@@ -4,6 +4,7 @@ from __future__ import annotations
 from moot.board import Board, Issue, PullRequest, Review, RunRecord
 from moot.config import Config
 from moot.grammar import ParsedComment, parse_comment
+from moot.models import ModelRegistry, ModelSpec
 
 
 def _group(cli, bot, token):
@@ -88,3 +89,16 @@ def mk_board(cfg: Config, issues=(), pulls=(), comments=(), phase: str = "execut
                  issues={i.number: i for i in issues}, pulls={p.number: p for p in pulls}, comments=tuple(comments),
                  runs=runs or {g: {} for g in cfg.group_names}, spend=spend or {g: {} for g in cfg.group_names},
                  open_challenges=open_challenges, ignored_comments=0)
+
+
+def _spec(adapter: str, model_id: str, context_class: str, tier: str) -> ModelSpec:
+    return ModelSpec(adapter, model_id, context_class, ("low", "medium", "high"), tier)
+
+
+REG = ModelRegistry({
+    "claude": {
+        "claude-sonnet-5": _spec("claude", "claude-sonnet-5", "large", "medium"),
+        "claude-haiku-4-5-20251001": _spec("claude", "claude-haiku-4-5-20251001", "medium", "small"),
+    },
+    "codex": {"gpt-test": _spec("codex", "gpt-test", "large", "medium")},
+})

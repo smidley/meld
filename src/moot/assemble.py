@@ -31,12 +31,19 @@ def _labels(raw: dict) -> frozenset[str]:
     return frozenset(l["name"] for l in raw.get("labels", []))
 
 
-def find_active_milestone(gh: GitHub) -> tuple[int, int]:
+def _locate_active(gh: GitHub) -> tuple[int, int, list[dict]]:
+    """Find the active milestone with coordination issue. Returns (milestone_number, coordination_number, raw_issues)."""
     for m in sorted(gh.list_open_milestones(), key=lambda m: m["number"]):
-        for issue in gh.list_issues(m["number"]):
+        raw_issues = gh.list_issues(m["number"])
+        for issue in raw_issues:
             if COORDINATION_LABEL in _labels(issue):
-                return m["number"], issue["number"]
+                return m["number"], issue["number"], raw_issues
     raise BoardError("no open milestone has an issue labelled moot:coordination; run `moot setup` first")
+
+
+def find_active_milestone(gh: GitHub) -> tuple[int, int]:
+    milestone, coordination, _ = _locate_active(gh)
+    return milestone, coordination
 
 
 def checks_state(check_runs: dict) -> str:
@@ -97,15 +104,17 @@ def _pull(gh: GitHub, raw: dict) -> PullRequest:
 def build_board(gh: GitHub, cfg: Config, runs: dict[str, dict[int, RunRecord]], spend: dict[str, dict[str, int]],
                 milestone: int | None = None) -> Board:
     if milestone is None:
-        milestone, coordination = find_active_milestone(gh)
-        raw_issues = gh.list_issues(milestone)
+        milestone, coordination, raw_issues = _locate_active(gh)
     else:
         raw_issues = gh.list_issues(milestone)
         coord = [i for i in raw_issues if COORDINATION_LABEL in _labels(i)]
         if not coord:
             raise BoardError(f"milestone {milestone} has no issue labelled moot:coordination")
         coordination = coord[0]["number"]
-    coord_raw = next(i for i in raw_issues if i["number"] == coordination)
+    coord_raw_list = [i for i in raw_issues if i["number"] == coordination]
+    if not coord_raw_list:
+        raise BoardError(f"coordination issue {coordination} not found in milestone {milestone} issues")
+    coord_raw = coord_raw_list[0]
     comments = tuple(parse_comment(c, cfg) for c in gh.list_comments(coordination))
     known = {g.bot for g in cfg.groups.values()} | set(cfg.humans)
     ignored = sum(1 for c in comments if c.author not in known)

@@ -49,3 +49,17 @@ def test_issue_number_from_pr():
     assert issue_number_from_pr("fixes   #7 and more", "whatever") == 7
     assert issue_number_from_pr("no keyword", "moot/42-slug") == 42
     assert issue_number_from_pr("nothing", "feature/x") is None
+
+
+def test_build_board_fetches_issues_once(board1_gh):
+    fake, gh = board1_gh
+    build_board(gh, CFG2, {"claude": {}, "codex": {}}, {"claude": {}, "codex": {}})
+    issue_list_calls = [c for c in fake.calls if c.method == "GET" and c.endpoint == "repos/acme/widgets/issues"]
+    assert len(issue_list_calls) == 1
+
+
+def test_build_board_with_explicit_milestone_missing_coordination(board1_gh):
+    fake, gh = board1_gh
+    fake.route("GET", "repos/acme/widgets/issues", [])
+    with pytest.raises(BoardError, match="coordination"):
+        build_board(gh, CFG2, {}, {}, milestone=3)

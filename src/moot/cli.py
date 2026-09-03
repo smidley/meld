@@ -13,6 +13,7 @@ from moot.config import ConfigError
 from moot.context import Context, load_context
 from moot.github import GitHubError
 from moot.status import build_status
+from moot.waiting import wait_for_change
 
 RUN = subprocess.run  # tests monkeypatch this with a FakeGh
 
@@ -63,6 +64,19 @@ def models(ctx: click.Context, adapter: str | None) -> None:
     emit({"adapter": adapter, "models": [
         {"id": s.id, "context_class": s.context_class, "efforts": list(s.efforts), "tier": s.tier} for s in specs
     ]}, ctx.obj["pretty"])
+
+
+@main.command()
+@click.option("--timeout", type=float, default=None, help="Seconds to wait before returning unchanged (default: polling.wait_timeout_seconds).")
+@click.option("--interval", type=float, default=None, help="Seconds between polls (default: polling.interval_seconds).")
+@click.pass_context
+def wait(ctx: click.Context, timeout: float | None, interval: float | None) -> None:
+    """Block until the board changes, then print status plus a changes list."""
+    c = _load(ctx)
+    t = timeout if timeout is not None else c.cfg.wait_timeout_seconds
+    i = interval if interval is not None else c.cfg.poll_interval_seconds
+    data = _guard(lambda: wait_for_change(c, timeout=t, interval=i))
+    emit(data, ctx.obj["pretty"])
 
 
 if __name__ == "__main__":

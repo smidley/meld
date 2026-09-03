@@ -1,0 +1,77 @@
+import json
+
+from moot.context import load_context
+from moot.waiting import wait_for_change
+from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
+from tests.fakegh import FakeGh
+
+
+def make_ctx(tmp_path):
+    (tmp_path / ".moot.toml").write_text(PROJECT_TOML)
+    fake = FakeGh()
+    load_board1_routes(fake)
+    ctx = load_context(tmp_path / ".moot.toml", env=env_for(tmp_path), run=fake)
+    return fake, ctx
+
+
+class Clock:
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        return self.t
+
+    def sleep(self, s):
+        self.t += s
+
+
+def test_first_call_returns_initial_snapshot(tmp_path):
+    fake, ctx = make_ctx(tmp_path)
+    clock = Clock()
+    out = wait_for_change(ctx, timeout=300, interval=30, sleep=clock.sleep, clock=clock)
+    assert out["changes"] == ["initial snapshot"] and out["timed_out"] is False
+    assert ctx.store.load_snapshot() == out["digest"]
+
+
+def test_returns_when_board_changes(tmp_path):
+    fake, ctx = make_ctx(tmp_path)
+    clock = Clock()
+    wait_for_change(ctx, timeout=300, interval=30, sleep=clock.sleep, clock=clock)
+    issues = json.loads((__import__("pathlib").Path(__file__).parent / "fixtures/board1/issues.json").read_text())
+    for i in issues:
+        if i["number"] == 11:
+            i["labels"] = [l for l in i["labels"] if l["name"] != "moot:ready"] + [{"name": "moot:in-progress"}]
+            i["assignees"] = [{"login": "moot-codex-bot"}]
+
+    def sleep_then_mutate(s):
+        clock.sleep(s)
+        fake.route("GET", "repos/acme/widgets/issues", issues)
+
+    out = wait_for_change(ctx, timeout=300, interval=30, sleep=sleep_then_mutate, clock=clock)
+    assert out["timed_out"] is False
+    assert "issue #11: ready -> in_progress" in out["changes"]
+    assert ctx.store.load_snapshot() == out["digest"]
+
+
+def test_times_out_without_changes(tmp_path):
+    fake, ctx = make_ctx(tmp_path)
+    clock = Clock()
+    wait_for_change(ctx, timeout=300, interval=30, sleep=clock.sleep, clock=clock)
+    out = wait_for_change(ctx, timeout=90, interval=30, sleep=clock.sleep, clock=clock)
+    assert out["timed_out"] is True and out["changes"] == [] and out["rate_limited"] is False
+    assert clock.t >= 90
+
+
+def test_rate_limit_backs_off_and_recovers(tmp_path):
+    fake, ctx = make_ctx(tmp_path)
+    clock = Clock()
+    wait_for_change(ctx, timeout=300, interval=30, sleep=clock.sleep, clock=clock)
+    fake.rate_limit_next = True
+    slept = []
+
+    def sleep(s):
+        slept.append(s)
+        clock.sleep(s)
+
+    out = wait_for_change(ctx, timeout=100, interval=30, sleep=sleep, clock=clock)
+    assert out["timed_out"] is True and slept[0] == 30

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Sequence
 
 from moot.config import Config, Party
 
@@ -126,3 +127,60 @@ def compose(header: Header, text: str) -> str:
     if header.qualifier:
         parts.append(header.qualifier)
     return " ".join(parts) + "\n\n" + text.strip() + "\n"
+
+
+@dataclass(frozen=True)
+class Agreement:
+    ref: str
+    text: str | None
+    proposer: str | None
+    agreed: frozenset[str]
+    dissent: dict[str, str]
+    rounds: int
+    status: str
+    joint_posted: bool
+
+    def can_amend(self, cfg: Config) -> bool:
+        return self.rounds < cfg.amend_cap
+
+
+def agreement_for(comments: Sequence[ParsedComment], ref: str, cfg: Config) -> Agreement:
+    text: str | None = None
+    proposer: str | None = None
+    agreed: set[str] = set()
+    dissent: dict[str, str] = {}
+    rounds = 0
+    joint_posted = False
+    for cmt in sorted(comments, key=lambda x: (x.created_at, x.id)):
+        if not cmt.ok or cmt.header is None or cmt.header.ref != ref:
+            continue
+        h = cmt.header
+        if h.party.kind == "joint":
+            joint_posted = True
+            continue
+        if h.party.kind not in ("group", "pm") or h.party.group is None:
+            continue
+        g = h.party.group
+        if h.verb in ("PROPOSE", "DRAFT"):
+            text, proposer, agreed, dissent = cmt.text, g, {g}, {}
+        elif h.verb == "AMEND":
+            text, proposer, agreed, dissent = cmt.text, g, {g}, {}
+            rounds += 1
+        elif h.verb == "AGREE" and text is not None:
+            agreed.add(g)
+            dissent.pop(g, None)
+        elif h.verb == "DISSENT" and text is not None:
+            dissent[g] = cmt.text
+            agreed.discard(g)
+    groups = set(cfg.group_names)
+    if text is None:
+        status = "none"
+    elif agreed >= groups:
+        status = "agreed"
+    elif (agreed | set(dissent)) < groups:
+        status = "open"
+    elif len(agreed) * 2 > len(groups):
+        status = "majority"
+    else:
+        status = "disagree"
+    return Agreement(ref, text, proposer, frozenset(agreed), dissent, rounds, status, joint_posted)

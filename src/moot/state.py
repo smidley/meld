@@ -1,0 +1,158 @@
+"""Disposable local state under $MOOT_HOME: run records, snapshots, cursors, caches."""
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import asdict
+from pathlib import Path
+from typing import Callable, Mapping
+
+from moot.board import Board, RunRecord
+
+
+def moot_home(env: Mapping[str, str]) -> Path:
+    return Path(env.get("MOOT_HOME", "~/.moot")).expanduser()
+
+
+def pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+class StateStore:
+    def __init__(self, home: Path, group: str | None):
+        self.home = home
+        self.group = group
+        who = group or "human"
+        self.cache_dir = home / "cache" / who
+        self.state_dir = home / "state" / who
+        self.runs_root = home / "runs"
+
+    # ---- snapshot ----------------------------------------------------------
+
+    @property
+    def snapshot_path(self) -> Path:
+        return self.state_dir / "snapshot.json"
+
+    def load_snapshot(self) -> dict | None:
+        if not self.snapshot_path.exists():
+            return None
+        return json.loads(self.snapshot_path.read_text())
+
+    def save_snapshot(self, digest: dict) -> None:
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        self.snapshot_path.write_text(json.dumps(digest, sort_keys=True))
+
+    # ---- run records -------------------------------------------------------
+
+    def write_run(self, record: RunRecord) -> Path:
+        d = self.runs_root / record.group
+        d.mkdir(parents=True, exist_ok=True)
+        data = asdict(record)
+        data.pop("alive", None)
+        path = d / f"{record.issue}.json"
+        path.write_text(json.dumps(data, sort_keys=True))
+        return path
+
+    def _read_record(self, path: Path, alive: Callable[[int], bool]) -> RunRecord:
+        data = json.loads(path.read_text())
+        return RunRecord(
+            group=data["group"], issue=int(data["issue"]), kind=data.get("kind", "build"), pr=data.get("pr"),
+            pid=int(data["pid"]), started_at=data["started_at"], worktree=data["worktree"], log_path=data["log_path"],
+            model=data["model"], effort=data["effort"], tier=data["tier"], milestone=int(data["milestone"]),
+            alive=alive(int(data["pid"])), collected=bool(data.get("collected", False)),
+        )
+
+    def load_runs(self, alive: Callable[[int], bool] = pid_alive) -> dict[str, dict[int, RunRecord]]:
+        out: dict[str, dict[int, RunRecord]] = {}
+        if not self.runs_root.exists():
+            return out
+        for gdir in sorted(p for p in self.runs_root.iterdir() if p.is_dir()):
+            out[gdir.name] = {}
+            for f in sorted(gdir.glob("*.json")):
+                rec = self._read_record(f, alive)
+                out[gdir.name][rec.issue] = rec
+        return out
+
+    def load_spend(self, milestone: int) -> dict[str, dict[str, int]]:
+        out: dict[str, dict[str, int]] = {}
+        if not self.runs_root.exists():
+            return out
+        for gdir in sorted(p for p in self.runs_root.iterdir() if p.is_dir()):
+            counts: dict[str, int] = {}
+            files = list(gdir.glob("*.json")) + list((gdir / "archive").glob("*.json"))
+            for f in files:
+                data = json.loads(f.read_text())
+                if int(data.get("milestone", -1)) != milestone:
+                    continue
+                counts[data["tier"]] = counts.get(data["tier"], 0) + 1
+            out[gdir.name] = counts
+        return out
+
+
+# ---- digests ---------------------------------------------------------------
+
+def board_digest(board: Board) -> dict:
+    return {
+        "phase": board.phase,
+        "halted": board.halted,
+        "issues": {str(n): {"status": i.status, "assignees": list(i.assignees), "labels": sorted(i.labels)}
+                   for n, i in sorted(board.issues.items())},
+        "pulls": {str(n): {"head": p.head_sha, "approvals": sorted(p.approvals_on_head()),
+                           "changes_requested": sorted(p.changes_requested_on_head()), "checks": p.checks, "state": p.state}
+                  for n, p in sorted(board.pulls.items())},
+        "runs": {f"{g}/#{n}": ("running" if r.alive else "collected" if r.collected else "finished")
+                 for g, recs in sorted(board.runs.items()) for n, r in sorted(recs.items())},
+        "last_comment_id": max((c.id for c in board.comments), default=0),
+        "open_challenges": sorted(board.open_challenges),
+    }
+
+
+def diff_digest(old: dict | None, new: dict) -> list[str]:
+    if old is None:
+        return ["initial snapshot"]
+    changes: list[str] = []
+    for key in ("phase", "halted"):
+        if old.get(key) != new.get(key):
+            changes.append(f"{key}: {old.get(key)} -> {new.get(key)}")
+    for n in sorted(set(old.get("issues", {})) | set(new.get("issues", {})), key=int):
+        a, b = old.get("issues", {}).get(n), new.get("issues", {}).get(n)
+        if a is None:
+            changes.append(f"issue #{n}: new ({b['status']})")
+        elif b is None:
+            changes.append(f"issue #{n}: gone")
+        elif a["status"] != b["status"]:
+            changes.append(f"issue #{n}: {a['status']} -> {b['status']}")
+        elif a != b:
+            changes.append(f"issue #{n}: labels or assignees changed")
+    for n in sorted(set(old.get("pulls", {})) | set(new.get("pulls", {})), key=int):
+        a, b = old.get("pulls", {}).get(n), new.get("pulls", {}).get(n)
+        if a is None:
+            changes.append(f"pr #{n}: new")
+        elif b is None:
+            changes.append(f"pr #{n}: gone")
+        else:
+            if a["head"] != b["head"]:
+                changes.append(f"pr #{n}: new head {b['head']}")
+            if a["approvals"] != b["approvals"]:
+                changes.append(f"pr #{n}: approvals {a['approvals']} -> {b['approvals']}")
+            if a["changes_requested"] != b["changes_requested"]:
+                changes.append(f"pr #{n}: changes_requested {a['changes_requested']} -> {b['changes_requested']}")
+            if a["checks"] != b["checks"]:
+                changes.append(f"pr #{n}: checks {a['checks']} -> {b['checks']}")
+            if a["state"] != b["state"]:
+                changes.append(f"pr #{n}: {a['state']} -> {b['state']}")
+    for k in sorted(set(old.get("runs", {})) | set(new.get("runs", {}))):
+        a, b = old.get("runs", {}).get(k), new.get("runs", {}).get(k)
+        if a != b:
+            changes.append(f"run {k}: {a or 'none'} -> {b or 'none'}")
+    if old.get("last_comment_id") != new.get("last_comment_id"):
+        changes.append(f"comments: new up to #{new.get('last_comment_id')}")
+    if old.get("open_challenges") != new.get("open_challenges"):
+        changes.append(f"open_challenges: {old.get('open_challenges')} -> {new.get('open_challenges')}")
+    return changes

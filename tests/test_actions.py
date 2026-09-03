@@ -6,6 +6,7 @@ from click.testing import CliRunner
 import moot.cli as cli
 from moot.actions import Refused, claim, release
 from moot.context import load_context
+from moot.github import GitHubError
 from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
 from tests.fakegh import FakeGh
 
@@ -28,12 +29,12 @@ def test_claim_happy_path(tmp_path):
     fake, ctx = make(tmp_path)
     fake.route("POST", R + "issues/11/assignees", {"assignees": [{"login": "moot-claude-bot"}]})
     fake.route("GET", R + "issues/11", {"number": 11, "assignees": [{"login": "moot-claude-bot"}]})
-    fake.route("DELETE", R + "issues/11/labels/moot:ready", [])
     fake.route("POST", R + "issues/11/labels", [{"name": "moot:in-progress"}])
+    fake.route("DELETE", R + "issues/11/labels/moot:ready", [])
     assert claim(ctx, 11) == {"claimed": 11, "assignee": "moot-claude-bot"}
     mutations = [(c.method, c.endpoint) for c in fake.calls if c.method != "GET"]
-    assert mutations == [("POST", R + "issues/11/assignees"), ("DELETE", R + "issues/11/labels/moot:ready"),
-                         ("POST", R + "issues/11/labels")]
+    assert mutations == [("POST", R + "issues/11/assignees"), ("POST", R + "issues/11/labels"),
+                         ("DELETE", R + "issues/11/labels/moot:ready")]
     assert posted_headers(fake) == []
 
 
@@ -72,13 +73,34 @@ def test_claim_unknown_issue(tmp_path):
         claim(ctx, 999)
 
 
+def test_claim_compensates_when_reread_fails(tmp_path):
+    fake, ctx = make(tmp_path)
+    fake.route("POST", R + "issues/11/assignees", {})
+    fake.route("DELETE", R + "issues/11/assignees", {})
+    # no GET issues/11 route -> 404 -> GitHubError on the fresh re-read
+    with pytest.raises(GitHubError):
+        claim(ctx, 11)
+    assert ("DELETE", R + "issues/11/assignees") in [(c.method, c.endpoint) for c in fake.calls]
+
+
+def test_refusal_survives_a_failed_violation_post(tmp_path):
+    fake, ctx = make(tmp_path, role="orchestrator")  # no comments route -> post fails with 404
+    with pytest.raises(Refused) as ei:
+        claim(ctx, 11)
+    assert ei.value.refusal.rule == "only a PM or a human may claim"
+    assert ei.value.post_error is not None
+
+
 def test_release_by_owner_and_forced_by_human(tmp_path):
     fake, ctx = make(tmp_path)
     fake.route("DELETE", R + "issues/12/assignees", {})
+    fake.route("POST", R + "issues/12/labels", [{"name": "moot:ready"}])
     fake.route("DELETE", R + "issues/12/labels/moot:in-progress", [])
     fake.route("DELETE", R + "issues/12/labels/moot:blocked", [])
-    fake.route("POST", R + "issues/12/labels", [{"name": "moot:ready"}])
     assert release(ctx, 12) == {"released": 12, "previous_assignees": ["moot-claude-bot"]}
+    mutations = [(c.method, c.endpoint) for c in fake.calls if c.method != "GET"]
+    assert mutations == [("DELETE", R + "issues/12/assignees"), ("POST", R + "issues/12/labels"),
+                         ("DELETE", R + "issues/12/labels/moot:in-progress")]
     assert posted_headers(fake) == []
 
     fake2, human = make(tmp_path, group=None)
@@ -105,3 +127,4 @@ def test_cli_claim_refusal_exit_code(tmp_path, monkeypatch):
     assert result.exit_code == 2
     data = json.loads(result.output)
     assert data["verb"] == "claim" and data["target"] == "#12" and "not ready" in data["rule"]
+    assert data["violation_posted"] is True

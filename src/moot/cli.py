@@ -84,7 +84,8 @@ def _run_action(ctx: click.Context, fn) -> None:
     try:
         emit(_guard(fn), ctx.obj["pretty"])
     except Refused as e:
-        emit({"refused": str(e), "verb": e.refusal.verb.value, "target": e.refusal.target, "rule": e.refusal.rule},
+        emit({"refused": str(e), "verb": e.refusal.verb.value, "target": e.refusal.target, "rule": e.refusal.rule,
+              "violation_posted": e.post_error is None},
              ctx.obj["pretty"])
         ctx.exit(2)
 

@@ -72,12 +72,12 @@ class GitHub:
                 parsed = text
         return status, resp_headers, parsed
 
-    def get(self, endpoint: str, params: dict[str, Any] | None = None) -> Any:
+    def get(self, endpoint: str, params: dict[str, Any] | None = None, *, use_cache: bool = True) -> Any:
         url = endpoint + ("?" + urlencode(params) if params else "")
         cache = self._cache_path(url)
         headers: dict[str, str] = {}
         cached: dict | None = None
-        if cache is not None and cache.exists():
+        if use_cache and cache is not None and cache.exists():
             cached = json.loads(cache.read_text())
             headers["If-None-Match"] = cached["etag"]
         status, resp_headers, body = self._call("GET", url, headers=headers)
@@ -138,8 +138,8 @@ class GitHub:
         raw = self.get_paginated(self._r("issues"), {"milestone": milestone, "state": "all"})
         return [i for i in raw if "pull_request" not in i]
 
-    def get_issue(self, number: int) -> dict:
-        return self.get(self._r(f"issues/{number}"))
+    def get_issue(self, number: int, fresh: bool = False) -> dict:
+        return self.get(self._r(f"issues/{number}"), use_cache=not fresh)
 
     def list_comments(self, issue: int, since: str | None = None) -> list[dict]:
         params: dict[str, Any] = {}

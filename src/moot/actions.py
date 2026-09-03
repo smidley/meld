@@ -5,6 +5,7 @@ from typing import NoReturn
 
 from moot.board import Board
 from moot.config import Party
+from moot.github import GitHubError
 from moot.grammar import Header, compose
 from moot.rules import Refusal, Verb, issue_refusal
 from moot.status import build_status
@@ -13,17 +14,22 @@ READY, IN_PROGRESS, BLOCKED = "moot:ready", "moot:in-progress", "moot:blocked"
 
 
 class Refused(Exception):
-    def __init__(self, refusal: Refusal):
+    def __init__(self, refusal: Refusal, post_error: str | None = None):
         super().__init__(str(refusal))
         self.refusal = refusal
+        self.post_error = post_error
 
 
 def refuse(ctx, board: Board | None, refusal: Refusal) -> NoReturn:
     actor = ctx.actor()
+    post_error = None
     if board is not None and not actor.is_human:
         header = Header(actor.party, "PROTOCOL-VIOLATION", refusal.target, None)
-        ctx.gh.create_comment(board.coordination_issue, compose(header, f"Refused `{refusal.verb.value}`: {refusal.rule}"))
-    raise Refused(refusal)
+        try:
+            ctx.gh.create_comment(board.coordination_issue, compose(header, f"Refused `{refusal.verb.value}`: {refusal.rule}"))
+        except GitHubError as e:
+            post_error = str(e)
+    raise Refused(refusal, post_error=post_error)
 
 
 def _issue_or_refuse(ctx, board: Board, verb: Verb, number: int):
@@ -41,14 +47,21 @@ def claim(ctx, number: int) -> dict:
     if refusal:
         refuse(ctx, board, refusal)
     ctx.gh.add_assignees(number, [actor.login])
-    fresh = ctx.gh.get_issue(number)
-    assignees = [a["login"] for a in fresh.get("assignees", [])]
-    if assignees != [actor.login]:
-        ctx.gh.remove_assignees(number, [actor.login])
-        others = [a for a in assignees if a != actor.login]
-        refuse(ctx, board, Refusal(Verb.CLAIM, f"#{number}", f"lost the claim race to {', '.join(others) or 'unknown'}"))
-    ctx.gh.remove_label(number, READY)
-    ctx.gh.add_labels(number, [IN_PROGRESS])
+    try:
+        fresh = ctx.gh.get_issue(number, fresh=True)
+        assignees = [a["login"] for a in fresh.get("assignees", [])]
+        if set(assignees) != {actor.login}:
+            ctx.gh.remove_assignees(number, [actor.login])
+            others = [a for a in assignees if a != actor.login]
+            refuse(ctx, board, Refusal(Verb.CLAIM, f"#{number}", f"lost the claim race to {', '.join(others) or 'unknown'}"))
+        ctx.gh.add_labels(number, [IN_PROGRESS])
+        ctx.gh.remove_label(number, READY)
+    except GitHubError:
+        try:
+            ctx.gh.remove_assignees(number, [actor.login])
+        except GitHubError:
+            pass
+        raise
     return {"claimed": number, "assignee": actor.login}
 
 
@@ -63,10 +76,10 @@ def release(ctx, number: int, force: bool = False) -> dict:
         refuse(ctx, board, refusal)
     if issue.assignees:
         ctx.gh.remove_assignees(number, list(issue.assignees))
+    ctx.gh.add_labels(number, [READY])
     for label in (IN_PROGRESS, BLOCKED):
         if label in issue.labels:
             ctx.gh.remove_label(number, label)
-    ctx.gh.add_labels(number, [READY])
     if force:
         note = compose(Header(Party("human"), "RELEASE", f"#{number}", None),
                        f"Force-released #{number} from {', '.join(issue.assignees) or 'nobody'}.")

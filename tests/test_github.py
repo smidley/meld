@@ -111,3 +111,13 @@ def test_no_token_leaves_gh_auth_alone(tmp_path):
         assert gh_token_in_env
     else:
         assert not gh_token_in_env
+
+
+def test_get_issue_fresh_bypasses_etag_cache(tmp_path):
+    fake, gh = make(tmp_path)
+    fake.route("GET", "repos/acme/widgets/issues/7", {"number": 7, "assignees": []}, etag='W/"v1"')
+    assert gh.get_issue(7)["assignees"] == []
+    fake.route("GET", "repos/acme/widgets/issues/7", {"number": 7, "assignees": [{"login": "b"}]}, etag='W/"v1"')
+    assert gh.get_issue(7)["assignees"] == []            # cached 304 path still answers stale
+    assert gh.get_issue(7, fresh=True)["assignees"] == [{"login": "b"}]
+    assert "if-none-match" not in fake.calls[-1].headers

@@ -33,10 +33,7 @@ def main(ctx: click.Context, config_path: Path | None, pretty: bool) -> None:
 
 
 def _load(ctx: click.Context) -> Context:
-    try:
-        return load_context(ctx.obj["config_path"], run=RUN)
-    except ConfigError as e:
-        raise click.ClickException(str(e)) from e
+    return _guard(lambda: load_context(ctx.obj["config_path"], run=RUN))
 
 
 def _guard(fn):

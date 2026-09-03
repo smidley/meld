@@ -73,6 +73,28 @@ def test_status_as_orchestrator_cannot_claim(project: Path, monkeypatch):
     assert {i["number"]: i["legal"] for i in data["issues"]}[11] == []
 
 
+def test_status_as_human_uses_gh_identity(project: Path, monkeypatch):
+    fake = FakeGh()
+    load_board1_routes(fake)
+    monkeypatch.setattr(cli, "RUN", fake)
+    result = CliRunner().invoke(cli.main, ["--config", str(project / ".moot.toml"), "--compact", "status"],
+                                env=env_for(project, group=None))
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["party"] == "[human]" and data["actor"] == "empowerScott"
+    assert {i["number"]: i["legal"] for i in data["issues"]}[11] == ["claim"]
+
+
+def test_gh_failure_is_a_clean_cli_error(project: Path, monkeypatch):
+    fake = FakeGh()  # no "user" route: gh returns 404 -> GitHubError from viewer_login
+    monkeypatch.setattr(cli, "RUN", fake)
+    result = CliRunner().invoke(cli.main, ["--config", str(project / ".moot.toml"), "--compact", "status"],
+                                env=env_for(project, group=None))
+    assert result.exit_code == 1
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "Error:" in result.output and "GET user" in result.output
+
+
 def test_models_command_lists_adapter_models(project: Path, monkeypatch):
     fake = FakeGh()
     monkeypatch.setattr(cli, "RUN", fake)

@@ -419,6 +419,17 @@ No test claims to measure decision quality. That is done by watching the first m
 
 ## 21. Future work (explicitly out of v1)
 
+### Borrowed from prior art (approved 2026-09-03)
+
+A survey of existing multi-agent coding systems (Symphony and its forks, Gas Town/Beads, Code Conductor, claude-code-review-council, ai-pair, Claude Code Review) found no project combining Moot's mechanisms, but five of their ideas are adopted for the later plans:
+
+1. **Lease-plus-heartbeat claims** (from Beads). A claim carries a TTL that the PM's loop renews while the worker runs; an expired claim auto-reverts the issue to `ready` and posts a note. Replaces bare first-assignment-wins as the crash-recovery path. Lands in plan 2 with dispatch and collect.
+2. **Citation verification before a finding is shown** (from claude-code-review-council). The reviewer worker's contract requires every cited file and line to be opened and checked against the checkout before it appears in the review; uncheckable citations are dropped and noted. Lands in plan 2's reviewer prompt.
+3. **Role-matched review** (from ai-pair). When more than one group reviews a PR, the review request assigns each a different primary concern (correctness and security, tests and conventions, architecture) so reviewers surface distinct issues. Lands in plan 3 with `review`.
+4. **Neutral check runs** (from Claude Code Review). Cross-group review results are published as a GitHub check run with a neutral conclusion, visible but never blocking on its own; merge remains gated by the quorum rule in `rules.py` and the human. Lands in plan 3 with `review` and `merge`.
+5. **Repo-local verification bar** (from Claude Code Review's `REVIEW.md`). A product may add `.moot/REVIEW.md` stating what counts as evidence for that repo; it is rendered into reviewer and auditor briefs. Lands in plan 2 with brief rendering.
+
+
 - Webhooks when running on an always-on box.
 - Per-group machines and a shared `$MOOT_HOME` alternative.
 - A third adapter to prove the N-group claims end to end.

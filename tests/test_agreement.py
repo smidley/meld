@@ -83,3 +83,12 @@ def test_draft_behaves_like_propose_and_joint_marks_posted():
           c(CFG2, 3, "codex", "ANSWER", "ask-1", "answer\n\nverified-by: moot status", joint=True)]
     a = agreement_for(cs, "ask-1", CFG2)
     assert a.status == "agreed" and a.joint_posted
+
+
+def test_reproposal_counts_as_a_round():
+    cs = [c(CFG2, 1, "claude", "PROPOSE", "plan-1", "v1"), c(CFG2, 2, "codex", "PROPOSE", "plan-1", "v2")]
+    a = agreement_for(cs, "plan-1", CFG2)
+    assert a.rounds == 1 and a.text == "v2" and a.proposer == "codex" and a.agreed == {"codex"}
+    cs.append(c(CFG2, 3, "claude", "DRAFT", "plan-1", "v3"))
+    a = agreement_for(cs, "plan-1", CFG2)
+    assert a.rounds == 2 and not a.can_amend(CFG2)

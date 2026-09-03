@@ -161,11 +161,11 @@ def agreement_for(comments: Sequence[ParsedComment], ref: str, cfg: Config) -> A
         if h.party.kind not in ("group", "pm") or h.party.group is None:
             continue
         g = h.party.group
-        if h.verb in ("PROPOSE", "DRAFT"):
+        if h.verb in ("PROPOSE", "DRAFT", "AMEND"):
+            # A re-proposal (PROPOSE/DRAFT when text is not None) counts as an amend round
+            if text is not None:
+                rounds += 1
             text, proposer, agreed, dissent = cmt.text, g, {g}, {}
-        elif h.verb == "AMEND":
-            text, proposer, agreed, dissent = cmt.text, g, {g}, {}
-            rounds += 1
         elif h.verb == "AGREE" and text is not None:
             agreed.add(g)
             dissent.pop(g, None)

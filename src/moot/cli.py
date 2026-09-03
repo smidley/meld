@@ -8,6 +8,7 @@ from pathlib import Path
 import click
 
 from moot import __version__
+from moot.actions import Refused, claim as do_claim, release as do_release
 from moot.assemble import BoardError
 from moot.config import ConfigError
 from moot.context import Context, load_context
@@ -77,6 +78,34 @@ def wait(ctx: click.Context, timeout: float | None, interval: float | None) -> N
     i = interval if interval is not None else c.cfg.poll_interval_seconds
     data = _guard(lambda: wait_for_change(c, timeout=t, interval=i))
     emit(data, ctx.obj["pretty"])
+
+
+def _run_action(ctx: click.Context, fn) -> None:
+    try:
+        emit(_guard(fn), ctx.obj["pretty"])
+    except Refused as e:
+        emit({"refused": str(e), "verb": e.refusal.verb.value, "target": e.refusal.target, "rule": e.refusal.rule},
+             ctx.obj["pretty"])
+        ctx.exit(2)
+
+
+@main.command()
+@click.argument("number", type=int)
+@click.pass_context
+def claim(ctx: click.Context, number: int) -> None:
+    """Claim a ready issue by assigning this party (first assignment wins)."""
+    c = _load(ctx)
+    _run_action(ctx, lambda: do_claim(c, number))
+
+
+@main.command()
+@click.argument("number", type=int)
+@click.option("--force", is_flag=True, help="Human-only: release another party's claim and post a note.")
+@click.pass_context
+def release(ctx: click.Context, number: int, force: bool) -> None:
+    """Release a claim, returning the issue to ready."""
+    c = _load(ctx)
+    _run_action(ctx, lambda: do_release(c, number, force=force))
 
 
 if __name__ == "__main__":

@@ -53,3 +53,27 @@ def test_digest_and_diff_name_what_changed():
     assert "run claude/#12: running -> finished" in changes
     assert "halted: False -> True" in changes
     assert diff_digest(None, d2) == ["initial snapshot"]
+
+
+def test_corrupt_run_record_is_skipped_and_reported(tmp_path):
+    store = StateStore(tmp_path, "claude")
+    store.write_run(mk_run("claude", 1))
+    bad = tmp_path / "runs" / "claude" / "2.json"
+    bad.write_text("{not json")
+    missing = tmp_path / "runs" / "claude" / "3.json"
+    missing.write_text(json.dumps({"group": "claude", "issue": 3, "milestone": 3}))
+    runs = store.load_runs(alive=lambda pid: False)
+    assert sorted(runs["claude"]) == [1]
+    assert len(store.errors) == 2 and str(bad) in store.errors[0]
+    assert store.load_spend(3) == {"claude": {"medium": 1}}
+    assert len(store.errors) == 4  # load_spend reports the same two files again
+
+
+def test_writes_are_atomic_and_pid_guard(tmp_path):
+    from moot.state import pid_alive
+    store = StateStore(tmp_path, "claude")
+    store.save_snapshot({"a": 1})
+    assert not list((tmp_path / "state" / "claude").glob("*.tmp"))
+    store.write_run(mk_run("claude", 5))
+    assert not list((tmp_path / "runs" / "claude").glob("*.tmp"))
+    assert pid_alive(0) is False and pid_alive(-1) is False

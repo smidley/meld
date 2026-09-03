@@ -10,11 +10,20 @@ from typing import Callable, Mapping
 from moot.board import Board, RunRecord
 
 
+def _write_atomic(path: Path, text: str) -> None:
+    """Write text to a temporary file, then atomically replace the target."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+
+
 def moot_home(env: Mapping[str, str]) -> Path:
     return Path(env.get("MOOT_HOME", "~/.moot")).expanduser()
 
 
 def pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -32,6 +41,7 @@ class StateStore:
         self.cache_dir = home / "cache" / who
         self.state_dir = home / "state" / who
         self.runs_root = home / "runs"
+        self.errors: list[str] = []
 
     # ---- snapshot ----------------------------------------------------------
 
@@ -42,11 +52,15 @@ class StateStore:
     def load_snapshot(self) -> dict | None:
         if not self.snapshot_path.exists():
             return None
-        return json.loads(self.snapshot_path.read_text())
+        try:
+            return json.loads(self.snapshot_path.read_text())
+        except (json.JSONDecodeError, OSError) as e:
+            self.errors.append(f"{self.snapshot_path}: {e.__class__.__name__}: {e}")
+            return None
 
     def save_snapshot(self, digest: dict) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
-        self.snapshot_path.write_text(json.dumps(digest, sort_keys=True))
+        _write_atomic(self.snapshot_path, json.dumps(digest, sort_keys=True))
 
     # ---- run records -------------------------------------------------------
 
@@ -56,7 +70,7 @@ class StateStore:
         data = asdict(record)
         data.pop("alive", None)
         path = d / f"{record.issue}.json"
-        path.write_text(json.dumps(data, sort_keys=True))
+        _write_atomic(path, json.dumps(data, sort_keys=True))
         return path
 
     def _read_record(self, path: Path, alive: Callable[[int], bool]) -> RunRecord:
@@ -75,8 +89,12 @@ class StateStore:
         for gdir in sorted(p for p in self.runs_root.iterdir() if p.is_dir()):
             out[gdir.name] = {}
             for f in sorted(gdir.glob("*.json")):
-                rec = self._read_record(f, alive)
-                out[gdir.name][rec.issue] = rec
+                try:
+                    rec = self._read_record(f, alive)
+                    out[gdir.name][rec.issue] = rec
+                except (json.JSONDecodeError, KeyError, ValueError, OSError) as e:
+                    self.errors.append(f"{f}: {e.__class__.__name__}: {e}")
+                    continue
         return out
 
     def load_spend(self, milestone: int) -> dict[str, dict[str, int]]:
@@ -87,10 +105,14 @@ class StateStore:
             counts: dict[str, int] = {}
             files = list(gdir.glob("*.json")) + list((gdir / "archive").glob("*.json"))
             for f in files:
-                data = json.loads(f.read_text())
-                if int(data.get("milestone", -1)) != milestone:
+                try:
+                    data = json.loads(f.read_text())
+                    if int(data.get("milestone", -1)) != milestone:
+                        continue
+                    counts[data["tier"]] = counts.get(data["tier"], 0) + 1
+                except (json.JSONDecodeError, KeyError, ValueError, OSError) as e:
+                    self.errors.append(f"{f}: {e.__class__.__name__}: {e}")
                     continue
-                counts[data["tier"]] = counts.get(data["tier"], 0) + 1
             out[gdir.name] = counts
         return out
 

@@ -1,5 +1,5 @@
 from moot.config import Party
-from moot.rules import Actor, Verb, issue_refusal, legal_issue_verbs, party_of_login
+from moot.rules import Actor, Refusal, Verb, issue_refusal, legal_issue_verbs, party_of_login
 from tests.factories import CFG2, REG, mk_board, mk_comment, mk_issue, mk_pr, mk_run
 
 ROSTER = frozenset({"backend", "frontend", "security", "qa", "reviewer", "auditor", "docs"})
@@ -150,3 +150,20 @@ def test_legal_issue_verbs_and_party_of_login():
     assert party_of_login(CFG2, "moot-codex-bot") == "codex"
     assert party_of_login(CFG2, "empowerScott") == "human:empowerScott"
     assert party_of_login(CFG2, "randouser") is None
+
+
+def test_refusal_carries_verb_target_and_renders():
+    i = mk_issue(11)
+    b = mk_board(CFG2, issues=[i])
+    r = issue_refusal(b, CFG2, CLAUDE_ORCH, Verb.CLAIM, i, REG)
+    assert isinstance(r, Refusal)
+    assert r.verb is Verb.CLAIM and r.target == "#11" and r.rule == "only a PM or a human may claim"
+    assert str(r) == "claim #11 refused: only a PM or a human may claim"
+    assert issue_refusal(b, CFG2, CLAUDE_PM, Verb.CLAIM, i, REG) is None
+
+
+def test_reopen_is_legal_when_no_closing_pr_is_recorded():
+    closed = mk_issue(9, state="closed")
+    audit = mk_comment(CFG2, 7, "moot-codex-bot", "[codex] AUDIT #9 FAIL\n\nunmet criterion")
+    b = mk_board(CFG2, issues=[closed], comments=[audit])
+    assert rule(b, CODEX_PM, Verb.REOPEN, closed) is None

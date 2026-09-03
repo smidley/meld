@@ -193,3 +193,67 @@ def issue_refusal(board: Board, cfg: Config, actor: Actor, verb: Verb, issue: Is
 
 def legal_issue_verbs(board: Board, cfg: Config, actor: Actor, issue: Issue, models: ModelRegistry) -> list[str]:
     return [v.value for v in ISSUE_VERBS if issue_refusal(board, cfg, actor, v, issue, models) is None]
+
+
+# ---- PR verbs ----------------------------------------------------------------
+
+def committer_party(cfg: Config, pr: PullRequest) -> str | None:
+    return party_of_login(cfg, pr.head_committer)
+
+
+def approving_parties(cfg: Config, pr: PullRequest) -> frozenset[str]:
+    committer = committer_party(cfg, pr)
+    parties = (party_of_login(cfg, login) for login in pr.approvals_on_head())
+    return frozenset(p for p in parties if p is not None and p != committer)
+
+
+def pingpong_exceeded(cfg: Config, pr: PullRequest) -> bool:
+    return pr.changes_requested_total() >= cfg.pingpong_cap
+
+
+def _approve(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | None:
+    if actor.name == committer_party(cfg, pr):
+        return f"{actor.name} made the last commit on this PR and cannot approve its own head"
+    if board.is_challenged(f"#{pr.number}"):
+        return "PR has an open CHALLENGE"
+    return None
+
+
+def _other_party_only(cfg: Config, actor: Actor, pr: PullRequest, verb: Verb) -> str | None:
+    if actor.name == committer_party(cfg, pr):
+        return f"{actor.name} made the last commit on this PR; only other parties may {verb.value}"
+    return None
+
+
+def _merge(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | None:
+    if board.halted:
+        return "HALT is in effect"
+    if not (actor.is_pm or actor.is_human):
+        return "only a PM or a human may merge"
+    if board.is_challenged(f"#{pr.number}"):
+        return "PR has an open CHALLENGE"
+    if pr.checks != "green":
+        return f"required checks are {pr.checks}, not green"
+    have = approving_parties(cfg, pr)
+    need = cfg.effective_quorum
+    if len(have) < need:
+        return f"{len(have)}/{need} approvals from non-committer parties (have: {sorted(have)})"
+    return None
+
+
+def pr_refusal(board: Board, cfg: Config, actor: Actor, verb: Verb, pr: PullRequest) -> Refusal | None:
+    if pr.state != "open":
+        rule: str | None = "PR is not open"
+    elif verb == Verb.APPROVE:
+        rule = _approve(board, cfg, actor, pr)
+    elif verb in (Verb.REQUEST_CHANGES, Verb.PUSH_FIX):
+        rule = _other_party_only(cfg, actor, pr, verb)
+    elif verb == Verb.MERGE:
+        rule = _merge(board, cfg, actor, pr)
+    else:
+        rule = f"{verb.value} is not a PR verb"
+    return Refusal(verb, f"#{pr.number}", rule) if rule else None
+
+
+def legal_pr_verbs(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> list[str]:
+    return [v.value for v in PR_VERBS if pr_refusal(board, cfg, actor, v, pr) is None]

@@ -1,0 +1,8 @@
+[
+  {"number": 20, "title": "CI pipeline", "body": "Closes #13\n\nverified-by: act -j ci (passed)", "state": "open",
+   "merged_at": null, "user": {"login": "moot-codex-bot"}, "head": {"ref": "moot/13-ci-pipeline", "sha": "abc123"}, "labels": []},
+  {"number": 19, "title": "Old merged", "body": "Closes #9", "state": "closed",
+   "merged_at": "2026-09-02T10:00:00Z", "user": {"login": "moot-claude-bot"}, "head": {"ref": "moot/9-old", "sha": "000999"}, "labels": []},
+  {"number": 18, "title": "Not ours", "body": "", "state": "open", "merged_at": null,
+   "user": {"login": "empowerScott"}, "head": {"ref": "feature/unrelated", "sha": "111222"}, "labels": []}
+]

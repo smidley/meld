@@ -1,0 +1,17 @@
+version: "3"
+
+tasks:
+  test:
+    desc: Run the unit test suite
+    cmds:
+      - uv run pytest -q
+
+  test:smoke:
+    desc: Run opt-in smoke tests against real CLIs (Plan 2)
+    cmds:
+      - MOOT_SMOKE=1 uv run pytest tests/smoke -q
+
+  status:
+    desc: Print the board for the current party (MOOT_GROUP / MOOT_ROLE from env)
+    cmds:
+      - uv run moot status

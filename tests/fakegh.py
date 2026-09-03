@@ -20,6 +20,7 @@ class Call:
 class FakeGh:
     routes: dict[tuple[str, str], tuple[int, object, str | None]] = field(default_factory=dict)
     calls: list[Call] = field(default_factory=list)
+    envs: list[dict] = field(default_factory=list)
     rate_limit_next: bool = False
 
     def route(self, method: str, endpoint: str, body: object, status: int = 200, etag: str | None = None) -> None:
@@ -46,6 +47,7 @@ class FakeGh:
         query = {k: v[0] for k, v in parse_qs(parts.query).items()}
         body = json.loads(input) if input else None
         self.calls.append(Call(method, parts.path, query, body, headers))
+        self.envs.append(dict(env or {}))
 
         if self.rate_limit_next:
             self.rate_limit_next = False

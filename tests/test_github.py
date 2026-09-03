@@ -1,3 +1,6 @@
+import json
+import os
+
 import pytest
 
 from moot.github import GitHub, GitHubError, RateLimited
@@ -15,6 +18,9 @@ def test_get_sets_token_and_parses_json(tmp_path):
     fake.route("GET", "repos/acme/widgets/issues/7", {"number": 7, "title": "x"})
     assert gh.get_issue(7) == {"number": 7, "title": "x"}
     assert fake.calls[0].method == "GET"
+    assert fake.envs[0]["GH_TOKEN"] == "tok"
+    assert "tok" not in fake.calls[0].endpoint
+    assert "tok" not in json.dumps(fake.calls[0].headers)
 
 
 def test_etag_cache_returns_cached_body_on_304(tmp_path):
@@ -91,3 +97,17 @@ def test_viewer_login(tmp_path):
     fake, gh = make(tmp_path)
     fake.route("GET", "user", {"login": "empowerScott"})
     assert gh.viewer_login() == "empowerScott"
+
+
+def test_no_token_leaves_gh_auth_alone(tmp_path):
+    fake = FakeGh()
+    gh = GitHub("acme/widgets", token=None, run=fake, cache_dir=tmp_path / "cache")
+    fake.route("GET", "repos/acme/widgets/issues/7", {"number": 7})
+    gh.get_issue(7)
+    gh_token_in_os = "GH_TOKEN" in os.environ
+    gh_token_in_env = "GH_TOKEN" in fake.envs[0]
+    # If GH_TOKEN is in os.environ, it should pass through; otherwise it should not be set
+    if gh_token_in_os:
+        assert gh_token_in_env
+    else:
+        assert not gh_token_in_env

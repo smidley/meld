@@ -234,3 +234,39 @@ def test_cli_post_rejects_message_and_body_file_together(tmp_path, monkeypatch):
                                 env=env_for(tmp_path, role="orchestrator"))
     assert result.exit_code == 2
     assert "mutually exclusive" in result.output
+
+
+THREE_GROUPS = PROJECT_TOML + """
+[groups.gemini]
+cli = "gemini"
+bot = "moot-gemini-bot"
+token_env = "MOOT_TOKEN_GEMINI"
+[groups.gemini.orchestrator]
+model = "g"
+effort = "high"
+[groups.gemini.pm]
+model = "g"
+effort = "medium"
+"""
+
+
+def test_joint_majority_puts_dissent_before_the_addendum(tmp_path):
+    (tmp_path / ".moot.toml").write_text(THREE_GROUPS)
+    fake = FakeGh()
+    load_board1_routes(fake)
+    fake.route("GET", R + "issues/10/comments", BASE_COMMENTS + [
+        {"id": 102, "user": {"login": "moot-claude-bot"}, "created_at": "2026-09-03T09:10:00Z",
+         "body": "[claude] PROPOSE dec-1\n\nUse Postgres.\n\nverified-by: moot status"},
+        {"id": 103, "user": {"login": "moot-codex-bot"}, "created_at": "2026-09-03T09:11:00Z",
+         "body": "[codex] AGREE dec-1\n\nok"},
+        {"id": 104, "user": {"login": "moot-gemini-bot"}, "created_at": "2026-09-03T09:12:00Z",
+         "body": "[gemini] DISSENT dec-1\n\nSQLite is enough."},
+    ])
+    fake.route("POST", R + "issues/10/comments", {"id": 556, "html_url": "u"})
+    ctx = load_context(tmp_path / ".moot.toml", env=env_for(tmp_path, role="orchestrator"), run=fake)
+    out = post(ctx, "DECISION", ref="dec-1", joint=True, text="Revisit in Q2.")
+    assert out["header"] == "[joint] DECISION dec-1"
+    body = posted(fake)[0]
+    assert body == ("[joint] DECISION dec-1\n\nUse Postgres.\n\nverified-by: moot status\n\n"
+                    "## DISSENT\n- **gemini**: SQLite is enough.\n\n## Addendum\nRevisit in Q2.\n")
+    assert body.index("## DISSENT") < body.index("## Addendum")

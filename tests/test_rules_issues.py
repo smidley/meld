@@ -1,5 +1,5 @@
 from moot.config import Party
-from moot.rules import Actor, Refusal, Verb, issue_refusal, legal_issue_verbs, party_of_login
+from moot.rules import ISSUE_VERBS, PR_VERBS, Actor, Refusal, Verb, issue_refusal, legal_issue_verbs, party_of_login
 from tests.factories import CFG2, REG, mk_board, mk_comment, mk_issue, mk_pr, mk_run
 
 ROSTER = frozenset({"backend", "frontend", "security", "qa", "reviewer", "auditor", "docs"})
@@ -167,3 +167,13 @@ def test_reopen_is_legal_when_no_closing_pr_is_recorded():
     audit = mk_comment(CFG2, 7, "moot-codex-bot", "[codex] AUDIT #9 FAIL\n\nunmet criterion")
     b = mk_board(CFG2, issues=[closed], comments=[audit])
     assert rule(b, CODEX_PM, Verb.REOPEN, closed) is None
+
+
+def test_post_is_refusable_but_is_not_a_board_verb():
+    # POST exists so a post refusal can name a verb, but it belongs to no issue and no PR,
+    # so it must never surface in a legal-action list.
+    assert Verb.POST.value == "post"
+    assert Verb.POST not in ISSUE_VERBS and Verb.POST not in PR_VERBS
+    issue = mk_issue(11)
+    board = mk_board(CFG2, issues=[issue])
+    assert "post" not in legal_issue_verbs(board, CFG2, CLAUDE_PM, issue, REG)

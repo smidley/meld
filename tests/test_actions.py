@@ -1,4 +1,5 @@
 import json
+from urllib.parse import quote
 
 import pytest
 from click.testing import CliRunner
@@ -14,7 +15,8 @@ R = "repos/acme/widgets/"
 
 
 def label_ep(number: int, label: str) -> str:
-    return R + f"issues/{number}/labels/{label}"
+    """The label endpoint as GitHub sees it: the label is one URL-quoted path segment."""
+    return R + f"issues/{number}/labels/{quote(label, safe='')}"
 
 
 def make(tmp_path, group="claude", role="pm"):

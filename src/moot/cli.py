@@ -55,17 +55,27 @@ def status(ctx: click.Context) -> None:
     emit(data, ctx.obj["pretty"])
 
 
+def _adapter_models(c: Context, adapter: str) -> dict:
+    return {"adapter": adapter, "models": [
+        {"id": s.id, "context_class": s.context_class, "efforts": list(s.efforts), "tier": s.tier}
+        for s in c.models.for_adapter(adapter)
+    ]}
+
+
 @main.command()
-@click.option("--adapter", default=None, help="Adapter to list (default: the calling group's CLI).")
+@click.option("--adapter", default=None,
+              help="Adapter to list (default: the calling group's CLI, or every adapter for a human).")
 @click.pass_context
 def models(ctx: click.Context, adapter: str | None) -> None:
     """List the models and efforts an adapter accepts."""
     c = _load(ctx)
-    adapter = adapter or (c.cfg.groups[c.party.group].cli if c.party.group else "claude")
-    specs = c.models.for_adapter(adapter)
-    emit({"adapter": adapter, "models": [
-        {"id": s.id, "context_class": s.context_class, "efforts": list(s.efforts), "tier": s.tier} for s in specs
-    ]}, ctx.obj["pretty"])
+    if adapter is None and c.party.group:
+        adapter = c.cfg.groups[c.party.group].cli
+    if adapter is None:
+        # A human belongs to no group, so there is no adapter to assume: list them all.
+        emit({"adapters": [_adapter_models(c, a) for a in c.models.adapters]}, ctx.obj["pretty"])
+        return
+    emit(_adapter_models(c, adapter), ctx.obj["pretty"])
 
 
 @main.command()
@@ -77,6 +87,10 @@ def wait(ctx: click.Context, timeout: float | None, interval: float | None) -> N
     c = _load(ctx)
     t = timeout if timeout is not None else c.cfg.wait_timeout_seconds
     i = interval if interval is not None else c.cfg.poll_interval_seconds
+    if i <= 0:
+        raise click.BadParameter("must be greater than 0", param_hint="--interval")
+    if t < 0:
+        raise click.BadParameter("must not be negative", param_hint="--timeout")
     data = _guard(lambda: wait_for_change(c, timeout=t, interval=i))
     emit(data, ctx.obj["pretty"])
 
@@ -124,6 +138,8 @@ def release(ctx: click.Context, number: int, force: bool) -> None:
 def post(ctx: click.Context, verb: str, ref: str | None, qualifier: str | None, message: str | None,
          body_file: Path | None, joint: bool) -> None:
     """Post a coordination comment: VERB [REF] with the calling party's header."""
+    if message is not None and body_file is not None:
+        raise click.UsageError("-m/--message and --body-file are mutually exclusive")
     c = _load(ctx)
     text = body_file.read_text() if body_file else (message or "")
     try:

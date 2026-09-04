@@ -10,6 +10,11 @@ from moot.status import build_status
 _MAX_BACKOFF = 300.0
 
 
+def _nap(sleep, clock, deadline: float, want: float) -> None:
+    """Sleep for `want` seconds, but never past the deadline (and never negative)."""
+    sleep(max(0.0, min(want, deadline - clock())))
+
+
 def wait_for_change(ctx, timeout: float, interval: float, *, sleep=time.sleep, clock=time.monotonic) -> dict:
     deadline = clock() + timeout
     prev = ctx.store.load_snapshot()
@@ -20,7 +25,7 @@ def wait_for_change(ctx, timeout: float, interval: float, *, sleep=time.sleep, c
         except RateLimited:
             if clock() >= deadline:
                 return {"timed_out": True, "rate_limited": True, "changes": []}
-            sleep(min(backoff, _MAX_BACKOFF))
+            _nap(sleep, clock, deadline, min(backoff, _MAX_BACKOFF))
             backoff = min(backoff * 2, _MAX_BACKOFF)
             continue
         digest = data["digest"]
@@ -32,4 +37,4 @@ def wait_for_change(ctx, timeout: float, interval: float, *, sleep=time.sleep, c
         if clock() >= deadline:
             data.update({"changes": [], "timed_out": True, "rate_limited": False})
             return data
-        sleep(interval)
+        _nap(sleep, clock, deadline, interval)

@@ -161,3 +161,10 @@ def test_cache_is_written_through_write_atomic(tmp_path, monkeypatch):
     gh.get_issue(7)
     assert seen == [next((tmp_path / "cache").glob("*.json"))]
     assert not list((tmp_path / "cache").glob("*.tmp"))
+
+
+def test_remove_label_quotes_the_label_path_segment(tmp_path):
+    fake, gh = make(tmp_path)
+    fake.route("DELETE", "repos/acme/widgets/issues/7/labels/needs%20triage%3A%20now", [])
+    gh.remove_label(7, "needs triage: now")
+    assert fake.calls[-1].endpoint == "repos/acme/widgets/issues/7/labels/needs%20triage%3A%20now"

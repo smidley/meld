@@ -121,3 +121,13 @@ def test_party_from_env(tmp_path):
         party_from_env(cfg, {"MOOT_GROUP": "nope"})
     with pytest.raises(ConfigError):
         party_from_env(cfg, {"MOOT_GROUP": "claude", "MOOT_ROLE": "worker"})
+
+
+def test_reserved_and_malformed_group_names_are_rejected(tmp_path):
+    for reserved in ("human", "joint"):
+        with pytest.raises(ConfigError, match=f"groups.{reserved}: "):
+            load_config(write(tmp_path, MINIMAL.replace("[groups.codex]", f"[groups.{reserved}]")
+                                              .replace("[groups.codex.", f"[groups.{reserved}.")))
+    with pytest.raises(ConfigError, match=r"groups.my group: group names must match"):
+        load_config(write(tmp_path, MINIMAL.replace("[groups.codex]", '[groups."my group"]')
+                                          .replace("[groups.codex.", '[groups."my group".')))

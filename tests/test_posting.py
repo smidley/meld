@@ -223,3 +223,14 @@ def test_cli_post_rule_refusal_exits_two_with_the_refusal_json(tmp_path, monkeyp
     assert data["verb"] == "post" and data["target"] == "plan-1"
     assert "already has a proposal" in data["rule"] and data["violation_posted"] is True
     assert posted_headers(fake) == ["[claude] PROTOCOL-VIOLATION plan-1"]
+
+
+def test_cli_post_rejects_message_and_body_file_together(tmp_path, monkeypatch):
+    (tmp_path / ".moot.toml").write_text(PROJECT_TOML)
+    (tmp_path / "body.md").write_text("from a file")
+    monkeypatch.setattr(cli, "RUN", FakeGh())
+    result = CliRunner().invoke(cli.main, ["--config", str(tmp_path / ".moot.toml"), "--compact", "post", "PING",
+                                           "-m", "inline", "--body-file", str(tmp_path / "body.md")],
+                                env=env_for(tmp_path, role="orchestrator"))
+    assert result.exit_code == 2
+    assert "mutually exclusive" in result.output

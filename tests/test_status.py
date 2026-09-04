@@ -127,3 +127,28 @@ def test_status_tolerates_an_unknown_head_committer(project: Path, monkeypatch):
     pulls = {p["number"]: p for p in json.loads(result.output)["pulls"]}
     assert pulls[20]["committer_party"] is None
     assert pulls[20]["legal"] == ["request-changes", "push-fix"]
+
+
+def test_models_command_lists_every_adapter_for_a_human(project: Path, monkeypatch):
+    fake = FakeGh()
+    fake.route("GET", "user", {"login": "empowerScott"})
+    monkeypatch.setattr(cli, "RUN", fake)
+    result = CliRunner().invoke(cli.main, ["--config", str(project / ".moot.toml"), "--compact", "models"],
+                                env=env_for(project, group=None))
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert "adapter" not in data
+    assert [a["adapter"] for a in data["adapters"]] == ["claude", "codex"]
+    assert any(m["id"] == "claude-sonnet-5" for m in data["adapters"][0]["models"])
+    assert data["adapters"][1]["models"], "codex models are listed too"
+
+
+def test_models_command_still_honours_an_explicit_adapter_for_a_human(project: Path, monkeypatch):
+    fake = FakeGh()
+    fake.route("GET", "user", {"login": "empowerScott"})
+    monkeypatch.setattr(cli, "RUN", fake)
+    result = CliRunner().invoke(cli.main, ["--config", str(project / ".moot.toml"), "--compact", "models",
+                                           "--adapter", "codex"],
+                                env=env_for(project, group=None))
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["adapter"] == "codex"

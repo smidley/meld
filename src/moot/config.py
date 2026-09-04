@@ -1,10 +1,16 @@
 """Load .moot.toml into a typed Config, and identify the calling Party."""
 from __future__ import annotations
 
+import re
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Mapping
+
+# A group name becomes a party label, so it must not collide with a reserved party and
+# must parse as one in a coordination header.
+RESERVED_PARTY_NAMES = ("human", "joint")
+GROUP_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 class ConfigError(ValueError):
@@ -72,6 +78,10 @@ class Config:
         groups: dict[str, GroupConfig] = {}
         for name, g in groups_raw.items():
             path = f"groups.{name}"
+            if name in RESERVED_PARTY_NAMES:
+                raise ConfigError(f"{path}: {name!r} is a reserved party name and cannot name a group")
+            if not GROUP_NAME_RE.match(name):
+                raise ConfigError(f"{path}: group names must match {GROUP_NAME_RE.pattern}")
             groups[name] = GroupConfig(
                 name=name,
                 cli=str(_require(g, "cli", path)),

@@ -49,6 +49,10 @@ class ModelRegistry:
                 )
         return cls(specs)
 
+    @property
+    def adapters(self) -> tuple[str, ...]:
+        return tuple(self._specs)
+
     def get(self, adapter: str, model_id: str) -> ModelSpec | None:
         return self._specs.get(adapter, {}).get(model_id)
 

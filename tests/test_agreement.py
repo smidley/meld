@@ -92,3 +92,10 @@ def test_reproposal_counts_as_a_round():
     cs.append(c(CFG2, 3, "claude", "DRAFT", "plan-1", "v3"))
     a = agreement_for(cs, "plan-1", CFG2)
     assert a.rounds == 2 and not a.can_amend(CFG2)
+
+
+def test_votes_before_a_proposal_are_ignored():
+    cs = [c(CFG2, 1, "claude", "AGREE", "plan-1"), c(CFG2, 2, "codex", "DISSENT", "plan-1", "no")]
+    a = agreement_for(cs, "plan-1", CFG2)
+    assert a.status == "none" and a.text is None and a.proposer is None
+    assert a.agreed == frozenset() and a.dissent == {} and a.rounds == 0

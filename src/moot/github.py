@@ -7,7 +7,7 @@ import os
 import subprocess
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from moot.atomic import write_atomic
 
@@ -179,7 +179,7 @@ class GitHub:
         return self.post(self._r(f"issues/{number}/labels"), {"labels": labels})
 
     def remove_label(self, number: int, label: str) -> None:
-        status, _, resp = self._call("DELETE", self._r(f"issues/{number}/labels/{label}"))
+        status, _, resp = self._call("DELETE", self._r(f"issues/{number}/labels/{quote(label, safe='')}"))
         if status >= 400 and status != 404:
             raise GitHubError(f"DELETE label {label} on #{number} failed with HTTP {status}: {resp}")
 

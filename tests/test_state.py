@@ -182,3 +182,27 @@ def test_diff_changes_are_structured_and_filterable():
     initial = diff_changes(None, d2)
     assert [c.kind for c in initial] == ["snapshot"] and initial[0].text == "initial snapshot"
     assert filter_changes(initial, {"comments"}) == initial
+
+
+def test_write_run_archives_a_collected_record_before_a_new_run_and_spend_counts_both(tmp_path):
+    from dataclasses import replace
+    store = StateStore(tmp_path, "claude")
+    first = mk_run("claude", 12, tier="medium")
+    store.write_run(first)
+    store.write_run(replace(first, lease_comment=5))                # the same run updated in place
+    store.write_run(replace(first, alive=False, collected=True))    # and finished
+    assert not (tmp_path / "runs" / "claude" / "archive").exists()
+    store.write_run(mk_run("claude", 12, tier="large"))             # a retry on the same issue
+    archived = list((tmp_path / "runs" / "claude" / "archive").glob("12-*.json"))
+    assert len(archived) == 1 and json.loads(archived[0].read_text())["tier"] == "medium"
+    assert store.load_runs(alive=lambda p: True)["claude"][12].tier == "large"
+    assert store.load_spend(3) == {"claude": {"medium": 1, "large": 1}}
+
+
+def test_archive_run_never_overwrites_an_earlier_archive(tmp_path):
+    store = StateStore(tmp_path, "claude")
+    for _ in range(3):
+        store.write_run(mk_run("claude", 7))
+        store.archive_run("claude", 7)
+    assert len(list((tmp_path / "runs" / "claude" / "archive").glob("7-*.json"))) == 3
+    assert store.load_spend(3) == {"claude": {"medium": 3}}

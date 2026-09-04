@@ -103,3 +103,32 @@ def test_a_stale_lease_cannot_release_another_groups_fresh_claim(tmp_path):
     with pytest.raises(Refused, match="not assigned to meld-claude-bot"):
         release(claude, 13)                                             # claude cannot cite its own dead lease
     assert not [c for c in fake.calls if c.method == "DELETE" and c.endpoint == R + "issues/13/assignees"]
+
+
+def test_kill_run_skips_a_pid_that_leads_no_process_group(monkeypatch):
+    import os, signal, subprocess, sys
+    from meld.board import RunRecord
+    from meld.dispatch import kill_run
+    from tests.factories import mk_run
+    leader = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
+    rec = RunRecord(**{**mk_run("claude", 1).__dict__, "pid": leader.pid})
+    try:
+        real_getpgid = os.getpgid
+        # pretend the worker's pid has been reused by a process that leads no group: it must not be signalled
+        monkeypatch.setattr(os, "getpgid", lambda pid: real_getpgid(pid) + 1 if pid == leader.pid else real_getpgid(pid))
+        assert kill_run(rec, grace_seconds=1) == "gone"
+        assert leader.poll() is None
+        monkeypatch.undo()
+        assert kill_run(rec, grace_seconds=5) == "terminated"  # the real session leader is still killed as before
+    finally:
+        if leader.poll() is None:
+            os.killpg(leader.pid, signal.SIGKILL)
+        leader.wait()
+    bystander = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])  # in our own group
+    try:
+        assert kill_run(RunRecord(**{**mk_run("claude", 1).__dict__, "pid": bystander.pid}), grace_seconds=1) == "gone"
+        assert bystander.poll() is None
+    finally:
+        bystander.kill()
+        bystander.wait()
+    assert kill_run(mk_run("claude", 2, alive=True), grace_seconds=1) == "gone"  # pid 4242: dead or not ours

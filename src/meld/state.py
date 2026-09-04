@@ -71,11 +71,34 @@ class StateStore:
     def write_run(self, record: RunRecord) -> Path:
         d = self.runs_root / record.group
         d.mkdir(parents=True, exist_ok=True)
+        path = d / f"{record.issue}.json"
+        if not record.collected and self._is_collected(path):
+            # A new run over a finished one (a retry, or a review then an audit of one PR): keep the
+            # old record under archive/ so load_spend still counts it against the budget.
+            os.replace(path, self._archive_path(record.group, record.issue))
         data = asdict(record)
         data.pop("alive", None)
-        path = d / f"{record.issue}.json"
         write_atomic(path, json.dumps(data, sort_keys=True))
         return path
+
+    @staticmethod
+    def _is_collected(path: Path) -> bool:
+        try:
+            return bool(json.loads(path.read_text()).get("collected", False))
+        except (OSError, json.JSONDecodeError, AttributeError):
+            return False
+
+    def _archive_path(self, group: str, issue: int) -> Path:
+        """A name under archive/ that no earlier archive of this issue already uses."""
+        archive = self.runs_root / group / "archive"
+        archive.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        dst = archive / f"{issue}-{stamp}.json"
+        k = 1
+        while dst.exists():
+            dst = archive / f"{issue}-{stamp}-{k}.json"
+            k += 1
+        return dst
 
     def _read_record(self, path: Path, alive: Callable[[int], bool]) -> RunRecord:
         data = json.loads(path.read_text())
@@ -124,12 +147,8 @@ class StateStore:
         return out
 
     def archive_run(self, group: str, issue: int) -> Path:
-        src = self.runs_root / group / f"{issue}.json"
-        archive = self.runs_root / group / "archive"
-        archive.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        dst = archive / f"{issue}-{stamp}.json"
-        os.replace(src, dst)
+        dst = self._archive_path(group, issue)
+        os.replace(self.runs_root / group / f"{issue}.json", dst)
         return dst
 
 

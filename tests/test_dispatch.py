@@ -1,11 +1,15 @@
 import json
 import os
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 
+import meld.cli as cli
 from meld.actions import Refused
+from meld.adapters.claude import ClaudeAdapter
 from meld.brief import BRIEF_FILE
 from meld.context import load_context
 from meld.dispatch import DispatchError, dispatch, git_identity, worker_env
@@ -149,13 +153,7 @@ def test_git_identity_prefers_config_then_noreply(tmp_path):
 
 def test_dispatch_review_checks_out_pr_head(tmp_path):
     fake, ctx, repo, origin = make_product(tmp_path)
-    # the fixture PR #20 lives on meld/13-ci-pipeline; publish that branch to the fake origin
-    sh(["git", "checkout", "-q", "-b", "meld/13-ci-pipeline"], repo)
-    (repo / "ci.yml").write_text("ci\n")
-    sh(["git", "add", "ci.yml"], repo)
-    sh(["git", "commit", "-q", "-m", "ci"], repo)
-    sh(["git", "push", "-q", "origin", "meld/13-ci-pipeline"], repo)
-    sh(["git", "checkout", "-q", "main"], repo)
+    publish_pr_branch(repo)  # the fixture PR #20 lives on meld/13-ci-pipeline
     expected = sh(["git", "rev-parse", "meld/13-ci-pipeline"], repo)
     adapter = FakeAdapter()
     out = dispatch(ctx, 20, kind="review", adapter=adapter, now=NOW)
@@ -172,3 +170,65 @@ def test_dispatch_review_checks_out_pr_head(tmp_path):
     fake2, codex, *_ = make_product(tmp_path / "c", group="codex")
     with pytest.raises(Refused, match="cannot review"):
         dispatch(codex, 20, kind="review", adapter=FakeAdapter(), now=NOW)
+
+
+def publish_pr_branch(repo):
+    """Publish fixture PR #20's branch (meld/13-ci-pipeline) to the fake origin."""
+    sh(["git", "checkout", "-q", "-b", "meld/13-ci-pipeline"], repo)
+    (repo / "ci.yml").write_text("ci\n")
+    sh(["git", "add", "ci.yml"], repo)
+    sh(["git", "commit", "-q", "-m", "ci"], repo)
+    sh(["git", "push", "-q", "origin", "meld/13-ci-pipeline"], repo)
+    sh(["git", "checkout", "-q", "main"], repo)
+
+
+def mark_collected(tmp_path, number):
+    rec_path = tmp_path / "home" / "runs" / "claude" / f"{number}.json"
+    rec = json.loads(rec_path.read_text())
+    rec["collected"] = True
+    rec_path.write_text(json.dumps(rec))
+
+
+def test_dispatch_recovers_after_the_worktrees_directory_is_deleted(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path)
+    claim_issue_11(fake)
+    publish_pr_branch(repo)
+    first = dispatch(ctx, 11, adapter=FakeAdapter(), now=NOW)
+    review = dispatch(ctx, 20, kind="review", adapter=FakeAdapter(), now=NOW)
+    wait_for_exit(first["pid"])
+    wait_for_exit(review["pid"])
+    mark_collected(tmp_path, 11)
+    mark_collected(tmp_path, 20)
+    shutil.rmtree(tmp_path / "home" / "worktrees")  # disposable state, per spec section 18
+    second = dispatch(ctx, 11, adapter=FakeAdapter(), now=NOW)
+    assert second["worktree_mode"] == "new" and worktree_exists(repo, Path(second["worktree"]))
+    again = dispatch(ctx, 20, kind="review", adapter=FakeAdapter(), now=NOW)
+    assert worktree_exists(repo, Path(again["worktree"]))
+    wait_for_exit(second["pid"])
+    wait_for_exit(again["pid"])
+
+
+def test_dispatch_review_is_refused_under_halt(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path)
+    comments = fixture("comments_10.json") + [{"id": 130, "user": {"login": "empowerScott"}, "created_at": "2026-09-03T09:40:00Z",
+                                               "body": "[human] HALT\n\nstop everything"}]
+    fake.route("GET", R + "issues/10/comments", comments)
+    with pytest.raises(Refused) as ei:
+        dispatch(ctx, 20, kind="review", adapter=FakeAdapter(), now=NOW)
+    assert ei.value.refusal.rule == "HALT is in effect" and ei.value.violation_posted is True
+    assert not (tmp_path / "home" / "runs" / "claude" / "20.json").exists()
+
+
+def test_missing_cli_binary_is_a_clean_dispatch_error(tmp_path, monkeypatch):
+    fake, ctx, repo, origin = make_product(tmp_path)
+    claim_issue_11(fake)
+    absent = ClaudeAdapter(binary=str(tmp_path / "no-such-claude"), home=tmp_path / "no-such-home")
+    posts_before = len([c for c in fake.calls if c.method == "POST"])
+    with pytest.raises(DispatchError, match="cannot start claude: .*no-such-claude"):
+        dispatch(ctx, 11, adapter=absent, now=NOW)
+    assert not (tmp_path / "home" / "runs" / "claude" / "11.json").exists()    # no run record left behind
+    assert len([c for c in fake.calls if c.method == "POST"]) == posts_before    # no lease, no start comment
+    monkeypatch.setattr(cli, "RUN", fake)
+    monkeypatch.setattr(cli, "ADAPTER_FOR", lambda name: absent)
+    result = CliRunner().invoke(cli.main, ["--config", str(repo / ".meld.toml"), "--compact", "dispatch", "11"], env=env_for(tmp_path))
+    assert result.exit_code == 1 and "Traceback" not in result.output and "cannot start claude" in result.output

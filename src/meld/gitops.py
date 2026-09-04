@@ -41,6 +41,10 @@ def remote_branch_exists(repo_root: Path, branch: str, run: RunFn = subprocess.r
 
 
 def worktree_exists(repo_root: Path, path: Path, run: RunFn = subprocess.run) -> bool:
+    """True only when `path` is registered as a worktree and its directory is present. A registration whose
+    directory was deleted ($MELD_HOME is disposable) is stale; the next create prunes it."""
+    if not path.is_dir():
+        return False
     listing = git(["worktree", "list", "--porcelain"], repo_root, run)
     target = path.resolve()
     return any(line.startswith("worktree ") and Path(line[len("worktree "):]).resolve() == target for line in listing.splitlines())
@@ -49,6 +53,7 @@ def worktree_exists(repo_root: Path, path: Path, run: RunFn = subprocess.run) ->
 def create_worktree(repo_root: Path, path: Path, branch: str, base: str, run: RunFn = subprocess.run) -> str:
     """Create `path` on `branch`: reuse the remote branch when it exists (a retry), else branch from origin/<base>."""
     git(["fetch", "--quiet", "origin"], repo_root, run)
+    git(["worktree", "prune"], repo_root, run)  # a registration whose directory is gone would otherwise refuse the add
     path.parent.mkdir(parents=True, exist_ok=True)
     if remote_branch_exists(repo_root, branch, run):
         git(["worktree", "add", "--track", "-B", branch, str(path), f"origin/{branch}"], repo_root, run)
@@ -59,6 +64,7 @@ def create_worktree(repo_root: Path, path: Path, branch: str, base: str, run: Ru
 
 def checkout_pr_head(repo_root: Path, path: Path, branch: str, run: RunFn = subprocess.run) -> None:
     git(["fetch", "--quiet", "origin", branch], repo_root, run)
+    git(["worktree", "prune"], repo_root, run)
     path.parent.mkdir(parents=True, exist_ok=True)
     git(["worktree", "add", "--detach", str(path), f"origin/{branch}"], repo_root, run)
 
@@ -77,14 +83,17 @@ def is_dirty(path: Path, run: RunFn = subprocess.run) -> bool:
 
 
 def push_branch(path: Path, branch: str, token: str | None, run: RunFn = subprocess.run, base_env: dict | None = None) -> None:
-    """Push `branch` to origin. With a token, git authenticates through an inline helper that reads MELD_PUSH_TOKEN
-    from the environment (the token never appears in argv); without one, git's own configured credentials apply."""
+    """Push HEAD to origin/<branch>. The refspec is HEAD:refs/heads/<branch> rather than the bare branch name so a
+    detached checkout (a review worktree) pushes what it has, not whatever the clone's local branch points at;
+    --set-upstream is harmless when detached (there is no branch to configure). With a token, git authenticates
+    through an inline helper that reads MELD_PUSH_TOKEN from the environment (the token never appears in argv);
+    without one, git's own configured credentials apply."""
     env = dict(os.environ if base_env is None else base_env)
     args: list[str] = []
     if token:
         env["MELD_PUSH_TOKEN"] = token
         args += ["-c", "credential.helper=", "-c", f"credential.helper={_CREDENTIAL_HELPER}"]
-    git([*args, "push", "--set-upstream", "origin", branch], path, run, env=env)
+    git([*args, "push", "--set-upstream", "origin", f"HEAD:refs/heads/{branch}"], path, run, env=env)
 
 
 def remove_worktree(repo_root: Path, path: Path, run: RunFn = subprocess.run) -> None:

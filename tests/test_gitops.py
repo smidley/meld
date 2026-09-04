@@ -1,3 +1,4 @@
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -117,3 +118,38 @@ def test_push_without_token_leaves_git_credentials_alone(tmp_path):
     push_branch(wt, "meld/8-y", token=None, run=recording_run)
     assert not any("credential.helper" in a for a in seen[-1])
     assert remote_branch_exists(repo, "meld/8-y")
+
+
+def test_worktree_exists_needs_the_directory_and_create_prunes_a_stale_registration(tmp_path):
+    origin, repo = make_origin_and_clone(tmp_path)
+    wt = tmp_path / "wt" / "claude" / "5-x"
+    assert create_worktree(repo, wt, "meld/5-x", "main") == "new"
+    shutil.rmtree(wt)  # $MELD_HOME/worktrees is disposable state
+    assert "meld/5-x" in git(["worktree", "list", "--porcelain"], repo)  # git still has the registration
+    assert not worktree_exists(repo, wt)
+    assert create_worktree(repo, wt, "meld/5-x", "main") == "new" and worktree_exists(repo, wt)
+    review = tmp_path / "wt" / "claude" / "review-5"
+    checkout_pr_head(repo, review, "main")
+    shutil.rmtree(review)
+    assert not worktree_exists(repo, review)
+    checkout_pr_head(repo, review, "main")
+    assert worktree_exists(repo, review) and head_sha(review) == head_sha(repo)
+
+
+def test_push_branch_pushes_head_from_attached_and_detached_checkouts(tmp_path):
+    origin, repo = make_origin_and_clone(tmp_path)
+    wt = tmp_path / "wt" / "a"
+    create_worktree(repo, wt, "meld/3-a", "main")
+    (wt / "a.txt").write_text("a\n")
+    sh(["git", "add", "a.txt"], wt)
+    sh(["git", "commit", "-q", "-m", "a"], wt)
+    push_branch(wt, "meld/3-a", token=None)
+    assert sh(["git", "rev-parse", "--abbrev-ref", "meld/3-a@{upstream}"], wt) == "origin/meld/3-a"  # attached: upstream set
+    detached = tmp_path / "wt" / "review-3"
+    checkout_pr_head(repo, detached, "meld/3-a")
+    assert sh(["git", "rev-parse", "--abbrev-ref", "HEAD"], detached) == "HEAD"  # detached
+    (detached / "fix.txt").write_text("fix\n")
+    sh(["git", "add", "fix.txt"], detached)
+    sh(["git", "commit", "-q", "-m", "reviewer fix"], detached)
+    push_branch(detached, "meld/3-a", token=None)  # a bare branch name here would push the clone's local branch, not HEAD
+    assert sh(["git", "ls-remote", "--heads", "origin", "meld/3-a"], repo).split()[0] == head_sha(detached)

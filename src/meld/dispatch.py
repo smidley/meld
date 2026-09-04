@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import signal
 import time
@@ -42,6 +43,8 @@ KINDS = ("build", "review", "audit")
 _ISO = "%Y-%m-%dT%H:%M:%SZ"
 IN_REVIEW = "meld:in-review"
 NEEDS_HUMAN = "meld:needs-human"
+_CLOSER_RE = re.compile(r"(?i)\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)(\s+)#(\d+)")
+_BACKTICKS_RE = re.compile(r"`+")
 
 
 class DispatchError(RuntimeError):
@@ -76,16 +79,37 @@ def tail_lines(path: Path, n: int) -> str:
     return "\n".join(lines[-n:])
 
 
+def neutralise_closers(text: str) -> str:
+    """Keep a worker's words but break GitHub's closing-keyword syntax ("fixes #7" -> "fixes `#7`"), so the only line
+    of a PR body that can close an issue is the framework's own `Closes #<issue>`."""
+    return _CLOSER_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}`#{m.group(3)}`", text or "")
+
+
+def fenced(text: str) -> str:
+    """Wrap text in a code fence longer than any run of backticks inside it, so a log line of ``` cannot end the block
+    and let the rest of a worker's output render as markdown."""
+    longest = max((len(m.group(0)) for m in _BACKTICKS_RE.finditer(text)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return f"{fence}\n{text}\n{fence}"
+
+
+def _leads_own_group(pid: int) -> bool:
+    """Workers start in their own session, so a live worker's pid is its process-group id. A reused pid that leads
+    no group is somebody else's process and must not be signalled."""
+    try:
+        return os.getpgid(pid) == pid
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
 def kill_run(rec: RunRecord, *, grace_seconds: float = 5.0, sleep=time.sleep) -> str:
     """Terminate a worker's process group, escalating to SIGKILL after the grace period."""
-    if not pid_alive(rec.pid):
+    if not pid_alive(rec.pid) or not _leads_own_group(rec.pid):
         return "gone"
     try:
         os.killpg(rec.pid, signal.SIGTERM)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):  # PermissionError: the pid now belongs to another user's process
         return "gone"
-    except PermissionError:
-        pass
     waited = 0.0
     while pid_alive(rec.pid) and waited < grace_seconds:
         sleep(0.1)
@@ -94,7 +118,7 @@ def kill_run(rec: RunRecord, *, grace_seconds: float = 5.0, sleep=time.sleep) ->
         return "terminated"
     try:
         os.killpg(rec.pid, signal.SIGKILL)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         return "terminated"
     return "killed"
 
@@ -222,6 +246,8 @@ def _dispatch_build(ctx, board: Board, actor: Actor, number: int, adapter: Adapt
 
 def _dispatch_pr(ctx, board: Board, actor: Actor, number: int, kind: str, adapter: Adapter | None, when: datetime, env: dict | None) -> dict:
     target = f"#{number}"
+    if board.halted:
+        refuse(ctx, board, Refusal(Verb.DISPATCH, target, "HALT is in effect"))
     if not actor.is_pm:
         refuse(ctx, board, Refusal(Verb.DISPATCH, target, "only the PM may dispatch"))
     pr = board.pulls.get(number)
@@ -334,7 +360,7 @@ def collect(ctx, number: int, *, now: datetime | None = None) -> dict:
         refusal = issue_refusal(board, ctx.cfg, actor, Verb.COLLECT, issue, ctx.models)
         if refusal:
             refuse(ctx, board, refusal)
-        return _collect_build(ctx, board, group, rec, issue, when)
+        return _collect_build(ctx, board, group, rec, issue)
     return _collect_verdict(ctx, group, rec, when)
 
 
@@ -353,8 +379,16 @@ def _read_outcome(rec: RunRecord) -> tuple[WorkerResult | None, str | None]:
     return result, None
 
 
-def _collect_build(ctx, board: Board, group: GroupConfig, rec: RunRecord, issue, when: datetime) -> dict:
+def _collect_build(ctx, board: Board, group: GroupConfig, rec: RunRecord, issue) -> dict:
     number = rec.issue
+    if issue.status != "in_progress" or group.bot not in issue.assignees:
+        # The claim moved on while the worker ran (our lease expired and another group re-claimed, a human
+        # released or re-labelled): the run is over, but nothing of it may reach GitHub. The worktree stays
+        # for inspection.
+        holder = ", ".join(issue.assignees) or "nobody"
+        ctx.store.write_run(replace(rec, collected=True))
+        return {"collected": number, "outcome": "superseded",
+                "reason": f"issue is {issue.status} and assigned to {holder}; {group.name} no longer holds it"}
     wt = Path(rec.worktree)
     result, reason = _read_outcome(rec)
     tail = tail_lines(Path(rec.log_path), ctx.cfg.worker_log_tail_lines)
@@ -375,12 +409,13 @@ def _collect_build(ctx, board: Board, group: GroupConfig, rec: RunRecord, issue,
         _swap_labels(ctx, number, BLOCKED, (IN_PROGRESS,))
         summary = f"\n\nWorker summary: {result.summary}" if result else ""
         ctx.gh.create_comment(number, f"Meld: `{group.name}` worker did not complete #{number}: {reason}.{summary}\n\n"
-                                      f"Last {ctx.cfg.worker_log_tail_lines} log lines:\n\n```\n{tail}\n```")
+                                      f"Last {ctx.cfg.worker_log_tail_lines} log lines:\n\n{fenced(tail)}")
         ctx.store.write_run(replace(rec, collected=True))
         return {"collected": number, "outcome": "failed", "reason": reason}
     assert result is not None
     push_branch(wt, rec.branch, ctx.gh.token)
-    body = f"Closes #{number}\n\n{result.summary}\n\nverified-by: {result.verified_by}"
+    # Worker text enters the PR body: strip its power to close arbitrary issues (only our Closes line may).
+    body = f"Closes #{number}\n\n{neutralise_closers(result.summary)}\n\nverified-by: {neutralise_closers(result.verified_by)}"
     existing = board.pr_for_issue(number)
     if existing is not None and existing.state == "open":
         ctx.gh.update_pull(existing.number, body)

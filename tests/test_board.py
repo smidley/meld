@@ -1,6 +1,7 @@
 from meld.board import (
     Issue,
     Lease,
+    assigned_leases,
     derive_halted,
     derive_leases,
     derive_open_challenges,
@@ -90,3 +91,16 @@ def test_malformed_lease_until_is_dropped():
     assert parse_lease_until("until: 2026-09-03T13:00:00Z") == "2026-09-03T13:00:00Z"
     cs = [mk_comment(CFG2, 1, "meld-claude-bot", "[claude:pm] LEASE #12\n\nuntil: soon")]
     assert derive_leases(cs) == {}
+
+
+def test_assigned_leases_keeps_only_leases_whose_bot_still_holds_the_issue():
+    bots = {"claude": "meld-claude-bot", "codex": "meld-codex-bot"}
+    issues = {i.number: i for i in (
+        mk_issue(12, status="in_progress", assignees=("meld-claude-bot",)),   # claude holds it: lease stands
+        mk_issue(13, status="in_progress", assignees=("meld-codex-bot",)),    # codex re-claimed it: claude's stale lease is void
+        mk_issue(14, status="ready"),                                         # released: nobody holds it
+    )}
+    leases = {12: mk_lease(12, "claude"), 13: mk_lease(13, "claude"), 14: mk_lease(14, "claude"), 15: mk_lease(15, "claude"),
+              16: mk_lease(16, "gemini")}
+    assert assigned_leases(leases, issues, bots) == {12: leases[12]}
+    assert assigned_leases({13: mk_lease(13, "codex")}, issues, bots) == {13: mk_lease(13, "codex")}

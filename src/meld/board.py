@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 
 from meld.grammar import ParsedComment
 
@@ -169,6 +169,7 @@ def parse_lease_until(text: str) -> str | None:
 
 
 def derive_leases(comments: Sequence[ParsedComment]) -> dict[int, Lease]:
+    """The lease each LEASE comment still asserts, before `assigned_leases` checks it against the board."""
     leases: dict[int, Lease] = {}
     for c in _ordered(comments):
         if not c.ok or c.header is None or not c.header.ref or not c.header.ref.startswith("#") or not c.header.ref[1:].isdigit():
@@ -181,6 +182,25 @@ def derive_leases(comments: Sequence[ParsedComment]) -> dict[int, Lease]:
         elif (c.header.verb == "EXPIRED" and c.header.party.kind == "pm") or (c.header.verb == "RELEASE" and c.header.party.kind == "human"):
             leases.pop(n, None)
     return leases
+
+
+# A lease is valid only while the leasing group's bot is assigned to the issue. The LEASE
+# comment outlives the claim it describes: `meld release` posts nothing, so once the leasing
+# group lets go and another group claims the issue, the old comment would still read as a
+# lease on the new claim, and once its `until` passed any PM could release the new owner
+# (a LEASE forged by hand would do the same on purpose). Assignment, not the thread, is the
+# claim lock (spec section 6), so it decides validity too. The check lives here, next to the
+# derivation, but is applied by the board assembler, which knows each group's bot; Board
+# itself stays free of Config.
+def assigned_leases(leases: Mapping[int, Lease], issues: Mapping[int, Issue], bot_of_group: Mapping[str, str]) -> dict[int, Lease]:
+    """Keep only the leases whose group's bot is currently assigned to the leased issue."""
+    out: dict[int, Lease] = {}
+    for n, lease in leases.items():
+        issue = issues.get(n)
+        bot = bot_of_group.get(lease.group)
+        if issue is not None and bot is not None and bot in issue.assignees:
+            out[n] = lease
+    return out
 
 
 @dataclass(frozen=True)

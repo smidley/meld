@@ -58,6 +58,32 @@ def test_verb_not_allowed_for_party(tmp_path):
         post(human, "PLAN", ref="plan-1", joint=True, text="x")
 
 
+def test_lease_and_expired_are_framework_only(tmp_path):
+    _, pm = make(tmp_path, role="pm")
+    with pytest.raises(PostError, match="LEASE is written by meld itself"):
+        post(pm, "LEASE", ref="#12", text="until: 2099-01-01T00:00:00Z")
+    with pytest.raises(PostError, match="EXPIRED is written by meld itself"):
+        post(pm, "EXPIRED", ref="#12", text="released")
+    _, orch = make(tmp_path, role="orchestrator")
+    with pytest.raises(PostError, match="LEASE is written by meld itself"):
+        post(orch, "LEASE", ref="#12", text="until: 2099-01-01T00:00:00Z")
+    _, human = make(tmp_path, group=None)
+    with pytest.raises(PostError, match="EXPIRED is written by meld itself"):
+        post(human, "EXPIRED", ref="#12", text="x")
+
+
+def test_cli_post_lease_is_a_usage_error(tmp_path, monkeypatch):
+    (tmp_path / ".meld.toml").write_text(PROJECT_TOML)
+    fake = FakeGh()
+    load_board1_routes(fake)
+    fake.route("POST", R + "issues/10/comments", {"id": 7, "html_url": "u"})
+    monkeypatch.setattr(cli, "RUN", fake)
+    result = CliRunner().invoke(cli.main, ["--config", str(tmp_path / ".meld.toml"), "--compact", "post", "LEASE", "#12",
+                                           "-m", "until: 2099-01-01T00:00:00Z"], env=env_for(tmp_path, role="pm"))
+    assert result.exit_code == 2 and "never through meld post" in json.loads(result.output)["error"]
+    assert posted(fake) == []
+
+
 def test_validation_errors_surface(tmp_path):
     _, ctx = make(tmp_path)
     with pytest.raises(PostError, match="CHALLENGE requires a ref"):

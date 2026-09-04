@@ -92,3 +92,16 @@ def test_build_board_reads_leases_and_plan_text(board1_gh):
     assert b.lease_expired(12)
     assert b.plan_text == "approved plan text"
     assert b.now == "2026-09-03T11:00:00Z"
+
+
+def test_build_board_drops_a_lease_once_another_group_holds_the_issue(board1_gh):
+    fake, gh = board1_gh
+    comments = json.loads((Path(__file__).parent / "fixtures" / "board1" / "comments_10.json").read_text())
+    # fixture #13 is assigned to meld-codex-bot; a stale claude lease on it asserts nothing any more
+    comments.append({"id": 110, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T09:20:00Z",
+                     "body": "[claude:pm] LEASE #13\n\nuntil: 2026-09-03T10:30:00Z\nrun: claude/#13"})
+    comments.append({"id": 111, "user": {"login": "meld-codex-bot"}, "created_at": "2026-09-03T09:21:00Z",
+                     "body": "[codex:pm] LEASE #14\n\nuntil: 2026-09-03T10:30:00Z\nrun: codex/#14"})
+    fake.route("GET", "repos/acme/widgets/issues/10/comments", comments)
+    b = build_board(gh, CFG2, {}, {})
+    assert 13 not in b.leases and b.leases[14].group == "codex"   # #14 is assigned to meld-codex-bot

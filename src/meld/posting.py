@@ -15,6 +15,11 @@ class PostError(ValueError):
     """A usage error: the call is malformed, not a legal call that the rules refuse."""
 
 
+# Written by meld itself (dispatch and tick) as `[<group>:pm]`; `meld post` refuses them for every
+# caller, so a lease can only be asserted by an actual run and only expired by a tick.
+FRAMEWORK_ONLY_VERBS = frozenset({"LEASE", "EXPIRED"})
+
+
 def _refuse(ctx, board: Board, verb: str, ref: str | None, rule: str) -> NoReturn:
     """Refuse a rule-level violation: a group party also posts PROTOCOL-VIOLATION."""
     refuse(ctx, board, Refusal(Verb.POST, ref or verb, rule))
@@ -54,6 +59,8 @@ def post(ctx, verb: str, ref: str | None = None, qualifier: str | None = None, t
     actor = ctx.actor()
     if joint and actor.is_human:
         raise PostError("humans cannot post [joint] comments")
+    if verb in FRAMEWORK_ONLY_VERBS:
+        raise PostError(f"{verb} is written by meld itself (dispatch and tick), never through meld post")
     party = Party("joint") if joint else actor.party
     if verb not in allowed_verbs(party):
         raise PostError(f"{verb} is not a verb {party.label} may post (allowed: {', '.join(sorted(allowed_verbs(party)))})")

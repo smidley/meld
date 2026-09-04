@@ -3,8 +3,14 @@ from datetime import datetime, timezone
 
 import pytest
 
+from meld.actions import Refused, release
+from meld.context import load_context
 from meld.dispatch import DispatchError, dispatch, tick
+from meld.rules import Verb, issue_refusal
 from meld.state import pid_alive
+from meld.status import build_status
+from tests.conftest import env_for
+from tests.fakeadapter import no_skills
 from tests.fakeadapter import FakeAdapter
 from tests.productfixtures import R, SLEEP_SCRIPT, claim_issue_11, fixture, make_product, wait_for_exit
 
@@ -73,3 +79,27 @@ def test_tick_is_pm_only(tmp_path):
     fake, orch, *_ = make_product(tmp_path, role="orchestrator")
     with pytest.raises(DispatchError, match="PM"):
         tick(orch, now=NOW)
+
+
+def test_a_stale_lease_cannot_release_another_groups_fresh_claim(tmp_path):
+    fake, codex, repo, origin = make_product(tmp_path, group="codex")
+    claude = load_context(repo / ".meld.toml", env=env_for(tmp_path, group="claude", role="pm"), run=fake, adapter_for=no_skills)
+    issues = fixture("issues.json")
+    for i in issues:
+        if i["number"] == 13:  # codex's in-progress claim (assigned to meld-codex-bot in the fixture)
+            i["labels"] = [l for l in i["labels"] if l["name"] != "meld:in-review"] + [{"name": "meld:in-progress"}]
+    fake.route("GET", R + "issues", issues)
+    # claude leased #13 earlier, released it without a comment, and the lease has since expired
+    comments = fixture("comments_10.json") + [{"id": 120, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T09:30:00Z",
+                                               "body": "[claude:pm] LEASE #13\n\nuntil: 2026-09-03T11:00:00Z\nrun: claude/#13"}]
+    fake.route("GET", R + "issues/10/comments", comments)
+    fake.route("DELETE", R + "issues/13/assignees", {})
+    fake.route("POST", R + "issues/13/labels", [])
+    fake.route("DELETE", R + "issues/13/labels/meld%3Ain-progress", [])
+    assert tick(codex, now=NOW)["expired"] == []                       # codex's own claim is not "expired"
+    _, board = build_status(claude)
+    assert board.leases == {} and issue_refusal(board, claude.cfg, claude.actor(), Verb.RELEASE, board.issues[13], claude.models).rule == \
+        "issue is not assigned to meld-claude-bot"
+    with pytest.raises(Refused, match="not assigned to meld-claude-bot"):
+        release(claude, 13)                                             # claude cannot cite its own dead lease
+    assert not [c for c in fake.calls if c.method == "DELETE" and c.endpoint == R + "issues/13/assignees"]

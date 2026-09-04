@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from meld.results import ResultsError, load_result, mark_submitted, result_path, store_result
+from meld.results import ResultsError, load_result, mark_submitted, result_path, store_result, update_result
 
 
 def test_store_result_never_overwrites_an_unconsumed_verdict(tmp_path):
@@ -28,6 +28,18 @@ def test_mark_submitted_moves_the_file_and_records_what_happened(tmp_path):
     assert data["result"]["verdict"] == "approve"
     with pytest.raises(ResultsError, match="no collected review result"):
         mark_submitted(tmp_path, "claude", "review", 20, {}, "2026-09-04T10:06:00Z")
+
+
+def test_update_result_merges_into_the_unconsumed_verdict_in_place(tmp_path):
+    store_result(tmp_path, "claude", "review", 20, {"head_sha": "abc123", "result": {"verdict": "push-fix"}}, "2026-09-04T10:00:00Z")
+    path = update_result(tmp_path, "claude", "review", 20, {"pushed": "def456", "pushed_at": "2026-09-04T10:05:00Z"})
+    assert path == tmp_path / "results" / "claude" / "review-20.json"
+    data = json.loads(path.read_text())
+    assert data["pushed"] == "def456" and data["pushed_at"] == "2026-09-04T10:05:00Z"
+    assert data["head_sha"] == "abc123" and data["result"]["verdict"] == "push-fix"   # original fields survive
+    assert load_result(tmp_path, "claude", "review", 20) == data                     # still unconsumed, updated in place
+    with pytest.raises(ResultsError, match="no collected review result"):
+        update_result(tmp_path, "claude", "review", 21, {"pushed": "x"})
 
 
 def test_load_result_rejects_malformed_json(tmp_path):

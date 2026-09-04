@@ -61,6 +61,18 @@ def load_result(home: Path, group: str, kind: str, number: int) -> dict | None:
     return data
 
 
+def update_result(home: Path, group: str, kind: str, number: int, extra: dict) -> Path:
+    """Merge `extra` into the unconsumed verdict file for #<number>, in place. For recording an irreversible side
+    effect (e.g. a push) the moment it happens, so a retry that fails later still sees it happened and does not
+    repeat it. Raises ResultsError if there is no unconsumed verdict to update."""
+    path = result_path(home, group, kind, number)
+    data = load_result(home, group, kind, number)
+    if data is None:
+        raise ResultsError(f"no collected {kind} result for #{number} in {group}")
+    write_atomic(path, json.dumps({**data, **extra}, indent=2))
+    return path
+
+
 def mark_submitted(home: Path, group: str, kind: str, number: int, extra: dict, now_iso: str) -> Path:
     data = load_result(home, group, kind, number)
     if data is None:

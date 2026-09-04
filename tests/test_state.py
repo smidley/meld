@@ -2,6 +2,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 from meld.state import StateStore, board_digest, diff_digest, meld_home, diff_changes, filter_changes
 from tests.factories import CFG2, mk_board, mk_issue, mk_pr, mk_run
 
@@ -130,11 +132,23 @@ def test_write_atomic_writes_a_sibling_temp_then_replaces(tmp_path, monkeypatch)
 
 
 def test_pid_alive_reaps_own_exited_child_and_archive_run(tmp_path):
-    import subprocess, sys
+    import os, subprocess, sys, time
     from meld.state import pid_alive
     proc = subprocess.Popen([sys.executable, "-c", "pass"])
-    proc.wait()  # exited; without a waitpid in pid_alive a zombie would still answer kill(pid, 0)
-    assert pid_alive(proc.pid) is False
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:  # wait for the child to exit WITHOUT reaping it
+        try:
+            os.kill(proc.pid, 0)
+        except ProcessLookupError:  # pragma: no cover - cannot happen for an unreaped child
+            break
+        if (Path(f"/proc/{proc.pid}").exists() and "Z" in Path(f"/proc/{proc.pid}/stat").read_text()) or sys.platform == "darwin":
+            time.sleep(0.2)
+            break
+        time.sleep(0.05)
+    os.kill(proc.pid, 0)  # still answers: the exited child is a zombie until someone reaps it
+    assert pid_alive(proc.pid) is False  # pid_alive reaps it via waitpid and reports it dead
+    with pytest.raises(ProcessLookupError):
+        os.kill(proc.pid, 0)  # proof that pid_alive really reaped it
     store = StateStore(tmp_path, "claude")
     store.write_run(mk_run("claude", 12))
     archived = store.archive_run("claude", 12)

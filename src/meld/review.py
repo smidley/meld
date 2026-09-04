@@ -71,9 +71,19 @@ def review(ctx, number: int, *, now: datetime | None = None) -> dict:
         return _no_action(ctx, group, number, verdict, "stale head", "stale", when,
                           f"Meld: `{group.name}` review of `{stored['head_sha'][:7]}` is stale; the head is now `{pr.head_sha[:7]}`. Re-dispatch a review.",
                           {"current_head": pr.head_sha})
-    refusal = pr_refusal(board, ctx.cfg, actor, VERBS[verdict], pr)
-    if refusal:
-        refuse(ctx, board, refusal)
+    # A resumed push-fix (the push already landed on this exact head) is not a new decision to re-validate:
+    # legality, including the own-head check, was established before the irreversible push -- and by now
+    # GitHub shows our own bot as the PR's last committer, which would make pr_refusal's own-head check
+    # wrongly refuse resuming the report. Skip pr_refusal for a resume; the open-PR gate it would also
+    # enforce still applies.
+    resuming_push = verdict == "push-fix" and bool(pushed) and pushed == pr.head_sha
+    if resuming_push:
+        if pr.state != "open":
+            refuse(ctx, board, Refusal(VERBS[verdict], target, "PR is not open"))
+    else:
+        refusal = pr_refusal(board, ctx.cfg, actor, VERBS[verdict], pr)
+        if refusal:
+            refuse(ctx, board, refusal)
     comments = [c for c in result.get("comments") or []
                 if isinstance(c, dict) and {"path", "line", "body"} <= set(c)
                 and (isinstance(c.get("line"), int) or str(c.get("line", "")).isdigit())]
@@ -123,7 +133,9 @@ def review(ctx, number: int, *, now: datetime | None = None) -> dict:
         status_error = str(e)
     issue_status = None
     if verdict == "request-changes" and pr.issue_number is not None and pr.issue_number in board.issues:
-        if pr.changes_requested_total() + 1 >= ctx.cfg.pingpong_cap:
+        # already_submitted means our review is already counted in pr.changes_requested_total(); adding 1
+        # again would double-count it on a retry and could push the issue to blocked one round too early.
+        if pr.changes_requested_total() + (0 if already_submitted else 1) >= ctx.cfg.pingpong_cap:
             _swap_labels(ctx, pr.issue_number, BLOCKED, (IN_REVIEW, IN_PROGRESS))
             ctx.gh.create_comment(pr.issue_number, f"Meld: review ping-pong cap ({ctx.cfg.pingpong_cap}) reached on PR #{number}; "
                                                     "the orchestrators must post a resolution before work resumes.")

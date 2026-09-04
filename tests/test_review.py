@@ -88,6 +88,19 @@ def test_review_request_changes_at_the_pingpong_cap_blocks_the_issue(tmp_path):
     assert any("ping-pong cap (3) reached" in c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/13/comments")
 
 
+def test_review_request_changes_retry_does_not_double_count_ping_pong(tmp_path):
+    fake, ctx, repo, wt = reviewed_pr(tmp_path, CHANGES_SCRIPT)
+    # A prior attempt already posted our CHANGES_REQUESTED on abc123 but didn't reach mark_submitted (e.g. a
+    # later step failed); another account's older round is also on record. Cap is 3.
+    fake.route("GET", R + "pulls/20/reviews",
+               [{"user": {"login": "meld-codex-bot"}, "state": "CHANGES_REQUESTED", "commit_id": "old000", "submitted_at": "2026-09-03T09:00:00Z"},
+                {"user": {"login": "meld-claude-bot"}, "state": "CHANGES_REQUESTED", "commit_id": "abc123", "submitted_at": "2026-09-03T11:30:00Z"}])
+    out = review(ctx, 20, now=NOW)
+    assert out["issue_status"] == "in_progress"           # not blocked: our own already-posted review must not be double-counted
+    assert not calls(fake, "POST", "pulls/20/reviews")    # no duplicate review filed on the retry
+    assert calls(fake, "POST", "issues/13/labels") == [{"labels": ["meld:in-progress"]}]
+
+
 def test_review_push_fix_pushes_and_asks_the_author_group_to_re_review(tmp_path):
     fake, ctx, repo, wt = reviewed_pr(tmp_path, PUSH_FIX_SCRIPT)
     new_head = sh(["git", "rev-parse", "HEAD"], wt)
@@ -175,13 +188,19 @@ def test_review_push_fix_resumes_after_a_failed_review_post(tmp_path):
     fake.route("GET", R + "pulls", pulls)
     fake.route("GET", R + f"commits/{new_head}/check-runs", fixture("checkruns_abc123.json"))
     fake.route("GET", R + "pulls/20/reviews", [])
+    # As real GitHub would show after our push: the PR's last commit is now ours, not codex's. Without the
+    # resuming_push carve-out this would make pr_refusal's own-head check wrongly refuse the resume.
+    fake.route("GET", R + "pulls/20/commits",
+               [{"sha": "abc122", "author": {"login": "meld-codex-bot"}, "committer": {"login": "meld-codex-bot"}},
+                {"sha": "abc123", "author": {"login": "meld-codex-bot"}, "committer": {"login": "meld-codex-bot"}},
+                {"sha": new_head, "author": {"login": "meld-claude-bot"}, "committer": {"login": "meld-claude-bot"}}])
     fake.route("POST", R + f"statuses/{new_head}", {"id": 79})
 
     out = review(ctx, 20, now=NOW)
-    assert out["event"] == "COMMENT" and out["head"] == new_head
+    assert out["event"] == "COMMENT" and out["head"] == new_head              # the COMMENT review is posted, once
     assert sh(["git", "rev-parse", "origin/meld/13-ci-pipeline"], repo) == new_head    # exactly one push across both attempts
     coord = [c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/10/comments"]
-    assert coord[-1].startswith("[claude:pm] REVIEW-REQUEST #20\n")
+    assert coord[-1].startswith("[claude:pm] REVIEW-REQUEST #20\n")           # the REVIEW-REQUEST is posted
 
 
 def test_submit_review_folds_findings_into_the_body_on_422():

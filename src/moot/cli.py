@@ -13,6 +13,7 @@ from moot.assemble import BoardError
 from moot.config import ConfigError
 from moot.context import Context, load_context
 from moot.github import GitHubError
+from moot.posting import PostError, post as do_post
 from moot.status import build_status
 from moot.waiting import wait_for_change
 
@@ -107,6 +108,26 @@ def release(ctx: click.Context, number: int, force: bool) -> None:
     """Release a claim, returning the issue to ready."""
     c = _load(ctx)
     _run_action(ctx, lambda: do_release(c, number, force=force))
+
+
+@main.command()
+@click.argument("verb")
+@click.argument("ref", required=False, default=None)
+@click.option("--qualifier", default=None, help="Optional trailing qualifier, e.g. DISAGREE or FAIL.")
+@click.option("-m", "--message", "message", default=None, help="Comment text.")
+@click.option("--body-file", type=click.Path(path_type=Path, exists=True), default=None, help="Read comment text from a file.")
+@click.option("--joint", is_flag=True, help="Post as [joint] after verifying agreement on REF.")
+@click.pass_context
+def post(ctx: click.Context, verb: str, ref: str | None, qualifier: str | None, message: str | None,
+         body_file: Path | None, joint: bool) -> None:
+    """Post a coordination comment: VERB [REF] with the calling party's header."""
+    c = _load(ctx)
+    text = body_file.read_text() if body_file else (message or "")
+    try:
+        emit(_guard(lambda: do_post(c, verb.upper(), ref=ref, qualifier=qualifier, text=text, joint=joint)), ctx.obj["pretty"])
+    except PostError as e:
+        emit({"error": str(e)}, ctx.obj["pretty"])
+        ctx.exit(2)
 
 
 if __name__ == "__main__":

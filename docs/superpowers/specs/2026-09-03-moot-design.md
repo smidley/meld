@@ -76,7 +76,7 @@ moot/
       base.py               # Adapter protocol
       claude.py
       codex.py
-  models.toml               # per adapter: models, efforts, context class, tier
+  src/moot/data/models.toml   # per adapter: models, efforts, context class, tier
   prompts/
     _preamble.md  orchestrator.md  pm.md  coordination-issue.md
     workers/  backend.md frontend.md security.md qa.md reviewer.md auditor.md docs.md
@@ -96,6 +96,7 @@ The product repo holds only `.moot.toml`, `.moot/workers/` (product-specific wor
 
 ```toml
 [repo]
+name = "owner/name"
 default_branch = "main"
 private = true                     # setup refuses to proceed on a public repo without --allow-public
 
@@ -214,7 +215,7 @@ Verbs:
 | `CONFIG` | group | Running models and efforts for orchestrator and PM |
 | `PROPOSE`, `AMEND`, `AGREE`, `DISSENT` | group | Agreement protocol rounds on a referenced item |
 | `PLAN`, `PLAN-ADD` | joint | Agreed decomposition; additions mid-milestone |
-| `ASK`, `DIRECTIVE`, `AMEND`, `APPROVE`, `ACK`, `PROVIDED`, `RESOLVED`, `HALT`, `RESUME`, `REVERT` | human | Human inputs |
+| `ASK`, `DIRECTIVE`, `AMEND`, `APPROVE`, `ACK`, `PROVIDED`, `RESOLVED`, `HALT`, `RESUME`, `REVERT`, `RELEASE` | human | Human inputs |
 | `DRAFT`, `AGREE`, `AMEND` | group | Chat deliberation on an `ASK <id>` |
 | `ANSWER` | joint | Agreed reply to an `ASK`; qualifier `DISAGREE` when no majority |
 | `REVIEW-REQUEST #<pr>` | group:pm | Ask other groups to review |
@@ -224,6 +225,7 @@ Verbs:
 | `AUDIT <ref>`, `DRIFT` | group | Independent audit findings; plan drift |
 | `DECISION <id>` | joint | Agreed decision, mirrored to a file |
 | `PROPOSE-WORKER <name>` | group | New worker type proposal with draft prompt |
+| `WORKER <name>` | joint | Agreed new worker type, closing a `PROPOSE-WORKER` round |
 | `PING`, `SOLO`, `RESUMED`, `PROTOCOL-VIOLATION` | group | Liveness and enforcement notices |
 
 Required fields by verb are enforced by the parser: `PLAN`, `DECISION`, `ANSWER`, `EVIDENCE`, and every worker finish comment must carry a `verified-by:` line naming a command run, test executed, or URL read. Missing it makes the comment invalid.
@@ -252,14 +254,14 @@ Two milestone-level states sit above this: `planning` until `moot:plan-approved`
 
 `rules.py` computes, for a board snapshot and a calling party, the set of legal verbs per issue and per PR. Every rule below is a test.
 
-- **claim**: milestone is `executing`; issue is `ready`; no assignee; caller's roster contains the issue's `worker:` label; caller's count of `in-progress` issues below `concurrency`; caller's budget tier for the issue's model not exhausted; no `HALT`.
-- **dispatch**: caller's bot is assignee; no live run record for the issue; `model`, `effort`, `size` labels present and valid for the caller's adapter; `size` compatible with the model's context class; issue not `needs-human` or `challenged`; no `HALT`.
+- **claim**: caller is a PM or a human; milestone is `executing`; issue is `ready`; no assignee; caller's roster contains the issue's `worker:` label; caller's count of `in-progress` issues below `concurrency`; caller's budget tier for the issue's model not exhausted; no `HALT`.
+- **dispatch**: caller is a PM; caller's bot is assignee; no live run record for the issue; `model`, `effort`, `size` labels present and valid for the caller's adapter; `size` compatible with the model's context class; issue not `needs-human` or `challenged`; no `HALT`.
 - **release**: caller is assignee's group or human; issue in `in-progress` or `blocked`. `--force` is human-only and posts a note.
 - **review approve**: caller's group did not author the last commit on the PR head; PR not `challenged`. Request-changes and push-fix are legal for any non-author-of-head group. Push-fix by group X makes X the last committer.
 - **merge**: approvals on the current head from at least `min(review.quorum, N-1)` distinct groups, none of which authored the head, with human approvals counting as a group; required checks green; no open `CHALLENGE` on the PR; no `HALT`. Either group's PM may call it.
 - **reopen**: an `AUDIT` comment with a `fail` finding naming the issue exists and was posted by the caller's group; the issue is closed; the caller's group did not author the PR that closed it. Returns the issue to `ready` with the findings attached.
 - **collect**: caller's bot is assignee (or requested the review or audit); a run record exists whose process has exited and has not been collected.
-- **post**: always legal for any party, except `--joint`, which requires verified agreement.
+- **post**: always legal for any party, except `--joint`, which requires verified agreement. A `PROPOSE` or `DRAFT` on a ref that already has proposal text is refused; a re-proposal after that point is an `AMEND` and counts a round.
 - **plan**: legal only in `planning`, or for `PLAN-ADD` in `executing`.
 
 Illegal calls return a refusal naming the rule and post `PROTOCOL-VIOLATION` on the coordination issue so other groups and the human see it.
@@ -314,7 +316,7 @@ The orchestrator prompt carries the rubric as a table with three worked examples
 - Read this group's run records and check whether each PID is alive.
 - Diff against `$MOOT_HOME/state/<group>/snapshot.json`; return on any change.
 
-Three or four conditional API calls per cycle, roughly 400 requests an hour idle against a 5,000 per hour per-token limit. Rate-limit responses trigger exponential backoff and are reported in the returned JSON. Handoff latency is bounded by the interval, about 30 seconds; the timeout only bounds idle re-reads. The wait timeout stays below the calling CLI's command timeout by construction (adapter reports its ceiling; `moot doctor` verifies).
+Three or four conditional API calls per cycle, roughly 400 requests an hour idle against a 5,000 per hour per-token limit. Rate-limit responses trigger exponential backoff and are reported in the returned JSON. Handoff latency is bounded by the interval, about 30 seconds; the timeout only bounds idle re-reads. The wait timeout stays below the calling CLI's command timeout by construction (adapter reports its ceiling; `moot doctor` verifies). `moot claim` re-reads the issue with the ETag cache bypassed before deciding the race.
 
 ## 13. Cross-review and merge
 

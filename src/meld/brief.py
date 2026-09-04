@@ -1,0 +1,138 @@
+"""Render the worker brief and read the worker result file."""
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass
+from importlib import resources
+from pathlib import Path
+
+from meld.board import Issue, PullRequest
+from meld.gitops import branch_name
+from meld.roster import WorkerType
+
+BRIEF_FILE = ".meld-brief.md"
+RESULT_FILE = ".meld-result.json"
+OUTCOMES = ("done", "failed", "blocked")
+VERDICTS = ("approve", "request-changes", "push-fix", "pass", "fail")
+_AGENT_FILES = ("CLAUDE.md", "AGENTS.md", ".github/copilot-instructions.md")
+_PATH_TOKEN_RE = re.compile(r"`([A-Za-z0-9_./-]+\.[A-Za-z0-9]+)`")
+_FILES_HEADING_RE = re.compile(r"^\s*(?:#+\s*)?files:?\s*$", re.IGNORECASE)
+
+
+class ResultError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class WorkerResult:
+    outcome: str
+    summary: str
+    verified_by: str
+    verdict: str | None
+    comments: tuple[dict, ...]
+    needs_human: str | None
+
+
+def worker_contract() -> str:
+    return resources.files("meld").joinpath("prompts", "_worker_contract.md").read_text()
+
+
+def plan_excerpt(plan_text: str, issue_number: int) -> str:
+    pattern = re.compile(rf"#{issue_number}(?!\d)")
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", plan_text or "") if p.strip()]
+    return "\n\n".join(p for p in paragraphs if pattern.search(p))
+
+
+def file_hints(issue_body: str) -> list[str]:
+    lines = (issue_body or "").splitlines()
+    for i, line in enumerate(lines):
+        if _FILES_HEADING_RE.match(line):
+            hints: list[str] = []
+            for follow in lines[i + 1:]:
+                if not follow.strip():
+                    break
+                hints.append(follow.strip().lstrip("-*").strip().strip("`"))
+            if hints:
+                return hints
+    return [m for m in _PATH_TOKEN_RE.findall(issue_body or "") if "/" in m or m.endswith((".py", ".md", ".toml", ".ts", ".js"))]
+
+
+def decision_titles(repo_root: Path) -> list[str]:
+    d = repo_root / ".meld" / "decisions"
+    titles: list[str] = []
+    if d.is_dir():
+        for f in sorted(d.glob("*.md")):
+            for line in f.read_text().splitlines():
+                if line.startswith("# "):
+                    titles.append(line[2:].strip())
+                    break
+    return titles
+
+
+def review_bar(repo_root: Path) -> str:
+    f = repo_root / ".meld" / "REVIEW.md"
+    return f.read_text() if f.is_file() else ""
+
+
+def agent_instruction_files(worktree: Path) -> list[str]:
+    return [name for name in _AGENT_FILES if (worktree / name).is_file()]
+
+
+def render_brief(*, role: WorkerType, kind: str, group: str, model: str, effort: str, issue: Issue | None, pr: PullRequest | None,
+                 plan_text: str, repo_root: Path, worktree: Path, base_branch: str) -> str:
+    if issue is not None:
+        title = f"# Meld brief: {role.name} for #{issue.number}"
+        task = f"## Your task\n\n**#{issue.number}: {issue.title}**\n\n{issue.body.strip() or '(no description)'}\n"
+        task += f"\nYou are on branch `{branch_name(issue.number, issue.title)}`, created from `{base_branch}`.\n"
+        excerpt = plan_excerpt(plan_text, issue.number)
+        hints = file_hints(issue.body)
+    else:
+        assert pr is not None
+        title = f"# Meld brief: {role.name} for PR #{pr.number}"
+        task = (f"## Your task\n\n**PR #{pr.number}: {pr.title}** (branch `{pr.head_ref}`, head `{pr.head_sha[:7]}`, "
+                f"authored by `{pr.author}`, last commit by `{pr.head_committer or 'unknown'}`).\n\n{pr.body.strip() or '(no description)'}\n"
+                f"\nThe checkout is the PR head. Your verdict goes in the `verdict` field of the result file.\n")
+        excerpt = plan_excerpt(plan_text, pr.issue_number) if pr.issue_number else ""
+        hints = []
+    parts = [title, "", f"You are the **{role.name}** worker of group **{group}**, running as `{model}` at effort: {effort}.", "",
+             "## Who you are", "", role.text.strip() or role.description, "", task]
+    if excerpt:
+        parts += ["## Plan excerpt", "", excerpt, ""]
+    if hints:
+        parts += ["## Files to start from", ""] + [f"- `{h}`" for h in hints] + [""]
+    decisions = decision_titles(repo_root)
+    if decisions:
+        parts += ["## Decisions in force", ""] + [f"- {t}" for t in decisions] + ["", "Read the matching file under `.meld/decisions/` before departing from any of them.", ""]
+    bar = review_bar(repo_root)
+    if bar:
+        parts += ["## Verification bar for this repository", "", bar.strip(), ""]
+    agent_files = agent_instruction_files(worktree)
+    if agent_files:
+        parts += ["## Repository instructions", ""] + [f"- `{f}`" for f in agent_files] + ["", "These win over anything generic below.", ""]
+    parts += [worker_contract().strip(), ""]
+    return "\n".join(parts)
+
+
+def read_result(worktree: Path) -> WorkerResult | None:
+    f = worktree / RESULT_FILE
+    if not f.is_file():
+        return None
+    try:
+        data = json.loads(f.read_text())
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        raise ResultError(f"{RESULT_FILE} is not valid JSON: {e}") from e
+    if not isinstance(data, dict):
+        raise ResultError(f"{RESULT_FILE} must be a JSON object")
+    outcome = data.get("outcome")
+    if outcome not in OUTCOMES:
+        raise ResultError(f"{RESULT_FILE}: outcome must be one of {', '.join(OUTCOMES)}, got {outcome!r}")
+    verdict = data.get("verdict")
+    if verdict is not None and verdict not in VERDICTS:
+        raise ResultError(f"{RESULT_FILE}: verdict must be one of {', '.join(VERDICTS)} or null, got {verdict!r}")
+    comments = data.get("comments") or []
+    if not isinstance(comments, list) or not all(isinstance(c, dict) for c in comments):
+        raise ResultError(f"{RESULT_FILE}: comments must be a list of objects")
+    needs_human = data.get("needs_human")
+    return WorkerResult(outcome=outcome, summary=str(data.get("summary", "")), verified_by=str(data.get("verified_by", "")),
+                        verdict=verdict, comments=tuple(comments), needs_human=str(needs_human) if needs_human else None)

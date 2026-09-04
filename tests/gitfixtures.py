@@ -1,12 +1,16 @@
 """Real temporary git repositories for gitops and dispatch tests. No network."""
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
+HERMETIC_GIT_ENV = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
+
 
 def sh(args: list[str], cwd: Path) -> str:
-    return subprocess.run(args, cwd=str(cwd), capture_output=True, text=True, check=True).stdout.strip()
+    env = {**os.environ, **HERMETIC_GIT_ENV}  # the host's gitconfig never shapes a fixture, even outside the autouse fixture
+    return subprocess.run(args, cwd=str(cwd), capture_output=True, text=True, check=True, env=env).stdout.strip()
 
 
 def make_origin_and_clone(tmp_path: Path) -> tuple[Path, Path]:

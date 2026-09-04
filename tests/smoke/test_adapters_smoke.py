@@ -16,8 +16,12 @@ PROMPT = "Create a file named hello.txt containing exactly the word hello, then 
 
 
 def _repo(tmp_path: Path) -> Path:
-    subprocess.run(["git", "init", "-q", "-b", "main", str(tmp_path)], check=True)
-    subprocess.run(["git", "-C", str(tmp_path), "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
+    git = lambda *args: subprocess.run(["git", "-C", str(tmp_path), *args], check=True, env=env)  # noqa: E731
+    subprocess.run(["git", "init", "-q", "-b", "main", str(tmp_path)], check=True, env=env)
+    git("config", "user.name", "Smoke")
+    git("config", "user.email", "smoke@example.com")
+    git("commit", "-q", "--allow-empty", "-m", "init")
     return tmp_path
 
 

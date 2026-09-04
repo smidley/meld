@@ -23,6 +23,22 @@ def load_board1_routes(fake: FakeGh, repo: str = "acme/widgets") -> None:
     fake.route("GET", "user", {"login": "empowerScott"})
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_cli_adapter(monkeypatch):
+    """CLI tests never scan the host's ~/.claude or ~/.codex: the CLI resolves adapters through a fake with no skills."""
+    import meld.cli as cli  # imported here, not at module load, so conftest never forces the CLI's import graph early
+    from tests.fakeadapter import no_skills
+    monkeypatch.setattr(cli, "ADAPTER_FOR", no_skills)
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_git(monkeypatch):
+    """No host gitconfig (gpgsign, hooks, credential helpers, identity) reaches any git the suite or the code under
+    test runs; fixtures set a local identity wherever they commit."""
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+
 @pytest.fixture
 def board1_gh(tmp_path):
     fake = FakeGh()

@@ -33,12 +33,17 @@ def challenge(ctx, action: str, ref: str, text: str) -> dict:
     resp = ctx.gh.create_comment(board.coordination_issue, compose(header, text))
     n = _number(ref)
     label = None
-    if n is not None and (n in board.issues or n in board.pulls):   # the label rides on the challenged issue or PR (spec 14)
-        if action == "open":
+    # `open` only labels a number still on the board (spec 14): a challenge on a stale/unknown
+    # number labels nothing. A closer must clear the label unconditionally, even when the
+    # challenged PR closed unmerged and dropped off the board (assemble filters out closed-unmerged
+    # PRs) -- GitHub.remove_label already tolerates a 404, so removing is safe whether or not the
+    # label, or the PR itself, still exists.
+    if action == "open":
+        if n is not None and (n in board.issues or n in board.pulls):
             ctx.gh.add_labels(n, [CHALLENGED_LABEL])
             label = "added"
-        elif action in CLOSERS:
-            ctx.gh.remove_label(n, CHALLENGED_LABEL)
-            label = "removed"
+    elif action in CLOSERS and n is not None:
+        ctx.gh.remove_label(n, CHALLENGED_LABEL)
+        label = "removed"
     return {"challenge": action, "ref": ref, "verb": ACTION_VERB[action], "comment_id": resp.get("id"), "label": label,
             "challenged_party": challenged_party(board, ctx.cfg, ref)}

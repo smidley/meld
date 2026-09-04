@@ -63,6 +63,30 @@ def test_challenge_on_an_agreement_ref_labels_nothing(tmp_path):
     assert not [c for c in fake.calls if c.method == "POST" and "labels" in c.endpoint]
 
 
+def test_dismiss_clears_the_label_on_a_pr_that_closed_off_the_board(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, group=None)   # a PR closed unmerged drops off the board (assemble filters it)
+    pulls = fixture("pulls.json")
+    for p in pulls:
+        if p["number"] == 20:
+            p["state"], p["merged_at"] = "closed", None
+    fake.route("GET", R + "pulls", pulls)
+    fake.route("GET", R + "issues/10/comments", fixture("comments_10.json") + [
+        {"id": 152, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T11:05:00Z",
+         "body": "[claude] CHALLENGE #20\n\nclosing without merging does not answer the doubt"}])
+    fake.route("DELETE", R + "issues/20/labels/meld%3Achallenged", [])
+    out = challenge(ctx, "dismiss", "#20", "resolved")
+    assert out["label"] == "removed"
+    assert any(c.method == "DELETE" and c.endpoint == R + "issues/20/labels/meld%3Achallenged" for c in fake.calls)
+
+
+def test_open_labels_a_pr_ref_still_on_the_board(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, role="orchestrator")
+    fake.route("POST", R + "issues/20/labels", [])
+    out = challenge(ctx, "open", "#20", "the merge quorum math looks off")
+    assert out["label"] == "added" and out["challenged_party"] == "codex"
+    assert [c.body for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/20/labels"] == [{"labels": ["meld:challenged"]}]
+
+
 def test_cli_challenge(tmp_path, monkeypatch):
     fake, ctx, repo, origin = make_product(tmp_path, role="orchestrator")
     fake.route("POST", R + "issues/13/labels", [])

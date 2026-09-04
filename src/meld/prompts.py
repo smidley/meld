@@ -8,6 +8,13 @@ from meld.config import Config, GroupConfig
 from meld.roster import WorkerType, roster
 
 ROLES = ("orchestrator", "pm")
+LAUNCH_REASONS = ("start", "exit", "crash", "recycle")
+_REASON_TEXT = {
+    "start": "the supervisor has just started; this is the first session of this role",
+    "exit": "the previous session of this role finished its turn and exited normally; this is routine",
+    "crash": "the previous session ended abnormally (a non-zero exit, or it exited within a minute of starting)",
+    "recycle": "the previous session was recycled on the restart schedule (runners.restart_hours)",
+}
 COMMANDS = ("meld status", "meld wait --filter <kinds> [--timeout S]", "meld post VERB [REF] -m TEXT [--joint]", "meld claim N",
             "meld release N", "meld dispatch N [--kind review|audit]", "meld tick", "meld collect N", "meld reap N",
             "meld tag N [--worker W] [--model M] [--effort E] [--size S]", "meld roster", "meld models")
@@ -17,7 +24,19 @@ def _read(name: str) -> str:
     return resources.files("meld").joinpath("prompts", name).read_text()
 
 
-def role_prompt(role: str, cfg: Config, group: GroupConfig, repo_root: Path, *, roster_entries: list[WorkerType] | None = None) -> str:
+def launch_block(launch_no: int, reason: str) -> list[str]:
+    """Tell a role which launch this is and why, so it can decide what to announce (see orchestrator.md and pm.md)."""
+    if reason not in LAUNCH_REASONS:
+        raise ValueError(f"reason must be one of {', '.join(LAUNCH_REASONS)}, got {reason!r}")
+    if launch_no < 1:
+        raise ValueError(f"launch_no must be at least 1, got {launch_no}")
+    return ["## This launch", "",
+            f"- Launch number: {launch_no}" + (" (the first launch under this supervisor)" if launch_no == 1 else ""),
+            f"- Reason: `{reason}` ({_REASON_TEXT[reason]})"]
+
+
+def role_prompt(role: str, cfg: Config, group: GroupConfig, repo_root: Path, *, roster_entries: list[WorkerType] | None = None,
+                launch_no: int = 1, reason: str = "start") -> str:
     if role not in ROLES:
         raise ValueError(f"role must be one of {', '.join(ROLES)}, got {role!r}")
     own = group.orchestrator if role == "orchestrator" else group.pm
@@ -39,4 +58,5 @@ def role_prompt(role: str, cfg: Config, group: GroupConfig, repo_root: Path, *, 
     entries = roster_entries if roster_entries is not None else roster(repo_root)
     lines += [f"- `{w.name}` ({w.source}): {w.description}" for w in entries]
     lines += ["", "## Commands available", ""] + [f"- `{c}`" for c in COMMANDS]
+    lines += ["", *launch_block(launch_no, reason)]
     return "\n".join([_read("_preamble.md").strip(), "", _read(f"{role}.md").strip(), "", *lines, ""])

@@ -49,6 +49,11 @@ class Context:
         self._roster_cache = result
         return result
 
+    def refresh_roster(self) -> None:
+        """Forget the memoized adapter and roster, so the next lookup re-scans installed skills and product worker files."""
+        self._adapter_cache = _UNSET
+        self._roster_cache = None
+
     def actor(self) -> Actor:
         names = frozenset(w.name for w in self.roster_entries()) if self.party.group else frozenset()
         return Actor(self.party, self.actor_login, names)

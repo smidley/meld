@@ -77,6 +77,17 @@ def test_status_reports_leases(project: Path, monkeypatch):
     lease = {i["number"]: i for i in data["issues"]}[12]["lease"]
     assert lease == {"group": "claude", "until": "2000-01-01T00:00:00Z", "expired": True}
 
+    # A lease on an issue that has since left in-progress (e.g. moved to in-review)
+    # must not be reported: the lease only governs who may RELEASE an in-progress claim.
+    issues = json.loads((Path(__file__).parent / "fixtures" / "board1" / "issues.json").read_text())
+    for i in issues:
+        if i["number"] == 12:
+            i["labels"] = [{"name": "meld:in-review"} if l["name"] == "meld:in-progress" else l for l in i["labels"]]
+    fake.route("GET", "repos/acme/widgets/issues", issues)
+    result2 = CliRunner().invoke(cli.main, ["--config", str(project / ".meld.toml"), "--compact", "status"], env=env_for(project))
+    data2 = json.loads(result2.output)
+    assert {i["number"]: i for i in data2["issues"]}[12]["lease"] is None
+
 
 def test_status_as_orchestrator_cannot_claim(project: Path, monkeypatch):
     fake = FakeGh()

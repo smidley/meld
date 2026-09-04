@@ -82,3 +82,11 @@ def test_parse_lease_until_and_derive_leases():
     b = mk_board(CFG2, issues=[mk_issue(12, status="in_progress", assignees=("meld-claude-bot",))],
                  leases={12: mk_lease(12, until="2026-09-03T11:00:00Z")}, now="2026-09-03T12:00:00Z")
     assert b.lease_expired(12) and not b.lease_expired(99)
+
+
+def test_malformed_lease_until_is_dropped():
+    assert parse_lease_until("until: 2026-09-03T13:00:00+00:00") is None
+    assert parse_lease_until("until: notadate") is None
+    assert parse_lease_until("until: 2026-09-03T13:00:00Z") == "2026-09-03T13:00:00Z"
+    cs = [mk_comment(CFG2, 1, "meld-claude-bot", "[claude:pm] LEASE #12\n\nuntil: soon")]
+    assert derive_leases(cs) == {}

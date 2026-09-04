@@ -138,7 +138,13 @@ class RunRecord:
         return not self.alive and not self.collected
 
 
-_LEASE_UNTIL_RE = re.compile(r"^\s*until:\s*(\S+)\s*$", re.MULTILINE)
+# Strict ISO-8601 UTC (`Z`) shape only: lease_expired compares `until` to `board.now`
+# lexicographically, which is only a valid stand-in for chronological order when both
+# strings share this exact zero-padded, zone-suffixed shape. Anything looser (an offset
+# like "+00:00", a missing "Z", free text) would make a malformed lease compare as
+# "less than" nothing and so never expire, so it is rejected here rather than accepted
+# and mis-ordered later.
+_LEASE_UNTIL_RE = re.compile(r"^\s*until:\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\s*$", re.MULTILINE)
 
 
 @dataclass(frozen=True)

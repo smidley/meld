@@ -29,6 +29,8 @@ def _age_minutes(iso: str, now: datetime) -> int:
 
 
 def _lease_json(board: Board, issue) -> dict | None:
+    if issue.status != "in_progress":
+        return None
     lease = board.leases.get(issue.number)
     if lease is None:
         return None

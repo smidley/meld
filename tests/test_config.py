@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from meld.config import Config, ConfigError, Party, load_config, party_from_env
+from meld.config import Config, ConfigError, Party, load_config, party_from_env, parse_duration
 
 MINIMAL = """
 [repo]
@@ -131,3 +131,31 @@ def test_reserved_and_malformed_group_names_are_rejected(tmp_path):
     with pytest.raises(ConfigError, match=r"groups.my group: group names must match"):
         load_config(write(tmp_path, MINIMAL.replace("[groups.codex]", '[groups."my group"]')
                                           .replace("[groups.codex.", '[groups."my group".')))
+
+
+def test_git_identity_and_worker_lease_settings(tmp_path):
+    text = (MINIMAL + """
+[worker]
+log_tail_lines = 80
+max_turns = 50
+
+[lease]
+grace_minutes = 5
+""").replace('bot = "meld-claude-bot"', 'bot = "meld-claude-bot"\ngit_name = "Meld Claude"\ngit_email = "1+meld-claude-bot@users.noreply.github.com"')
+    cfg = load_config(write(tmp_path, text))
+    assert cfg.groups["claude"].git_name == "Meld Claude"
+    assert cfg.groups["claude"].git_email == "1+meld-claude-bot@users.noreply.github.com"
+    assert cfg.groups["codex"].git_name is None and cfg.groups["codex"].git_email is None
+    assert (cfg.worker_log_tail_lines, cfg.worker_max_turns, cfg.lease_grace_minutes) == (80, 50, 5)
+    defaults = load_config(write(tmp_path, MINIMAL))
+    assert (defaults.worker_log_tail_lines, defaults.worker_max_turns, defaults.lease_grace_minutes) == (50, 200, 10)
+
+
+def test_parse_duration_and_timeout_seconds(tmp_path):
+    assert parse_duration("90s") == 90 and parse_duration("20m") == 1200 and parse_duration("2h") == 7200 and parse_duration("45") == 45
+    with pytest.raises(ConfigError, match="duration"):
+        parse_duration("soon")
+    cfg = load_config(write(tmp_path, MINIMAL))
+    assert (cfg.timeout_seconds("S"), cfg.timeout_seconds("M"), cfg.timeout_seconds("L")) == (1200, 2700, 5400)
+    with pytest.raises(ConfigError, match="timeouts.M"):
+        load_config(write(tmp_path, MINIMAL + '\n[timeouts]\nM = "fast"\n'))

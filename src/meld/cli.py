@@ -9,6 +9,7 @@ import click
 
 from meld import __version__
 from meld.actions import Refused, claim as do_claim, release as do_release
+from meld.adapters import get_adapter
 from meld.assemble import BoardError
 from meld.config import ConfigError
 from meld.context import Context, load_context
@@ -21,6 +22,7 @@ from meld.status import build_status
 from meld.waiting import wait_for_change
 
 RUN = subprocess.run  # tests monkeypatch this with a FakeGh
+ADAPTER_FOR = get_adapter
 
 
 def emit(data: object, pretty: bool) -> None:
@@ -39,7 +41,7 @@ def main(ctx: click.Context, config_path: Path | None, pretty: bool) -> None:
 
 
 def _load(ctx: click.Context) -> Context:
-    return _guard(lambda: load_context(ctx.obj["config_path"], run=RUN))
+    return _guard(lambda: load_context(ctx.obj["config_path"], run=RUN, adapter_for=ADAPTER_FOR))
 
 
 def _guard(fn):
@@ -198,6 +200,14 @@ def reap(ctx: click.Context, number: int) -> None:
     """Remove a finished run's worktree and archive its record."""
     c = _load(ctx)
     _run_action(ctx, lambda: do_reap(c, number))
+
+
+@main.command()
+@click.pass_context
+def roster(ctx: click.Context) -> None:
+    """List the worker types available to the calling party."""
+    c = _load(ctx)
+    emit([{"name": w.name, "description": w.description, "source": w.source} for w in _guard(c.roster_entries)], ctx.obj["pretty"])
 
 
 if __name__ == "__main__":

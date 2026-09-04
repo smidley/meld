@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from meld.actions import BLOCKED, IN_PROGRESS, refuse, release
-from meld.adapters import Adapter, LaunchSpec, get_adapter, scrub_env
+from meld.adapters import Adapter, LaunchSpec, scrub_env
 from meld.board import Board, RunRecord
 from meld.brief import BRIEF_FILE, RESULT_FILE, ResultError, WorkerResult, read_result, render_brief
 from meld.config import GroupConfig, Party
@@ -99,7 +99,12 @@ def kill_run(rec: RunRecord, *, grace_seconds: float = 5.0, sleep=time.sleep) ->
 
 
 def _adapter(ctx, group: GroupConfig, adapter: Adapter | None) -> Adapter:
-    return adapter if adapter is not None else get_adapter(group.cli)
+    if adapter is not None:
+        return adapter
+    adp = ctx.adapter()
+    if adp is None:
+        raise DispatchError("no adapter for a human party")
+    return adp
 
 
 def _worker_type(ctx, adapter: Adapter, name: str | None) -> WorkerType | None:

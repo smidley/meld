@@ -43,7 +43,9 @@ KINDS = ("build", "review", "audit")
 _ISO = "%Y-%m-%dT%H:%M:%SZ"
 IN_REVIEW = "meld:in-review"
 NEEDS_HUMAN = "meld:needs-human"
-_CLOSER_RE = re.compile(r"(?i)\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)(\s+)#(\d+)")
+# Every form GitHub links: keyword, optional whitespace, optional colon, optional whitespace, then
+# `#<n>` or `<owner>/<repo>#<n>`. Superset on purpose (a missing separator is neutralised too).
+_CLOSER_RE = re.compile(r"(?i)\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b(\s*:?\s*)((?:[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+)?#\d+)")
 _BACKTICKS_RE = re.compile(r"`+")
 
 
@@ -80,9 +82,10 @@ def tail_lines(path: Path, n: int) -> str:
 
 
 def neutralise_closers(text: str) -> str:
-    """Keep a worker's words but break GitHub's closing-keyword syntax ("fixes #7" -> "fixes `#7`"), so the only line
-    of a PR body that can close an issue is the framework's own `Closes #<issue>`."""
-    return _CLOSER_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}`#{m.group(3)}`", text or "")
+    """Keep a worker's words but break GitHub's closing-keyword syntax ("fixes #7" -> "fixes `#7`", "Closes: #9",
+    "resolved acme/widgets#12" -> "resolved `acme/widgets#12`"), so the only line of a PR body that can close an
+    issue is the framework's own `Closes #<issue>`."""
+    return _CLOSER_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}`{m.group(3)}`", text or "")
 
 
 def fenced(text: str) -> str:
@@ -150,34 +153,51 @@ def lease_body(group: str, number: int, until: str, kind: str) -> str:
     return f"until: {until}\nrun: {group}/#{number}\nkind: {kind}"
 
 
-def worker_env(base: Mapping[str, str], *, identity: tuple[str, str], gh_config_dir: Path) -> dict[str, str]:
+# Git settings forced on every worker at the command-line level (they also override the same keys in the
+# clone's own config): no credential helpers, no commit signing with the human's key, no hooks.
+_WORKER_GIT_CONFIG = (("credential.helper", ""), ("commit.gpgsign", "false"), ("core.hooksPath", "/dev/null"))
+
+
+def worker_env(base: Mapping[str, str], *, identity: tuple[str, str], gh_config_dir: Path, git_config_global: Path) -> dict[str, str]:
     """The environment a worker runs in.
 
     Scrubbed of tokens and party identity (`scrub_env`), then: the group's bot as git author and
     committer through GIT_AUTHOR_*/GIT_COMMITTER_* -- never `git config` in the worktree, because a
     linked worktree shares the clone's .git/config, so one group would relabel every other group's
     commits and the human's own; `gh` pointed at an empty config directory so it cannot borrow the
-    human's login; git's credential helpers reset (an empty `credential.helper` clears the list) and
-    terminal prompts disabled so a push or fetch that needs credentials fails instead of asking.
+    human's login; git pointed at an empty global config file with the system config disabled, so the
+    human's `url.<base>.insteadOf` (which could route the HTTPS origin over host SSH keys),
+    `commit.gpgsign`/`user.signingkey`, `core.hooksPath`, and credential helpers are never read at
+    all -- the clone's own config still applies, since the worktree needs its remote; and, as
+    belt-and-braces, _WORKER_GIT_CONFIG appended to any GIT_CONFIG_* list the parent already set,
+    with terminal prompts disabled so a push or fetch that needs credentials fails instead of asking.
     """
     env = scrub_env(base)
     name, email = identity
     env.update({"GIT_AUTHOR_NAME": name, "GIT_AUTHOR_EMAIL": email, "GIT_COMMITTER_NAME": name, "GIT_COMMITTER_EMAIL": email,
-                "GH_CONFIG_DIR": str(gh_config_dir), "GIT_TERMINAL_PROMPT": "0"})
+                "GH_CONFIG_DIR": str(gh_config_dir), "GIT_CONFIG_GLOBAL": str(git_config_global), "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_TERMINAL_PROMPT": "0"})
     try:
         n = int(env.get("GIT_CONFIG_COUNT", "0"))
     except ValueError:
         n = 0
-    env.update({"GIT_CONFIG_COUNT": str(n + 1), f"GIT_CONFIG_KEY_{n}": "credential.helper", f"GIT_CONFIG_VALUE_{n}": ""})
+    for key, value in _WORKER_GIT_CONFIG:
+        env[f"GIT_CONFIG_KEY_{n}"], env[f"GIT_CONFIG_VALUE_{n}"] = key, value
+        n += 1
+    env["GIT_CONFIG_COUNT"] = str(n)
     return env
 
 
-def _gh_config_dir(ctx, group: GroupConfig, number: int) -> Path:
-    """A fresh, empty GH_CONFIG_DIR for this run (outside the worktree, so it is never committed)."""
-    d = ctx.store.home / "runs" / group.name / f"{number}-gh"
-    shutil.rmtree(d, ignore_errors=True)
-    d.mkdir(parents=True)
-    return d
+def _worker_scratch(ctx, group: GroupConfig, number: int) -> tuple[Path, Path]:
+    """Fresh per-run files outside the worktree (so they are never committed): an empty GH_CONFIG_DIR and an
+    empty file to stand in for the global gitconfig. Both are recreated on every launch so nothing a previous
+    worker wrote there carries over."""
+    gh_dir = ctx.store.home / "runs" / group.name / f"{number}-gh"
+    shutil.rmtree(gh_dir, ignore_errors=True)
+    gh_dir.mkdir(parents=True)
+    gitconfig = ctx.store.home / "runs" / group.name / f"{number}-gitconfig"
+    gitconfig.write_text("")
+    return gh_dir, gitconfig
 
 
 def _launch(ctx, group: GroupConfig, adapter: Adapter, *, worktree: Path, brief: str, model: str, effort: str,
@@ -185,9 +205,10 @@ def _launch(ctx, group: GroupConfig, adapter: Adapter, *, worktree: Path, brief:
     (worktree / BRIEF_FILE).write_text(brief)
     (worktree / RESULT_FILE).unlink(missing_ok=True)
     log_path = _log_path(ctx, group, kind, number, when)
+    gh_dir, gitconfig = _worker_scratch(ctx, group, number)
     spec = LaunchSpec(role="worker", model=model, effort=effort, cwd=worktree, prompt=WORKER_PROMPT, log_path=log_path,
                       timeout_seconds=timeout, max_turns=ctx.cfg.worker_max_turns,
-                      env=worker_env(os.environ if env is None else env, identity=identity, gh_config_dir=_gh_config_dir(ctx, group, number)))
+                      env=worker_env(os.environ if env is None else env, identity=identity, gh_config_dir=gh_dir, git_config_global=gitconfig))
     try:
         proc = adapter.launch(spec)
     except OSError as e:

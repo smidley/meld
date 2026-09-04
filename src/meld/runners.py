@@ -65,11 +65,12 @@ def launch_role(ctx, group: GroupConfig, adapter: Adapter, role: str, *, base_en
 
 
 def _terminate(proc, *, grace: float = 10.0, sleep=time.sleep) -> None:
-    if proc.poll() is not None:
-        return  # already exited and reaped: its pid may belong to someone else by now
+    # Signal the whole group even when the leader has already exited: a background job the role started
+    # is still in it. ESRCH means the group is gone; EPERM is macOS answering for an un-reaped zombie
+    # leader, or a pid reused by another user's process -- nothing of ours is left to signal either way.
     try:
         os.killpg(proc.pid, signal.SIGTERM)
-    except (ProcessLookupError, PermissionError):  # gone, or the pid was reused by a process that is not ours
+    except (ProcessLookupError, PermissionError):
         return
     waited = 0.0
     while proc.poll() is None and waited < grace:

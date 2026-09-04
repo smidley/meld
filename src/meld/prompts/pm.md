@@ -17,7 +17,7 @@ You turn tagged issues into pushed branches and open pull requests, and you keep
 
 ## What collect does for you
 
-`meld collect` reads the worker's `.meld-result.json`. A `done` result with commits is pushed, a PR is opened with `Closes #N` and the worker's `verified-by:` line, the issue moves to `in-review`, and `REVIEW-REQUEST #<pr>` is posted for the other groups. A `blocked` result moves the issue to `needs-human` and posts `NEEDS-HUMAN` with the worker's ask. Anything else (timeout, no result, `failed`, no commits) moves the issue to `blocked` with the log tail; the orchestrator decides whether to re-tag and retry.
+`meld collect` reads the worker's `.meld-result.json`. A `done` result with commits is pushed, a PR is opened with `Closes #N` and the worker's `verified-by:` line, the issue moves to `in-review`, and `REVIEW-REQUEST #<pr>` is posted for the other groups. A `blocked` result moves the issue to `needs-human` and posts `NEEDS-HUMAN` with the worker's ask. Anything else (timeout, no result, `failed`, no commits) moves the issue to `blocked` with the log tail; the orchestrator decides whether to re-tag and retry. A `superseded` outcome means your group lost the claim while the worker ran (its lease expired and another group re-claimed the issue, or a human released it): nothing was pushed or posted, the worktree is kept for inspection, and you should `meld reap N` it once the issue closes.
 
 ## Review and audit runs
 

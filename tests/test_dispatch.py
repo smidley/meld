@@ -48,7 +48,11 @@ def test_dispatch_build_happy_path(tmp_path):
     assert gh_dir == tmp_path / "home" / "runs" / "claude" / "11-gh" and gh_dir.is_dir() and not any(gh_dir.iterdir())
     assert not gh_dir.is_relative_to(wt)
     assert spec.env["GIT_TERMINAL_PROMPT"] == "0"
-    assert (spec.env["GIT_CONFIG_COUNT"], spec.env["GIT_CONFIG_KEY_0"], spec.env["GIT_CONFIG_VALUE_0"]) == ("1", "credential.helper", "")
+    gitconfig = Path(spec.env["GIT_CONFIG_GLOBAL"])
+    assert gitconfig == tmp_path / "home" / "runs" / "claude" / "11-gitconfig" and gitconfig.read_text() == "" and spec.env["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert spec.env["GIT_CONFIG_COUNT"] == "3"
+    assert [(spec.env[f"GIT_CONFIG_KEY_{i}"], spec.env[f"GIT_CONFIG_VALUE_{i}"]) for i in range(3)] == \
+        [("credential.helper", ""), ("commit.gpgsign", "false"), ("core.hooksPath", "/dev/null")]
     rec = json.loads((tmp_path / "home" / "runs" / "claude" / "11.json").read_text())
     assert rec["pid"] == out["pid"] and rec["deadline"] == "2026-09-03T12:20:00Z" and rec["branch"] == out["branch"] and rec["lease_comment"] == 310 and rec["kind"] == "build"
     lease = [c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/10/comments"][0]
@@ -135,12 +139,14 @@ def test_two_groups_commit_as_their_own_bots_without_touching_the_clone_config(t
 
 def test_worker_env_appends_to_an_existing_git_config_list(tmp_path):
     base = {"PATH": "/bin", "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.autocrlf", "GIT_CONFIG_VALUE_0": "false", "GH_TOKEN": "x"}
-    env = worker_env(base, identity=("Bot", "1+bot@users.noreply.github.com"), gh_config_dir=tmp_path / "gh")
-    assert env["GIT_CONFIG_COUNT"] == "2" and (env["GIT_CONFIG_KEY_0"], env["GIT_CONFIG_VALUE_0"]) == ("core.autocrlf", "false")
-    assert (env["GIT_CONFIG_KEY_1"], env["GIT_CONFIG_VALUE_1"]) == ("credential.helper", "")
+    env = worker_env(base, identity=("Bot", "1+bot@users.noreply.github.com"), gh_config_dir=tmp_path / "gh", git_config_global=tmp_path / "gc")
+    assert env["GIT_CONFIG_COUNT"] == "4" and (env["GIT_CONFIG_KEY_0"], env["GIT_CONFIG_VALUE_0"]) == ("core.autocrlf", "false")
+    assert [(env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"]) for i in (1, 2, 3)] == \
+        [("credential.helper", ""), ("commit.gpgsign", "false"), ("core.hooksPath", "/dev/null")]
     assert "GH_TOKEN" not in env and env["MELD_WORKER"] == "1" and env["GH_CONFIG_DIR"] == str(tmp_path / "gh")
-    bogus = worker_env({"GIT_CONFIG_COUNT": "many"}, identity=("Bot", "b@e"), gh_config_dir=tmp_path / "gh")
-    assert bogus["GIT_CONFIG_COUNT"] == "1" and bogus["GIT_CONFIG_KEY_0"] == "credential.helper"
+    assert env["GIT_CONFIG_GLOBAL"] == str(tmp_path / "gc") and env["GIT_CONFIG_NOSYSTEM"] == "1"
+    bogus = worker_env({"GIT_CONFIG_COUNT": "many"}, identity=("Bot", "b@e"), gh_config_dir=tmp_path / "gh", git_config_global=tmp_path / "gc")
+    assert bogus["GIT_CONFIG_COUNT"] == "3" and bogus["GIT_CONFIG_KEY_0"] == "credential.helper"
 
 
 def test_git_identity_prefers_config_then_noreply(tmp_path):

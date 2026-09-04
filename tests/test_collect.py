@@ -125,8 +125,15 @@ def test_collect_refusals(tmp_path):
 
 
 def test_neutralise_closers_and_fenced():
-    text = "closes #99, Fixes #7; resolved #8 and fixed  #12 but not #13 or close#14 or unfix #15"
-    assert neutralise_closers(text) == "closes `#99`, Fixes `#7`; resolved `#8` and fixed  `#12` but not #13 or close#14 or unfix #15"
+    text = "closes #99, Fixes #7; resolved #8 and fixed  #12 but not #13 or unfix #15 or closest #16"
+    assert neutralise_closers(text) == "closes `#99`, Fixes `#7`; resolved `#8` and fixed  `#12` but not #13 or unfix #15 or closest #16"
+    # the colon and cross-repository forms GitHub also links, and a missing separator (superset on purpose)
+    assert neutralise_closers("Closes: #9") == "Closes: `#9`"
+    assert neutralise_closers("closes:#9") == "closes:`#9`"
+    assert neutralise_closers("close#14") == "close`#14`"
+    assert neutralise_closers("Fixes acme/widgets#12") == "Fixes `acme/widgets#12`"
+    assert neutralise_closers("resolved: octo-org/octo-repo#100") == "resolved: `octo-org/octo-repo#100`"
+    assert neutralise_closers("see acme/widgets#12 and #13") == "see acme/widgets#12 and #13"  # no keyword: left alone
     assert neutralise_closers("") == ""
     assert fenced("plain") == "```\nplain\n```"
     assert fenced("```\nescaped\n```") == "````\n```\nescaped\n```\n````"
@@ -154,6 +161,44 @@ def test_collect_neutralises_closing_keywords_and_fences_the_log_tail(tmp_path):
     collect(ctx2, 11, now=NOW)
     comment = issue_posts(fake2, 11)[-1]
     assert comment.endswith("Last 50 log lines:\n\n````\n```\n# not a heading\n````")
+
+
+def test_worker_git_never_reads_the_humans_global_gitconfig(tmp_path):
+    import os, subprocess
+    fake, ctx, repo, origin = make_product(tmp_path)
+    claim_issue_11(fake)
+    routes_for_labels(fake, 11)
+    fake.route("POST", R + "pulls", {"number": 21})
+    home = tmp_path / "human-home"
+    hooks = home / "hooks"
+    hooks.mkdir(parents=True)
+    marker = home / "hook-ran"
+    (hooks / "pre-commit").write_text(f"#!/bin/sh\ntouch {marker}\nexit 1\n")
+    (hooks / "pre-commit").chmod(0o755)
+    # signing with a key that does not exist, hooks that refuse every commit, and a rewrite of the origin to nowhere
+    (home / ".gitconfig").write_text(f"[commit]\n\tgpgsign = true\n[user]\n\tsigningkey = DEADBEEF\n"
+                                     f"[core]\n\thooksPath = {hooks}\n[url \"{tmp_path}/nonexistent-rewrite/\"]\n\tinsteadOf = {origin}\n")
+    human_env = {k: v for k, v in os.environ.items() if k not in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM")}
+    human_env["HOME"] = str(home)
+    assert subprocess.run(["git", "config", "--get", "commit.gpgsign"], cwd=repo, env=human_env, capture_output=True, text=True).stdout.strip() == "true"
+    script = DONE_SCRIPT.replace('pathlib.Path(".meld-result.json")', 'subprocess.run(["git", "fetch", "-q", "origin"], check=True)\npathlib.Path(".meld-result.json")')
+    adapter = FakeAdapter(script=script)
+    out = dispatch(ctx, 11, adapter=adapter, now=NOW, env=human_env)
+    wait_for_exit(out["pid"])
+    wt, env = Path(out["worktree"]), adapter.launches[0].env
+    assert (wt / ".meld-result.json").exists()                         # the commit and the fetch over the plain origin both succeeded
+    assert sh(["git", "log", "-1", "--format=%G?|%an"], wt) == "N|meld-claude-bot"   # unsigned, as the bot
+    assert not marker.exists()                                          # the human's hooks never ran
+    probe = lambda *args: subprocess.run(["git", "config", *args], cwd=wt, env=env, capture_output=True, text=True)  # noqa: E731
+    assert probe("--show-origin", "--get", "commit.gpgsign").stdout == "command line:\tfalse\n"   # our override, not the human's true
+    for key in ("user.signingkey", "core.hooksPath"):                  # keys we override or not: the human's values resolve to nothing
+        got = probe("--show-origin", "--get", key)
+        assert "human-home" not in got.stdout, got.stdout
+    assert probe("--get", "user.signingkey").returncode == 1            # the fake global is never read at all
+    assert probe("--get-regexp", r"url\..*\.insteadof").returncode == 1
+    assert Path(env["GIT_CONFIG_GLOBAL"]).read_text() == "" and env["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert collect(ctx, 11, now=NOW)["outcome"] == "done"
+    assert remote_branch_exists(repo, "meld/11-add-health-endpoint")
 
 
 def test_collect_is_superseded_when_another_group_now_holds_the_issue(tmp_path):

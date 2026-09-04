@@ -7,6 +7,7 @@ import pytest
 from click.testing import CliRunner
 
 import meld.cli as cli
+from meld.board import Challenge
 from meld.config import ConfigError, Party
 from meld.context import find_config, load_context
 from meld.rules import Actor
@@ -215,3 +216,15 @@ def test_status_reports_the_audit_schedule_for_the_calling_group():
     done = replace(board, audits={19: {"codex": "pass"}})
     assert render_status(done, CFG2, CODEX_PM, REG, now)["audit"]["pending"] == []
     assert render_status(board, CFG2, HUMAN, REG, now)["audit"]["pending"] == []
+
+
+def test_status_pull_fields_and_challenge_details():
+    cfg = replace(CFG2, security_paths=("src/auth/*",))
+    pr = replace(mk_pr(20, 13), files=("src/auth/login.py",))
+    ch = Challenge("#20", "codex", 104, "2026-09-03T10:04:00Z")
+    board = replace(mk_board(cfg, pulls=[pr]), challenges={"#20": ch}, open_challenges=frozenset({"#20"}), audits={20: {"codex": "pass"}})
+    data = render_status(board, cfg, CLAUDE_PM, REG, datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc))
+    (p,) = data["pulls"]
+    assert p["touches_security_paths"] is True and p["files"] == 1 and p["merged"] is False and p["merged_at"] == "" and p["audited_by"] == {"codex": "pass"}
+    assert data["coordination"]["challenges"] == [{"ref": "#20", "challenger": "codex", "comment_id": 104, "opened_at": "2026-09-03T10:04:00Z"}]
+    assert data["coordination"]["open_challenges"] == ["#20"]

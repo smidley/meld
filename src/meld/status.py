@@ -55,6 +55,8 @@ def render_status(board: Board, cfg: Config, actor: Actor, models: ModelRegistry
          "committer_party": committer_party(cfg, p), "approvals": sorted(approving_parties(cfg, p)),
          "changes_requested": sorted({q for q in (party_of_login(cfg, a) for a in p.changes_requested_on_head()) if q}),
          "checks": p.checks, "pingpong_exceeded": pingpong_exceeded(cfg, p),
+         "merged": p.merged, "merged_at": p.merged_at, "files": len(p.files),
+         "touches_security_paths": p.touches(cfg.security_paths), "audited_by": dict(board.audits.get(p.number, {})),
          "legal": legal_pr_verbs(board, cfg, actor, p)}
         for p in sorted(board.pulls.values(), key=lambda p: p.number)
     ]
@@ -74,6 +76,8 @@ def render_status(board: Board, cfg: Config, actor: Actor, models: ModelRegistry
         "issues": issues, "pulls": pulls, "runs": runs,
         "coordination": {"comments": len(board.comments), "last_comment_id": max((c.id for c in board.comments), default=0),
                          "open_challenges": sorted(board.open_challenges), "ignored_comments": board.ignored_comments,
+                         "challenges": [{"ref": c.ref, "challenger": c.challenger, "comment_id": c.comment_id, "opened_at": c.opened_at}
+                                        for c in sorted(board.challenges.values(), key=lambda c: c.ref)],
                          "agreements": agreements},
         "audit": audit_summary(board, cfg, actor, now),
         "digest": board_digest(board),

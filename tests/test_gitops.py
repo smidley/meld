@@ -88,6 +88,21 @@ def test_push_keeps_token_out_of_argv(tmp_path):
     assert remote_branch_exists(repo, "meld/7-x")
 
 
+def test_exclude_paths_hides_scratch_files_from_status(tmp_path):
+    from meld.gitops import exclude_paths
+    origin, repo = make_origin_and_clone(tmp_path)
+    wt = tmp_path / "wt" / "z"
+    create_worktree(repo, wt, "meld/9-z", "main")
+    exclude_paths(wt)
+    for name in (".meld-brief.md", ".meld-result.json", ".meld-last-message.txt"):
+        (wt / name).write_text("scratch\n")
+    (wt / "real.py").write_text("x = 1\n")
+    assert git(["status", "--porcelain"], wt).splitlines() == ["?? real.py"]
+    exclude_paths(wt)  # idempotent
+    exclude_file = Path(git(["rev-parse", "--git-path", "info/exclude"], wt))
+    assert exclude_file.read_text().count(".meld-brief.md") == 1
+
+
 def test_push_without_token_leaves_git_credentials_alone(tmp_path):
     origin, repo = make_origin_and_clone(tmp_path)
     wt = tmp_path / "wt" / "y"

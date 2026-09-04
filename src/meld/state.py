@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Mapping
 
@@ -18,6 +19,12 @@ def meld_home(env: Mapping[str, str]) -> Path:
 def pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
+    try:
+        reaped, _ = os.waitpid(pid, os.WNOHANG)  # reap our own exited child so it does not linger as a zombie
+        if reaped == pid:
+            return False
+    except ChildProcessError:
+        pass
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -77,6 +84,9 @@ class StateStore:
             pid=int(data["pid"]), started_at=data["started_at"], worktree=data["worktree"], log_path=data["log_path"],
             model=data["model"], effort=data["effort"], tier=data["tier"], milestone=int(data["milestone"]),
             alive=alive(int(data["pid"])), collected=bool(data.get("collected", False)),
+            deadline=str(data.get("deadline", "")), branch=str(data.get("branch", "")),
+            lease_comment=(int(data["lease_comment"]) if data.get("lease_comment") is not None else None),
+            timed_out=bool(data.get("timed_out", False)),
         )
 
     def load_runs(self, alive: Callable[[int], bool] = pid_alive) -> dict[str, dict[int, RunRecord]]:
@@ -112,6 +122,15 @@ class StateStore:
                     continue
             out[gdir.name] = counts
         return out
+
+    def archive_run(self, group: str, issue: int) -> Path:
+        src = self.runs_root / group / f"{issue}.json"
+        archive = self.runs_root / group / "archive"
+        archive.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        dst = archive / f"{issue}-{stamp}.json"
+        os.replace(src, dst)
+        return dst
 
 
 # ---- digests ---------------------------------------------------------------

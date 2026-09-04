@@ -132,6 +132,10 @@ class RunRecord:
     milestone: int
     alive: bool
     collected: bool
+    deadline: str = ""
+    branch: str = ""
+    lease_comment: int | None = None
+    timed_out: bool = False
 
     @property
     def finished(self) -> bool:

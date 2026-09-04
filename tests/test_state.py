@@ -129,6 +129,30 @@ def test_write_atomic_writes_a_sibling_temp_then_replaces(tmp_path, monkeypatch)
     assert target.read_text() == "new" and not list(tmp_path.glob("*.tmp"))
 
 
+def test_pid_alive_reaps_own_exited_child_and_archive_run(tmp_path):
+    import subprocess, sys
+    from meld.state import pid_alive
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()  # exited; without a waitpid in pid_alive a zombie would still answer kill(pid, 0)
+    assert pid_alive(proc.pid) is False
+    store = StateStore(tmp_path, "claude")
+    store.write_run(mk_run("claude", 12))
+    archived = store.archive_run("claude", 12)
+    assert archived.parent == tmp_path / "runs" / "claude" / "archive" and archived.name.startswith("12-")
+    assert not (tmp_path / "runs" / "claude" / "12.json").exists()
+    assert store.load_runs(alive=lambda p: False) == {"claude": {}}
+    assert store.load_spend(3) == {"claude": {"medium": 1}}
+
+
+def test_run_record_extensions_round_trip(tmp_path):
+    store = StateStore(tmp_path, "claude")
+    rec = mk_run("claude", 12)
+    from dataclasses import replace
+    store.write_run(replace(rec, deadline="2026-09-03T13:00:00Z", branch="meld/12-login", lease_comment=110, timed_out=True))
+    loaded = store.load_runs(alive=lambda p: False)["claude"][12]
+    assert (loaded.deadline, loaded.branch, loaded.lease_comment, loaded.timed_out) == ("2026-09-03T13:00:00Z", "meld/12-login", 110, True)
+
+
 def test_diff_changes_are_structured_and_filterable():
     b1 = mk_board(CFG2, issues=[mk_issue(11)], pulls=[mk_pr(20, 13)])
     b2 = mk_board(CFG2, issues=[mk_issue(11, status="in_progress", assignees=("meld-claude-bot",))],

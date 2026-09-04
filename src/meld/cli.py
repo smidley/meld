@@ -12,7 +12,9 @@ from meld.actions import Refused, claim as do_claim, release as do_release
 from meld.assemble import BoardError
 from meld.config import ConfigError
 from meld.context import Context, load_context
+from meld.dispatch import DispatchError, dispatch as do_dispatch
 from meld.github import GitHubError
+from meld.gitops import GitError
 from meld.posting import PostError, post as do_post
 from meld.state import CHANGE_KINDS
 from meld.status import build_status
@@ -43,7 +45,7 @@ def _load(ctx: click.Context) -> Context:
 def _guard(fn):
     try:
         return fn()
-    except (BoardError, GitHubError, ConfigError) as e:
+    except (BoardError, GitHubError, ConfigError, DispatchError, GitError) as e:
         raise click.ClickException(str(e)) from e
 
 
@@ -159,6 +161,17 @@ def post(ctx: click.Context, verb: str, ref: str | None, qualifier: str | None, 
     except PostError as e:
         emit({"error": str(e)}, ctx.obj["pretty"])
         ctx.exit(2)
+
+
+@main.command()
+@click.argument("number", type=int)
+@click.option("--kind", type=click.Choice(["build", "review", "audit"]), default="build", show_default=True,
+              help="build: a claimed issue; review/audit: a pull request.")
+@click.pass_context
+def dispatch(ctx: click.Context, number: int, kind: str) -> None:
+    """Spawn a headless worker in its own worktree for an issue (build) or a PR (review, audit)."""
+    c = _load(ctx)
+    _run_action(ctx, lambda: do_dispatch(c, number, kind=kind))
 
 
 if __name__ == "__main__":

@@ -103,3 +103,18 @@ def delete_local_branch(repo_root: Path, branch: str, run: RunFn = subprocess.ru
     except GitError as e:
         if "not found" not in str(e):
             raise
+
+
+MELD_SCRATCH_FILES = (".meld-brief.md", ".meld-result.json", ".meld-last-message.txt")
+
+
+def exclude_paths(path: Path, patterns: tuple[str, ...] = MELD_SCRATCH_FILES, run: RunFn = subprocess.run) -> None:
+    """Hide meld's scratch files from git in this worktree via its private info/exclude (never the shared .gitignore)."""
+    exclude = Path(git(["rev-parse", "--git-path", "info/exclude"], path, run))
+    if not exclude.is_absolute():
+        exclude = path / exclude
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    existing = exclude.read_text().splitlines() if exclude.exists() else []
+    missing = [p for p in patterns if p not in existing]
+    if missing:
+        exclude.write_text("\n".join([*existing, *missing]) + "\n")

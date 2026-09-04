@@ -20,6 +20,8 @@ class Verb(str, Enum):
     PUSH_FIX = "push-fix"
     MERGE = "merge"
     POST = "post"
+    REAP = "reap"
+    TAG = "tag"
 
 
 # POST is deliberately absent from both: it is refusable but not a per-issue or per-PR verb,

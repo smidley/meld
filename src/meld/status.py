@@ -60,7 +60,8 @@ def render_status(board: Board, cfg: Config, actor: Actor, models: ModelRegistry
     ]
     runs = [
         {"group": r.group, "issue": r.issue, "kind": r.kind, "pr": r.pr, "pid": r.pid,
-         "state": "running" if r.alive else "collected" if r.collected else "finished", "started_at": r.started_at}
+         "state": "running" if r.alive else "collected" if r.collected else "finished", "started_at": r.started_at,
+         "deadline": r.deadline, "branch": r.branch, "timed_out": r.timed_out}
         for g in sorted(board.runs) for r in sorted(board.runs[g].values(), key=lambda r: r.issue)
     ]
     refs = sorted({c.header.ref for c in board.comments if c.ok and c.header and c.header.ref and c.header.verb in AGREEMENT_VERBS})

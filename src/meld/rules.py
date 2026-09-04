@@ -181,14 +181,18 @@ def _reopen(board: Board, cfg: Config, actor: Actor, issue: Issue) -> str | None
     if actor.is_human:
         return None
     ref = f"#{issue.number}"
+    pr = board.pr_for_issue(issue.number)
+    # spec 8 names the audited work by the issue it closes; spec 14 posts AUDIT per PR. A FAIL
+    # verdict may therefore land under either ref -- accept an AUDIT FAIL keyed on the issue's own
+    # number or on the number of the PR that closed it.
+    refs = {ref} | ({f"#{pr.number}"} if pr is not None else set())
     audits = [
         c for c in board.comments
-        if c.ok and c.header is not None and c.header.verb == "AUDIT" and c.header.ref == ref
+        if c.ok and c.header is not None and c.header.verb == "AUDIT" and c.header.ref in refs
         and c.header.qualifier == "FAIL" and c.header.party.group == actor.group
     ]
     if not audits:
         return f"no AUDIT {ref} FAIL posted by {actor.group}"
-    pr = board.pr_for_issue(issue.number)
     if pr is not None and party_of_login(cfg, pr.author) == actor.group:
         return f"{actor.group} authored the PR that closed {ref}"
     return None

@@ -48,13 +48,8 @@ def test_audit_posts_the_verdict_and_reopen_returns_the_issue_to_ready(tmp_path)
     assert any("meld reopen 13" in c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/13/comments")
     with pytest.raises(Refused, match="issue is not closed"):
         reopen(ctx, 13)
-    # rules._reopen (out of scope for this task) keys its AUDIT-FAIL lookup on the closed issue's
-    # own number, not the PR number audit() posts under -- see task-8-report.md Concerns for the
-    # cross-module ref mismatch this exposes. Reflect that real, pre-existing check here instead of
-    # reusing `coord` (ref #20) verbatim, so this test still exercises reopen()'s own behaviour.
-    reopen_trigger = coord.replace("AUDIT #20 FAIL", "AUDIT #13 FAIL", 1)
     fake.route("GET", R + "issues/10/comments", fixture("comments_10.json") + [
-        {"id": 140, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T12:30:00Z", "body": reopen_trigger}])
+        {"id": 140, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T12:30:00Z", "body": coord}])
     issues = fixture("issues.json")
     for i in issues:
         if i["number"] == 13:

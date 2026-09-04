@@ -154,6 +154,17 @@ def test_reopen_requires_fail_audit_from_non_author_group():
     assert rule(mk_board(CFG2, issues=[open_issue]), HUMAN, Verb.REOPEN, open_issue) == "issue is not closed"
 
 
+def test_reopen_accepts_a_fail_audit_posted_on_the_pr_that_closed_the_issue():
+    closed = mk_issue(9, state="closed")
+    pr = mk_pr(19, 9, committer="meld-codex-bot", state="closed", merged=True)
+    pr_audit = mk_comment(CFG2, 7, "meld-claude-bot", "[claude] AUDIT #19 FAIL\n\nacceptance criterion 2 unmet")
+    b = mk_board(CFG2, issues=[closed], pulls=[pr], comments=[pr_audit])
+    assert rule(b, CLAUDE_PM, Verb.REOPEN, closed) is None
+    unrelated = mk_comment(CFG2, 8, "meld-codex-bot", "[codex] AUDIT #999 FAIL\n\nsome other PR entirely")
+    b2 = mk_board(CFG2, issues=[closed], pulls=[pr], comments=[unrelated])
+    assert rule(b2, CODEX_PM, Verb.REOPEN, closed) == "no AUDIT #9 FAIL posted by codex"
+
+
 def test_legal_issue_verbs_and_party_of_login():
     i = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",))
     b = mk_board(CFG2, issues=[i], runs={"claude": {12: mk_run("claude", 12, alive=False)}, "codex": {}})

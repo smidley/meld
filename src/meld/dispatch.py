@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import time
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Mapping
 
 from meld.actions import BLOCKED, IN_PROGRESS, refuse, release
 from meld.adapters import Adapter, LaunchSpec, scrub_env
@@ -25,7 +27,6 @@ from meld.gitops import (
     noreply_email,
     push_branch,
     remove_worktree,
-    set_identity,
     slugify,
     worktree_exists,
 )
@@ -125,14 +126,48 @@ def lease_body(group: str, number: int, until: str, kind: str) -> str:
     return f"until: {until}\nrun: {group}/#{number}\nkind: {kind}"
 
 
+def worker_env(base: Mapping[str, str], *, identity: tuple[str, str], gh_config_dir: Path) -> dict[str, str]:
+    """The environment a worker runs in.
+
+    Scrubbed of tokens and party identity (`scrub_env`), then: the group's bot as git author and
+    committer through GIT_AUTHOR_*/GIT_COMMITTER_* -- never `git config` in the worktree, because a
+    linked worktree shares the clone's .git/config, so one group would relabel every other group's
+    commits and the human's own; `gh` pointed at an empty config directory so it cannot borrow the
+    human's login; git's credential helpers reset (an empty `credential.helper` clears the list) and
+    terminal prompts disabled so a push or fetch that needs credentials fails instead of asking.
+    """
+    env = scrub_env(base)
+    name, email = identity
+    env.update({"GIT_AUTHOR_NAME": name, "GIT_AUTHOR_EMAIL": email, "GIT_COMMITTER_NAME": name, "GIT_COMMITTER_EMAIL": email,
+                "GH_CONFIG_DIR": str(gh_config_dir), "GIT_TERMINAL_PROMPT": "0"})
+    try:
+        n = int(env.get("GIT_CONFIG_COUNT", "0"))
+    except ValueError:
+        n = 0
+    env.update({"GIT_CONFIG_COUNT": str(n + 1), f"GIT_CONFIG_KEY_{n}": "credential.helper", f"GIT_CONFIG_VALUE_{n}": ""})
+    return env
+
+
+def _gh_config_dir(ctx, group: GroupConfig, number: int) -> Path:
+    """A fresh, empty GH_CONFIG_DIR for this run (outside the worktree, so it is never committed)."""
+    d = ctx.store.home / "runs" / group.name / f"{number}-gh"
+    shutil.rmtree(d, ignore_errors=True)
+    d.mkdir(parents=True)
+    return d
+
+
 def _launch(ctx, group: GroupConfig, adapter: Adapter, *, worktree: Path, brief: str, model: str, effort: str,
-            timeout: int, kind: str, number: int, when: datetime, env: dict | None) -> tuple[int, Path]:
+            timeout: int, kind: str, number: int, when: datetime, env: dict | None, identity: tuple[str, str]) -> tuple[int, Path]:
     (worktree / BRIEF_FILE).write_text(brief)
     (worktree / RESULT_FILE).unlink(missing_ok=True)
     log_path = _log_path(ctx, group, kind, number, when)
     spec = LaunchSpec(role="worker", model=model, effort=effort, cwd=worktree, prompt=WORKER_PROMPT, log_path=log_path,
-                      timeout_seconds=timeout, env=scrub_env(os.environ if env is None else env), max_turns=ctx.cfg.worker_max_turns)
-    proc = adapter.launch(spec)
+                      timeout_seconds=timeout, max_turns=ctx.cfg.worker_max_turns,
+                      env=worker_env(os.environ if env is None else env, identity=identity, gh_config_dir=_gh_config_dir(ctx, group, number)))
+    try:
+        proc = adapter.launch(spec)
+    except OSError as e:
+        raise DispatchError(f"cannot start {adapter.name}: {e}") from e
     return proc.pid, log_path
 
 
@@ -163,15 +198,13 @@ def _dispatch_build(ctx, board: Board, actor: Actor, number: int, adapter: Adapt
     branch = branch_name(number, issue.title)
     wt = _worktree(ctx, group, f"{number}-{slugify(issue.title)}")
     mode = "reused" if worktree_exists(ctx.repo_root, wt) else create_worktree(ctx.repo_root, wt, branch, ctx.cfg.default_branch)
-    name, email = git_identity(ctx, group)
-    set_identity(wt, name, email)
     exclude_paths(wt)
     brief = render_brief(role=worker, kind="build", group=group.name, model=issue.model or "", effort=issue.effort or "", issue=issue,
                          pr=None, plan_text=board.plan_text, repo_root=ctx.repo_root, worktree=wt, base_branch=ctx.cfg.default_branch)
     timeout = ctx.cfg.timeout_seconds(issue.size or "M")
     deadline = when + timedelta(seconds=timeout)
     pid, log_path = _launch(ctx, group, adp, worktree=wt, brief=brief, model=issue.model or "", effort=issue.effort or "",
-                            timeout=timeout, kind="build", number=number, when=when, env=env)
+                            timeout=timeout, kind="build", number=number, when=when, env=env, identity=git_identity(ctx, group))
     record = RunRecord(group=group.name, issue=number, kind="build", pr=None, pid=pid, started_at=_iso(when), worktree=str(wt),
                        log_path=str(log_path), model=issue.model or "", effort=issue.effort or "",
                        tier=ctx.models.tier_of(group.cli, issue.model or "") or "medium", milestone=board.milestone, alive=True,
@@ -219,8 +252,6 @@ def _dispatch_pr(ctx, board: Board, actor: Actor, number: int, kind: str, adapte
     if worktree_exists(ctx.repo_root, wt):
         remove_worktree(ctx.repo_root, wt)
     checkout_pr_head(ctx.repo_root, wt, pr.head_ref)
-    name, email = git_identity(ctx, group)
-    set_identity(wt, name, email)
     exclude_paths(wt)
     model, effort = group.orchestrator.model, group.orchestrator.effort
     brief = render_brief(role=worker, kind=kind, group=group.name, model=model, effort=effort, issue=None, pr=pr,
@@ -228,7 +259,7 @@ def _dispatch_pr(ctx, board: Board, actor: Actor, number: int, kind: str, adapte
     timeout = ctx.cfg.timeout_seconds("M")
     deadline = when + timedelta(seconds=timeout)
     pid, log_path = _launch(ctx, group, adp, worktree=wt, brief=brief, model=model, effort=effort, timeout=timeout, kind=kind,
-                            number=number, when=when, env=env)
+                            number=number, when=when, env=env, identity=git_identity(ctx, group))
     record = RunRecord(group=group.name, issue=number, kind=kind, pr=number, pid=pid, started_at=_iso(when), worktree=str(wt),
                        log_path=str(log_path), model=model, effort=effort, tier=ctx.models.tier_of(group.cli, model) or "medium",
                        milestone=board.milestone, alive=True, collected=False, deadline=_iso(deadline), branch=pr.head_ref)

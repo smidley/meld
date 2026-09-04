@@ -1,4 +1,4 @@
-"""Git plumbing for worktrees, identities, and pushes. The only module that runs git."""
+"""Git plumbing for worktrees and pushes. The only module that runs git."""
 from __future__ import annotations
 
 import os
@@ -61,11 +61,6 @@ def checkout_pr_head(repo_root: Path, path: Path, branch: str, run: RunFn = subp
     git(["fetch", "--quiet", "origin", branch], repo_root, run)
     path.parent.mkdir(parents=True, exist_ok=True)
     git(["worktree", "add", "--detach", str(path), f"origin/{branch}"], repo_root, run)
-
-
-def set_identity(path: Path, name: str, email: str, run: RunFn = subprocess.run) -> None:
-    git(["config", "user.name", name], path, run)
-    git(["config", "user.email", email], path, run)
 
 
 def head_sha(path: Path, run: RunFn = subprocess.run) -> str:

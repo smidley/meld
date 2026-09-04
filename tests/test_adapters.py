@@ -10,7 +10,8 @@ from tests.fakeadapter import FakeAdapter
 
 def test_scrub_env_drops_credentials_and_party_and_marks_worker():
     env = {"PATH": "/bin", "HOME": "/Users/x", "GH_TOKEN": "a", "GITHUB_TOKEN": "b", "MELD_TOKEN_CLAUDE": "c",
-           "MELD_TOKEN_CODEX": "d", "MELD_GROUP": "claude", "MELD_ROLE": "pm", "MELD_PUSH_TOKEN": "e", "MELD_HOME": "/h"}
+           "MELD_TOKEN_CODEX": "d", "MELD_GROUP": "claude", "MELD_ROLE": "pm", "MELD_PUSH_TOKEN": "e", "MELD_HOME": "/h",
+           "GH_ENTERPRISE_TOKEN": "f", "GITHUB_ENTERPRISE_TOKEN": "g"}
     out = scrub_env(env)
     assert out == {"PATH": "/bin", "HOME": "/Users/x", "MELD_HOME": "/h", "MELD_WORKER": "1"}
 

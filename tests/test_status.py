@@ -33,6 +33,15 @@ def test_load_context_requires_token_for_groups(project: Path):
         load_context(project / ".meld.toml", env=env, run=fake, adapter_for=no_skills)
 
 
+def test_load_context_refuses_to_run_inside_a_worker(project: Path):
+    fake = FakeGh()
+    fake.route("GET", "user", {"login": "empowerScott"})
+    for env in (env_for(project), env_for(project, group=None)):
+        with pytest.raises(ConfigError, match="meld may not be run by a worker"):
+            load_context(project / ".meld.toml", env={**env, "MELD_WORKER": "1"}, run=fake, adapter_for=no_skills)
+    assert fake.calls == []  # refused before touching GitHub
+
+
 def test_load_context_human_uses_viewer_login(project: Path):
     fake = FakeGh()
     fake.route("GET", "user", {"login": "empowerScott"})

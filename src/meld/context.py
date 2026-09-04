@@ -65,6 +65,9 @@ def find_config(start: Path) -> Path:
 def load_context(config_path: Path | None = None, env: Mapping[str, str] | None = None, run=subprocess.run,
                  cwd: Path | None = None, models: ModelRegistry | None = None, adapter_for: Callable[[str], Adapter] = get_adapter) -> Context:
     env = os.environ if env is None else env
+    if env.get("MELD_WORKER") == "1":
+        # Workers hold no token and no party; a worker that reaches for meld is trying to act as its group.
+        raise ConfigError("meld may not be run by a worker")
     path = config_path or find_config(cwd or Path.cwd())
     cfg = load_config(path)
     party = party_from_env(cfg, env)

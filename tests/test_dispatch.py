@@ -7,9 +7,11 @@ import pytest
 
 from meld.actions import Refused
 from meld.brief import BRIEF_FILE
-from meld.dispatch import DispatchError, dispatch, git_identity
+from meld.context import load_context
+from meld.dispatch import DispatchError, dispatch, git_identity, worker_env
 from meld.gitops import head_sha, worktree_exists
-from tests.fakeadapter import FakeAdapter
+from tests.conftest import env_for
+from tests.fakeadapter import FakeAdapter, no_skills
 from tests.gitfixtures import sh
 from tests.productfixtures import DONE_SCRIPT, R, claim_issue_11, fixture, make_product, wait_for_exit
 
@@ -34,6 +36,15 @@ def test_dispatch_build_happy_path(tmp_path):
     spec = adapter.launches[0]
     assert spec.role == "worker" and spec.model == "claude-sonnet-5" and spec.effort == "medium" and spec.cwd == wt and spec.timeout_seconds == 1200
     assert "MELD_TOKEN_CLAUDE" not in spec.env and "GH_TOKEN" not in spec.env and spec.env["MELD_WORKER"] == "1" and spec.max_turns == 200
+    # the worker commits as the group's bot through the environment, never through the shared clone config
+    assert spec.env["GIT_AUTHOR_NAME"] == spec.env["GIT_COMMITTER_NAME"] == "meld-claude-bot"
+    assert spec.env["GIT_AUTHOR_EMAIL"] == spec.env["GIT_COMMITTER_EMAIL"] == "7+meld-claude-bot@users.noreply.github.com"
+    # and it cannot borrow the human's GitHub or git credentials
+    gh_dir = Path(spec.env["GH_CONFIG_DIR"])
+    assert gh_dir == tmp_path / "home" / "runs" / "claude" / "11-gh" and gh_dir.is_dir() and not any(gh_dir.iterdir())
+    assert not gh_dir.is_relative_to(wt)
+    assert spec.env["GIT_TERMINAL_PROMPT"] == "0"
+    assert (spec.env["GIT_CONFIG_COUNT"], spec.env["GIT_CONFIG_KEY_0"], spec.env["GIT_CONFIG_VALUE_0"]) == ("1", "credential.helper", "")
     rec = json.loads((tmp_path / "home" / "runs" / "claude" / "11.json").read_text())
     assert rec["pid"] == out["pid"] and rec["deadline"] == "2026-09-03T12:20:00Z" and rec["branch"] == out["branch"] and rec["lease_comment"] == 310 and rec["kind"] == "build"
     lease = [c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/10/comments"][0]
@@ -86,6 +97,46 @@ def test_dispatch_refuses_worker_type_missing_from_roster(tmp_path):
     with pytest.raises(Refused) as ei:
         dispatch(ctx, 11, adapter=FakeAdapter(), now=NOW)
     assert "not in claude's roster" in ei.value.refusal.rule
+
+
+def codex_claims_13(fake, issues):
+    """Turn fixture #13 (in-review, assigned to meld-codex-bot) into codex's in-progress claim on a codex model."""
+    for i in issues:
+        if i["number"] == 13:
+            i["labels"] = [l for l in i["labels"] if not l["name"].startswith(("meld:in-review", "model:"))]
+            i["labels"] += [{"name": "meld:in-progress"}, {"name": "model:gpt-5.6-terra"}]
+    fake.route("GET", R + "issues", issues)
+    return issues
+
+
+def test_two_groups_commit_as_their_own_bots_without_touching_the_clone_config(tmp_path):
+    fake, claude, repo, origin = make_product(tmp_path)
+    codex_claims_13(fake, claim_issue_11(fake))
+    codex = load_context(repo / ".meld.toml", env=env_for(tmp_path, group="codex", role="pm"), run=fake, adapter_for=no_skills)
+    before = (sh(["git", "config", "user.name"], repo), sh(["git", "config", "user.email"], repo))
+    a = dispatch(claude, 11, adapter=FakeAdapter(script=DONE_SCRIPT), now=NOW)
+    b = dispatch(codex, 13, adapter=FakeAdapter(script=DONE_SCRIPT), now=NOW)
+    wait_for_exit(a["pid"])
+    wait_for_exit(b["pid"])
+    fmt = "--format=%an <%ae> / %cn <%ce>"
+    assert sh(["git", "log", "-1", fmt], Path(a["worktree"])) == ("meld-claude-bot <7+meld-claude-bot@users.noreply.github.com> / "
+                                                                  "meld-claude-bot <7+meld-claude-bot@users.noreply.github.com>")
+    assert sh(["git", "log", "-1", fmt], Path(b["worktree"])) == ("meld-codex-bot <8+meld-codex-bot@users.noreply.github.com> / "
+                                                                  "meld-codex-bot <8+meld-codex-bot@users.noreply.github.com>")
+    # a linked worktree shares the clone's .git/config: neither dispatch may have written an identity there
+    assert (sh(["git", "config", "user.name"], repo), sh(["git", "config", "user.email"], repo)) == before == ("Fixture", "fixture@example.com")
+    for wt in (a["worktree"], b["worktree"]):
+        assert sh(["git", "config", "--show-origin", "user.name"], Path(wt)).split("\t")[0].endswith("repo/.git/config")
+
+
+def test_worker_env_appends_to_an_existing_git_config_list(tmp_path):
+    base = {"PATH": "/bin", "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.autocrlf", "GIT_CONFIG_VALUE_0": "false", "GH_TOKEN": "x"}
+    env = worker_env(base, identity=("Bot", "1+bot@users.noreply.github.com"), gh_config_dir=tmp_path / "gh")
+    assert env["GIT_CONFIG_COUNT"] == "2" and (env["GIT_CONFIG_KEY_0"], env["GIT_CONFIG_VALUE_0"]) == ("core.autocrlf", "false")
+    assert (env["GIT_CONFIG_KEY_1"], env["GIT_CONFIG_VALUE_1"]) == ("credential.helper", "")
+    assert "GH_TOKEN" not in env and env["MELD_WORKER"] == "1" and env["GH_CONFIG_DIR"] == str(tmp_path / "gh")
+    bogus = worker_env({"GIT_CONFIG_COUNT": "many"}, identity=("Bot", "b@e"), gh_config_dir=tmp_path / "gh")
+    assert bogus["GIT_CONFIG_COUNT"] == "1" and bogus["GIT_CONFIG_KEY_0"] == "credential.helper"
 
 
 def test_git_identity_prefers_config_then_noreply(tmp_path):

@@ -17,7 +17,6 @@ from meld.gitops import (
     push_branch,
     remote_branch_exists,
     remove_worktree,
-    set_identity,
     slugify,
     worktree_exists,
 )
@@ -44,12 +43,11 @@ def test_worktree_lifecycle_new_push_existing(tmp_path):
     assert not worktree_exists(repo, wt)
     assert create_worktree(repo, wt, branch, "main") == "new"
     assert worktree_exists(repo, wt)
-    set_identity(wt, "Meld Claude", "1+meld-claude-bot@users.noreply.github.com")
     assert not is_dirty(wt)
     (wt / "health.py").write_text("OK = True\n")
     assert is_dirty(wt)
     sh(["git", "add", "health.py"], wt)
-    sh(["git", "commit", "-q", "-m", "feat: health"], wt)
+    sh(["git", "-c", "user.name=Meld Claude", "-c", "user.email=1+meld-claude-bot@users.noreply.github.com", "commit", "-q", "-m", "feat: health"], wt)
     assert sh(["git", "log", "-1", "--format=%an <%ae>"], wt) == "Meld Claude <1+meld-claude-bot@users.noreply.github.com>"
     ahead = commits_ahead(wt, "origin/main")
     assert ahead == [head_sha(wt)]

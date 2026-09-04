@@ -1,4 +1,4 @@
-"""moot command-line entry point."""
+"""meld command-line entry point."""
 from __future__ import annotations
 
 import json
@@ -7,15 +7,15 @@ from pathlib import Path
 
 import click
 
-from moot import __version__
-from moot.actions import Refused, claim as do_claim, release as do_release
-from moot.assemble import BoardError
-from moot.config import ConfigError
-from moot.context import Context, load_context
-from moot.github import GitHubError
-from moot.posting import PostError, post as do_post
-from moot.status import build_status
-from moot.waiting import wait_for_change
+from meld import __version__
+from meld.actions import Refused, claim as do_claim, release as do_release
+from meld.assemble import BoardError
+from meld.config import ConfigError
+from meld.context import Context, load_context
+from meld.github import GitHubError
+from meld.posting import PostError, post as do_post
+from meld.status import build_status
+from meld.waiting import wait_for_change
 
 RUN = subprocess.run  # tests monkeypatch this with a FakeGh
 
@@ -25,13 +25,13 @@ def emit(data: object, pretty: bool) -> None:
 
 
 @click.group()
-@click.version_option(__version__, prog_name="moot")
+@click.version_option(__version__, prog_name="meld")
 @click.option("--config", "config_path", type=click.Path(path_type=Path), default=None,
-              help="Path to .moot.toml (default: search upward from the current directory).")
+              help="Path to .meld.toml (default: search upward from the current directory).")
 @click.option("--pretty/--compact", default=True, help="Pretty-print JSON output.")
 @click.pass_context
 def main(ctx: click.Context, config_path: Path | None, pretty: bool) -> None:
-    """Moot: multi-AI coordination over a GitHub repo."""
+    """Meld: multi-AI coordination over a GitHub repo."""
     ctx.obj = {"config_path": config_path, "pretty": pretty}
 
 

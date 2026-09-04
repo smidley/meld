@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from typing import Sequence
 
-from moot.config import Config, Party
+from meld.config import Config, Party
 
 ORCHESTRATOR_VERBS = frozenset({
     "ROSTER", "ROSTER-CHANGE", "CONFIG", "PROPOSE", "AMEND", "AGREE", "DISSENT", "DRAFT", "ACK",

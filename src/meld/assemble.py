@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 
-from moot.board import (
+from meld.board import (
     COORDINATION_LABEL,
     Board,
     Issue,
@@ -14,13 +14,13 @@ from moot.board import (
     derive_open_challenges,
     derive_phase,
 )
-from moot.config import Config
-from moot.github import GitHub
-from moot.grammar import parse_comment
+from meld.config import Config
+from meld.github import GitHub
+from meld.grammar import parse_comment
 
-BRANCH_PREFIX = "moot/"
+BRANCH_PREFIX = "meld/"
 _CLOSES_RE = re.compile(r"\b(?:closes|fixes|resolves)\s+#(\d+)", re.IGNORECASE)
-_BRANCH_RE = re.compile(r"^moot/(\d+)-")
+_BRANCH_RE = re.compile(r"^meld/(\d+)-")
 
 
 class BoardError(RuntimeError):
@@ -38,7 +38,7 @@ def _locate_active(gh: GitHub) -> tuple[int, int, list[dict]]:
         for issue in raw_issues:
             if COORDINATION_LABEL in _labels(issue):
                 return m["number"], issue["number"], raw_issues
-    raise BoardError("no open milestone has an issue labelled moot:coordination; run `moot setup` first")
+    raise BoardError("no open milestone has an issue labelled meld:coordination; run `meld setup` first")
 
 
 def find_active_milestone(gh: GitHub) -> tuple[int, int]:
@@ -112,7 +112,7 @@ def build_board(gh: GitHub, cfg: Config, runs: dict[str, dict[int, RunRecord]], 
         raw_issues = gh.list_issues(milestone)
         coord = [i for i in raw_issues if COORDINATION_LABEL in _labels(i)]
         if not coord:
-            raise BoardError(f"milestone {milestone} has no issue labelled moot:coordination")
+            raise BoardError(f"milestone {milestone} has no issue labelled meld:coordination")
         coordination = coord[0]["number"]
     coord_raw_list = [i for i in raw_issues if i["number"] == coordination]
     if not coord_raw_list:

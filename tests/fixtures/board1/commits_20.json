@@ -1,4 +1,4 @@
 [
-  {"sha": "abc122", "author": {"login": "moot-codex-bot"}, "committer": {"login": "moot-codex-bot"}},
-  {"sha": "abc123", "author": {"login": "moot-codex-bot"}, "committer": {"login": "moot-codex-bot"}}
+  {"sha": "abc122", "author": {"login": "meld-codex-bot"}, "committer": {"login": "meld-codex-bot"}},
+  {"sha": "abc123", "author": {"login": "meld-codex-bot"}, "committer": {"login": "meld-codex-bot"}}
 ]

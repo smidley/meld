@@ -1,27 +1,27 @@
-# Moot Plan 1: Coordination Core — Implementation Plan
+# Meld Plan 1: Coordination Core — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the `moot` Python package's coordination core: config, GitHub access, the coordination-comment grammar and agreement protocol, the typed board, the rules engine that computes legal actions, and the `status`, `wait`, `claim`, `release`, and `post` verbs.
+**Goal:** Build the `meld` Python package's coordination core: config, GitHub access, the coordination-comment grammar and agreement protocol, the typed board, the rules engine that computes legal actions, and the `status`, `wait`, `claim`, `release`, and `post` verbs.
 
-**Architecture:** "LLM decides, Python enforces." `moot status` reads GitHub into a typed `Board`, `rules.py` computes which verbs each party may call, and every mutating verb re-checks legality and refuses with the violated rule. All GitHub access goes through `github.py`, a thin wrapper over the `gh` CLI with an ETag cache and injectable `run` function so every test runs without network. Everything durable lives in GitHub; `~/.moot` holds only disposable state.
+**Architecture:** "LLM decides, Python enforces." `meld status` reads GitHub into a typed `Board`, `rules.py` computes which verbs each party may call, and every mutating verb re-checks legality and refuses with the violated rule. All GitHub access goes through `github.py`, a thin wrapper over the `gh` CLI with an ETag cache and injectable `run` function so every test runs without network. Everything durable lives in GitHub; `~/.meld` holds only disposable state.
 
 **Tech Stack:** Python 3.12, `uv`, `click` (only runtime dependency), `pytest`, `gh` CLI (system dependency), stdlib `tomllib`, `dataclasses`, `subprocess`.
 
-**Spec:** `docs/superpowers/specs/2026-09-03-moot-design.md` — sections 4 to 8, 12, 17 to 19 are implemented here. Read the spec first; this plan argues from it.
+**Spec:** `docs/superpowers/specs/2026-09-03-meld-design.md` — sections 4 to 8, 12, 17 to 19 are implemented here. Read the spec first; this plan argues from it.
 
 ## Global Constraints
 
 - Python `>=3.12`; managed by `uv`; run everything as `uv run ...`.
 - Only runtime dependency is `click>=8.1`. Dev dependency: `pytest>=8`. No others without a spec change.
-- Every GitHub call goes through `moot.github.GitHub`. Nothing else shells out to `gh`.
-- Every invariant lives in `moot/rules.py` and has a test. Prompts never enforce.
-- No secrets in the repo, in issues, in briefs, or in `$MOOT_HOME`. Tokens come from environment variables named in `.moot.toml`.
-- Coordination comments start with `[<party>] <VERB> [<ref>] [<qualifier>]`. Only `moot` writes `[joint]`.
+- Every GitHub call goes through `meld.github.GitHub`. Nothing else shells out to `gh`.
+- Every invariant lives in `meld/rules.py` and has a test. Prompts never enforce.
+- No secrets in the repo, in issues, in briefs, or in `$MELD_HOME`. Tokens come from environment variables named in `.meld.toml`.
+- Coordination comments start with `[<party>] <VERB> [<ref>] [<qualifier>]`. Only `meld` writes `[joint]`.
 - Effective review quorum is `max(1, min(review.quorum, N-1))`.
 - Commit messages are plain conventional commits (`feat:`, `test:`, `chore:`). No AI attribution, no `Co-Authored-By` lines.
-- Work on branch `plan-1-coordination-core` in `~/Documents/moot`; never commit to `main` directly after Task 1's branch step.
-- Deviations from the spec introduced by this plan, all small: `models.toml` ships inside the package at `src/moot/data/models.toml` (spec drew it at repo root) so an installed package finds it; `.moot.toml` gains `[repo] name = "owner/name"`; the grammar gains a `[joint] WORKER` verb for agreed worker types and a `[human] RELEASE` verb for forced releases. Update the spec in Task 16.
+- Work on branch `plan-1-coordination-core` in `~/Documents/meld`; never commit to `main` directly after Task 1's branch step.
+- Deviations from the spec introduced by this plan, all small: `models.toml` ships inside the package at `src/meld/data/models.toml` (spec drew it at repo root) so an installed package finds it; `.meld.toml` gains `[repo] name = "owner/name"`; the grammar gains a `[joint] WORKER` verb for agreed worker types and a `[human] RELEASE` verb for forced releases. Update the spec in Task 16.
 
 ---
 
@@ -29,8 +29,8 @@
 
 **Files:**
 - Create: `pyproject.toml`
-- Create: `src/moot/__init__.py`
-- Create: `src/moot/cli.py`
+- Create: `src/meld/__init__.py`
+- Create: `src/meld/cli.py`
 - Create: `tests/__init__.py`
 - Create: `tests/test_cli.py`
 - Create: `Taskfile.yml`
@@ -38,33 +38,33 @@
 - Modify: `.gitignore`
 
 **Interfaces:**
-- Produces: `moot.cli.main` (a `click.Group`), `moot.__version__ == "0.1.0"`.
+- Produces: `meld.cli.main` (a `click.Group`), `meld.__version__ == "0.1.0"`.
 
 - [ ] **Step 1: Create the branch**
 
 ```bash
-cd ~/Documents/moot && git checkout -b plan-1-coordination-core
+cd ~/Documents/meld && git checkout -b plan-1-coordination-core
 ```
 
 - [ ] **Step 2: Write `pyproject.toml`**
 
 ```toml
 [project]
-name = "moot"
+name = "meld"
 version = "0.1.0"
 description = "Multi-AI coordination: N AI coding systems, one GitHub repo, one human."
 requires-python = ">=3.12"
 dependencies = ["click>=8.1"]
 
 [project.scripts]
-moot = "moot.cli:main"
+meld = "meld.cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/moot"]
+packages = ["src/meld"]
 
 [dependency-groups]
 dev = ["pytest>=8"]
@@ -75,7 +75,7 @@ testpaths = ["tests"]
 
 - [ ] **Step 3: Write the package init and the failing CLI test**
 
-`src/moot/__init__.py`:
+`src/meld/__init__.py`:
 
 ```python
 __version__ = "0.1.0"
@@ -88,7 +88,7 @@ __version__ = "0.1.0"
 ```python
 from click.testing import CliRunner
 
-from moot.cli import main
+from meld.cli import main
 
 
 def test_version_flag_prints_version():
@@ -99,26 +99,26 @@ def test_version_flag_prints_version():
 
 - [ ] **Step 4: Run the test to verify it fails**
 
-Run: `cd ~/Documents/moot && uv sync && uv run pytest tests/test_cli.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'moot.cli'`
+Run: `cd ~/Documents/meld && uv sync && uv run pytest tests/test_cli.py -v`
+Expected: FAIL with `ModuleNotFoundError: No module named 'meld.cli'`
 
 - [ ] **Step 5: Write the minimal CLI**
 
-`src/moot/cli.py`:
+`src/meld/cli.py`:
 
 ```python
-"""moot command-line entry point. Verbs are added in later tasks."""
+"""meld command-line entry point. Verbs are added in later tasks."""
 from __future__ import annotations
 
 import click
 
-from moot import __version__
+from meld import __version__
 
 
 @click.group()
-@click.version_option(__version__, prog_name="moot")
+@click.version_option(__version__, prog_name="meld")
 def main() -> None:
-    """Moot: multi-AI coordination over a GitHub repo."""
+    """Meld: multi-AI coordination over a GitHub repo."""
 
 
 if __name__ == "__main__":
@@ -146,28 +146,28 @@ tasks:
   test:smoke:
     desc: Run opt-in smoke tests against real CLIs (Plan 2)
     cmds:
-      - MOOT_SMOKE=1 uv run pytest tests/smoke -q
+      - MELD_SMOKE=1 uv run pytest tests/smoke -q
 
   status:
-    desc: Print the board for the current party (MOOT_GROUP / MOOT_ROLE from env)
+    desc: Print the board for the current party (MELD_GROUP / MELD_ROLE from env)
     cmds:
-      - uv run moot status
+      - uv run meld status
 ```
 
 `README.md`:
 
 ```markdown
-# Moot
+# Meld
 
 Multi-AI coordination: N independent AI coding systems (Claude Code, Codex CLI, ...) work on one GitHub repo as separate groups, negotiate on a coordination issue, claim work via issue assignment, review and modify each other's PRs, and answer to one human.
 
-Design: `docs/superpowers/specs/2026-09-03-moot-design.md`.
+Design: `docs/superpowers/specs/2026-09-03-meld-design.md`.
 
 ## Develop
 
     uv sync
     uv run pytest
-    uv run moot --help
+    uv run meld --help
 ```
 
 `.gitignore` (replace contents):
@@ -178,14 +178,14 @@ __pycache__/
 .venv/
 .pytest_cache/
 dist/
-.moot-home/
+.meld-home/
 ```
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add pyproject.toml uv.lock src/moot/__init__.py src/moot/cli.py tests/__init__.py tests/test_cli.py Taskfile.yml README.md .gitignore
-git commit -m "chore: scaffold moot package with click CLI and pytest"
+git add pyproject.toml uv.lock src/meld/__init__.py src/meld/cli.py tests/__init__.py tests/test_cli.py Taskfile.yml README.md .gitignore
+git commit -m "chore: scaffold meld package with click CLI and pytest"
 ```
 
 ---
@@ -193,7 +193,7 @@ git commit -m "chore: scaffold moot package with click CLI and pytest"
 ### Task 2: Config loading and Party
 
 **Files:**
-- Create: `src/moot/config.py`
+- Create: `src/meld/config.py`
 - Create: `tests/test_config.py`
 
 **Interfaces:**
@@ -215,7 +215,7 @@ from pathlib import Path
 
 import pytest
 
-from moot.config import Config, ConfigError, Party, load_config, party_from_env
+from meld.config import Config, ConfigError, Party, load_config, party_from_env
 
 MINIMAL = """
 [repo]
@@ -226,8 +226,8 @@ accounts = ["empowerScott"]
 
 [groups.claude]
 cli = "claude"
-bot = "moot-claude-bot"
-token_env = "MOOT_TOKEN_CLAUDE"
+bot = "meld-claude-bot"
+token_env = "MELD_TOKEN_CLAUDE"
 [groups.claude.orchestrator]
 model = "claude-opus-5"
 effort = "high"
@@ -237,8 +237,8 @@ effort = "medium"
 
 [groups.codex]
 cli = "codex"
-bot = "moot-codex-bot"
-token_env = "MOOT_TOKEN_CODEX"
+bot = "meld-codex-bot"
+token_env = "MELD_TOKEN_CODEX"
 [groups.codex.orchestrator]
 model = "gpt-x"
 effort = "high"
@@ -249,7 +249,7 @@ effort = "medium"
 
 
 def write(tmp_path: Path, text: str) -> Path:
-    p = tmp_path / ".moot.toml"
+    p = tmp_path / ".meld.toml"
     p.write_text(text)
     return p
 
@@ -261,7 +261,7 @@ def test_loads_groups_and_defaults(tmp_path):
     assert cfg.private is True
     assert cfg.humans == ("empowerScott",)
     assert cfg.group_names == ("claude", "codex")
-    assert cfg.groups["claude"].bot == "moot-claude-bot"
+    assert cfg.groups["claude"].bot == "meld-claude-bot"
     assert cfg.groups["claude"].concurrency == 8
     assert cfg.groups["claude"].review_concurrency == 4
     assert cfg.groups["claude"].orchestrator.model == "claude-opus-5"
@@ -281,8 +281,8 @@ def test_effective_quorum_is_min_of_quorum_and_n_minus_one(tmp_path):
     three = MINIMAL + """
 [groups.gemini]
 cli = "gemini"
-bot = "moot-gemini-bot"
-token_env = "MOOT_TOKEN_GEMINI"
+bot = "meld-gemini-bot"
+token_env = "MELD_TOKEN_GEMINI"
 [groups.gemini.orchestrator]
 model = "g"
 effort = "high"
@@ -296,10 +296,10 @@ effort = "medium"
 
 def test_group_for_bot_and_is_human(tmp_path):
     cfg = load_config(write(tmp_path, MINIMAL))
-    assert cfg.group_for_bot("moot-codex-bot").name == "codex"
+    assert cfg.group_for_bot("meld-codex-bot").name == "codex"
     assert cfg.group_for_bot("nobody") is None
     assert cfg.is_human("empowerScott")
-    assert not cfg.is_human("moot-claude-bot")
+    assert not cfg.is_human("meld-claude-bot")
 
 
 def test_missing_repo_name_is_an_error(tmp_path):
@@ -309,7 +309,7 @@ def test_missing_repo_name_is_an_error(tmp_path):
 
 def test_group_missing_bot_is_an_error(tmp_path):
     with pytest.raises(ConfigError, match="groups.codex.bot"):
-        load_config(write(tmp_path, MINIMAL.replace('bot = "moot-codex-bot"', "")))
+        load_config(write(tmp_path, MINIMAL.replace('bot = "meld-codex-bot"', "")))
 
 
 def test_party_labels_and_parse(tmp_path):
@@ -328,23 +328,23 @@ def test_party_labels_and_parse(tmp_path):
 def test_party_from_env(tmp_path):
     cfg = load_config(write(tmp_path, MINIMAL))
     assert party_from_env(cfg, {}) == Party("human")
-    assert party_from_env(cfg, {"MOOT_GROUP": "claude"}) == Party("group", "claude")
-    assert party_from_env(cfg, {"MOOT_GROUP": "claude", "MOOT_ROLE": "pm"}) == Party("pm", "claude")
+    assert party_from_env(cfg, {"MELD_GROUP": "claude"}) == Party("group", "claude")
+    assert party_from_env(cfg, {"MELD_GROUP": "claude", "MELD_ROLE": "pm"}) == Party("pm", "claude")
     with pytest.raises(ConfigError):
-        party_from_env(cfg, {"MOOT_GROUP": "nope"})
+        party_from_env(cfg, {"MELD_GROUP": "nope"})
     with pytest.raises(ConfigError):
-        party_from_env(cfg, {"MOOT_GROUP": "claude", "MOOT_ROLE": "worker"})
+        party_from_env(cfg, {"MELD_GROUP": "claude", "MELD_ROLE": "worker"})
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_config.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'moot.config'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'meld.config'`
 
-- [ ] **Step 3: Write `src/moot/config.py`**
+- [ ] **Step 3: Write `src/meld/config.py`**
 
 ```python
-"""Load .moot.toml into a typed Config, and identify the calling Party."""
+"""Load .meld.toml into a typed Config, and identify the calling Party."""
 from __future__ import annotations
 
 import tomllib
@@ -523,17 +523,17 @@ class Party:
 
 
 def party_from_env(cfg: Config, env: Mapping[str, str]) -> Party:
-    group = env.get("MOOT_GROUP")
+    group = env.get("MELD_GROUP")
     if not group:
         return Party("human")
     if group not in cfg.groups:
-        raise ConfigError(f"MOOT_GROUP={group!r} is not a configured group")
-    role = env.get("MOOT_ROLE", "orchestrator")
+        raise ConfigError(f"MELD_GROUP={group!r} is not a configured group")
+    role = env.get("MELD_ROLE", "orchestrator")
     if role == "orchestrator":
         return Party("group", group)
     if role == "pm":
         return Party("pm", group)
-    raise ConfigError(f"MOOT_ROLE={role!r} must be 'orchestrator' or 'pm'")
+    raise ConfigError(f"MELD_ROLE={role!r} must be 'orchestrator' or 'pm'")
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -544,8 +544,8 @@ Expected: PASS (7 tests)
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/moot/config.py tests/test_config.py
-git commit -m "feat: load .moot.toml into Config and identify the calling Party"
+git add src/meld/config.py tests/test_config.py
+git commit -m "feat: load .meld.toml into Config and identify the calling Party"
 ```
 
 ---
@@ -553,9 +553,9 @@ git commit -m "feat: load .moot.toml into Config and identify the calling Party"
 ### Task 3: Model registry and size compatibility
 
 **Files:**
-- Create: `src/moot/data/models.toml`
-- Create: `src/moot/data/__init__.py` (empty, so hatch packages the data directory)
-- Create: `src/moot/models.py`
+- Create: `src/meld/data/models.toml`
+- Create: `src/meld/data/__init__.py` (empty, so hatch packages the data directory)
+- Create: `src/meld/models.py`
 - Create: `tests/test_models.py`
 
 **Interfaces:**
@@ -572,7 +572,7 @@ git commit -m "feat: load .moot.toml into Config and identify the calling Party"
 ```python
 from pathlib import Path
 
-from moot.models import ModelRegistry, size_fits
+from meld.models import ModelRegistry, size_fits
 
 SAMPLE = """
 [claude.claude-opus-5]
@@ -632,11 +632,11 @@ def test_packaged_registry_loads_and_has_claude_models():
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_models.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'moot.models'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'meld.models'`
 
 - [ ] **Step 3: Write the packaged `models.toml`**
 
-Create `src/moot/data/__init__.py` (empty). Then `src/moot/data/models.toml`. The Claude entries below are current model IDs. For Codex, **do not invent identifiers**: run `codex --help` and `codex exec --help` on this machine, check `~/.codex/config.toml` for a configured `model`, and consult the Codex docs for the current model list and reasoning-effort values. Enter exactly what the installed CLI accepts, at least one model, and mark tiers by cost.
+Create `src/meld/data/__init__.py` (empty). Then `src/meld/data/models.toml`. The Claude entries below are current model IDs. For Codex, **do not invent identifiers**: run `codex --help` and `codex exec --help` on this machine, check `~/.codex/config.toml` for a configured `model`, and consult the Codex docs for the current model list and reasoning-effort values. Enter exactly what the installed CLI accepts, at least one model, and mark tiers by cost.
 
 ```toml
 # Per adapter, per model. context_class and tier are small|medium|large.
@@ -665,7 +665,7 @@ tier = "small"
 # tier = "medium"
 ```
 
-- [ ] **Step 4: Write `src/moot/models.py`**
+- [ ] **Step 4: Write `src/meld/models.py`**
 
 ```python
 """Model registry: which models and efforts each adapter accepts, and size fit."""
@@ -702,7 +702,7 @@ class ModelRegistry:
     @classmethod
     def load(cls, path: Path | None = None) -> "ModelRegistry":
         if path is None:
-            text = resources.files("moot.data").joinpath("models.toml").read_text()
+            text = resources.files("meld.data").joinpath("models.toml").read_text()
         else:
             text = path.read_text()
         raw = tomllib.loads(text)
@@ -746,7 +746,7 @@ Expected: PASS (4 tests). If the last test fails on the codex assertion, you hav
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/moot/data/__init__.py src/moot/data/models.toml src/moot/models.py tests/test_models.py
+git add src/meld/data/__init__.py src/meld/data/models.toml src/meld/models.py tests/test_models.py
 git commit -m "feat: model registry with per-adapter efforts, tiers, and size fit"
 ```
 
@@ -755,7 +755,7 @@ git commit -m "feat: model registry with per-adapter efforts, tiers, and size fi
 ### Task 4: GitHub wrapper over `gh api`
 
 **Files:**
-- Create: `src/moot/github.py`
+- Create: `src/meld/github.py`
 - Create: `tests/fakegh.py`
 - Create: `tests/test_github.py`
 
@@ -844,7 +844,7 @@ class FakeGh:
 ```python
 import pytest
 
-from moot.github import GitHub, GitHubError, RateLimited
+from meld.github import GitHub, GitHubError, RateLimited
 from tests.fakegh import FakeGh
 
 
@@ -899,21 +899,21 @@ def test_mutations_send_json_bodies(tmp_path):
     fake, gh = make(tmp_path)
     fake.route("POST", "repos/acme/widgets/issues/7/assignees", {"assignees": [{"login": "b"}]})
     fake.route("DELETE", "repos/acme/widgets/issues/7/assignees", {"assignees": []})
-    fake.route("POST", "repos/acme/widgets/issues/7/labels", [{"name": "moot:ready"}])
+    fake.route("POST", "repos/acme/widgets/issues/7/labels", [{"name": "meld:ready"}])
     fake.route("POST", "repos/acme/widgets/issues/7/comments", {"id": 99, "html_url": "u"})
     gh.add_assignees(7, ["b"])
     gh.remove_assignees(7, ["b"])
-    gh.add_labels(7, ["moot:ready"])
+    gh.add_labels(7, ["meld:ready"])
     assert gh.create_comment(7, "hi")["id"] == 99
     assert fake.calls[0].body == {"assignees": ["b"]}
     assert fake.calls[1].method == "DELETE"
-    assert fake.calls[2].body == {"labels": ["moot:ready"]}
+    assert fake.calls[2].body == {"labels": ["meld:ready"]}
     assert fake.calls[3].body == {"body": "hi"}
 
 
 def test_remove_label_ignores_404(tmp_path):
     fake, gh = make(tmp_path)
-    gh.remove_label(7, "moot:ready")  # no route -> 404 -> swallowed
+    gh.remove_label(7, "meld:ready")  # no route -> 404 -> swallowed
 
 
 def test_http_error_raises(tmp_path):
@@ -940,9 +940,9 @@ def test_viewer_login(tmp_path):
 - [ ] **Step 3: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_github.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'moot.github'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'meld.github'`
 
-- [ ] **Step 4: Write `src/moot/github.py`**
+- [ ] **Step 4: Write `src/meld/github.py`**
 
 ```python
 """Thin wrapper over `gh api`. The only module that talks to GitHub."""
@@ -1132,7 +1132,7 @@ Expected: PASS (10 tests)
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/moot/github.py tests/fakegh.py tests/test_github.py
+git add src/meld/github.py tests/fakegh.py tests/test_github.py
 git commit -m "feat: gh api wrapper with etag cache, pagination, and rate-limit detection"
 ```
 
@@ -1141,11 +1141,11 @@ git commit -m "feat: gh api wrapper with etag cache, pagination, and rate-limit 
 ### Task 5: Grammar — headers, authorization, validation, compose
 
 **Files:**
-- Create: `src/moot/grammar.py`
+- Create: `src/meld/grammar.py`
 - Create: `tests/test_grammar.py`
 
 **Interfaces:**
-- Consumes: `Config`, `Party` from `moot.config`.
+- Consumes: `Config`, `Party` from `meld.config`.
 - Produces:
   - `@dataclass(frozen=True) Header(party: Party, verb: str, ref: str | None, qualifier: str | None)`
   - `@dataclass(frozen=True) ParsedComment(id: int, author: str, created_at: str, body: str, header: Header | None, authorized: bool, errors: tuple[str, ...])` with `.text -> str` (body minus the header line, stripped) and `.ok -> bool` (`header is not None and authorized and not errors`)
@@ -1163,8 +1163,8 @@ git commit -m "feat: gh api wrapper with etag cache, pagination, and rate-limit 
 `tests/test_grammar.py`:
 
 ```python
-from moot.config import Config, Party
-from moot.grammar import (
+from meld.config import Config, Party
+from meld.grammar import (
     Header,
     compose,
     has_verified_by,
@@ -1178,9 +1178,9 @@ CFG = Config.from_dict({
     "repo": {"name": "acme/widgets"},
     "humans": {"accounts": ["empowerScott"]},
     "groups": {
-        "claude": {"cli": "claude", "bot": "moot-claude-bot", "token_env": "T1",
+        "claude": {"cli": "claude", "bot": "meld-claude-bot", "token_env": "T1",
                    "orchestrator": {"model": "m", "effort": "high"}, "pm": {"model": "m", "effort": "medium"}},
-        "codex": {"cli": "codex", "bot": "moot-codex-bot", "token_env": "T2",
+        "codex": {"cli": "codex", "bot": "meld-codex-bot", "token_env": "T2",
                   "orchestrator": {"model": "m", "effort": "high"}, "pm": {"model": "m", "effort": "medium"}},
     },
 })
@@ -1216,17 +1216,17 @@ def test_has_verified_by_is_case_insensitive_and_needs_content():
 
 
 def test_authorization():
-    assert is_authorized("moot-claude-bot", Header(Party("group", "claude"), "ROSTER", None, None), CFG)
-    assert is_authorized("moot-claude-bot", Header(Party("pm", "claude"), "STATUS", None, None), CFG)
-    assert not is_authorized("moot-codex-bot", Header(Party("group", "claude"), "ROSTER", None, None), CFG)
+    assert is_authorized("meld-claude-bot", Header(Party("group", "claude"), "ROSTER", None, None), CFG)
+    assert is_authorized("meld-claude-bot", Header(Party("pm", "claude"), "STATUS", None, None), CFG)
+    assert not is_authorized("meld-codex-bot", Header(Party("group", "claude"), "ROSTER", None, None), CFG)
     assert is_authorized("empowerScott", Header(Party("human"), "HALT", None, None), CFG)
     assert not is_authorized("randouser", Header(Party("human"), "HALT", None, None), CFG)
-    assert is_authorized("moot-codex-bot", Header(Party("joint"), "PLAN", None, None), CFG)
+    assert is_authorized("meld-codex-bot", Header(Party("joint"), "PLAN", None, None), CFG)
     assert not is_authorized("empowerScott", Header(Party("joint"), "PLAN", None, None), CFG)
 
 
 def test_parse_comment_end_to_end():
-    raw = {"id": 5, "user": {"login": "moot-claude-bot"}, "created_at": "2026-09-03T10:00:00Z",
+    raw = {"id": 5, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T10:00:00Z",
            "body": "[claude] PROPOSE plan-1\n\nSplit into 4 issues."}
     c = parse_comment(raw, CFG)
     assert c.ok
@@ -1250,9 +1250,9 @@ def test_compose_round_trips():
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_grammar.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'moot.grammar'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'meld.grammar'`
 
-- [ ] **Step 3: Write `src/moot/grammar.py`**
+- [ ] **Step 3: Write `src/meld/grammar.py`**
 
 ```python
 """Coordination-comment grammar: `[<party>] <VERB> [<ref>] [<qualifier>]`."""
@@ -1261,7 +1261,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from moot.config import Config, Party
+from meld.config import Config, Party
 
 ORCHESTRATOR_VERBS = frozenset({
     "ROSTER", "ROSTER-CHANGE", "CONFIG", "PROPOSE", "AMEND", "AGREE", "DISSENT", "DRAFT", "ACK",
@@ -1393,7 +1393,7 @@ Expected: PASS (7 tests)
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/moot/grammar.py tests/test_grammar.py
+git add src/meld/grammar.py tests/test_grammar.py
 git commit -m "feat: coordination header grammar with authorization and validation"
 ```
 
@@ -1402,11 +1402,11 @@ git commit -m "feat: coordination header grammar with authorization and validati
 ### Task 6: Grammar — agreement protocol state
 
 **Files:**
-- Modify: `src/moot/grammar.py` (append)
+- Modify: `src/meld/grammar.py` (append)
 - Create: `tests/test_agreement.py`
 
 **Interfaces:**
-- Produces (in `moot.grammar`):
+- Produces (in `meld.grammar`):
   - `@dataclass(frozen=True) Agreement(ref: str, text: str | None, proposer: str | None, agreed: frozenset[str], dissent: dict[str, str], rounds: int, status: str, joint_posted: bool)` where `status in {"none", "open", "agreed", "majority", "disagree"}` and `.can_amend(cfg) -> bool`
   - `agreement_for(comments: Sequence[ParsedComment], ref: str, cfg: Config) -> Agreement`
 
@@ -1417,17 +1417,17 @@ Semantics (from spec section 7): `PROPOSE`/`DRAFT` by group G sets the text, pro
 `tests/test_agreement.py`:
 
 ```python
-from moot.config import Config
-from moot.grammar import agreement_for, parse_comment
+from meld.config import Config
+from meld.grammar import agreement_for, parse_comment
 
 CFG2 = Config.from_dict({
     "repo": {"name": "acme/widgets"},
     "humans": {"accounts": ["empowerScott"]},
     "agreement": {"amend_cap": 2},
     "groups": {
-        "claude": {"cli": "claude", "bot": "moot-claude-bot", "token_env": "T1",
+        "claude": {"cli": "claude", "bot": "meld-claude-bot", "token_env": "T1",
                    "orchestrator": {"model": "m", "effort": "high"}, "pm": {"model": "m", "effort": "medium"}},
-        "codex": {"cli": "codex", "bot": "moot-codex-bot", "token_env": "T2",
+        "codex": {"cli": "codex", "bot": "meld-codex-bot", "token_env": "T2",
                   "orchestrator": {"model": "m", "effort": "high"}, "pm": {"model": "m", "effort": "medium"}},
     },
 })
@@ -1436,16 +1436,16 @@ CFG3 = Config.from_dict({
     "humans": {"accounts": ["empowerScott"]},
     "agreement": {"amend_cap": 2},
     "groups": {
-        "claude": {"cli": "claude", "bot": "moot-claude-bot", "token_env": "T1",
+        "claude": {"cli": "claude", "bot": "meld-claude-bot", "token_env": "T1",
                    "orchestrator": {"model": "m", "effort": "high"}, "pm": {"model": "m", "effort": "medium"}},
-        "codex": {"cli": "codex", "bot": "moot-codex-bot", "token_env": "T2",
+        "codex": {"cli": "codex", "bot": "meld-codex-bot", "token_env": "T2",
                   "orchestrator": {"model": "m", "effort": "high"}, "pm": {"model": "m", "effort": "medium"}},
-        "gemini": {"cli": "gemini", "bot": "moot-gemini-bot", "token_env": "T3",
+        "gemini": {"cli": "gemini", "bot": "meld-gemini-bot", "token_env": "T3",
                    "orchestrator": {"model": "m", "effort": "high"}, "pm": {"model": "m", "effort": "medium"}},
     },
 })
 
-BOTS = {"claude": "moot-claude-bot", "codex": "moot-codex-bot", "gemini": "moot-gemini-bot"}
+BOTS = {"claude": "meld-claude-bot", "codex": "meld-codex-bot", "gemini": "meld-gemini-bot"}
 
 
 def c(cfg, i, group, verb, ref, text="body", joint=False, author=None):
@@ -1499,7 +1499,7 @@ def test_unauthorized_and_other_ref_comments_are_ignored():
 
 def test_draft_behaves_like_propose_and_joint_marks_posted():
     cs = [c(CFG2, 1, "codex", "DRAFT", "ask-1", "answer"), c(CFG2, 2, "claude", "AGREE", "ask-1"),
-          c(CFG2, 3, "codex", "ANSWER", "ask-1", "answer\n\nverified-by: moot status", joint=True)]
+          c(CFG2, 3, "codex", "ANSWER", "ask-1", "answer\n\nverified-by: meld status", joint=True)]
     a = agreement_for(cs, "ask-1", CFG2)
     assert a.status == "agreed" and a.joint_posted
 ```
@@ -1509,7 +1509,7 @@ def test_draft_behaves_like_propose_and_joint_marks_posted():
 Run: `uv run pytest tests/test_agreement.py -v`
 Expected: FAIL with `ImportError: cannot import name 'agreement_for'`
 
-- [ ] **Step 3: Append to `src/moot/grammar.py`**
+- [ ] **Step 3: Append to `src/meld/grammar.py`**
 
 ```python
 from typing import Sequence  # add to the imports at the top of the file
@@ -1580,7 +1580,7 @@ Expected: PASS (14 tests)
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/moot/grammar.py tests/test_agreement.py
+git add src/meld/grammar.py tests/test_agreement.py
 git commit -m "feat: agreement protocol state (propose/amend/agree/dissent) with quorum"
 ```
 
@@ -1589,21 +1589,21 @@ git commit -m "feat: agreement protocol state (propose/amend/agree/dissent) with
 ### Task 7: Board model (pure data)
 
 **Files:**
-- Create: `src/moot/board.py`
+- Create: `src/meld/board.py`
 - Create: `tests/factories.py`
 - Create: `tests/test_board.py`
 
 **Interfaces:**
-- Consumes: `Config` (`moot.config`), `ParsedComment` (`moot.grammar`).
-- Produces (in `moot.board`):
-  - `STATUS_LABELS: dict[str, str]` mapping `moot:*` labels to status names `planned|ready|in_progress|in_review|blocked|needs_human`
+- Consumes: `Config` (`meld.config`), `ParsedComment` (`meld.grammar`).
+- Produces (in `meld.board`):
+  - `STATUS_LABELS: dict[str, str]` mapping `meld:*` labels to status names `planned|ready|in_progress|in_review|blocked|needs_human`
   - `@dataclass(frozen=True) Issue(number, title, body, labels: frozenset[str], assignees: tuple[str, ...], state, milestone: int | None, created_at: str = "", updated_at: str = "")` with `.status -> str` (adds `closed`, `unlabeled`), `.label_value(prefix) -> str | None`, `.worker`, `.model`, `.effort`, `.size`, `.challenged`
   - `@dataclass(frozen=True) Review(author, state, commit_id, submitted_at: str = "")`
   - `@dataclass(frozen=True) PullRequest(number, title, body, head_ref, head_sha, author, head_committer, issue_number: int | None, reviews: tuple[Review, ...], checks: str, labels: frozenset[str], state, merged: bool)` with `.latest_reviews() -> dict[str, Review]`, `.approvals_on_head() -> frozenset[str]`, `.changes_requested_on_head() -> frozenset[str]`, `.changes_requested_total() -> int`, `.challenged`
   - `@dataclass(frozen=True) RunRecord(group, issue, kind, pr: int | None, pid, started_at, worktree, log_path, model, effort, tier, milestone, alive: bool, collected: bool)` with `.finished -> bool` (exited and not yet collected)
   - `@dataclass(frozen=True) Board(repo, milestone, coordination_issue, phase, halted, issues: dict[int, Issue], pulls: dict[int, PullRequest], comments: tuple[ParsedComment, ...], runs: dict[str, dict[int, RunRecord]], spend: dict[str, dict[str, int]], open_challenges: frozenset[str], ignored_comments: int)` with `.in_progress_count(bot) -> int`, `.pr_for_issue(n) -> PullRequest | None`, `.run_for(group, issue) -> RunRecord | None`, `.is_challenged(ref) -> bool`
   - `derive_phase(coordination_labels: frozenset[str]) -> str`, `derive_halted(comments) -> bool`, `derive_open_challenges(comments) -> frozenset[str]`
-- `tests/factories.py` produces: `CFG2` (two groups, bots `moot-claude-bot`/`moot-codex-bot`, human `empowerScott`), `CFG3` (adds `gemini`/`moot-gemini-bot`), `mk_issue(...)`, `mk_pr(...)`, `mk_comment(cfg, id, author, body, created_at=...)`, `mk_board(cfg, ...)`, `mk_run(...)`.
+- `tests/factories.py` produces: `CFG2` (two groups, bots `meld-claude-bot`/`meld-codex-bot`, human `empowerScott`), `CFG3` (adds `gemini`/`meld-gemini-bot`), `mk_issue(...)`, `mk_pr(...)`, `mk_comment(cfg, id, author, body, created_at=...)`, `mk_board(cfg, ...)`, `mk_run(...)`.
 
 - [ ] **Step 1: Write the factories**
 
@@ -1613,9 +1613,9 @@ git commit -m "feat: agreement protocol state (propose/amend/agree/dissent) with
 """Builders for pure board objects used across rules/status tests."""
 from __future__ import annotations
 
-from moot.board import Board, Issue, PullRequest, Review, RunRecord
-from moot.config import Config
-from moot.grammar import ParsedComment, parse_comment
+from meld.board import Board, Issue, PullRequest, Review, RunRecord
+from meld.config import Config
+from meld.grammar import ParsedComment, parse_comment
 
 
 def _group(cli, bot, token):
@@ -1627,18 +1627,18 @@ def _group(cli, bot, token):
 CFG2 = Config.from_dict({
     "repo": {"name": "acme/widgets"},
     "humans": {"accounts": ["empowerScott"]},
-    "groups": {"claude": _group("claude", "moot-claude-bot", "T1"), "codex": _group("codex", "moot-codex-bot", "T2")},
+    "groups": {"claude": _group("claude", "meld-claude-bot", "T1"), "codex": _group("codex", "meld-codex-bot", "T2")},
 })
 
 CFG3 = Config.from_dict({
     "repo": {"name": "acme/widgets"},
     "humans": {"accounts": ["empowerScott"]},
-    "groups": {"claude": _group("claude", "moot-claude-bot", "T1"), "codex": _group("codex", "moot-codex-bot", "T2"),
-               "gemini": _group("gemini", "moot-gemini-bot", "T3")},
+    "groups": {"claude": _group("claude", "meld-claude-bot", "T1"), "codex": _group("codex", "meld-codex-bot", "T2"),
+               "gemini": _group("gemini", "meld-gemini-bot", "T3")},
 })
 
-STATUS_TO_LABEL = {"planned": "moot:planned", "ready": "moot:ready", "in_progress": "moot:in-progress",
-                   "in_review": "moot:in-review", "blocked": "moot:blocked", "needs_human": "moot:needs-human"}
+STATUS_TO_LABEL = {"planned": "meld:planned", "ready": "meld:ready", "in_progress": "meld:in-progress",
+                   "in_review": "meld:in-review", "blocked": "meld:blocked", "needs_human": "meld:needs-human"}
 
 
 def mk_issue(number: int, status: str = "ready", worker: str | None = "backend", model: str | None = "claude-sonnet-5",
@@ -1656,7 +1656,7 @@ def mk_issue(number: int, status: str = "ready", worker: str | None = "backend",
                  updated_at=updated_at)
 
 
-def mk_pr(number: int, issue: int, head_sha: str = "abc123", committer: str = "moot-claude-bot",
+def mk_pr(number: int, issue: int, head_sha: str = "abc123", committer: str = "meld-claude-bot",
           author: str | None = None, approvals: tuple[str, ...] = (), stale_approvals: tuple[str, ...] = (),
           changes_requested: tuple[str, ...] = (), extra_changes_requested_history: int = 0,
           checks: str = "green", state: str = "open", merged: bool = False,
@@ -1676,7 +1676,7 @@ def mk_pr(number: int, issue: int, head_sha: str = "abc123", committer: str = "m
         t += 1
         reviews.append(Review(a, "APPROVED", head_sha, f"2026-09-03T10:{t:02d}:00Z"))
     return PullRequest(number=number, title=f"PR {number}", body=f"Closes #{issue}\n\nverified-by: pytest",
-                       head_ref=f"moot/{issue}-slug", head_sha=head_sha, author=author or committer,
+                       head_ref=f"meld/{issue}-slug", head_sha=head_sha, author=author or committer,
                        head_committer=committer, issue_number=issue, reviews=tuple(reviews), checks=checks,
                        labels=frozenset(extra_labels), state=state, merged=merged)
 
@@ -1707,7 +1707,7 @@ def mk_board(cfg: Config, issues=(), pulls=(), comments=(), phase: str = "execut
 `tests/test_board.py`:
 
 ```python
-from moot.board import Issue, derive_halted, derive_open_challenges, derive_phase
+from meld.board import Issue, derive_halted, derive_open_challenges, derive_phase
 from tests.factories import CFG2, mk_board, mk_comment, mk_issue, mk_pr, mk_run
 
 
@@ -1715,27 +1715,27 @@ def test_issue_status_precedence_and_labels():
     i = mk_issue(1, status="ready")
     assert i.status == "ready"
     assert i.worker == "backend" and i.model == "claude-sonnet-5" and i.effort == "medium" and i.size == "S"
-    both = Issue(2, "t", "", frozenset({"moot:blocked", "moot:needs-human", "moot:in-progress"}), (), "open", 3)
+    both = Issue(2, "t", "", frozenset({"meld:blocked", "meld:needs-human", "meld:in-progress"}), (), "open", 3)
     assert both.status == "needs_human"
     assert Issue(3, "t", "", frozenset(), (), "open", 3).status == "unlabeled"
-    assert Issue(4, "t", "", frozenset({"moot:ready"}), (), "closed", 3).status == "closed"
-    assert mk_issue(5, extra_labels=("moot:challenged",)).challenged
+    assert Issue(4, "t", "", frozenset({"meld:ready"}), (), "closed", 3).status == "closed"
+    assert mk_issue(5, extra_labels=("meld:challenged",)).challenged
     assert mk_issue(6, worker=None).worker is None
 
 
 def test_pr_review_math_uses_latest_review_per_author_on_head():
-    pr = mk_pr(20, 13, committer="moot-codex-bot", approvals=("moot-claude-bot",), stale_approvals=("empowerScott",))
-    assert pr.approvals_on_head() == {"moot-claude-bot"}
+    pr = mk_pr(20, 13, committer="meld-codex-bot", approvals=("meld-claude-bot",), stale_approvals=("empowerScott",))
+    assert pr.approvals_on_head() == {"meld-claude-bot"}
     assert pr.changes_requested_on_head() == frozenset()
-    pr2 = mk_pr(21, 14, changes_requested=("moot-claude-bot",), extra_changes_requested_history=2)
-    assert pr2.changes_requested_on_head() == {"moot-claude-bot"}
+    pr2 = mk_pr(21, 14, changes_requested=("meld-claude-bot",), extra_changes_requested_history=2)
+    assert pr2.changes_requested_on_head() == {"meld-claude-bot"}
     assert pr2.changes_requested_total() == 3
-    assert pr2.latest_reviews()["moot-claude-bot"].state == "CHANGES_REQUESTED"
+    assert pr2.latest_reviews()["meld-claude-bot"].state == "CHANGES_REQUESTED"
 
 
 def test_derive_phase_and_halted():
-    assert derive_phase(frozenset({"moot:coordination"})) == "planning"
-    assert derive_phase(frozenset({"moot:coordination", "moot:plan-approved"})) == "executing"
+    assert derive_phase(frozenset({"meld:coordination"})) == "planning"
+    assert derive_phase(frozenset({"meld:coordination", "meld:plan-approved"})) == "executing"
     cs = [mk_comment(CFG2, 1, "empowerScott", "[human] HALT\n\nstop"),
           mk_comment(CFG2, 2, "randouser", "[human] RESUME\n\ngo")]
     assert derive_halted(cs) is True  # imposter RESUME ignored
@@ -1744,22 +1744,22 @@ def test_derive_phase_and_halted():
 
 
 def test_derive_open_challenges_closes_on_verdict_or_retract():
-    cs = [mk_comment(CFG2, 1, "moot-codex-bot", "[codex] CHALLENGE #12\n\ndoubt"),
-          mk_comment(CFG2, 2, "moot-codex-bot", "[codex] CHALLENGE #20\n\ndoubt"),
-          mk_comment(CFG2, 3, "moot-claude-bot", "[claude] RETRACT #20\n\nfair"),
-          mk_comment(CFG2, 4, "moot-codex-bot", "[codex] CHALLENGE plan-1\n\ndoubt"),
+    cs = [mk_comment(CFG2, 1, "meld-codex-bot", "[codex] CHALLENGE #12\n\ndoubt"),
+          mk_comment(CFG2, 2, "meld-codex-bot", "[codex] CHALLENGE #20\n\ndoubt"),
+          mk_comment(CFG2, 3, "meld-claude-bot", "[claude] RETRACT #20\n\nfair"),
+          mk_comment(CFG2, 4, "meld-codex-bot", "[codex] CHALLENGE plan-1\n\ndoubt"),
           mk_comment(CFG2, 5, "empowerScott", "[human] DISMISSED plan-1\n\nfine")]
     assert derive_open_challenges(cs) == {"#12"}
 
 
 def test_board_helpers():
     b = mk_board(CFG2,
-                 issues=[mk_issue(11), mk_issue(12, status="in_progress", assignees=("moot-claude-bot",)),
-                         mk_issue(13, status="in_review", assignees=("moot-claude-bot",))],
+                 issues=[mk_issue(11), mk_issue(12, status="in_progress", assignees=("meld-claude-bot",)),
+                         mk_issue(13, status="in_review", assignees=("meld-claude-bot",))],
                  pulls=[mk_pr(20, 13)],
                  runs={"claude": {12: mk_run("claude", 12)}, "codex": {}},
                  open_challenges=frozenset({"#12"}))
-    assert b.in_progress_count("moot-claude-bot") == 1
+    assert b.in_progress_count("meld-claude-bot") == 1
     assert b.pr_for_issue(13).number == 20 and b.pr_for_issue(11) is None
     assert b.run_for("claude", 12).alive and b.run_for("codex", 12) is None
     assert b.is_challenged("#12") and not b.is_challenged("#11")
@@ -1771,9 +1771,9 @@ def test_board_helpers():
 - [ ] **Step 3: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_board.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'moot.board'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'meld.board'`
 
-- [ ] **Step 4: Write `src/moot/board.py`**
+- [ ] **Step 4: Write `src/meld/board.py`**
 
 ```python
 """Typed board model. Pure data and derivations; no GitHub access here."""
@@ -1782,20 +1782,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Sequence
 
-from moot.grammar import ParsedComment
+from meld.grammar import ParsedComment
 
 STATUS_LABELS = {
-    "moot:planned": "planned",
-    "moot:ready": "ready",
-    "moot:in-progress": "in_progress",
-    "moot:in-review": "in_review",
-    "moot:blocked": "blocked",
-    "moot:needs-human": "needs_human",
+    "meld:planned": "planned",
+    "meld:ready": "ready",
+    "meld:in-progress": "in_progress",
+    "meld:in-review": "in_review",
+    "meld:blocked": "blocked",
+    "meld:needs-human": "needs_human",
 }
 _STATUS_PRECEDENCE = ("needs_human", "blocked", "in_review", "in_progress", "ready", "planned")
-CHALLENGED_LABEL = "moot:challenged"
-COORDINATION_LABEL = "moot:coordination"
-PLAN_APPROVED_LABEL = "moot:plan-approved"
+CHALLENGED_LABEL = "meld:challenged"
+COORDINATION_LABEL = "meld:coordination"
+PLAN_APPROVED_LABEL = "meld:plan-approved"
 
 
 @dataclass(frozen=True)
@@ -1992,22 +1992,22 @@ Expected: PASS (5 tests)
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/moot/board.py tests/factories.py tests/test_board.py
+git add src/meld/board.py tests/factories.py tests/test_board.py
 git commit -m "feat: typed board model with status, review math, halt and challenge derivations"
 ```
 
 ---
 
-### Task 8: State store — MOOT_HOME, run records, spend, snapshot digest
+### Task 8: State store — MELD_HOME, run records, spend, snapshot digest
 
 **Files:**
-- Create: `src/moot/state.py`
+- Create: `src/meld/state.py`
 - Create: `tests/test_state.py`
 
 **Interfaces:**
-- Consumes: `Board`, `RunRecord` from `moot.board`.
-- Produces (in `moot.state`):
-  - `moot_home(env: Mapping[str, str]) -> Path` (`MOOT_HOME`, default `~/.moot`)
+- Consumes: `Board`, `RunRecord` from `meld.board`.
+- Produces (in `meld.state`):
+  - `meld_home(env: Mapping[str, str]) -> Path` (`MELD_HOME`, default `~/.meld`)
   - `pid_alive(pid: int) -> bool`
   - `class StateStore(home: Path, group: str | None)` with attributes `cache_dir`, `state_dir`, `runs_root`, and methods `load_snapshot() -> dict | None`, `save_snapshot(d: dict) -> None`, `load_runs(alive=pid_alive) -> dict[str, dict[int, RunRecord]]` (every group's records under `runs/<group>/*.json`), `load_spend(milestone: int) -> dict[str, dict[str, int]]` (counts records in `runs/<group>/*.json` and `runs/<group>/archive/*.json` with that milestone, by tier), `write_run(record: RunRecord) -> Path` (used by Plan 2's dispatch; written here so the on-disk shape has one owner)
   - `board_digest(board: Board) -> dict`, `diff_digest(old: dict | None, new: dict) -> list[str]`
@@ -2020,13 +2020,13 @@ git commit -m "feat: typed board model with status, review math, halt and challe
 ```python
 import json
 
-from moot.state import StateStore, board_digest, diff_digest, moot_home
+from meld.state import StateStore, board_digest, diff_digest, meld_home
 from tests.factories import CFG2, mk_board, mk_issue, mk_pr, mk_run
 
 
-def test_moot_home_default_and_override(tmp_path):
-    assert moot_home({}).name == ".moot"
-    assert moot_home({"MOOT_HOME": str(tmp_path)}) == tmp_path
+def test_meld_home_default_and_override(tmp_path):
+    assert meld_home({}).name == ".meld"
+    assert meld_home({"MELD_HOME": str(tmp_path)}) == tmp_path
 
 
 def test_write_and_load_runs_with_alive_probe(tmp_path):
@@ -2062,14 +2062,14 @@ def test_snapshot_round_trip(tmp_path):
 
 def test_digest_and_diff_name_what_changed():
     b1 = mk_board(CFG2, issues=[mk_issue(11)], pulls=[mk_pr(20, 13)], runs={"claude": {12: mk_run("claude", 12)}, "codex": {}})
-    b2 = mk_board(CFG2, issues=[mk_issue(11, status="in_progress", assignees=("moot-claude-bot",))],
-                  pulls=[mk_pr(20, 13, approvals=("moot-codex-bot",))],
+    b2 = mk_board(CFG2, issues=[mk_issue(11, status="in_progress", assignees=("meld-claude-bot",))],
+                  pulls=[mk_pr(20, 13, approvals=("meld-codex-bot",))],
                   runs={"claude": {12: mk_run("claude", 12, alive=False)}, "codex": {}}, halted=True)
     d1, d2 = board_digest(b1), board_digest(b2)
     assert diff_digest(d1, d1) == []
     changes = diff_digest(d1, d2)
     assert "issue #11: ready -> in_progress" in changes
-    assert "pr #20: approvals [] -> ['moot-codex-bot']" in changes
+    assert "pr #20: approvals [] -> ['meld-codex-bot']" in changes
     assert "run claude/#12: running -> finished" in changes
     assert "halted: False -> True" in changes
     assert diff_digest(None, d2) == ["initial snapshot"]
@@ -2078,12 +2078,12 @@ def test_digest_and_diff_name_what_changed():
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_state.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'moot.state'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'meld.state'`
 
-- [ ] **Step 3: Write `src/moot/state.py`**
+- [ ] **Step 3: Write `src/meld/state.py`**
 
 ```python
-"""Disposable local state under $MOOT_HOME: run records, snapshots, cursors, caches."""
+"""Disposable local state under $MELD_HOME: run records, snapshots, cursors, caches."""
 from __future__ import annotations
 
 import json
@@ -2092,11 +2092,11 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Callable, Mapping
 
-from moot.board import Board, RunRecord
+from meld.board import Board, RunRecord
 
 
-def moot_home(env: Mapping[str, str]) -> Path:
-    return Path(env.get("MOOT_HOME", "~/.moot")).expanduser()
+def meld_home(env: Mapping[str, str]) -> Path:
+    return Path(env.get("MELD_HOME", "~/.meld")).expanduser()
 
 
 def pid_alive(pid: int) -> bool:
@@ -2251,7 +2251,7 @@ Expected: PASS (5 tests)
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/moot/state.py tests/test_state.py
+git add src/meld/state.py tests/test_state.py
 git commit -m "feat: state store for run records, spend, and board snapshot digests"
 ```
 
@@ -2260,7 +2260,7 @@ git commit -m "feat: state store for run records, spend, and board snapshot dige
 ### Task 9: Board assembly from GitHub
 
 **Files:**
-- Create: `src/moot/assemble.py`
+- Create: `src/meld/assemble.py`
 - Create: `tests/fixtures/board1/milestones.json`
 - Create: `tests/fixtures/board1/issues.json`
 - Create: `tests/fixtures/board1/comments_10.json`
@@ -2272,10 +2272,10 @@ git commit -m "feat: state store for run records, spend, and board snapshot dige
 - Create: `tests/test_assemble.py`
 
 **Interfaces:**
-- Consumes: `GitHub` (`moot.github`), `Config`, `parse_comment`, board dataclasses and `derive_*` helpers.
-- Produces (in `moot.assemble`):
+- Consumes: `GitHub` (`meld.github`), `Config`, `parse_comment`, board dataclasses and `derive_*` helpers.
+- Produces (in `meld.assemble`):
   - `class BoardError(RuntimeError)`
-  - `find_active_milestone(gh: GitHub) -> tuple[int, int]` returning `(milestone_number, coordination_issue_number)`; raises `BoardError` when no open milestone has a `moot:coordination` issue
+  - `find_active_milestone(gh: GitHub) -> tuple[int, int]` returning `(milestone_number, coordination_issue_number)`; raises `BoardError` when no open milestone has a `meld:coordination` issue
   - `build_board(gh, cfg, runs, spend, milestone: int | None = None) -> Board`
   - `checks_state(check_runs_json: dict) -> str` (`none|pending|green|red`)
   - `issue_number_from_pr(body: str, head_ref: str) -> int | None`
@@ -2294,20 +2294,20 @@ git commit -m "feat: state store for run records, spend, and board snapshot dige
 ```json
 [
   {"number": 10, "title": "Coordination: M1", "body": "Goal: build the skeleton", "state": "open",
-   "labels": [{"name": "moot:coordination"}, {"name": "moot:plan-approved"}], "assignees": [],
+   "labels": [{"name": "meld:coordination"}, {"name": "meld:plan-approved"}], "assignees": [],
    "milestone": {"number": 3}, "created_at": "2026-09-03T08:00:00Z", "updated_at": "2026-09-03T09:05:00Z"},
   {"number": 11, "title": "Add health endpoint", "body": "GET /healthz returns 200", "state": "open",
-   "labels": [{"name": "moot:ready"}, {"name": "worker:backend"}, {"name": "model:claude-sonnet-5"}, {"name": "effort:medium"}, {"name": "size:S"}],
+   "labels": [{"name": "meld:ready"}, {"name": "worker:backend"}, {"name": "model:claude-sonnet-5"}, {"name": "effort:medium"}, {"name": "size:S"}],
    "assignees": [], "milestone": {"number": 3}, "created_at": "2026-09-03T08:10:00Z", "updated_at": "2026-09-03T08:10:00Z"},
   {"number": 12, "title": "Login form", "body": "OAuth login form", "state": "open",
-   "labels": [{"name": "moot:in-progress"}, {"name": "worker:frontend"}, {"name": "model:claude-sonnet-5"}, {"name": "effort:medium"}, {"name": "size:M"}],
-   "assignees": [{"login": "moot-claude-bot"}], "milestone": {"number": 3}, "created_at": "2026-09-03T08:11:00Z", "updated_at": "2026-09-03T10:00:00Z"},
+   "labels": [{"name": "meld:in-progress"}, {"name": "worker:frontend"}, {"name": "model:claude-sonnet-5"}, {"name": "effort:medium"}, {"name": "size:M"}],
+   "assignees": [{"login": "meld-claude-bot"}], "milestone": {"number": 3}, "created_at": "2026-09-03T08:11:00Z", "updated_at": "2026-09-03T10:00:00Z"},
   {"number": 13, "title": "CI pipeline", "body": "GitHub Actions running pytest", "state": "open",
-   "labels": [{"name": "moot:in-review"}, {"name": "worker:backend"}, {"name": "model:claude-sonnet-5"}, {"name": "effort:high"}, {"name": "size:M"}],
-   "assignees": [{"login": "moot-codex-bot"}], "milestone": {"number": 3}, "created_at": "2026-09-03T08:12:00Z", "updated_at": "2026-09-03T10:30:00Z"},
+   "labels": [{"name": "meld:in-review"}, {"name": "worker:backend"}, {"name": "model:claude-sonnet-5"}, {"name": "effort:high"}, {"name": "size:M"}],
+   "assignees": [{"login": "meld-codex-bot"}], "milestone": {"number": 3}, "created_at": "2026-09-03T08:12:00Z", "updated_at": "2026-09-03T10:30:00Z"},
   {"number": 14, "title": "Needs API key", "body": "Stripe sandbox key required", "state": "open",
-   "labels": [{"name": "moot:needs-human"}, {"name": "worker:backend"}, {"name": "model:claude-sonnet-5"}, {"name": "effort:medium"}, {"name": "size:S"}],
-   "assignees": [{"login": "moot-codex-bot"}], "milestone": {"number": 3}, "created_at": "2026-09-03T08:13:00Z", "updated_at": "2026-09-03T09:00:00Z"},
+   "labels": [{"name": "meld:needs-human"}, {"name": "worker:backend"}, {"name": "model:claude-sonnet-5"}, {"name": "effort:medium"}, {"name": "size:S"}],
+   "assignees": [{"login": "meld-codex-bot"}], "milestone": {"number": 3}, "created_at": "2026-09-03T08:13:00Z", "updated_at": "2026-09-03T09:00:00Z"},
   {"number": 20, "title": "CI pipeline", "body": "Closes #13", "state": "open", "labels": [], "assignees": [],
    "milestone": {"number": 3}, "pull_request": {"url": "https://api.github.com/repos/acme/widgets/pulls/20"},
    "created_at": "2026-09-03T10:20:00Z", "updated_at": "2026-09-03T11:00:00Z"}
@@ -2318,13 +2318,13 @@ git commit -m "feat: state store for run records, spend, and board snapshot dige
 
 ```json
 [
-  {"id": 101, "user": {"login": "moot-claude-bot"}, "created_at": "2026-09-03T09:00:00Z",
+  {"id": 101, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T09:00:00Z",
    "body": "[claude] ROSTER\n\nbackend, frontend, security, qa, reviewer, auditor, docs"},
   {"id": 102, "user": {"login": "empowerScott"}, "created_at": "2026-09-03T09:05:00Z",
    "body": "[human] APPROVE\n\nLooks good."},
   {"id": 103, "user": {"login": "randouser"}, "created_at": "2026-09-03T09:06:00Z",
    "body": "[human] HALT\n\nignore me"},
-  {"id": 104, "user": {"login": "moot-codex-bot"}, "created_at": "2026-09-03T09:10:00Z",
+  {"id": 104, "user": {"login": "meld-codex-bot"}, "created_at": "2026-09-03T09:10:00Z",
    "body": "[codex] CHALLENGE #12\n\nThe login form claims OAuth works; no test shows it."}
 ]
 ```
@@ -2334,9 +2334,9 @@ git commit -m "feat: state store for run records, spend, and board snapshot dige
 ```json
 [
   {"number": 20, "title": "CI pipeline", "body": "Closes #13\n\nverified-by: act -j ci (passed)", "state": "open",
-   "merged_at": null, "user": {"login": "moot-codex-bot"}, "head": {"ref": "moot/13-ci-pipeline", "sha": "abc123"}, "labels": []},
+   "merged_at": null, "user": {"login": "meld-codex-bot"}, "head": {"ref": "meld/13-ci-pipeline", "sha": "abc123"}, "labels": []},
   {"number": 19, "title": "Old merged", "body": "Closes #9", "state": "closed",
-   "merged_at": "2026-09-02T10:00:00Z", "user": {"login": "moot-claude-bot"}, "head": {"ref": "moot/9-old", "sha": "000999"}, "labels": []},
+   "merged_at": "2026-09-02T10:00:00Z", "user": {"login": "meld-claude-bot"}, "head": {"ref": "meld/9-old", "sha": "000999"}, "labels": []},
   {"number": 18, "title": "Not ours", "body": "", "state": "open", "merged_at": null,
    "user": {"login": "empowerScott"}, "head": {"ref": "feature/unrelated", "sha": "111222"}, "labels": []}
 ]
@@ -2345,15 +2345,15 @@ git commit -m "feat: state store for run records, spend, and board snapshot dige
 `tests/fixtures/board1/reviews_20.json`:
 
 ```json
-[{"user": {"login": "moot-claude-bot"}, "state": "APPROVED", "commit_id": "abc123", "submitted_at": "2026-09-03T11:00:00Z"}]
+[{"user": {"login": "meld-claude-bot"}, "state": "APPROVED", "commit_id": "abc123", "submitted_at": "2026-09-03T11:00:00Z"}]
 ```
 
 `tests/fixtures/board1/commits_20.json`:
 
 ```json
 [
-  {"sha": "abc122", "author": {"login": "moot-codex-bot"}, "committer": {"login": "moot-codex-bot"}},
-  {"sha": "abc123", "author": {"login": "moot-codex-bot"}, "committer": {"login": "moot-codex-bot"}}
+  {"sha": "abc122", "author": {"login": "meld-codex-bot"}, "committer": {"login": "meld-codex-bot"}},
+  {"sha": "abc123", "author": {"login": "meld-codex-bot"}, "committer": {"login": "meld-codex-bot"}}
 ]
 ```
 
@@ -2371,7 +2371,7 @@ from pathlib import Path
 
 import pytest
 
-from moot.github import GitHub
+from meld.github import GitHub
 from tests.fakegh import FakeGh
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -2405,7 +2405,7 @@ def board1_gh(tmp_path):
 ```python
 import pytest
 
-from moot.assemble import BoardError, build_board, checks_state, find_active_milestone, issue_number_from_pr
+from meld.assemble import BoardError, build_board, checks_state, find_active_milestone, issue_number_from_pr
 from tests.factories import CFG2, mk_run
 
 
@@ -2428,12 +2428,12 @@ def test_build_board_end_to_end(board1_gh):
     b = build_board(gh, CFG2, runs, spend)
     assert (b.milestone, b.coordination_issue, b.phase, b.halted) == (3, 10, "executing", False)
     assert sorted(b.issues) == [11, 12, 13, 14]          # coordination issue and PR entry excluded
-    assert b.issues[11].status == "ready" and b.issues[12].assignees == ("moot-claude-bot",)
+    assert b.issues[11].status == "ready" and b.issues[12].assignees == ("meld-claude-bot",)
     assert b.issues[14].status == "needs_human"
-    assert sorted(b.pulls) == [19, 20]                    # non-moot branch excluded
+    assert sorted(b.pulls) == [19, 20]                    # non-meld branch excluded
     pr = b.pulls[20]
-    assert pr.issue_number == 13 and pr.head_committer == "moot-codex-bot" and pr.checks == "green"
-    assert pr.approvals_on_head() == {"moot-claude-bot"}
+    assert pr.issue_number == 13 and pr.head_committer == "meld-codex-bot" and pr.checks == "green"
+    assert pr.approvals_on_head() == {"meld-claude-bot"}
     assert b.pulls[19].merged and b.pulls[19].reviews == ()
     assert b.open_challenges == {"#12"} and b.is_challenged("#12")
     assert b.ignored_comments == 1
@@ -2450,18 +2450,18 @@ def test_checks_state():
 
 
 def test_issue_number_from_pr():
-    assert issue_number_from_pr("Closes #13", "moot/13-x") == 13
+    assert issue_number_from_pr("Closes #13", "meld/13-x") == 13
     assert issue_number_from_pr("fixes   #7 and more", "whatever") == 7
-    assert issue_number_from_pr("no keyword", "moot/42-slug") == 42
+    assert issue_number_from_pr("no keyword", "meld/42-slug") == 42
     assert issue_number_from_pr("nothing", "feature/x") is None
 ```
 
 - [ ] **Step 4: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_assemble.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'moot.assemble'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'meld.assemble'`
 
-- [ ] **Step 5: Write `src/moot/assemble.py`**
+- [ ] **Step 5: Write `src/meld/assemble.py`**
 
 ```python
 """Assemble a Board from GitHub. The only reader of GitHub in the coordination core."""
@@ -2469,7 +2469,7 @@ from __future__ import annotations
 
 import re
 
-from moot.board import (
+from meld.board import (
     COORDINATION_LABEL,
     Board,
     Issue,
@@ -2480,13 +2480,13 @@ from moot.board import (
     derive_open_challenges,
     derive_phase,
 )
-from moot.config import Config
-from moot.github import GitHub
-from moot.grammar import parse_comment
+from meld.config import Config
+from meld.github import GitHub
+from meld.grammar import parse_comment
 
-BRANCH_PREFIX = "moot/"
+BRANCH_PREFIX = "meld/"
 _CLOSES_RE = re.compile(r"\b(?:closes|fixes|resolves)\s+#(\d+)", re.IGNORECASE)
-_BRANCH_RE = re.compile(r"^moot/(\d+)-")
+_BRANCH_RE = re.compile(r"^meld/(\d+)-")
 
 
 class BoardError(RuntimeError):
@@ -2502,7 +2502,7 @@ def find_active_milestone(gh: GitHub) -> tuple[int, int]:
         for issue in gh.list_issues(m["number"]):
             if COORDINATION_LABEL in _labels(issue):
                 return m["number"], issue["number"]
-    raise BoardError("no open milestone has an issue labelled moot:coordination; run `moot setup` first")
+    raise BoardError("no open milestone has an issue labelled meld:coordination; run `meld setup` first")
 
 
 def checks_state(check_runs: dict) -> str:
@@ -2569,7 +2569,7 @@ def build_board(gh: GitHub, cfg: Config, runs: dict[str, dict[int, RunRecord]], 
         raw_issues = gh.list_issues(milestone)
         coord = [i for i in raw_issues if COORDINATION_LABEL in _labels(i)]
         if not coord:
-            raise BoardError(f"milestone {milestone} has no issue labelled moot:coordination")
+            raise BoardError(f"milestone {milestone} has no issue labelled meld:coordination")
         coordination = coord[0]["number"]
     coord_raw = next(i for i in raw_issues if i["number"] == coordination)
     comments = tuple(parse_comment(c, cfg) for c in gh.list_comments(coordination))
@@ -2598,7 +2598,7 @@ Expected: PASS (5 tests)
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/moot/assemble.py tests/conftest.py tests/fixtures tests/test_assemble.py
+git add src/meld/assemble.py tests/conftest.py tests/fixtures tests/test_assemble.py
 git commit -m "feat: assemble the board from GitHub milestones, issues, PRs, and comments"
 ```
 
@@ -2607,13 +2607,13 @@ git commit -m "feat: assemble the board from GitHub milestones, issues, PRs, and
 ### Task 10: Rules — issue verbs (claim, release, dispatch, collect, reopen)
 
 **Files:**
-- Create: `src/moot/rules.py`
+- Create: `src/meld/rules.py`
 - Modify: `tests/factories.py` (add `REG`, a test `ModelRegistry`)
 - Create: `tests/test_rules_issues.py`
 
 **Interfaces:**
-- Consumes: `Board`, `Issue`, `PullRequest` (`moot.board`); `Config`, `Party` (`moot.config`); `ModelRegistry`, `SIZES`, `size_fits` (`moot.models`).
-- Produces (in `moot.rules`):
+- Consumes: `Board`, `Issue`, `PullRequest` (`meld.board`); `Config`, `Party` (`meld.config`); `ModelRegistry`, `SIZES`, `size_fits` (`meld.models`).
+- Produces (in `meld.rules`):
   - `class Verb(str, Enum)` with `CLAIM="claim"`, `RELEASE="release"`, `DISPATCH="dispatch"`, `COLLECT="collect"`, `REOPEN="reopen"`, `APPROVE="approve"`, `REQUEST_CHANGES="request-changes"`, `PUSH_FIX="push-fix"`, `MERGE="merge"`
   - `ISSUE_VERBS`, `PR_VERBS` tuples
   - `@dataclass(frozen=True) Actor(party: Party, login: str, roster: frozenset[str] = frozenset())` with `.is_human`, `.is_pm`, `.group -> str | None`, `.name -> str` (group name, or `human:<login>`)
@@ -2628,7 +2628,7 @@ git commit -m "feat: assemble the board from GitHub milestones, issues, PRs, and
 Append:
 
 ```python
-from moot.models import ModelRegistry, ModelSpec  # add near the other imports at the top
+from meld.models import ModelRegistry, ModelSpec  # add near the other imports at the top
 
 
 def _spec(adapter: str, model_id: str, context_class: str, tier: str) -> ModelSpec:
@@ -2649,14 +2649,14 @@ REG = ModelRegistry({
 `tests/test_rules_issues.py`:
 
 ```python
-from moot.config import Party
-from moot.rules import Actor, Verb, issue_refusal, legal_issue_verbs, party_of_login
+from meld.config import Party
+from meld.rules import Actor, Verb, issue_refusal, legal_issue_verbs, party_of_login
 from tests.factories import CFG2, REG, mk_board, mk_comment, mk_issue, mk_pr, mk_run
 
 ROSTER = frozenset({"backend", "frontend", "security", "qa", "reviewer", "auditor", "docs"})
-CLAUDE_PM = Actor(Party("pm", "claude"), "moot-claude-bot", ROSTER)
-CLAUDE_ORCH = Actor(Party("group", "claude"), "moot-claude-bot", ROSTER)
-CODEX_PM = Actor(Party("pm", "codex"), "moot-codex-bot", ROSTER)
+CLAUDE_PM = Actor(Party("pm", "claude"), "meld-claude-bot", ROSTER)
+CLAUDE_ORCH = Actor(Party("group", "claude"), "meld-claude-bot", ROSTER)
+CODEX_PM = Actor(Party("pm", "codex"), "meld-codex-bot", ROSTER)
 HUMAN = Actor(Party("human"), "empowerScott")
 
 
@@ -2680,8 +2680,8 @@ def test_claim_refusals_in_priority_order():
     assert rule(mk_board(CFG2, issues=[i]), CLAUDE_ORCH, Verb.CLAIM, i) == "only a PM or a human may claim"
     blocked = mk_issue(12, status="blocked")
     assert rule(mk_board(CFG2, issues=[blocked]), CLAUDE_PM, Verb.CLAIM, blocked) == "issue is blocked, not ready"
-    taken = mk_issue(13, assignees=("moot-codex-bot",))
-    assert rule(mk_board(CFG2, issues=[taken]), CLAUDE_PM, Verb.CLAIM, taken) == "already claimed by moot-codex-bot"
+    taken = mk_issue(13, assignees=("meld-codex-bot",))
+    assert rule(mk_board(CFG2, issues=[taken]), CLAUDE_PM, Verb.CLAIM, taken) == "already claimed by meld-codex-bot"
     no_worker = mk_issue(14, worker=None)
     assert rule(mk_board(CFG2, issues=[no_worker]), CLAUDE_PM, Verb.CLAIM, no_worker) == "issue has no worker: label"
     marketing = mk_issue(15, worker="marketing")
@@ -2689,7 +2689,7 @@ def test_claim_refusals_in_priority_order():
 
 
 def test_claim_respects_concurrency_cap():
-    busy = [mk_issue(n, status="in_progress", assignees=("moot-claude-bot",)) for n in range(100, 108)]
+    busy = [mk_issue(n, status="in_progress", assignees=("meld-claude-bot",)) for n in range(100, 108)]
     fresh = mk_issue(11, model="gpt-test")  # known to codex, unknown to claude; the cap check comes before the model check
     b = mk_board(CFG2, issues=[*busy, fresh])
     assert rule(b, CLAUDE_PM, Verb.CLAIM, fresh) == "claude is at its concurrency cap (8/8)"
@@ -2711,16 +2711,16 @@ def test_claim_requires_known_model_and_budget():
 # ---- dispatch ----------------------------------------------------------------
 
 def test_dispatch_legal_for_assignee_pm():
-    i = mk_issue(12, status="in_progress", assignees=("moot-claude-bot",), size="M")
+    i = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",), size="M")
     assert rule(mk_board(CFG2, issues=[i]), CLAUDE_PM, Verb.DISPATCH, i) is None
 
 
 def test_dispatch_refusals():
-    i = mk_issue(12, status="in_progress", assignees=("moot-claude-bot",))
+    i = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",))
     assert rule(mk_board(CFG2, issues=[i], halted=True), CLAUDE_PM, Verb.DISPATCH, i) == "HALT is in effect"
     assert rule(mk_board(CFG2, issues=[i]), CLAUDE_ORCH, Verb.DISPATCH, i) == "only the PM may dispatch"
     assert rule(mk_board(CFG2, issues=[i]), HUMAN, Verb.DISPATCH, i) == "only the PM may dispatch"
-    assert rule(mk_board(CFG2, issues=[i]), CODEX_PM, Verb.DISPATCH, i) == "issue is not assigned to moot-codex-bot"
+    assert rule(mk_board(CFG2, issues=[i]), CODEX_PM, Verb.DISPATCH, i) == "issue is not assigned to meld-codex-bot"
     ready = mk_issue(13)
     assert rule(mk_board(CFG2, issues=[ready]), CLAUDE_PM, Verb.DISPATCH, ready) == "issue is ready, not in-progress"
     running = mk_board(CFG2, issues=[i], runs={"claude": {12: mk_run("claude", 12)}, "codex": {}})
@@ -2730,18 +2730,18 @@ def test_dispatch_refusals():
     collected = mk_board(CFG2, issues=[i], runs={"claude": {12: mk_run("claude", 12, alive=False, collected=True)}, "codex": {}})
     assert rule(collected, CLAUDE_PM, Verb.DISPATCH, i) is None
     assert rule(mk_board(CFG2, issues=[i], open_challenges=frozenset({"#12"})), CLAUDE_PM, Verb.DISPATCH, i) == "issue has an open CHALLENGE"
-    labelled = mk_issue(12, status="in_progress", assignees=("moot-claude-bot",), extra_labels=("moot:challenged",))
+    labelled = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",), extra_labels=("meld:challenged",))
     assert rule(mk_board(CFG2, issues=[labelled]), CLAUDE_PM, Verb.DISPATCH, labelled) == "issue has an open CHALLENGE"
 
 
 def test_dispatch_validates_model_effort_size():
-    missing = mk_issue(12, status="in_progress", assignees=("moot-claude-bot",), effort=None, size=None)
+    missing = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",), effort=None, size=None)
     assert rule(mk_board(CFG2, issues=[missing]), CLAUDE_PM, Verb.DISPATCH, missing) == "issue is missing labels: effort, size"
-    bad_effort = mk_issue(12, status="in_progress", assignees=("moot-claude-bot",), effort="turbo")
+    bad_effort = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",), effort="turbo")
     assert "effort 'turbo' not valid" in rule(mk_board(CFG2, issues=[bad_effort]), CLAUDE_PM, Verb.DISPATCH, bad_effort)
-    bad_size = mk_issue(12, status="in_progress", assignees=("moot-claude-bot",), size="XL")
+    bad_size = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",), size="XL")
     assert rule(mk_board(CFG2, issues=[bad_size]), CLAUDE_PM, Verb.DISPATCH, bad_size) == "size 'XL' is not one of S, M, L"
-    too_big = mk_issue(12, status="in_progress", assignees=("moot-claude-bot",), model="claude-haiku-4-5-20251001", size="L")
+    too_big = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",), model="claude-haiku-4-5-20251001", size="L")
     assert rule(mk_board(CFG2, issues=[too_big]), CLAUDE_PM, Verb.DISPATCH, too_big) == \
         "size L does not fit model claude-haiku-4-5-20251001 (context class medium)"
 
@@ -2749,7 +2749,7 @@ def test_dispatch_validates_model_effort_size():
 # ---- collect -----------------------------------------------------------------
 
 def test_collect_rules():
-    i = mk_issue(12, status="in_progress", assignees=("moot-claude-bot",))
+    i = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",))
     none = mk_board(CFG2, issues=[i])
     assert rule(none, CLAUDE_PM, Verb.COLLECT, i) == "no run record for #12 in claude"
     alive = mk_board(CFG2, issues=[i], runs={"claude": {12: mk_run("claude", 12)}, "codex": {}})
@@ -2764,16 +2764,16 @@ def test_collect_rules():
 # ---- release -----------------------------------------------------------------
 
 def test_release_rules():
-    mine = mk_issue(12, status="in_progress", assignees=("moot-claude-bot",))
+    mine = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",))
     b = mk_board(CFG2, issues=[mine])
     assert rule(b, CLAUDE_PM, Verb.RELEASE, mine) is None
     assert rule(b, CLAUDE_ORCH, Verb.RELEASE, mine) is None
-    assert rule(b, CODEX_PM, Verb.RELEASE, mine) == "issue is not assigned to moot-codex-bot"
+    assert rule(b, CODEX_PM, Verb.RELEASE, mine) == "issue is not assigned to meld-codex-bot"
     assert rule(b, HUMAN, Verb.RELEASE, mine) is None
     ready = mk_issue(13)
     assert rule(mk_board(CFG2, issues=[ready]), HUMAN, Verb.RELEASE, ready) == \
         "issue is ready; release is only legal from in-progress or blocked"
-    blocked = mk_issue(14, status="blocked", assignees=("moot-claude-bot",))
+    blocked = mk_issue(14, status="blocked", assignees=("meld-claude-bot",))
     assert rule(mk_board(CFG2, issues=[blocked]), CLAUDE_PM, Verb.RELEASE, blocked) is None
 
 
@@ -2781,12 +2781,12 @@ def test_release_rules():
 
 def test_reopen_requires_fail_audit_from_non_author_group():
     closed = mk_issue(9, state="closed")
-    pr = mk_pr(19, 9, committer="moot-claude-bot", state="closed", merged=True)
-    audit = mk_comment(CFG2, 7, "moot-codex-bot", "[codex] AUDIT #9 FAIL\n\nacceptance criterion 2 unmet\n\nverified-by: pytest -k healthz")
+    pr = mk_pr(19, 9, committer="meld-claude-bot", state="closed", merged=True)
+    audit = mk_comment(CFG2, 7, "meld-codex-bot", "[codex] AUDIT #9 FAIL\n\nacceptance criterion 2 unmet\n\nverified-by: pytest -k healthz")
     b = mk_board(CFG2, issues=[closed], pulls=[pr], comments=[audit])
     assert rule(b, CODEX_PM, Verb.REOPEN, closed) is None
     assert rule(b, CLAUDE_PM, Verb.REOPEN, closed) == "no AUDIT #9 FAIL posted by claude"
-    self_audit = mk_comment(CFG2, 8, "moot-claude-bot", "[claude] AUDIT #9 FAIL\n\nnope")
+    self_audit = mk_comment(CFG2, 8, "meld-claude-bot", "[claude] AUDIT #9 FAIL\n\nnope")
     b2 = mk_board(CFG2, issues=[closed], pulls=[pr], comments=[audit, self_audit])
     assert rule(b2, CLAUDE_PM, Verb.REOPEN, closed) == "claude authored the PR that closed #9"
     assert rule(b, HUMAN, Verb.REOPEN, closed) is None
@@ -2795,10 +2795,10 @@ def test_reopen_requires_fail_audit_from_non_author_group():
 
 
 def test_legal_issue_verbs_and_party_of_login():
-    i = mk_issue(12, status="in_progress", assignees=("moot-claude-bot",))
+    i = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",))
     b = mk_board(CFG2, issues=[i], runs={"claude": {12: mk_run("claude", 12, alive=False)}, "codex": {}})
     assert legal_issue_verbs(b, CFG2, CLAUDE_PM, i, REG) == ["release", "collect"]
-    assert party_of_login(CFG2, "moot-codex-bot") == "codex"
+    assert party_of_login(CFG2, "meld-codex-bot") == "codex"
     assert party_of_login(CFG2, "empowerScott") == "human:empowerScott"
     assert party_of_login(CFG2, "randouser") is None
 ```
@@ -2806,9 +2806,9 @@ def test_legal_issue_verbs_and_party_of_login():
 - [ ] **Step 3: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_rules_issues.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'moot.rules'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'meld.rules'`
 
-- [ ] **Step 4: Write `src/moot/rules.py`**
+- [ ] **Step 4: Write `src/meld/rules.py`**
 
 ```python
 """Legal-action computation. Every invariant lives here and has a test."""
@@ -2817,9 +2817,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from moot.board import Board, Issue, PullRequest
-from moot.config import Config, Party
-from moot.models import SIZES, ModelRegistry, size_fits
+from meld.board import Board, Issue, PullRequest
+from meld.config import Config, Party
+from meld.models import SIZES, ModelRegistry, size_fits
 
 
 class Verb(str, Enum):
@@ -2886,7 +2886,7 @@ def _claim(board: Board, cfg: Config, actor: Actor, issue: Issue, models: ModelR
     if board.halted:
         return "HALT is in effect"
     if board.phase != "executing":
-        return "milestone is still in planning (no moot:plan-approved label)"
+        return "milestone is still in planning (no meld:plan-approved label)"
     if not (actor.is_pm or actor.is_human):
         return "only a PM or a human may claim"
     if issue.status != "ready":
@@ -3016,7 +3016,7 @@ Expected: PASS (12 tests)
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/moot/rules.py tests/factories.py tests/test_rules_issues.py
+git add src/meld/rules.py tests/factories.py tests/test_rules_issues.py
 git commit -m "feat: rules engine for claim, dispatch, collect, release, and reopen"
 ```
 
@@ -3025,11 +3025,11 @@ git commit -m "feat: rules engine for claim, dispatch, collect, release, and reo
 ### Task 11: Rules — PR verbs (approve, request-changes, push-fix, merge)
 
 **Files:**
-- Modify: `src/moot/rules.py` (append)
+- Modify: `src/meld/rules.py` (append)
 - Create: `tests/test_rules_prs.py`
 
 **Interfaces:**
-- Produces (in `moot.rules`):
+- Produces (in `meld.rules`):
   - `committer_party(cfg, pr) -> str | None`
   - `approving_parties(cfg, pr) -> frozenset[str]` (parties with an APPROVED latest review on the head, excluding the committer's party and unknown logins)
   - `pingpong_exceeded(cfg, pr) -> bool`
@@ -3041,14 +3041,14 @@ git commit -m "feat: rules engine for claim, dispatch, collect, release, and reo
 `tests/test_rules_prs.py`:
 
 ```python
-from moot.config import Party
-from moot.rules import Actor, Verb, approving_parties, committer_party, legal_pr_verbs, pingpong_exceeded, pr_refusal
+from meld.config import Party
+from meld.rules import Actor, Verb, approving_parties, committer_party, legal_pr_verbs, pingpong_exceeded, pr_refusal
 from tests.factories import CFG2, CFG3, mk_board, mk_pr
 
-CLAUDE_PM = Actor(Party("pm", "claude"), "moot-claude-bot")
-CLAUDE_ORCH = Actor(Party("group", "claude"), "moot-claude-bot")
-CODEX_PM = Actor(Party("pm", "codex"), "moot-codex-bot")
-GEMINI_PM = Actor(Party("pm", "gemini"), "moot-gemini-bot")
+CLAUDE_PM = Actor(Party("pm", "claude"), "meld-claude-bot")
+CLAUDE_ORCH = Actor(Party("group", "claude"), "meld-claude-bot")
+CODEX_PM = Actor(Party("pm", "codex"), "meld-codex-bot")
+GEMINI_PM = Actor(Party("pm", "gemini"), "meld-gemini-bot")
 HUMAN = Actor(Party("human"), "empowerScott")
 
 
@@ -3058,19 +3058,19 @@ def rule(board, cfg, actor, verb, pr):
 
 
 def test_committer_and_approving_parties():
-    pr = mk_pr(20, 13, committer="moot-codex-bot", approvals=("moot-claude-bot", "moot-codex-bot", "empowerScott", "randouser"))
+    pr = mk_pr(20, 13, committer="meld-codex-bot", approvals=("meld-claude-bot", "meld-codex-bot", "empowerScott", "randouser"))
     assert committer_party(CFG2, pr) == "codex"
     assert approving_parties(CFG2, pr) == {"claude", "human:empowerScott"}
 
 
 def test_approve_rules():
-    pr = mk_pr(20, 13, committer="moot-codex-bot")
+    pr = mk_pr(20, 13, committer="meld-codex-bot")
     b = mk_board(CFG2, pulls=[pr])
     assert rule(b, CFG2, CLAUDE_PM, Verb.APPROVE, pr) is None
     assert rule(b, CFG2, CLAUDE_ORCH, Verb.APPROVE, pr) is None
     assert rule(b, CFG2, HUMAN, Verb.APPROVE, pr) is None
     assert rule(b, CFG2, CODEX_PM, Verb.APPROVE, pr) == "codex made the last commit on this PR and cannot approve its own head"
-    fixed = mk_pr(21, 14, committer="moot-claude-bot", author="moot-codex-bot")  # claude pushed a fix onto codex's PR
+    fixed = mk_pr(21, 14, committer="meld-claude-bot", author="meld-codex-bot")  # claude pushed a fix onto codex's PR
     b2 = mk_board(CFG2, pulls=[fixed])
     assert rule(b2, CFG2, CODEX_PM, Verb.APPROVE, fixed) is None
     assert rule(b2, CFG2, CLAUDE_PM, Verb.APPROVE, fixed) == "claude made the last commit on this PR and cannot approve its own head"
@@ -3081,7 +3081,7 @@ def test_approve_rules():
 
 
 def test_request_changes_and_push_fix_need_a_different_committer():
-    pr = mk_pr(20, 13, committer="moot-codex-bot")
+    pr = mk_pr(20, 13, committer="meld-codex-bot")
     b = mk_board(CFG2, pulls=[pr])
     for verb in (Verb.REQUEST_CHANGES, Verb.PUSH_FIX):
         assert rule(b, CFG2, CLAUDE_PM, verb, pr) is None
@@ -3090,45 +3090,45 @@ def test_request_changes_and_push_fix_need_a_different_committer():
 
 
 def test_merge_quorum_two_groups():
-    unreviewed = mk_pr(20, 13, committer="moot-codex-bot")
+    unreviewed = mk_pr(20, 13, committer="meld-codex-bot")
     assert rule(mk_board(CFG2, pulls=[unreviewed]), CFG2, CLAUDE_PM, Verb.MERGE, unreviewed) == \
         "0/1 approvals from non-committer parties (have: [])"
-    self_approved = mk_pr(20, 13, committer="moot-codex-bot", approvals=("moot-codex-bot",))
+    self_approved = mk_pr(20, 13, committer="meld-codex-bot", approvals=("meld-codex-bot",))
     assert "0/1 approvals" in rule(mk_board(CFG2, pulls=[self_approved]), CFG2, CLAUDE_PM, Verb.MERGE, self_approved)
-    approved = mk_pr(20, 13, committer="moot-codex-bot", approvals=("moot-claude-bot",))
+    approved = mk_pr(20, 13, committer="meld-codex-bot", approvals=("meld-claude-bot",))
     b = mk_board(CFG2, pulls=[approved])
     assert rule(b, CFG2, CLAUDE_PM, Verb.MERGE, approved) is None
     assert rule(b, CFG2, CODEX_PM, Verb.MERGE, approved) is None  # either PM may merge
     assert rule(b, CFG2, HUMAN, Verb.MERGE, approved) is None
     assert rule(b, CFG2, CLAUDE_ORCH, Verb.MERGE, approved) == "only a PM or a human may merge"
-    human_approved = mk_pr(21, 14, committer="moot-codex-bot", approvals=("empowerScott",))
+    human_approved = mk_pr(21, 14, committer="meld-codex-bot", approvals=("empowerScott",))
     assert rule(mk_board(CFG2, pulls=[human_approved]), CFG2, CODEX_PM, Verb.MERGE, human_approved) is None
 
 
 def test_merge_quorum_three_groups():
-    one = mk_pr(20, 13, committer="moot-codex-bot", approvals=("moot-claude-bot",))
+    one = mk_pr(20, 13, committer="meld-codex-bot", approvals=("meld-claude-bot",))
     assert rule(mk_board(CFG3, pulls=[one]), CFG3, CLAUDE_PM, Verb.MERGE, one) == \
         "1/2 approvals from non-committer parties (have: ['claude'])"
-    two = mk_pr(20, 13, committer="moot-codex-bot", approvals=("moot-claude-bot", "moot-gemini-bot"))
+    two = mk_pr(20, 13, committer="meld-codex-bot", approvals=("meld-claude-bot", "meld-gemini-bot"))
     assert rule(mk_board(CFG3, pulls=[two]), CFG3, GEMINI_PM, Verb.MERGE, two) is None
-    human_plus_one = mk_pr(21, 14, committer="moot-codex-bot", approvals=("moot-claude-bot", "empowerScott"))
+    human_plus_one = mk_pr(21, 14, committer="meld-codex-bot", approvals=("meld-claude-bot", "empowerScott"))
     assert rule(mk_board(CFG3, pulls=[human_plus_one]), CFG3, CLAUDE_PM, Verb.MERGE, human_plus_one) is None
 
 
 def test_merge_blockers_and_stale_approvals():
-    approved = mk_pr(20, 13, committer="moot-codex-bot", approvals=("moot-claude-bot",))
+    approved = mk_pr(20, 13, committer="meld-codex-bot", approvals=("meld-claude-bot",))
     assert rule(mk_board(CFG2, pulls=[approved], halted=True), CFG2, CLAUDE_PM, Verb.MERGE, approved) == "HALT is in effect"
     assert rule(mk_board(CFG2, pulls=[approved], open_challenges=frozenset({"#20"})), CFG2, CLAUDE_PM, Verb.MERGE, approved) == "PR has an open CHALLENGE"
-    red = mk_pr(20, 13, committer="moot-codex-bot", approvals=("moot-claude-bot",), checks="red")
+    red = mk_pr(20, 13, committer="meld-codex-bot", approvals=("meld-claude-bot",), checks="red")
     assert rule(mk_board(CFG2, pulls=[red]), CFG2, CLAUDE_PM, Verb.MERGE, red) == "required checks are red, not green"
-    pending = mk_pr(20, 13, committer="moot-codex-bot", approvals=("moot-claude-bot",), checks="pending")
+    pending = mk_pr(20, 13, committer="meld-codex-bot", approvals=("meld-claude-bot",), checks="pending")
     assert rule(mk_board(CFG2, pulls=[pending]), CFG2, CLAUDE_PM, Verb.MERGE, pending) == "required checks are pending, not green"
-    stale = mk_pr(20, 13, committer="moot-codex-bot", stale_approvals=("moot-claude-bot",))
+    stale = mk_pr(20, 13, committer="meld-codex-bot", stale_approvals=("meld-claude-bot",))
     assert "0/1 approvals" in rule(mk_board(CFG2, pulls=[stale]), CFG2, CLAUDE_PM, Verb.MERGE, stale)
 
 
 def test_pingpong_and_legal_pr_verbs():
-    pr = mk_pr(20, 13, committer="moot-codex-bot", approvals=("moot-claude-bot",), extra_changes_requested_history=3)
+    pr = mk_pr(20, 13, committer="meld-codex-bot", approvals=("meld-claude-bot",), extra_changes_requested_history=3)
     assert pingpong_exceeded(CFG2, pr)
     assert not pingpong_exceeded(CFG2, mk_pr(21, 14, extra_changes_requested_history=2))
     b = mk_board(CFG2, pulls=[pr])
@@ -3141,7 +3141,7 @@ def test_pingpong_and_legal_pr_verbs():
 Run: `uv run pytest tests/test_rules_prs.py -v`
 Expected: FAIL with `ImportError: cannot import name 'approving_parties'`
 
-- [ ] **Step 3: Append to `src/moot/rules.py`**
+- [ ] **Step 3: Append to `src/meld/rules.py`**
 
 ```python
 # ---- PR verbs ----------------------------------------------------------------
@@ -3216,7 +3216,7 @@ Expected: PASS (19 tests)
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/moot/rules.py tests/test_rules_prs.py
+git add src/meld/rules.py tests/test_rules_prs.py
 git commit -m "feat: PR rules with review quorum, last-committer exclusion, and merge blockers"
 ```
 
@@ -3225,23 +3225,23 @@ git commit -m "feat: PR rules with review quorum, last-committer exclusion, and 
 ### Task 12: Roster — built-in and product worker types
 
 **Files:**
-- Create: `src/moot/prompts/workers/backend.md`, `frontend.md`, `security.md`, `qa.md`, `reviewer.md`, `auditor.md`, `docs.md`
-- Create: `src/moot/roster.py`
+- Create: `src/meld/prompts/workers/backend.md`, `frontend.md`, `security.md`, `qa.md`, `reviewer.md`, `auditor.md`, `docs.md`
+- Create: `src/meld/roster.py`
 - Create: `tests/test_roster.py`
 
 **Interfaces:**
-- Produces (in `moot.roster`):
+- Produces (in `meld.roster`):
   - `@dataclass(frozen=True) WorkerType(name: str, description: str, source: str, path: Path | None)` where `source in {"builtin", "product", "skill"}`
   - `parse_worker_file(path: Path, source: str) -> WorkerType`
   - `builtin_workers() -> list[WorkerType]`
-  - `product_workers(repo_root: Path) -> list[WorkerType]` (reads `<repo_root>/.moot/workers/*.md`)
+  - `product_workers(repo_root: Path) -> list[WorkerType]` (reads `<repo_root>/.meld/workers/*.md`)
   - `roster(repo_root: Path | None, extra: Iterable[WorkerType] = ()) -> list[WorkerType]` (builtins overridden by product entries of the same name, then `extra`, sorted by name)
   - `roster_names(repo_root: Path | None, extra=()) -> frozenset[str]`
 - Worker prompt file format: line 1 is `# <name>`; the first non-empty line after it is the one-line description. Plan 2 appends the full role brief and the fixed worker contract beneath.
 
 - [ ] **Step 1: Write the seven built-in worker files**
 
-`src/moot/prompts/workers/backend.md`:
+`src/meld/prompts/workers/backend.md`:
 
 ```markdown
 # backend
@@ -3249,7 +3249,7 @@ git commit -m "feat: PR rules with review quorum, last-committer exclusion, and 
 Implements server-side code, APIs, data models, and migrations, with tests for everything it builds.
 ```
 
-`src/moot/prompts/workers/frontend.md`:
+`src/meld/prompts/workers/frontend.md`:
 
 ```markdown
 # frontend
@@ -3257,7 +3257,7 @@ Implements server-side code, APIs, data models, and migrations, with tests for e
 Builds user-facing components, pages, and styling; verifies rendering and accessibility with tests.
 ```
 
-`src/moot/prompts/workers/security.md`:
+`src/meld/prompts/workers/security.md`:
 
 ```markdown
 # security
@@ -3265,7 +3265,7 @@ Builds user-facing components, pages, and styling; verifies rendering and access
 Reviews or implements authentication, authorization, secrets handling, and input validation; reports findings with evidence.
 ```
 
-`src/moot/prompts/workers/qa.md`:
+`src/meld/prompts/workers/qa.md`:
 
 ```markdown
 # qa
@@ -3273,7 +3273,7 @@ Reviews or implements authentication, authorization, secrets handling, and input
 Writes and runs end-to-end and regression tests against acceptance criteria; files precise failure reports.
 ```
 
-`src/moot/prompts/workers/reviewer.md`:
+`src/meld/prompts/workers/reviewer.md`:
 
 ```markdown
 # reviewer
@@ -3281,7 +3281,7 @@ Writes and runs end-to-end and regression tests against acceptance criteria; fil
 Reviews another group's pull request for correctness, security, tests, and conventions; approves, requests changes, or pushes a fix.
 ```
 
-`src/moot/prompts/workers/auditor.md`:
+`src/meld/prompts/workers/auditor.md`:
 
 ```markdown
 # auditor
@@ -3289,7 +3289,7 @@ Reviews another group's pull request for correctness, security, tests, and conve
 Independently re-checks merged work against its acceptance criteria and posted evidence; reports pass or fail per PR.
 ```
 
-`src/moot/prompts/workers/docs.md`:
+`src/meld/prompts/workers/docs.md`:
 
 ```markdown
 # docs
@@ -3304,7 +3304,7 @@ Writes and updates documentation, decision records, and worker-type prompt files
 ```python
 from pathlib import Path
 
-from moot.roster import WorkerType, builtin_workers, parse_worker_file, product_workers, roster, roster_names
+from meld.roster import WorkerType, builtin_workers, parse_worker_file, product_workers, roster, roster_names
 
 
 def test_builtin_roster_has_the_seven_day_one_types():
@@ -3325,7 +3325,7 @@ def test_parse_worker_file_uses_stem_and_first_paragraph(tmp_path: Path):
 
 
 def test_product_workers_override_builtins_and_add_new(tmp_path: Path):
-    wd = tmp_path / ".moot" / "workers"
+    wd = tmp_path / ".meld" / "workers"
     wd.mkdir(parents=True)
     (wd / "marketing.md").write_text("# marketing\n\nDrafts launch copy.\n")
     (wd / "backend.md").write_text("# backend\n\nProduct-specific backend rules.\n")
@@ -3348,9 +3348,9 @@ def test_roster_without_repo_root_and_with_extra():
 - [ ] **Step 3: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_roster.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'moot.roster'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'meld.roster'`
 
-- [ ] **Step 4: Write `src/moot/roster.py`**
+- [ ] **Step 4: Write `src/meld/roster.py`**
 
 ```python
 """Worker-type inventory: built-in prompts, product overrides, and adapter-provided skills."""
@@ -3381,7 +3381,7 @@ def parse_worker_file(path: Path, source: str) -> WorkerType:
 
 
 def builtin_workers() -> list[WorkerType]:
-    root = resources.files("moot").joinpath("prompts", "workers")
+    root = resources.files("meld").joinpath("prompts", "workers")
     out: list[WorkerType] = []
     for entry in sorted(root.iterdir(), key=lambda e: e.name):
         if entry.name.endswith(".md"):
@@ -3391,7 +3391,7 @@ def builtin_workers() -> list[WorkerType]:
 
 
 def product_workers(repo_root: Path) -> list[WorkerType]:
-    d = repo_root / ".moot" / "workers"
+    d = repo_root / ".meld" / "workers"
     if not d.is_dir():
         return []
     return [parse_worker_file(p, "product") for p in sorted(d.glob("*.md"))]
@@ -3419,36 +3419,36 @@ Expected: PASS (4 tests)
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/moot/prompts/workers src/moot/roster.py tests/test_roster.py
+git add src/meld/prompts/workers src/meld/roster.py tests/test_roster.py
 git commit -m "feat: worker roster from built-in prompts and product overrides"
 ```
 
 ---
 
-### Task 13: CLI context, `moot status`, and `moot models`
+### Task 13: CLI context, `meld status`, and `meld models`
 
 **Files:**
-- Create: `src/moot/context.py`
-- Create: `src/moot/status.py`
-- Modify: `src/moot/cli.py` (replace whole file)
+- Create: `src/meld/context.py`
+- Create: `src/meld/status.py`
+- Modify: `src/meld/cli.py` (replace whole file)
 - Modify: `tests/conftest.py` (add `PROJECT_TOML` and `env_for`)
 - Create: `tests/test_status.py`
 
 **Interfaces:**
 - Consumes: everything above.
 - Produces:
-  - `moot.context.Context` dataclass: `cfg, party, gh, store, models, repo_root: Path, actor_login: str` and `.actor() -> Actor` (roster from `roster_names(repo_root)` for groups, empty for humans)
-  - `moot.context.find_config(start: Path) -> Path` (searches `start` and its parents for `.moot.toml`, raises `ConfigError`)
-  - `moot.context.load_context(config_path: Path | None = None, env: Mapping | None = None, run=subprocess.run, cwd: Path | None = None, models: ModelRegistry | None = None) -> Context`
-  - `moot.status.render_status(board, cfg, actor, models, now: datetime | None = None) -> dict`
-  - `moot.status.build_status(ctx, now=None) -> tuple[dict, Board]`
-  - `moot.cli.RUN` module attribute (defaults to `subprocess.run`; tests monkeypatch it), `moot.cli.main` group with `--config PATH` and `--pretty/--compact`, commands `status` and `models`.
+  - `meld.context.Context` dataclass: `cfg, party, gh, store, models, repo_root: Path, actor_login: str` and `.actor() -> Actor` (roster from `roster_names(repo_root)` for groups, empty for humans)
+  - `meld.context.find_config(start: Path) -> Path` (searches `start` and its parents for `.meld.toml`, raises `ConfigError`)
+  - `meld.context.load_context(config_path: Path | None = None, env: Mapping | None = None, run=subprocess.run, cwd: Path | None = None, models: ModelRegistry | None = None) -> Context`
+  - `meld.status.render_status(board, cfg, actor, models, now: datetime | None = None) -> dict`
+  - `meld.status.build_status(ctx, now=None) -> tuple[dict, Board]`
+  - `meld.cli.RUN` module attribute (defaults to `subprocess.run`; tests monkeypatch it), `meld.cli.main` group with `--config PATH` and `--pretty/--compact`, commands `status` and `models`.
 - Status JSON shape (keys and types are the contract for the prompts in later plans):
 
 ```
 {
   "repo": str, "milestone": int, "coordination_issue": int, "phase": "planning"|"executing", "halted": bool,
-  "party": "[claude:pm]", "actor": "moot-claude-bot", "quorum": int,
+  "party": "[claude:pm]", "actor": "meld-claude-bot", "quorum": int,
   "needs_human": [{"issue": int, "title": str, "age_minutes": int}],
   "budget": {"spent": {group: {tier: int}}, "cap": {tier: int}},
   "issues": [{"number", "title", "status", "assignees", "worker", "model", "effort", "size", "challenged", "legal": [verb]}],
@@ -3474,8 +3474,8 @@ name = "acme/widgets"
 accounts = ["empowerScott"]
 [groups.claude]
 cli = "claude"
-bot = "moot-claude-bot"
-token_env = "MOOT_TOKEN_CLAUDE"
+bot = "meld-claude-bot"
+token_env = "MELD_TOKEN_CLAUDE"
 [groups.claude.orchestrator]
 model = "claude-opus-5"
 effort = "high"
@@ -3484,8 +3484,8 @@ model = "claude-sonnet-5"
 effort = "medium"
 [groups.codex]
 cli = "codex"
-bot = "moot-codex-bot"
-token_env = "MOOT_TOKEN_CODEX"
+bot = "meld-codex-bot"
+token_env = "MELD_TOKEN_CODEX"
 [groups.codex.orchestrator]
 model = "gpt-x"
 effort = "high"
@@ -3496,10 +3496,10 @@ effort = "medium"
 
 
 def env_for(tmp_path: Path, group: str | None = "claude", role: str = "pm") -> dict[str, str]:
-    e = {"MOOT_HOME": str(tmp_path / "home"), "MOOT_TOKEN_CLAUDE": "tok-c", "MOOT_TOKEN_CODEX": "tok-x"}
+    e = {"MELD_HOME": str(tmp_path / "home"), "MELD_TOKEN_CLAUDE": "tok-c", "MELD_TOKEN_CODEX": "tok-x"}
     if group:
-        e["MOOT_GROUP"] = group
-        e["MOOT_ROLE"] = role
+        e["MELD_GROUP"] = group
+        e["MELD_ROLE"] = role
     return e
 ```
 
@@ -3514,22 +3514,22 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-import moot.cli as cli
-from moot.config import ConfigError
-from moot.context import find_config, load_context
+import meld.cli as cli
+from meld.config import ConfigError
+from meld.context import find_config, load_context
 from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
 from tests.fakegh import FakeGh
 
 
 @pytest.fixture
 def project(tmp_path: Path):
-    (tmp_path / ".moot.toml").write_text(PROJECT_TOML)
+    (tmp_path / ".meld.toml").write_text(PROJECT_TOML)
     (tmp_path / "sub").mkdir()
     return tmp_path
 
 
 def test_find_config_walks_up(project: Path):
-    assert find_config(project / "sub") == project / ".moot.toml"
+    assert find_config(project / "sub") == project / ".meld.toml"
     with pytest.raises(ConfigError):
         find_config(Path("/"))
 
@@ -3537,15 +3537,15 @@ def test_find_config_walks_up(project: Path):
 def test_load_context_requires_token_for_groups(project: Path):
     fake = FakeGh()
     env = env_for(project)
-    del env["MOOT_TOKEN_CLAUDE"]
-    with pytest.raises(ConfigError, match="MOOT_TOKEN_CLAUDE"):
-        load_context(project / ".moot.toml", env=env, run=fake)
+    del env["MELD_TOKEN_CLAUDE"]
+    with pytest.raises(ConfigError, match="MELD_TOKEN_CLAUDE"):
+        load_context(project / ".meld.toml", env=env, run=fake)
 
 
 def test_load_context_human_uses_viewer_login(project: Path):
     fake = FakeGh()
     fake.route("GET", "user", {"login": "empowerScott"})
-    ctx = load_context(project / ".moot.toml", env=env_for(project, group=None), run=fake)
+    ctx = load_context(project / ".meld.toml", env=env_for(project, group=None), run=fake)
     assert ctx.party.kind == "human" and ctx.actor_login == "empowerScott" and ctx.gh.token is None
 
 
@@ -3553,10 +3553,10 @@ def test_status_command_reports_board_and_legal_actions(project: Path, monkeypat
     fake = FakeGh()
     load_board1_routes(fake)
     monkeypatch.setattr(cli, "RUN", fake)
-    result = CliRunner().invoke(cli.main, ["--config", str(project / ".moot.toml"), "--compact", "status"], env=env_for(project))
+    result = CliRunner().invoke(cli.main, ["--config", str(project / ".meld.toml"), "--compact", "status"], env=env_for(project))
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
-    assert data["party"] == "[claude:pm]" and data["actor"] == "moot-claude-bot" and data["phase"] == "executing"
+    assert data["party"] == "[claude:pm]" and data["actor"] == "meld-claude-bot" and data["phase"] == "executing"
     assert data["quorum"] == 1
     issues = {i["number"]: i for i in data["issues"]}
     assert issues[11]["legal"] == ["claim"]
@@ -3576,7 +3576,7 @@ def test_status_as_orchestrator_cannot_claim(project: Path, monkeypatch):
     fake = FakeGh()
     load_board1_routes(fake)
     monkeypatch.setattr(cli, "RUN", fake)
-    result = CliRunner().invoke(cli.main, ["--config", str(project / ".moot.toml"), "--compact", "status"],
+    result = CliRunner().invoke(cli.main, ["--config", str(project / ".meld.toml"), "--compact", "status"],
                                 env=env_for(project, role="orchestrator"))
     data = json.loads(result.output)
     assert {i["number"]: i["legal"] for i in data["issues"]}[11] == []
@@ -3585,7 +3585,7 @@ def test_status_as_orchestrator_cannot_claim(project: Path, monkeypatch):
 def test_models_command_lists_adapter_models(project: Path, monkeypatch):
     fake = FakeGh()
     monkeypatch.setattr(cli, "RUN", fake)
-    result = CliRunner().invoke(cli.main, ["--config", str(project / ".moot.toml"), "--compact", "models"], env=env_for(project))
+    result = CliRunner().invoke(cli.main, ["--config", str(project / ".meld.toml"), "--compact", "models"], env=env_for(project))
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
     assert data["adapter"] == "claude"
@@ -3595,9 +3595,9 @@ def test_models_command_lists_adapter_models(project: Path, monkeypatch):
 - [ ] **Step 3: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_status.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'moot.context'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'meld.context'`
 
-- [ ] **Step 4: Write `src/moot/context.py`**
+- [ ] **Step 4: Write `src/meld/context.py`**
 
 ```python
 """Resolve config, party, GitHub client, and state store for one CLI invocation."""
@@ -3609,12 +3609,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
-from moot.config import Config, ConfigError, Party, load_config, party_from_env
-from moot.github import GitHub
-from moot.models import ModelRegistry
-from moot.roster import roster_names
-from moot.rules import Actor
-from moot.state import StateStore, moot_home
+from meld.config import Config, ConfigError, Party, load_config, party_from_env
+from meld.github import GitHub
+from meld.models import ModelRegistry
+from meld.roster import roster_names
+from meld.rules import Actor
+from meld.state import StateStore, meld_home
 
 
 @dataclass
@@ -3634,10 +3634,10 @@ class Context:
 
 def find_config(start: Path) -> Path:
     for d in [start, *start.parents]:
-        candidate = d / ".moot.toml"
+        candidate = d / ".meld.toml"
         if candidate.exists():
             return candidate
-    raise ConfigError(f"no .moot.toml found from {start} upward; pass --config")
+    raise ConfigError(f"no .meld.toml found from {start} upward; pass --config")
 
 
 def load_context(config_path: Path | None = None, env: Mapping[str, str] | None = None, run=subprocess.run,
@@ -3646,7 +3646,7 @@ def load_context(config_path: Path | None = None, env: Mapping[str, str] | None 
     path = config_path or find_config(cwd or Path.cwd())
     cfg = load_config(path)
     party = party_from_env(cfg, env)
-    store = StateStore(moot_home(env), party.group)
+    store = StateStore(meld_home(env), party.group)
     token: str | None = None
     if party.group:
         g = cfg.groups[party.group]
@@ -3659,7 +3659,7 @@ def load_context(config_path: Path | None = None, env: Mapping[str, str] | None 
                    repo_root=path.parent, actor_login=login)
 ```
 
-- [ ] **Step 5: Write `src/moot/status.py`**
+- [ ] **Step 5: Write `src/meld/status.py`**
 
 ```python
 """Render the board plus legal actions for the calling party."""
@@ -3667,12 +3667,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from moot.assemble import build_board, find_active_milestone
-from moot.board import Board
-from moot.config import Config
-from moot.grammar import AGREEMENT_VERBS, agreement_for
-from moot.models import ModelRegistry
-from moot.rules import (
+from meld.assemble import build_board, find_active_milestone
+from meld.board import Board
+from meld.config import Config
+from meld.grammar import AGREEMENT_VERBS, agreement_for
+from meld.models import ModelRegistry
+from meld.rules import (
     Actor,
     approving_parties,
     committer_party,
@@ -3681,7 +3681,7 @@ from moot.rules import (
     party_of_login,
     pingpong_exceeded,
 )
-from moot.state import board_digest
+from meld.state import board_digest
 
 
 def _age_minutes(iso: str, now: datetime) -> int:
@@ -3740,10 +3740,10 @@ def build_status(ctx, now: datetime | None = None) -> tuple[dict, Board]:
     return render_status(board, ctx.cfg, ctx.actor(), ctx.models, now), board
 ```
 
-- [ ] **Step 6: Replace `src/moot/cli.py`**
+- [ ] **Step 6: Replace `src/meld/cli.py`**
 
 ```python
-"""moot command-line entry point."""
+"""meld command-line entry point."""
 from __future__ import annotations
 
 import json
@@ -3752,12 +3752,12 @@ from pathlib import Path
 
 import click
 
-from moot import __version__
-from moot.assemble import BoardError
-from moot.config import ConfigError
-from moot.context import Context, load_context
-from moot.github import GitHubError
-from moot.status import build_status
+from meld import __version__
+from meld.assemble import BoardError
+from meld.config import ConfigError
+from meld.context import Context, load_context
+from meld.github import GitHubError
+from meld.status import build_status
 
 RUN = subprocess.run  # tests monkeypatch this with a FakeGh
 
@@ -3767,13 +3767,13 @@ def emit(data: object, pretty: bool) -> None:
 
 
 @click.group()
-@click.version_option(__version__, prog_name="moot")
+@click.version_option(__version__, prog_name="meld")
 @click.option("--config", "config_path", type=click.Path(path_type=Path), default=None,
-              help="Path to .moot.toml (default: search upward from the current directory).")
+              help="Path to .meld.toml (default: search upward from the current directory).")
 @click.option("--pretty/--compact", default=True, help="Pretty-print JSON output.")
 @click.pass_context
 def main(ctx: click.Context, config_path: Path | None, pretty: bool) -> None:
-    """Moot: multi-AI coordination over a GitHub repo."""
+    """Meld: multi-AI coordination over a GitHub repo."""
     ctx.obj = {"config_path": config_path, "pretty": pretty}
 
 
@@ -3825,23 +3825,23 @@ Expected: PASS (7 tests)
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/moot/context.py src/moot/status.py src/moot/cli.py tests/test_status.py
-git commit -m "feat: moot status and moot models with legal actions per party"
+git add src/meld/context.py src/meld/status.py src/meld/cli.py tests/test_status.py
+git commit -m "feat: meld status and meld models with legal actions per party"
 ```
 
 ---
 
-### Task 14: `moot wait`
+### Task 14: `meld wait`
 
 **Files:**
-- Create: `src/moot/waiting.py`
-- Modify: `src/moot/cli.py` (add command)
+- Create: `src/meld/waiting.py`
+- Modify: `src/meld/cli.py` (add command)
 - Create: `tests/test_wait.py`
 
 **Interfaces:**
 - Produces:
-  - `moot.waiting.wait_for_change(ctx, timeout: float, interval: float, *, sleep=time.sleep, clock=time.monotonic) -> dict` — the status dict plus `changes: list[str]`, `timed_out: bool`, `rate_limited: bool`. Returns immediately when there is no prior snapshot (`changes == ["initial snapshot"]`), when the digest differs from the saved snapshot (and saves the new one), or at the deadline with `changes == []`. On `RateLimited` it backs off (interval, doubling, capped at 300s) and keeps trying until the deadline.
-  - CLI: `moot wait [--timeout SECONDS] [--interval SECONDS]`, defaults from `polling.wait_timeout_seconds` and `polling.interval_seconds`.
+  - `meld.waiting.wait_for_change(ctx, timeout: float, interval: float, *, sleep=time.sleep, clock=time.monotonic) -> dict` — the status dict plus `changes: list[str]`, `timed_out: bool`, `rate_limited: bool`. Returns immediately when there is no prior snapshot (`changes == ["initial snapshot"]`), when the digest differs from the saved snapshot (and saves the new one), or at the deadline with `changes == []`. On `RateLimited` it backs off (interval, doubling, capped at 300s) and keeps trying until the deadline.
+  - CLI: `meld wait [--timeout SECONDS] [--interval SECONDS]`, defaults from `polling.wait_timeout_seconds` and `polling.interval_seconds`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3850,17 +3850,17 @@ git commit -m "feat: moot status and moot models with legal actions per party"
 ```python
 import json
 
-from moot.context import load_context
-from moot.waiting import wait_for_change
+from meld.context import load_context
+from meld.waiting import wait_for_change
 from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
 from tests.fakegh import FakeGh
 
 
 def make_ctx(tmp_path):
-    (tmp_path / ".moot.toml").write_text(PROJECT_TOML)
+    (tmp_path / ".meld.toml").write_text(PROJECT_TOML)
     fake = FakeGh()
     load_board1_routes(fake)
-    ctx = load_context(tmp_path / ".moot.toml", env=env_for(tmp_path), run=fake)
+    ctx = load_context(tmp_path / ".meld.toml", env=env_for(tmp_path), run=fake)
     return fake, ctx
 
 
@@ -3890,8 +3890,8 @@ def test_returns_when_board_changes(tmp_path):
     issues = json.loads((__import__("pathlib").Path(__file__).parent / "fixtures/board1/issues.json").read_text())
     for i in issues:
         if i["number"] == 11:
-            i["labels"] = [l for l in i["labels"] if l["name"] != "moot:ready"] + [{"name": "moot:in-progress"}]
-            i["assignees"] = [{"login": "moot-codex-bot"}]
+            i["labels"] = [l for l in i["labels"] if l["name"] != "meld:ready"] + [{"name": "meld:in-progress"}]
+            i["assignees"] = [{"login": "meld-codex-bot"}]
 
     def sleep_then_mutate(s):
         clock.sleep(s)
@@ -3930,9 +3930,9 @@ def test_rate_limit_backs_off_and_recovers(tmp_path):
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_wait.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'moot.waiting'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'meld.waiting'`
 
-- [ ] **Step 3: Write `src/moot/waiting.py`**
+- [ ] **Step 3: Write `src/meld/waiting.py`**
 
 ```python
 """Block until the board changes or a timeout elapses."""
@@ -3940,9 +3940,9 @@ from __future__ import annotations
 
 import time
 
-from moot.github import RateLimited
-from moot.state import diff_digest
-from moot.status import build_status
+from meld.github import RateLimited
+from meld.state import diff_digest
+from meld.status import build_status
 
 _MAX_BACKOFF = 300.0
 
@@ -3972,9 +3972,9 @@ def wait_for_change(ctx, timeout: float, interval: float, *, sleep=time.sleep, c
         sleep(interval)
 ```
 
-- [ ] **Step 4: Add the command to `src/moot/cli.py`**
+- [ ] **Step 4: Add the command to `src/meld/cli.py`**
 
-Add `from moot.waiting import wait_for_change` to the imports, then append:
+Add `from meld.waiting import wait_for_change` to the imports, then append:
 
 ```python
 @main.command()
@@ -3998,26 +3998,26 @@ Expected: PASS (4 tests)
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/moot/waiting.py src/moot/cli.py tests/test_wait.py
-git commit -m "feat: moot wait blocks until the board changes with rate-limit backoff"
+git add src/meld/waiting.py src/meld/cli.py tests/test_wait.py
+git commit -m "feat: meld wait blocks until the board changes with rate-limit backoff"
 ```
 
 ---
 
-### Task 15: `moot claim` and `moot release`
+### Task 15: `meld claim` and `meld release`
 
 **Files:**
-- Create: `src/moot/actions.py`
-- Modify: `src/moot/cli.py` (add commands and refusal handling)
+- Create: `src/meld/actions.py`
+- Modify: `src/meld/cli.py` (add commands and refusal handling)
 - Create: `tests/test_actions.py`
 
 **Interfaces:**
-- Produces (in `moot.actions`):
+- Produces (in `meld.actions`):
   - `class Refused(Exception)` with `.refusal: Refusal`
   - `refuse(ctx, board, refusal) -> NoReturn` — for group parties posts `[<party>] PROTOCOL-VIOLATION <target>` on the coordination issue, then raises `Refused`; humans get no comment.
-  - `claim(ctx, number: int) -> dict` → `{"claimed": number, "assignee": login}`; performs assign, re-read, race check, label swap `moot:ready` → `moot:in-progress`.
-  - `release(ctx, number: int, force: bool = False) -> dict` → `{"released": number, "previous_assignees": [...]}`; removes assignees, swaps `moot:in-progress`/`moot:blocked` → `moot:ready`; `--force` is human-only and posts `[human] RELEASE #n`.
-  - CLI: `moot claim N`, `moot release N [--force]`; on `Refused` prints `{"refused": ..., "verb": ..., "target": ..., "rule": ..., "violation_posted": ...}` and exits 2. `violation_posted` is tri-state: `True` when a `PROTOCOL-VIOLATION` comment was posted, `False` when posting one was attempted and failed, `None` when none was attempted (a human's refusal, or a lost claim race, which is not a protocol violation).
+  - `claim(ctx, number: int) -> dict` → `{"claimed": number, "assignee": login}`; performs assign, re-read, race check, label swap `meld:ready` → `meld:in-progress`.
+  - `release(ctx, number: int, force: bool = False) -> dict` → `{"released": number, "previous_assignees": [...]}`; removes assignees, swaps `meld:in-progress`/`meld:blocked` → `meld:ready`; `--force` is human-only and posts `[human] RELEASE #n`.
+  - CLI: `meld claim N`, `meld release N [--force]`; on `Refused` prints `{"refused": ..., "verb": ..., "target": ..., "rule": ..., "violation_posted": ...}` and exits 2. `violation_posted` is tri-state: `True` when a `PROTOCOL-VIOLATION` comment was posted, `False` when posting one was attempted and failed, `None` when none was attempted (a human's refusal, or a lost claim race, which is not a protocol violation).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -4029,9 +4029,9 @@ import json
 import pytest
 from click.testing import CliRunner
 
-import moot.cli as cli
-from moot.actions import Refused, claim, release
-from moot.context import load_context
+import meld.cli as cli
+from meld.actions import Refused, claim, release
+from meld.context import load_context
 from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
 from tests.fakegh import FakeGh
 
@@ -4039,10 +4039,10 @@ R = "repos/acme/widgets/"
 
 
 def make(tmp_path, group="claude", role="pm"):
-    (tmp_path / ".moot.toml").write_text(PROJECT_TOML)
+    (tmp_path / ".meld.toml").write_text(PROJECT_TOML)
     fake = FakeGh()
     load_board1_routes(fake)
-    ctx = load_context(tmp_path / ".moot.toml", env=env_for(tmp_path, group=group, role=role), run=fake)
+    ctx = load_context(tmp_path / ".meld.toml", env=env_for(tmp_path, group=group, role=role), run=fake)
     return fake, ctx
 
 
@@ -4052,13 +4052,13 @@ def posted_headers(fake):
 
 def test_claim_happy_path(tmp_path):
     fake, ctx = make(tmp_path)
-    fake.route("POST", R + "issues/11/assignees", {"assignees": [{"login": "moot-claude-bot"}]})
-    fake.route("GET", R + "issues/11", {"number": 11, "assignees": [{"login": "moot-claude-bot"}]})
-    fake.route("DELETE", R + "issues/11/labels/moot:ready", [])
-    fake.route("POST", R + "issues/11/labels", [{"name": "moot:in-progress"}])
-    assert claim(ctx, 11) == {"claimed": 11, "assignee": "moot-claude-bot"}
+    fake.route("POST", R + "issues/11/assignees", {"assignees": [{"login": "meld-claude-bot"}]})
+    fake.route("GET", R + "issues/11", {"number": 11, "assignees": [{"login": "meld-claude-bot"}]})
+    fake.route("DELETE", R + "issues/11/labels/meld:ready", [])
+    fake.route("POST", R + "issues/11/labels", [{"name": "meld:in-progress"}])
+    assert claim(ctx, 11) == {"claimed": 11, "assignee": "meld-claude-bot"}
     mutations = [(c.method, c.endpoint) for c in fake.calls if c.method != "GET"]
-    assert mutations == [("POST", R + "issues/11/assignees"), ("DELETE", R + "issues/11/labels/moot:ready"),
+    assert mutations == [("POST", R + "issues/11/assignees"), ("DELETE", R + "issues/11/labels/meld:ready"),
                          ("POST", R + "issues/11/labels")]
     assert posted_headers(fake) == []
 
@@ -4066,12 +4066,12 @@ def test_claim_happy_path(tmp_path):
 def test_claim_lost_race_releases_and_refuses(tmp_path):
     fake, ctx = make(tmp_path)
     fake.route("POST", R + "issues/11/assignees", {})
-    fake.route("GET", R + "issues/11", {"number": 11, "assignees": [{"login": "moot-codex-bot"}, {"login": "moot-claude-bot"}]})
+    fake.route("GET", R + "issues/11", {"number": 11, "assignees": [{"login": "meld-codex-bot"}, {"login": "meld-claude-bot"}]})
     fake.route("DELETE", R + "issues/11/assignees", {})
     fake.route("POST", R + "issues/10/comments", {"id": 1})
     with pytest.raises(Refused) as ei:
         claim(ctx, 11)
-    assert "lost the claim race to moot-codex-bot" in ei.value.refusal.rule
+    assert "lost the claim race to meld-codex-bot" in ei.value.refusal.rule
     assert ("DELETE", R + "issues/11/assignees") in [(c.method, c.endpoint) for c in fake.calls]
     assert posted_headers(fake) == ["[claude:pm] PROTOCOL-VIOLATION #11"]
 
@@ -4101,16 +4101,16 @@ def test_claim_unknown_issue(tmp_path):
 def test_release_by_owner_and_forced_by_human(tmp_path):
     fake, ctx = make(tmp_path)
     fake.route("DELETE", R + "issues/12/assignees", {})
-    fake.route("DELETE", R + "issues/12/labels/moot:in-progress", [])
-    fake.route("DELETE", R + "issues/12/labels/moot:blocked", [])
-    fake.route("POST", R + "issues/12/labels", [{"name": "moot:ready"}])
-    assert release(ctx, 12) == {"released": 12, "previous_assignees": ["moot-claude-bot"]}
+    fake.route("DELETE", R + "issues/12/labels/meld:in-progress", [])
+    fake.route("DELETE", R + "issues/12/labels/meld:blocked", [])
+    fake.route("POST", R + "issues/12/labels", [{"name": "meld:ready"}])
+    assert release(ctx, 12) == {"released": 12, "previous_assignees": ["meld-claude-bot"]}
     assert posted_headers(fake) == []
 
     fake2, human = make(tmp_path, group=None)
     fake2.route("DELETE", R + "issues/12/assignees", {})
-    fake2.route("DELETE", R + "issues/12/labels/moot:in-progress", [])
-    fake2.route("POST", R + "issues/12/labels", [{"name": "moot:ready"}])
+    fake2.route("DELETE", R + "issues/12/labels/meld:in-progress", [])
+    fake2.route("POST", R + "issues/12/labels", [{"name": "meld:ready"}])
     fake2.route("POST", R + "issues/10/comments", {"id": 2})
     release(human, 12, force=True)
     assert posted_headers(fake2) == ["[human] RELEASE #12"]
@@ -4122,12 +4122,12 @@ def test_release_by_owner_and_forced_by_human(tmp_path):
 
 
 def test_cli_claim_refusal_exit_code(tmp_path, monkeypatch):
-    (tmp_path / ".moot.toml").write_text(PROJECT_TOML)
+    (tmp_path / ".meld.toml").write_text(PROJECT_TOML)
     fake = FakeGh()
     load_board1_routes(fake)
     fake.route("POST", R + "issues/10/comments", {"id": 1})
     monkeypatch.setattr(cli, "RUN", fake)
-    result = CliRunner().invoke(cli.main, ["--config", str(tmp_path / ".moot.toml"), "--compact", "claim", "12"], env=env_for(tmp_path))
+    result = CliRunner().invoke(cli.main, ["--config", str(tmp_path / ".meld.toml"), "--compact", "claim", "12"], env=env_for(tmp_path))
     assert result.exit_code == 2
     data = json.loads(result.output)
     assert data["verb"] == "claim" and data["target"] == "#12" and "not ready" in data["rule"]
@@ -4136,9 +4136,9 @@ def test_cli_claim_refusal_exit_code(tmp_path, monkeypatch):
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_actions.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'moot.actions'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'meld.actions'`
 
-- [ ] **Step 3: Write `src/moot/actions.py`**
+- [ ] **Step 3: Write `src/meld/actions.py`**
 
 ```python
 """Mutating verbs on issues: claim and release. Each re-checks legality before acting."""
@@ -4146,13 +4146,13 @@ from __future__ import annotations
 
 from typing import NoReturn
 
-from moot.board import Board
-from moot.config import Party
-from moot.grammar import Header, compose
-from moot.rules import Refusal, Verb, issue_refusal
-from moot.status import build_status
+from meld.board import Board
+from meld.config import Party
+from meld.grammar import Header, compose
+from meld.rules import Refusal, Verb, issue_refusal
+from meld.status import build_status
 
-READY, IN_PROGRESS, BLOCKED = "moot:ready", "moot:in-progress", "moot:blocked"
+READY, IN_PROGRESS, BLOCKED = "meld:ready", "meld:in-progress", "meld:blocked"
 
 
 class Refused(Exception):
@@ -4217,9 +4217,9 @@ def release(ctx, number: int, force: bool = False) -> dict:
     return {"released": number, "previous_assignees": list(issue.assignees)}
 ```
 
-- [ ] **Step 4: Add the commands to `src/moot/cli.py`**
+- [ ] **Step 4: Add the commands to `src/meld/cli.py`**
 
-Add `from moot.actions import Refused, claim as do_claim, release as do_release` to the imports, then append:
+Add `from meld.actions import Refused, claim as do_claim, release as do_release` to the imports, then append:
 
 ```python
 def _run_action(ctx: click.Context, fn) -> None:
@@ -4258,26 +4258,26 @@ Expected: PASS (6 tests)
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/moot/actions.py src/moot/cli.py tests/test_actions.py
-git commit -m "feat: moot claim and moot release with race check and protocol-violation posts"
+git add src/meld/actions.py src/meld/cli.py tests/test_actions.py
+git commit -m "feat: meld claim and meld release with race check and protocol-violation posts"
 ```
 
 ---
 
-### Task 16: `moot post`, spec reconciliation, and README
+### Task 16: `meld post`, spec reconciliation, and README
 
 **Files:**
-- Create: `src/moot/posting.py`
-- Modify: `src/moot/cli.py` (add command)
+- Create: `src/meld/posting.py`
+- Modify: `src/meld/cli.py` (add command)
 - Create: `tests/test_posting.py`
-- Modify: `docs/superpowers/specs/2026-09-03-moot-design.md` (record the three small deviations)
+- Modify: `docs/superpowers/specs/2026-09-03-meld-design.md` (record the three small deviations)
 - Modify: `README.md`
 
 **Interfaces:**
-- Produces (in `moot.posting`):
+- Produces (in `meld.posting`):
   - `class PostError(ValueError)`
   - `post(ctx, verb: str, ref: str | None = None, qualifier: str | None = None, text: str = "", joint: bool = False) -> dict` → `{"comment_id", "url", "header"}`. Rules: verb must be allowed for the party; grammar `validate` must pass on the final body; `--joint` is refused for humans, requires a ref, requires the agreement on that ref to be `agreed`, `majority`, or `disagree`, requires the caller to be the proposer, renders a `## DISSENT` section for `majority`, requires qualifier `DISAGREE` and renders `## Positions` for `disagree`, and enforces `PLAN` only in `planning` and `PLAN-ADD` only in `executing`; a group `AMEND` is refused once `Agreement.can_amend` is false.
-  - CLI: `moot post VERB [REF] [--qualifier Q] [-m TEXT | --body-file PATH] [--joint]`; `PostError` prints `{"error": ...}` and exits 2.
+  - CLI: `meld post VERB [REF] [--qualifier Q] [-m TEXT | --body-file PATH] [--joint]`; `PostError` prints `{"error": ...}` and exits 2.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -4289,20 +4289,20 @@ import json
 import pytest
 from click.testing import CliRunner
 
-import moot.cli as cli
-from moot.context import load_context
-from moot.posting import PostError, post
+import meld.cli as cli
+from meld.context import load_context
+from meld.posting import PostError, post
 from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
 from tests.fakegh import FakeGh
 
 R = "repos/acme/widgets/"
 BASE_COMMENTS = [
-    {"id": 101, "user": {"login": "moot-claude-bot"}, "created_at": "2026-09-03T09:00:00Z", "body": "[claude] ROSTER\n\nbackend"},
+    {"id": 101, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T09:00:00Z", "body": "[claude] ROSTER\n\nbackend"},
 ]
 
 
 def make(tmp_path, group="claude", role="orchestrator", comments=None, approved=True):
-    (tmp_path / ".moot.toml").write_text(PROJECT_TOML)
+    (tmp_path / ".meld.toml").write_text(PROJECT_TOML)
     fake = FakeGh()
     load_board1_routes(fake)
     if comments is not None:
@@ -4311,10 +4311,10 @@ def make(tmp_path, group="claude", role="orchestrator", comments=None, approved=
         issues = json.loads((__import__("pathlib").Path(__file__).parent / "fixtures/board1/issues.json").read_text())
         for i in issues:
             if i["number"] == 10:
-                i["labels"] = [{"name": "moot:coordination"}]
+                i["labels"] = [{"name": "meld:coordination"}]
         fake.route("GET", R + "issues", issues)
     fake.route("POST", R + "issues/10/comments", {"id": 555, "html_url": "https://github.com/acme/widgets/issues/10#issuecomment-555"})
-    ctx = load_context(tmp_path / ".moot.toml", env=env_for(tmp_path, group=group, role=role), run=fake)
+    ctx = load_context(tmp_path / ".meld.toml", env=env_for(tmp_path, group=group, role=role), run=fake)
     return fake, ctx
 
 
@@ -4324,7 +4324,7 @@ def posted(fake):
 
 def test_post_simple_verb(tmp_path):
     fake, ctx = make(tmp_path)
-    out = post(ctx, "DRIFT", text="Scope moved: #12 now includes SSO.\n\nverified-by: moot status")
+    out = post(ctx, "DRIFT", text="Scope moved: #12 now includes SSO.\n\nverified-by: meld status")
     assert out["comment_id"] == 555 and out["header"] == "[claude] DRIFT"
     assert posted(fake)[0].startswith("[claude] DRIFT\n\nScope moved")
 
@@ -4348,26 +4348,26 @@ def test_validation_errors_surface(tmp_path):
 
 def test_joint_plan_when_agreed_during_planning(tmp_path):
     comments = BASE_COMMENTS + [
-        {"id": 102, "user": {"login": "moot-claude-bot"}, "created_at": "2026-09-03T09:10:00Z",
-         "body": "[claude] PROPOSE plan-1\n\n1. health endpoint\n2. login form\n\nverified-by: moot roster"},
-        {"id": 103, "user": {"login": "moot-codex-bot"}, "created_at": "2026-09-03T09:11:00Z", "body": "[codex] AGREE plan-1\n\nok"},
+        {"id": 102, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T09:10:00Z",
+         "body": "[claude] PROPOSE plan-1\n\n1. health endpoint\n2. login form\n\nverified-by: meld roster"},
+        {"id": 103, "user": {"login": "meld-codex-bot"}, "created_at": "2026-09-03T09:11:00Z", "body": "[codex] AGREE plan-1\n\nok"},
     ]
     fake, ctx = make(tmp_path, comments=comments, approved=False)
     out = post(ctx, "PLAN", ref="plan-1", joint=True)
     assert out["header"] == "[joint] PLAN plan-1"
     body = posted(fake)[0]
-    assert "1. health endpoint" in body and "verified-by: moot roster" in body
+    assert "1. health endpoint" in body and "verified-by: meld roster" in body
 
 
 def test_joint_refused_when_open_or_not_proposer_or_wrong_phase(tmp_path):
     open_comments = BASE_COMMENTS + [
-        {"id": 102, "user": {"login": "moot-claude-bot"}, "created_at": "2026-09-03T09:10:00Z",
+        {"id": 102, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T09:10:00Z",
          "body": "[claude] PROPOSE plan-1\n\nplan\n\nverified-by: x"},
     ]
     _, ctx = make(tmp_path, comments=open_comments, approved=False)
     with pytest.raises(PostError, match="agreement on plan-1 is open"):
         post(ctx, "PLAN", ref="plan-1", joint=True)
-    agreed = open_comments + [{"id": 103, "user": {"login": "moot-codex-bot"}, "created_at": "2026-09-03T09:11:00Z", "body": "[codex] AGREE plan-1\n\nok"}]
+    agreed = open_comments + [{"id": 103, "user": {"login": "meld-codex-bot"}, "created_at": "2026-09-03T09:11:00Z", "body": "[codex] AGREE plan-1\n\nok"}]
     _, codex = make(tmp_path, group="codex", comments=agreed, approved=False)
     with pytest.raises(PostError, match="only the proposer \\(claude\\)"):
         post(codex, "PLAN", ref="plan-1", joint=True)
@@ -4378,15 +4378,15 @@ def test_joint_refused_when_open_or_not_proposer_or_wrong_phase(tmp_path):
 
 def test_joint_disagree_requires_qualifier_and_lists_positions(tmp_path):
     comments = BASE_COMMENTS + [
-        {"id": 102, "user": {"login": "moot-codex-bot"}, "created_at": "2026-09-03T09:10:00Z",
+        {"id": 102, "user": {"login": "meld-codex-bot"}, "created_at": "2026-09-03T09:10:00Z",
          "body": "[codex] DRAFT ask-1\n\nUse Postgres.\n\nverified-by: docs"},
-        {"id": 103, "user": {"login": "moot-claude-bot"}, "created_at": "2026-09-03T09:11:00Z",
+        {"id": 103, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T09:11:00Z",
          "body": "[claude] DISSENT ask-1\n\nSQLite is enough for v1."},
     ]
     fake, codex = make(tmp_path, group="codex", comments=comments)
     with pytest.raises(PostError, match="no majority; post with qualifier DISAGREE"):
         post(codex, "ANSWER", ref="ask-1", joint=True)
-    out = post(codex, "ANSWER", ref="ask-1", qualifier="DISAGREE", joint=True, text="verified-by: moot status")
+    out = post(codex, "ANSWER", ref="ask-1", qualifier="DISAGREE", joint=True, text="verified-by: meld status")
     assert out["header"] == "[joint] ANSWER ask-1 DISAGREE"
     body = posted(fake)[0]
     assert "## Positions" in body and "Use Postgres." in body and "SQLite is enough" in body
@@ -4394,10 +4394,10 @@ def test_joint_disagree_requires_qualifier_and_lists_positions(tmp_path):
 
 def test_amend_cap_enforced(tmp_path):
     comments = BASE_COMMENTS + [
-        {"id": 102, "user": {"login": "moot-claude-bot"}, "created_at": "2026-09-03T09:10:00Z", "body": "[claude] PROPOSE plan-1\n\nv1"},
-        {"id": 103, "user": {"login": "moot-codex-bot"}, "created_at": "2026-09-03T09:11:00Z", "body": "[codex] AMEND plan-1\n\nv2"},
-        {"id": 104, "user": {"login": "moot-claude-bot"}, "created_at": "2026-09-03T09:12:00Z", "body": "[claude] AMEND plan-1\n\nv3"},
-        {"id": 105, "user": {"login": "moot-codex-bot"}, "created_at": "2026-09-03T09:13:00Z", "body": "[codex] AMEND plan-1\n\nv4"},
+        {"id": 102, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T09:10:00Z", "body": "[claude] PROPOSE plan-1\n\nv1"},
+        {"id": 103, "user": {"login": "meld-codex-bot"}, "created_at": "2026-09-03T09:11:00Z", "body": "[codex] AMEND plan-1\n\nv2"},
+        {"id": 104, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T09:12:00Z", "body": "[claude] AMEND plan-1\n\nv3"},
+        {"id": 105, "user": {"login": "meld-codex-bot"}, "created_at": "2026-09-03T09:13:00Z", "body": "[codex] AMEND plan-1\n\nv4"},
     ]
     _, ctx = make(tmp_path, comments=comments)
     with pytest.raises(PostError, match="amend cap \\(3\\) reached"):
@@ -4406,16 +4406,16 @@ def test_amend_cap_enforced(tmp_path):
 
 
 def test_cli_post_with_message_and_error_exit(tmp_path, monkeypatch):
-    (tmp_path / ".moot.toml").write_text(PROJECT_TOML)
+    (tmp_path / ".meld.toml").write_text(PROJECT_TOML)
     fake = FakeGh()
     load_board1_routes(fake)
     fake.route("POST", R + "issues/10/comments", {"id": 7, "html_url": "u"})
     monkeypatch.setattr(cli, "RUN", fake)
-    ok = CliRunner().invoke(cli.main, ["--config", str(tmp_path / ".moot.toml"), "--compact", "post", "PING", "-m", "anyone there?"],
+    ok = CliRunner().invoke(cli.main, ["--config", str(tmp_path / ".meld.toml"), "--compact", "post", "PING", "-m", "anyone there?"],
                             env=env_for(tmp_path, role="orchestrator"))
     assert ok.exit_code == 0, ok.output
     assert json.loads(ok.output)["header"] == "[claude] PING"
-    bad = CliRunner().invoke(cli.main, ["--config", str(tmp_path / ".moot.toml"), "--compact", "post", "CHALLENGE", "-m", "x"],
+    bad = CliRunner().invoke(cli.main, ["--config", str(tmp_path / ".meld.toml"), "--compact", "post", "CHALLENGE", "-m", "x"],
                              env=env_for(tmp_path, role="orchestrator"))
     assert bad.exit_code == 2 and "requires a ref" in json.loads(bad.output)["error"]
 ```
@@ -4423,16 +4423,16 @@ def test_cli_post_with_message_and_error_exit(tmp_path, monkeypatch):
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_posting.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'moot.posting'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'meld.posting'`
 
-- [ ] **Step 3: Write `src/moot/posting.py`**
+- [ ] **Step 3: Write `src/meld/posting.py`**
 
 ```python
 """Post a coordination comment in the header grammar, including verified [joint] comments."""
 from __future__ import annotations
 
-from moot.config import Party
-from moot.grammar import Header, agreement_for, allowed_verbs, compose, validate
+from meld.config import Party
+from meld.grammar import Header, agreement_for, allowed_verbs, compose, validate
 
 
 class PostError(ValueError):
@@ -4444,7 +4444,7 @@ def _dissent_section(dissent: dict[str, str]) -> str:
 
 
 def post(ctx, verb: str, ref: str | None = None, qualifier: str | None = None, text: str = "", joint: bool = False) -> dict:
-    from moot.status import build_status
+    from meld.status import build_status
 
     _, board = build_status(ctx)
     actor = ctx.actor()
@@ -4491,9 +4491,9 @@ def post(ctx, verb: str, ref: str | None = None, qualifier: str | None = None, t
     return {"comment_id": resp.get("id"), "url": resp.get("html_url"), "header": body.splitlines()[0]}
 ```
 
-- [ ] **Step 4: Add the command to `src/moot/cli.py`**
+- [ ] **Step 4: Add the command to `src/meld/cli.py`**
 
-Add `from moot.posting import PostError, post as do_post` to the imports, then append:
+Add `from meld.posting import PostError, post as do_post` to the imports, then append:
 
 ```python
 @main.command()
@@ -4528,42 +4528,42 @@ Expected: all tests pass, 0 failures.
 
 - [ ] **Step 7: Reconcile the spec and README**
 
-In `docs/superpowers/specs/2026-09-03-moot-design.md`, section 4 "Repo layout", change `models.toml               # per adapter: ...` to `src/moot/data/models.toml   # per adapter: ...`. In section 5, add `name = "owner/name"` as the first line of the `[repo]` block. In section 7's verb table, add `WORKER` to the joint row (`PLAN`, `PLAN-ADD`, `ANSWER`, `DECISION`, `WORKER`) and `RELEASE` to the human row. In section 8, replace the `**claim**` bullet's opening with `- **claim**: caller is a PM or a human; milestone is \`executing\`; ...` and the `**dispatch**` bullet's opening with `- **dispatch**: caller is a PM; caller's bot is assignee; ...`.
+In `docs/superpowers/specs/2026-09-03-meld-design.md`, section 4 "Repo layout", change `models.toml               # per adapter: ...` to `src/meld/data/models.toml   # per adapter: ...`. In section 5, add `name = "owner/name"` as the first line of the `[repo]` block. In section 7's verb table, add `WORKER` to the joint row (`PLAN`, `PLAN-ADD`, `ANSWER`, `DECISION`, `WORKER`) and `RELEASE` to the human row. In section 8, replace the `**claim**` bullet's opening with `- **claim**: caller is a PM or a human; milestone is \`executing\`; ...` and the `**dispatch**` bullet's opening with `- **dispatch**: caller is a PM; caller's bot is assignee; ...`.
 
 Replace `README.md` with:
 
 ```markdown
-# Moot
+# Meld
 
 Multi-AI coordination: N independent AI coding systems (Claude Code, Codex CLI, ...) work on one GitHub repo as separate groups, negotiate on a coordination issue, claim work via issue assignment, review and modify each other's PRs, and answer to one human.
 
-Design: `docs/superpowers/specs/2026-09-03-moot-design.md`. Plans: `docs/superpowers/plans/`.
+Design: `docs/superpowers/specs/2026-09-03-meld-design.md`. Plans: `docs/superpowers/plans/`.
 
 ## Develop
 
     uv sync
     uv run pytest
-    uv run moot --help
+    uv run meld --help
 
 ## Verbs (Plan 1)
 
 | Command | What it does |
 |---|---|
-| `moot status` | Board as JSON plus the legal actions for the calling party |
-| `moot wait [--timeout S] [--interval S]` | Block until the board changes, then print status with a `changes` list |
-| `moot claim N` | Assign this party to a ready issue (first assignment wins) |
-| `moot release N [--force]` | Return an issue to ready; `--force` is human-only |
-| `moot post VERB [REF] [-m TEXT] [--joint]` | Post a coordination comment in the header grammar |
-| `moot models [--adapter X]` | Models and efforts an adapter accepts |
+| `meld status` | Board as JSON plus the legal actions for the calling party |
+| `meld wait [--timeout S] [--interval S]` | Block until the board changes, then print status with a `changes` list |
+| `meld claim N` | Assign this party to a ready issue (first assignment wins) |
+| `meld release N [--force]` | Return an issue to ready; `--force` is human-only |
+| `meld post VERB [REF] [-m TEXT] [--joint]` | Post a coordination comment in the header grammar |
+| `meld models [--adapter X]` | Models and efforts an adapter accepts |
 
-The calling party comes from `MOOT_GROUP` and `MOOT_ROLE` (`orchestrator` or `pm`); unset means human, authenticated as `gh`'s current user. Group tokens come from the `token_env` named in `.moot.toml`. Local state lives under `MOOT_HOME` (default `~/.moot`) and can be deleted at any time.
+The calling party comes from `MELD_GROUP` and `MELD_ROLE` (`orchestrator` or `pm`); unset means human, authenticated as `gh`'s current user. Group tokens come from the `token_env` named in `.meld.toml`. Local state lives under `MELD_HOME` (default `~/.meld`) and can be deleted at any time.
 ```
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/moot/posting.py src/moot/cli.py tests/test_posting.py docs/superpowers/specs/2026-09-03-moot-design.md README.md
-git commit -m "feat: moot post with joint-comment verification and amend cap; reconcile spec"
+git add src/meld/posting.py src/meld/cli.py tests/test_posting.py docs/superpowers/specs/2026-09-03-meld-design.md README.md
+git commit -m "feat: meld post with joint-comment verification and amend cap; reconcile spec"
 ```
 
 ---
@@ -4571,6 +4571,6 @@ git commit -m "feat: moot post with joint-comment verification and amend cap; re
 ## Plan 1 exit criteria
 
 - `uv run pytest -q` passes with zero failures and no network access.
-- `MOOT_GROUP=claude MOOT_ROLE=pm MOOT_TOKEN_CLAUDE=... uv run moot status` against a real repo prepared by hand (labels, a milestone, a `moot:coordination` issue with `moot:plan-approved`) prints the board with legal actions. Manual until Plan 3 delivers `moot setup`.
+- `MELD_GROUP=claude MELD_ROLE=pm MELD_TOKEN_CLAUDE=... uv run meld status` against a real repo prepared by hand (labels, a milestone, a `meld:coordination` issue with `meld:plan-approved`) prints the board with legal actions. Manual until Plan 3 delivers `meld setup`.
 - Every rule in spec section 8 that concerns `claim`, `release`, `dispatch`, `collect`, `reopen`, `approve`, `request-changes`, `push-fix`, and `merge` has a named test in `tests/test_rules_issues.py` or `tests/test_rules_prs.py`.
 - Plan 2 (execution: adapters, dispatch, collect, reap, runners) and Plan 3 (collaboration and bootstrap) are written against the module names in this plan's Interfaces blocks.

@@ -1,10 +1,10 @@
 """Builders for pure board objects used across rules/status tests."""
 from __future__ import annotations
 
-from moot.board import Board, Issue, PullRequest, Review, RunRecord
-from moot.config import Config
-from moot.grammar import ParsedComment, parse_comment
-from moot.models import ModelRegistry, ModelSpec
+from meld.board import Board, Issue, PullRequest, Review, RunRecord
+from meld.config import Config
+from meld.grammar import ParsedComment, parse_comment
+from meld.models import ModelRegistry, ModelSpec
 
 
 def _group(cli, bot, token):
@@ -16,18 +16,18 @@ def _group(cli, bot, token):
 CFG2 = Config.from_dict({
     "repo": {"name": "acme/widgets"},
     "humans": {"accounts": ["empowerScott"]},
-    "groups": {"claude": _group("claude", "moot-claude-bot", "T1"), "codex": _group("codex", "moot-codex-bot", "T2")},
+    "groups": {"claude": _group("claude", "meld-claude-bot", "T1"), "codex": _group("codex", "meld-codex-bot", "T2")},
 })
 
 CFG3 = Config.from_dict({
     "repo": {"name": "acme/widgets"},
     "humans": {"accounts": ["empowerScott"]},
-    "groups": {"claude": _group("claude", "moot-claude-bot", "T1"), "codex": _group("codex", "moot-codex-bot", "T2"),
-               "gemini": _group("gemini", "moot-gemini-bot", "T3")},
+    "groups": {"claude": _group("claude", "meld-claude-bot", "T1"), "codex": _group("codex", "meld-codex-bot", "T2"),
+               "gemini": _group("gemini", "meld-gemini-bot", "T3")},
 })
 
-STATUS_TO_LABEL = {"planned": "moot:planned", "ready": "moot:ready", "in_progress": "moot:in-progress",
-                   "in_review": "moot:in-review", "blocked": "moot:blocked", "needs_human": "moot:needs-human"}
+STATUS_TO_LABEL = {"planned": "meld:planned", "ready": "meld:ready", "in_progress": "meld:in-progress",
+                   "in_review": "meld:in-review", "blocked": "meld:blocked", "needs_human": "meld:needs-human"}
 
 
 def mk_issue(number: int, status: str = "ready", worker: str | None = "backend", model: str | None = "claude-sonnet-5",
@@ -45,7 +45,7 @@ def mk_issue(number: int, status: str = "ready", worker: str | None = "backend",
                  updated_at=updated_at)
 
 
-def mk_pr(number: int, issue: int, head_sha: str = "abc123", committer: str | None = "moot-claude-bot",
+def mk_pr(number: int, issue: int, head_sha: str = "abc123", committer: str | None = "meld-claude-bot",
           author: str | None = None, approvals: tuple[str, ...] = (), stale_approvals: tuple[str, ...] = (),
           changes_requested: tuple[str, ...] = (), extra_changes_requested_history: int = 0,
           checks: str = "green", state: str = "open", merged: bool = False,
@@ -65,7 +65,7 @@ def mk_pr(number: int, issue: int, head_sha: str = "abc123", committer: str | No
         t += 1
         reviews.append(Review(a, "APPROVED", head_sha, f"2026-09-03T10:{t:02d}:00Z"))
     return PullRequest(number=number, title=f"PR {number}", body=f"Closes #{issue}\n\nverified-by: pytest",
-                       head_ref=f"moot/{issue}-slug", head_sha=head_sha, author=author or committer or "",
+                       head_ref=f"meld/{issue}-slug", head_sha=head_sha, author=author or committer or "",
                        head_committer=committer, issue_number=issue, reviews=tuple(reviews), checks=checks,
                        labels=frozenset(extra_labels), state=state, merged=merged)
 

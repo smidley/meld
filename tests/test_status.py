@@ -4,22 +4,22 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-import moot.cli as cli
-from moot.config import ConfigError
-from moot.context import find_config, load_context
+import meld.cli as cli
+from meld.config import ConfigError
+from meld.context import find_config, load_context
 from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
 from tests.fakegh import FakeGh
 
 
 @pytest.fixture
 def project(tmp_path: Path):
-    (tmp_path / ".moot.toml").write_text(PROJECT_TOML)
+    (tmp_path / ".meld.toml").write_text(PROJECT_TOML)
     (tmp_path / "sub").mkdir()
     return tmp_path
 
 
 def test_find_config_walks_up(project: Path):
-    assert find_config(project / "sub") == project / ".moot.toml"
+    assert find_config(project / "sub") == project / ".meld.toml"
     with pytest.raises(ConfigError):
         find_config(Path("/"))
 
@@ -27,15 +27,15 @@ def test_find_config_walks_up(project: Path):
 def test_load_context_requires_token_for_groups(project: Path):
     fake = FakeGh()
     env = env_for(project)
-    del env["MOOT_TOKEN_CLAUDE"]
-    with pytest.raises(ConfigError, match="MOOT_TOKEN_CLAUDE"):
-        load_context(project / ".moot.toml", env=env, run=fake)
+    del env["MELD_TOKEN_CLAUDE"]
+    with pytest.raises(ConfigError, match="MELD_TOKEN_CLAUDE"):
+        load_context(project / ".meld.toml", env=env, run=fake)
 
 
 def test_load_context_human_uses_viewer_login(project: Path):
     fake = FakeGh()
     fake.route("GET", "user", {"login": "empowerScott"})
-    ctx = load_context(project / ".moot.toml", env=env_for(project, group=None), run=fake)
+    ctx = load_context(project / ".meld.toml", env=env_for(project, group=None), run=fake)
     assert ctx.party.kind == "human" and ctx.actor_login == "empowerScott" and ctx.gh.token is None
 
 
@@ -43,10 +43,10 @@ def test_status_command_reports_board_and_legal_actions(project: Path, monkeypat
     fake = FakeGh()
     load_board1_routes(fake)
     monkeypatch.setattr(cli, "RUN", fake)
-    result = CliRunner().invoke(cli.main, ["--config", str(project / ".moot.toml"), "--compact", "status"], env=env_for(project))
+    result = CliRunner().invoke(cli.main, ["--config", str(project / ".meld.toml"), "--compact", "status"], env=env_for(project))
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
-    assert data["party"] == "[claude:pm]" and data["actor"] == "moot-claude-bot" and data["phase"] == "executing"
+    assert data["party"] == "[claude:pm]" and data["actor"] == "meld-claude-bot" and data["phase"] == "executing"
     assert data["quorum"] == 1
     issues = {i["number"]: i for i in data["issues"]}
     assert issues[11]["legal"] == ["claim"]
@@ -67,7 +67,7 @@ def test_status_as_orchestrator_cannot_claim(project: Path, monkeypatch):
     fake = FakeGh()
     load_board1_routes(fake)
     monkeypatch.setattr(cli, "RUN", fake)
-    result = CliRunner().invoke(cli.main, ["--config", str(project / ".moot.toml"), "--compact", "status"],
+    result = CliRunner().invoke(cli.main, ["--config", str(project / ".meld.toml"), "--compact", "status"],
                                 env=env_for(project, role="orchestrator"))
     data = json.loads(result.output)
     assert {i["number"]: i["legal"] for i in data["issues"]}[11] == []
@@ -77,7 +77,7 @@ def test_status_as_human_uses_gh_identity(project: Path, monkeypatch):
     fake = FakeGh()
     load_board1_routes(fake)
     monkeypatch.setattr(cli, "RUN", fake)
-    result = CliRunner().invoke(cli.main, ["--config", str(project / ".moot.toml"), "--compact", "status"],
+    result = CliRunner().invoke(cli.main, ["--config", str(project / ".meld.toml"), "--compact", "status"],
                                 env=env_for(project, group=None))
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
@@ -88,7 +88,7 @@ def test_status_as_human_uses_gh_identity(project: Path, monkeypatch):
 def test_gh_failure_is_a_clean_cli_error(project: Path, monkeypatch):
     fake = FakeGh()  # no "user" route: gh returns 404 -> GitHubError from viewer_login
     monkeypatch.setattr(cli, "RUN", fake)
-    result = CliRunner().invoke(cli.main, ["--config", str(project / ".moot.toml"), "--compact", "status"],
+    result = CliRunner().invoke(cli.main, ["--config", str(project / ".meld.toml"), "--compact", "status"],
                                 env=env_for(project, group=None))
     assert result.exit_code == 1
     assert result.exception is None or isinstance(result.exception, SystemExit)
@@ -98,7 +98,7 @@ def test_gh_failure_is_a_clean_cli_error(project: Path, monkeypatch):
 def test_models_command_lists_adapter_models(project: Path, monkeypatch):
     fake = FakeGh()
     monkeypatch.setattr(cli, "RUN", fake)
-    result = CliRunner().invoke(cli.main, ["--config", str(project / ".moot.toml"), "--compact", "models"], env=env_for(project))
+    result = CliRunner().invoke(cli.main, ["--config", str(project / ".meld.toml"), "--compact", "models"], env=env_for(project))
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
     assert data["adapter"] == "claude"
@@ -108,9 +108,9 @@ def test_models_command_lists_adapter_models(project: Path, monkeypatch):
 def test_orchestrator_and_pm_split_state_but_share_the_cache(project: Path):
     fake = FakeGh()
     load_board1_routes(fake)
-    orch = load_context(project / ".moot.toml", env=env_for(project, role="orchestrator"), run=fake)
-    pm = load_context(project / ".moot.toml", env=env_for(project, role="pm"), run=fake)
-    human = load_context(project / ".moot.toml", env=env_for(project, group=None), run=fake)
+    orch = load_context(project / ".meld.toml", env=env_for(project, role="orchestrator"), run=fake)
+    pm = load_context(project / ".meld.toml", env=env_for(project, role="pm"), run=fake)
+    human = load_context(project / ".meld.toml", env=env_for(project, group=None), run=fake)
     assert orch.store.state_dir != pm.store.state_dir
     assert orch.store.state_dir.name == "orchestrator" and pm.store.state_dir.name == "pm"
     assert orch.store.cache_dir == pm.store.cache_dir
@@ -122,7 +122,7 @@ def test_status_tolerates_an_unknown_head_committer(project: Path, monkeypatch):
     load_board1_routes(fake)
     fake.route("GET", "repos/acme/widgets/pulls/20/commits", [{"sha": "abc123", "author": None, "committer": None}])
     monkeypatch.setattr(cli, "RUN", fake)
-    result = CliRunner().invoke(cli.main, ["--config", str(project / ".moot.toml"), "--compact", "status"], env=env_for(project))
+    result = CliRunner().invoke(cli.main, ["--config", str(project / ".meld.toml"), "--compact", "status"], env=env_for(project))
     assert result.exit_code == 0, result.output
     pulls = {p["number"]: p for p in json.loads(result.output)["pulls"]}
     assert pulls[20]["committer_party"] is None
@@ -133,7 +133,7 @@ def test_models_command_lists_every_adapter_for_a_human(project: Path, monkeypat
     fake = FakeGh()
     fake.route("GET", "user", {"login": "empowerScott"})
     monkeypatch.setattr(cli, "RUN", fake)
-    result = CliRunner().invoke(cli.main, ["--config", str(project / ".moot.toml"), "--compact", "models"],
+    result = CliRunner().invoke(cli.main, ["--config", str(project / ".meld.toml"), "--compact", "models"],
                                 env=env_for(project, group=None))
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
@@ -147,7 +147,7 @@ def test_models_command_still_honours_an_explicit_adapter_for_a_human(project: P
     fake = FakeGh()
     fake.route("GET", "user", {"login": "empowerScott"})
     monkeypatch.setattr(cli, "RUN", fake)
-    result = CliRunner().invoke(cli.main, ["--config", str(project / ".moot.toml"), "--compact", "models",
+    result = CliRunner().invoke(cli.main, ["--config", str(project / ".meld.toml"), "--compact", "models",
                                            "--adapter", "codex"],
                                 env=env_for(project, group=None))
     assert result.exit_code == 0, result.output

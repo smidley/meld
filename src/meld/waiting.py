@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import time
 
-from moot.github import RateLimited
-from moot.state import diff_digest
-from moot.status import build_status
+from meld.github import RateLimited
+from meld.state import diff_digest
+from meld.status import build_status
 
 _MAX_BACKOFF = 300.0
 

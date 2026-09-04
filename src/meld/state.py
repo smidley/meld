@@ -1,4 +1,4 @@
-"""Disposable local state under $MOOT_HOME: run records, snapshots, cursors, caches."""
+"""Disposable local state under $MELD_HOME: run records, snapshots, cursors, caches."""
 from __future__ import annotations
 
 import json
@@ -7,12 +7,12 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Callable, Mapping
 
-from moot.atomic import write_atomic
-from moot.board import Board, RunRecord
+from meld.atomic import write_atomic
+from meld.board import Board, RunRecord
 
 
-def moot_home(env: Mapping[str, str]) -> Path:
-    return Path(env.get("MOOT_HOME", "~/.moot")).expanduser()
+def meld_home(env: Mapping[str, str]) -> Path:
+    return Path(env.get("MELD_HOME", "~/.meld")).expanduser()
 
 
 def pid_alive(pid: int) -> bool:

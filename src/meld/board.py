@@ -4,20 +4,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Sequence
 
-from moot.grammar import ParsedComment
+from meld.grammar import ParsedComment
 
 STATUS_LABELS = {
-    "moot:planned": "planned",
-    "moot:ready": "ready",
-    "moot:in-progress": "in_progress",
-    "moot:in-review": "in_review",
-    "moot:blocked": "blocked",
-    "moot:needs-human": "needs_human",
+    "meld:planned": "planned",
+    "meld:ready": "ready",
+    "meld:in-progress": "in_progress",
+    "meld:in-review": "in_review",
+    "meld:blocked": "blocked",
+    "meld:needs-human": "needs_human",
 }
 _STATUS_PRECEDENCE = ("needs_human", "blocked", "in_review", "in_progress", "ready", "planned")
-CHALLENGED_LABEL = "moot:challenged"
-COORDINATION_LABEL = "moot:coordination"
-PLAN_APPROVED_LABEL = "moot:plan-approved"
+CHALLENGED_LABEL = "meld:challenged"
+COORDINATION_LABEL = "meld:coordination"
+PLAN_APPROVED_LABEL = "meld:plan-approved"
 
 
 @dataclass(frozen=True)

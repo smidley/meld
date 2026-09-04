@@ -3,7 +3,7 @@ import os
 
 import pytest
 
-from moot.github import GitHub, GitHubError, RateLimited
+from meld.github import GitHub, GitHubError, RateLimited
 from tests.fakegh import FakeGh
 
 
@@ -61,21 +61,21 @@ def test_mutations_send_json_bodies(tmp_path):
     fake, gh = make(tmp_path)
     fake.route("POST", "repos/acme/widgets/issues/7/assignees", {"assignees": [{"login": "b"}]})
     fake.route("DELETE", "repos/acme/widgets/issues/7/assignees", {"assignees": []})
-    fake.route("POST", "repos/acme/widgets/issues/7/labels", [{"name": "moot:ready"}])
+    fake.route("POST", "repos/acme/widgets/issues/7/labels", [{"name": "meld:ready"}])
     fake.route("POST", "repos/acme/widgets/issues/7/comments", {"id": 99, "html_url": "u"})
     gh.add_assignees(7, ["b"])
     gh.remove_assignees(7, ["b"])
-    gh.add_labels(7, ["moot:ready"])
+    gh.add_labels(7, ["meld:ready"])
     assert gh.create_comment(7, "hi")["id"] == 99
     assert fake.calls[0].body == {"assignees": ["b"]}
     assert fake.calls[1].method == "DELETE"
-    assert fake.calls[2].body == {"labels": ["moot:ready"]}
+    assert fake.calls[2].body == {"labels": ["meld:ready"]}
     assert fake.calls[3].body == {"body": "hi"}
 
 
 def test_remove_label_ignores_404(tmp_path):
     fake, gh = make(tmp_path)
-    gh.remove_label(7, "moot:ready")  # no route -> 404 -> swallowed
+    gh.remove_label(7, "meld:ready")  # no route -> 404 -> swallowed
 
 
 def test_http_error_raises(tmp_path):
@@ -147,8 +147,8 @@ def test_cache_entry_missing_a_key_is_ignored(tmp_path):
 
 
 def test_cache_is_written_through_write_atomic(tmp_path, monkeypatch):
-    import moot.github as gh_mod
-    from moot.atomic import write_atomic as real_write_atomic
+    import meld.github as gh_mod
+    from meld.atomic import write_atomic as real_write_atomic
     seen = []
 
     def spy(path, text):

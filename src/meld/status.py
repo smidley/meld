@@ -4,12 +4,12 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime, timezone
 
-from moot.assemble import build_board
-from moot.board import Board
-from moot.config import Config
-from moot.grammar import AGREEMENT_VERBS, agreement_for
-from moot.models import ModelRegistry
-from moot.rules import (
+from meld.assemble import build_board
+from meld.board import Board
+from meld.config import Config
+from meld.grammar import AGREEMENT_VERBS, agreement_for
+from meld.models import ModelRegistry
+from meld.rules import (
     Actor,
     approving_parties,
     committer_party,
@@ -18,7 +18,7 @@ from moot.rules import (
     party_of_login,
     pingpong_exceeded,
 )
-from moot.state import board_digest
+from meld.state import board_digest
 
 
 def _age_minutes(iso: str, now: datetime) -> int:

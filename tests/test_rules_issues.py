@@ -1,11 +1,11 @@
-from moot.config import Party
-from moot.rules import ISSUE_VERBS, PR_VERBS, Actor, Refusal, Verb, issue_refusal, legal_issue_verbs, party_of_login
+from meld.config import Party
+from meld.rules import ISSUE_VERBS, PR_VERBS, Actor, Refusal, Verb, issue_refusal, legal_issue_verbs, party_of_login
 from tests.factories import CFG2, REG, mk_board, mk_comment, mk_issue, mk_pr, mk_run
 
 ROSTER = frozenset({"backend", "frontend", "security", "qa", "reviewer", "auditor", "docs"})
-CLAUDE_PM = Actor(Party("pm", "claude"), "moot-claude-bot", ROSTER)
-CLAUDE_ORCH = Actor(Party("group", "claude"), "moot-claude-bot", ROSTER)
-CODEX_PM = Actor(Party("pm", "codex"), "moot-codex-bot", ROSTER)
+CLAUDE_PM = Actor(Party("pm", "claude"), "meld-claude-bot", ROSTER)
+CLAUDE_ORCH = Actor(Party("group", "claude"), "meld-claude-bot", ROSTER)
+CODEX_PM = Actor(Party("pm", "codex"), "meld-codex-bot", ROSTER)
 HUMAN = Actor(Party("human"), "empowerScott")
 
 
@@ -29,8 +29,8 @@ def test_claim_refusals_in_priority_order():
     assert rule(mk_board(CFG2, issues=[i]), CLAUDE_ORCH, Verb.CLAIM, i) == "only a PM or a human may claim"
     blocked = mk_issue(12, status="blocked")
     assert rule(mk_board(CFG2, issues=[blocked]), CLAUDE_PM, Verb.CLAIM, blocked) == "issue is blocked, not ready"
-    taken = mk_issue(13, assignees=("moot-codex-bot",))
-    assert rule(mk_board(CFG2, issues=[taken]), CLAUDE_PM, Verb.CLAIM, taken) == "already claimed by moot-codex-bot"
+    taken = mk_issue(13, assignees=("meld-codex-bot",))
+    assert rule(mk_board(CFG2, issues=[taken]), CLAUDE_PM, Verb.CLAIM, taken) == "already claimed by meld-codex-bot"
     no_worker = mk_issue(14, worker=None)
     assert rule(mk_board(CFG2, issues=[no_worker]), CLAUDE_PM, Verb.CLAIM, no_worker) == "issue has no worker: label"
     marketing = mk_issue(15, worker="marketing")
@@ -38,7 +38,7 @@ def test_claim_refusals_in_priority_order():
 
 
 def test_claim_respects_concurrency_cap():
-    busy = [mk_issue(n, status="in_progress", assignees=("moot-claude-bot",)) for n in range(100, 108)]
+    busy = [mk_issue(n, status="in_progress", assignees=("meld-claude-bot",)) for n in range(100, 108)]
     fresh = mk_issue(11, model="gpt-test")  # known to codex, unknown to claude; the cap check comes before the model check
     b = mk_board(CFG2, issues=[*busy, fresh])
     assert rule(b, CLAUDE_PM, Verb.CLAIM, fresh) == "claude is at its concurrency cap (8/8)"
@@ -60,16 +60,16 @@ def test_claim_requires_known_model_and_budget():
 # ---- dispatch ----------------------------------------------------------------
 
 def test_dispatch_legal_for_assignee_pm():
-    i = mk_issue(12, status="in_progress", assignees=("moot-claude-bot",), size="M")
+    i = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",), size="M")
     assert rule(mk_board(CFG2, issues=[i]), CLAUDE_PM, Verb.DISPATCH, i) is None
 
 
 def test_dispatch_refusals():
-    i = mk_issue(12, status="in_progress", assignees=("moot-claude-bot",))
+    i = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",))
     assert rule(mk_board(CFG2, issues=[i], halted=True), CLAUDE_PM, Verb.DISPATCH, i) == "HALT is in effect"
     assert rule(mk_board(CFG2, issues=[i]), CLAUDE_ORCH, Verb.DISPATCH, i) == "only the PM may dispatch"
     assert rule(mk_board(CFG2, issues=[i]), HUMAN, Verb.DISPATCH, i) == "only the PM may dispatch"
-    assert rule(mk_board(CFG2, issues=[i]), CODEX_PM, Verb.DISPATCH, i) == "issue is not assigned to moot-codex-bot"
+    assert rule(mk_board(CFG2, issues=[i]), CODEX_PM, Verb.DISPATCH, i) == "issue is not assigned to meld-codex-bot"
     ready = mk_issue(13)
     assert rule(mk_board(CFG2, issues=[ready]), CLAUDE_PM, Verb.DISPATCH, ready) == "issue is ready, not in-progress"
     running = mk_board(CFG2, issues=[i], runs={"claude": {12: mk_run("claude", 12)}, "codex": {}})
@@ -79,18 +79,18 @@ def test_dispatch_refusals():
     collected = mk_board(CFG2, issues=[i], runs={"claude": {12: mk_run("claude", 12, alive=False, collected=True)}, "codex": {}})
     assert rule(collected, CLAUDE_PM, Verb.DISPATCH, i) is None
     assert rule(mk_board(CFG2, issues=[i], open_challenges=frozenset({"#12"})), CLAUDE_PM, Verb.DISPATCH, i) == "issue has an open CHALLENGE"
-    labelled = mk_issue(12, status="in_progress", assignees=("moot-claude-bot",), extra_labels=("moot:challenged",))
+    labelled = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",), extra_labels=("meld:challenged",))
     assert rule(mk_board(CFG2, issues=[labelled]), CLAUDE_PM, Verb.DISPATCH, labelled) == "issue has an open CHALLENGE"
 
 
 def test_dispatch_validates_model_effort_size():
-    missing = mk_issue(12, status="in_progress", assignees=("moot-claude-bot",), effort=None, size=None)
+    missing = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",), effort=None, size=None)
     assert rule(mk_board(CFG2, issues=[missing]), CLAUDE_PM, Verb.DISPATCH, missing) == "issue is missing labels: effort, size"
-    bad_effort = mk_issue(12, status="in_progress", assignees=("moot-claude-bot",), effort="turbo")
+    bad_effort = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",), effort="turbo")
     assert "effort 'turbo' not valid" in rule(mk_board(CFG2, issues=[bad_effort]), CLAUDE_PM, Verb.DISPATCH, bad_effort)
-    bad_size = mk_issue(12, status="in_progress", assignees=("moot-claude-bot",), size="XL")
+    bad_size = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",), size="XL")
     assert rule(mk_board(CFG2, issues=[bad_size]), CLAUDE_PM, Verb.DISPATCH, bad_size) == "size 'XL' is not one of S, M, L"
-    too_big = mk_issue(12, status="in_progress", assignees=("moot-claude-bot",), model="claude-haiku-4-5-20251001", size="L")
+    too_big = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",), model="claude-haiku-4-5-20251001", size="L")
     assert rule(mk_board(CFG2, issues=[too_big]), CLAUDE_PM, Verb.DISPATCH, too_big) == \
         "size L does not fit model claude-haiku-4-5-20251001 (context class medium)"
 
@@ -98,7 +98,7 @@ def test_dispatch_validates_model_effort_size():
 # ---- collect -----------------------------------------------------------------
 
 def test_collect_rules():
-    i = mk_issue(12, status="in_progress", assignees=("moot-claude-bot",))
+    i = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",))
     none = mk_board(CFG2, issues=[i])
     assert rule(none, CLAUDE_PM, Verb.COLLECT, i) == "no run record for #12 in claude"
     alive = mk_board(CFG2, issues=[i], runs={"claude": {12: mk_run("claude", 12)}, "codex": {}})
@@ -113,16 +113,16 @@ def test_collect_rules():
 # ---- release -----------------------------------------------------------------
 
 def test_release_rules():
-    mine = mk_issue(12, status="in_progress", assignees=("moot-claude-bot",))
+    mine = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",))
     b = mk_board(CFG2, issues=[mine])
     assert rule(b, CLAUDE_PM, Verb.RELEASE, mine) is None
     assert rule(b, CLAUDE_ORCH, Verb.RELEASE, mine) is None
-    assert rule(b, CODEX_PM, Verb.RELEASE, mine) == "issue is not assigned to moot-codex-bot"
+    assert rule(b, CODEX_PM, Verb.RELEASE, mine) == "issue is not assigned to meld-codex-bot"
     assert rule(b, HUMAN, Verb.RELEASE, mine) is None
     ready = mk_issue(13)
     assert rule(mk_board(CFG2, issues=[ready]), HUMAN, Verb.RELEASE, ready) == \
         "issue is ready; release is only legal from in-progress or blocked"
-    blocked = mk_issue(14, status="blocked", assignees=("moot-claude-bot",))
+    blocked = mk_issue(14, status="blocked", assignees=("meld-claude-bot",))
     assert rule(mk_board(CFG2, issues=[blocked]), CLAUDE_PM, Verb.RELEASE, blocked) is None
 
 
@@ -130,12 +130,12 @@ def test_release_rules():
 
 def test_reopen_requires_fail_audit_from_non_author_group():
     closed = mk_issue(9, state="closed")
-    pr = mk_pr(19, 9, committer="moot-claude-bot", state="closed", merged=True)
-    audit = mk_comment(CFG2, 7, "moot-codex-bot", "[codex] AUDIT #9 FAIL\n\nacceptance criterion 2 unmet\n\nverified-by: pytest -k healthz")
+    pr = mk_pr(19, 9, committer="meld-claude-bot", state="closed", merged=True)
+    audit = mk_comment(CFG2, 7, "meld-codex-bot", "[codex] AUDIT #9 FAIL\n\nacceptance criterion 2 unmet\n\nverified-by: pytest -k healthz")
     b = mk_board(CFG2, issues=[closed], pulls=[pr], comments=[audit])
     assert rule(b, CODEX_PM, Verb.REOPEN, closed) is None
     assert rule(b, CLAUDE_PM, Verb.REOPEN, closed) == "no AUDIT #9 FAIL posted by claude"
-    self_audit = mk_comment(CFG2, 8, "moot-claude-bot", "[claude] AUDIT #9 FAIL\n\nnope")
+    self_audit = mk_comment(CFG2, 8, "meld-claude-bot", "[claude] AUDIT #9 FAIL\n\nnope")
     b2 = mk_board(CFG2, issues=[closed], pulls=[pr], comments=[audit, self_audit])
     assert rule(b2, CLAUDE_PM, Verb.REOPEN, closed) == "claude authored the PR that closed #9"
     assert rule(b, HUMAN, Verb.REOPEN, closed) is None
@@ -144,10 +144,10 @@ def test_reopen_requires_fail_audit_from_non_author_group():
 
 
 def test_legal_issue_verbs_and_party_of_login():
-    i = mk_issue(12, status="in_progress", assignees=("moot-claude-bot",))
+    i = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",))
     b = mk_board(CFG2, issues=[i], runs={"claude": {12: mk_run("claude", 12, alive=False)}, "codex": {}})
     assert legal_issue_verbs(b, CFG2, CLAUDE_PM, i, REG) == ["release", "collect"]
-    assert party_of_login(CFG2, "moot-codex-bot") == "codex"
+    assert party_of_login(CFG2, "meld-codex-bot") == "codex"
     assert party_of_login(CFG2, "empowerScott") == "human:empowerScott"
     assert party_of_login(CFG2, "randouser") is None
 
@@ -164,7 +164,7 @@ def test_refusal_carries_verb_target_and_renders():
 
 def test_reopen_is_legal_when_no_closing_pr_is_recorded():
     closed = mk_issue(9, state="closed")
-    audit = mk_comment(CFG2, 7, "moot-codex-bot", "[codex] AUDIT #9 FAIL\n\nunmet criterion")
+    audit = mk_comment(CFG2, 7, "meld-codex-bot", "[codex] AUDIT #9 FAIL\n\nunmet criterion")
     b = mk_board(CFG2, issues=[closed], comments=[audit])
     assert rule(b, CODEX_PM, Verb.REOPEN, closed) is None
 

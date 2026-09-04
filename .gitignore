@@ -3,4 +3,4 @@ __pycache__/
 .venv/
 .pytest_cache/
 dist/
-.moot-home/
+.meld-home/

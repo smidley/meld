@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from moot.roster import WorkerType, builtin_workers, parse_worker_file, product_workers, roster, roster_names
+from meld.roster import WorkerType, builtin_workers, parse_worker_file, product_workers, roster, roster_names
 
 
 def test_builtin_roster_has_the_seven_day_one_types():
@@ -25,7 +25,7 @@ def test_parse_worker_file_uses_stem_and_first_paragraph(tmp_path: Path):
 
 
 def test_product_workers_override_builtins_and_add_new(tmp_path: Path):
-    wd = tmp_path / ".moot" / "workers"
+    wd = tmp_path / ".meld" / "workers"
     wd.mkdir(parents=True)
     (wd / "marketing.md").write_text("# marketing\n\nDrafts launch copy.\n")
     (wd / "backend.md").write_text("# backend\n\nProduct-specific backend rules.\n")
@@ -50,7 +50,7 @@ def test_parse_worker_file_requires_heading_and_skips_directories(tmp_path: Path
     bad.write_text("no heading here\n\nDescription.\n")
     with pytest.raises(ValueError, match="must start with a '# <name>' heading"):
         parse_worker_file(bad, "product")
-    wd = tmp_path / ".moot" / "workers"
+    wd = tmp_path / ".meld" / "workers"
     wd.mkdir(parents=True)
     (wd / "dir.md").mkdir()
     (wd / "ok.md").write_text("# ok\n\nFine.\n")

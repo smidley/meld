@@ -1,6 +1,6 @@
 import pytest
 
-from moot.assemble import BoardError, build_board, checks_state, find_active_milestone, issue_number_from_pr
+from meld.assemble import BoardError, build_board, checks_state, find_active_milestone, issue_number_from_pr
 from tests.factories import CFG2, mk_run
 
 
@@ -23,12 +23,12 @@ def test_build_board_end_to_end(board1_gh):
     b = build_board(gh, CFG2, runs, spend)
     assert (b.milestone, b.coordination_issue, b.phase, b.halted) == (3, 10, "executing", False)
     assert sorted(b.issues) == [11, 12, 13, 14]          # coordination issue and PR entry excluded
-    assert b.issues[11].status == "ready" and b.issues[12].assignees == ("moot-claude-bot",)
+    assert b.issues[11].status == "ready" and b.issues[12].assignees == ("meld-claude-bot",)
     assert b.issues[14].status == "needs_human"
-    assert sorted(b.pulls) == [19, 20]                    # non-moot branch excluded
+    assert sorted(b.pulls) == [19, 20]                    # non-meld branch excluded
     pr = b.pulls[20]
-    assert pr.issue_number == 13 and pr.head_committer == "moot-codex-bot" and pr.checks == "green"
-    assert pr.approvals_on_head() == {"moot-claude-bot"}
+    assert pr.issue_number == 13 and pr.head_committer == "meld-codex-bot" and pr.checks == "green"
+    assert pr.approvals_on_head() == {"meld-claude-bot"}
     assert b.pulls[19].merged and b.pulls[19].reviews == ()
     assert b.open_challenges == {"#12"} and b.is_challenged("#12")
     assert b.ignored_comments == 1
@@ -45,9 +45,9 @@ def test_checks_state():
 
 
 def test_issue_number_from_pr():
-    assert issue_number_from_pr("Closes #13", "moot/13-x") == 13
+    assert issue_number_from_pr("Closes #13", "meld/13-x") == 13
     assert issue_number_from_pr("fixes   #7 and more", "whatever") == 7
-    assert issue_number_from_pr("no keyword", "moot/42-slug") == 42
+    assert issue_number_from_pr("no keyword", "meld/42-slug") == 42
     assert issue_number_from_pr("nothing", "feature/x") is None
 
 
@@ -68,11 +68,11 @@ def test_build_board_with_explicit_milestone_missing_coordination(board1_gh):
 def test_head_committer_is_none_when_the_last_commit_maps_to_no_account(board1_gh):
     fake, gh = board1_gh
     fake.route("GET", "repos/acme/widgets/pulls/20/commits",
-               [{"sha": "abc122", "author": {"login": "moot-codex-bot"}, "committer": {"login": "moot-codex-bot"}},
+               [{"sha": "abc122", "author": {"login": "meld-codex-bot"}, "committer": {"login": "meld-codex-bot"}},
                 {"sha": "abc123", "author": None, "committer": None}])
     b = build_board(gh, CFG2, {}, {})
     assert b.pulls[20].head_committer is None
-    assert b.pulls[20].author == "moot-codex-bot"   # the PR author is never used as a stand-in
+    assert b.pulls[20].author == "meld-codex-bot"   # the PR author is never used as a stand-in
     # an empty login is falsy but not None, and must normalise to None too
     fake.route("GET", "repos/acme/widgets/pulls/20/commits", [{"sha": "abc123", "author": None, "committer": {"login": ""}}])
     assert build_board(gh, CFG2, {}, {}).pulls[20].head_committer is None

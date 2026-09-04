@@ -1,16 +1,16 @@
 import json
 
-from moot.context import load_context
-from moot.waiting import wait_for_change
+from meld.context import load_context
+from meld.waiting import wait_for_change
 from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
 from tests.fakegh import FakeGh
 
 
 def make_ctx(tmp_path):
-    (tmp_path / ".moot.toml").write_text(PROJECT_TOML)
+    (tmp_path / ".meld.toml").write_text(PROJECT_TOML)
     fake = FakeGh()
     load_board1_routes(fake)
-    ctx = load_context(tmp_path / ".moot.toml", env=env_for(tmp_path), run=fake)
+    ctx = load_context(tmp_path / ".meld.toml", env=env_for(tmp_path), run=fake)
     return fake, ctx
 
 
@@ -40,8 +40,8 @@ def test_returns_when_board_changes(tmp_path):
     issues = json.loads((__import__("pathlib").Path(__file__).parent / "fixtures/board1/issues.json").read_text())
     for i in issues:
         if i["number"] == 11:
-            i["labels"] = [l for l in i["labels"] if l["name"] != "moot:ready"] + [{"name": "moot:in-progress"}]
-            i["assignees"] = [{"login": "moot-codex-bot"}]
+            i["labels"] = [l for l in i["labels"] if l["name"] != "meld:ready"] + [{"name": "meld:in-progress"}]
+            i["assignees"] = [{"login": "meld-codex-bot"}]
 
     def sleep_then_mutate(s):
         clock.sleep(s)
@@ -111,13 +111,13 @@ def test_rate_limit_backoff_is_also_clamped(tmp_path):
 
 
 def test_cli_wait_rejects_a_non_positive_interval_and_a_negative_timeout(tmp_path, monkeypatch):
-    import moot.cli as cli
+    import meld.cli as cli
     from click.testing import CliRunner
-    (tmp_path / ".moot.toml").write_text(PROJECT_TOML)
+    (tmp_path / ".meld.toml").write_text(PROJECT_TOML)
     monkeypatch.setattr(cli, "RUN", FakeGh())
     for args, hint in ((["--interval", "0"], "--interval"), (["--interval", "-1"], "--interval"),
                        (["--timeout", "-1"], "--timeout")):
-        result = CliRunner().invoke(cli.main, ["--config", str(tmp_path / ".moot.toml"), "wait", *args],
+        result = CliRunner().invoke(cli.main, ["--config", str(tmp_path / ".meld.toml"), "wait", *args],
                                     env=env_for(tmp_path))
         assert result.exit_code == 2, result.output
         assert hint in result.output

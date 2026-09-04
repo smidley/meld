@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from moot.github import GitHub
+from meld.github import GitHub
 from tests.fakegh import FakeGh
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -37,8 +37,8 @@ name = "acme/widgets"
 accounts = ["empowerScott"]
 [groups.claude]
 cli = "claude"
-bot = "moot-claude-bot"
-token_env = "MOOT_TOKEN_CLAUDE"
+bot = "meld-claude-bot"
+token_env = "MELD_TOKEN_CLAUDE"
 [groups.claude.orchestrator]
 model = "claude-opus-5"
 effort = "high"
@@ -47,8 +47,8 @@ model = "claude-sonnet-5"
 effort = "medium"
 [groups.codex]
 cli = "codex"
-bot = "moot-codex-bot"
-token_env = "MOOT_TOKEN_CODEX"
+bot = "meld-codex-bot"
+token_env = "MELD_TOKEN_CODEX"
 [groups.codex.orchestrator]
 model = "gpt-x"
 effort = "high"
@@ -59,8 +59,8 @@ effort = "medium"
 
 
 def env_for(tmp_path: Path, group: str | None = "claude", role: str = "pm") -> dict[str, str]:
-    e = {"MOOT_HOME": str(tmp_path / "home"), "MOOT_TOKEN_CLAUDE": "tok-c", "MOOT_TOKEN_CODEX": "tok-x"}
+    e = {"MELD_HOME": str(tmp_path / "home"), "MELD_TOKEN_CLAUDE": "tok-c", "MELD_TOKEN_CODEX": "tok-x"}
     if group:
-        e["MOOT_GROUP"] = group
-        e["MOOT_ROLE"] = role
+        e["MELD_GROUP"] = group
+        e["MELD_ROLE"] = role
     return e

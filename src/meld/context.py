@@ -7,12 +7,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
-from moot.config import Config, ConfigError, Party, load_config, party_from_env
-from moot.github import GitHub
-from moot.models import ModelRegistry
-from moot.roster import roster_names
-from moot.rules import Actor
-from moot.state import StateStore, moot_home
+from meld.config import Config, ConfigError, Party, load_config, party_from_env
+from meld.github import GitHub
+from meld.models import ModelRegistry
+from meld.roster import roster_names
+from meld.rules import Actor
+from meld.state import StateStore, meld_home
 
 
 @dataclass
@@ -32,10 +32,10 @@ class Context:
 
 def find_config(start: Path) -> Path:
     for d in [start, *start.parents]:
-        candidate = d / ".moot.toml"
+        candidate = d / ".meld.toml"
         if candidate.exists():
             return candidate
-    raise ConfigError(f"no .moot.toml found from {start} upward; pass --config")
+    raise ConfigError(f"no .meld.toml found from {start} upward; pass --config")
 
 
 def load_context(config_path: Path | None = None, env: Mapping[str, str] | None = None, run=subprocess.run,
@@ -45,7 +45,7 @@ def load_context(config_path: Path | None = None, env: Mapping[str, str] | None 
     cfg = load_config(path)
     party = party_from_env(cfg, env)
     role = {"group": "orchestrator", "pm": "pm"}.get(party.kind)
-    store = StateStore(moot_home(env), party.group, role)
+    store = StateStore(meld_home(env), party.group, role)
     token: str | None = None
     if party.group:
         g = cfg.groups[party.group]

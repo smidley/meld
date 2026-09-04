@@ -4,9 +4,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from moot.board import Board, Issue, PullRequest
-from moot.config import Config, Party
-from moot.models import SIZES, ModelRegistry, size_fits
+from meld.board import Board, Issue, PullRequest
+from meld.config import Config, Party
+from meld.models import SIZES, ModelRegistry, size_fits
 
 
 class Verb(str, Enum):
@@ -76,7 +76,7 @@ def _claim(board: Board, cfg: Config, actor: Actor, issue: Issue, models: ModelR
     if board.halted:
         return "HALT is in effect"
     if board.phase != "executing":
-        return "milestone is still in planning (no moot:plan-approved label)"
+        return "milestone is still in planning (no meld:plan-approved label)"
     if not (actor.is_pm or actor.is_human):
         return "only a PM or a human may claim"
     if issue.status != "ready":

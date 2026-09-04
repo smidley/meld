@@ -30,7 +30,7 @@ def parse_worker_file(path: Path, source: str) -> WorkerType:
 
 
 def builtin_workers() -> list[WorkerType]:
-    root = resources.files("moot").joinpath("prompts", "workers")
+    root = resources.files("meld").joinpath("prompts", "workers")
     out: list[WorkerType] = []
     for entry in sorted(root.iterdir(), key=lambda e: e.name):
         if entry.name.endswith(".md"):
@@ -41,7 +41,7 @@ def builtin_workers() -> list[WorkerType]:
 
 
 def product_workers(repo_root: Path) -> list[WorkerType]:
-    d = repo_root / ".moot" / "workers"
+    d = repo_root / ".meld" / "workers"
     if not d.is_dir():
         return []
     return [parse_worker_file(p, "product") for p in sorted(d.glob("*.md")) if p.is_file()]

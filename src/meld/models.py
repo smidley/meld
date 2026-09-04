@@ -32,7 +32,7 @@ class ModelRegistry:
     @classmethod
     def load(cls, path: Path | None = None) -> "ModelRegistry":
         if path is None:
-            text = resources.files("moot.data").joinpath("models.toml").read_text()
+            text = resources.files("meld.data").joinpath("models.toml").read_text()
         else:
             text = path.read_text()
         raw = tomllib.loads(text)

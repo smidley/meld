@@ -1,4 +1,4 @@
-"""Load .moot.toml into a typed Config, and identify the calling Party."""
+"""Load .meld.toml into a typed Config, and identify the calling Party."""
 from __future__ import annotations
 
 import re
@@ -187,14 +187,14 @@ class Party:
 
 
 def party_from_env(cfg: Config, env: Mapping[str, str]) -> Party:
-    group = env.get("MOOT_GROUP")
+    group = env.get("MELD_GROUP")
     if not group:
         return Party("human")
     if group not in cfg.groups:
-        raise ConfigError(f"MOOT_GROUP={group!r} is not a configured group")
-    role = env.get("MOOT_ROLE", "orchestrator")
+        raise ConfigError(f"MELD_GROUP={group!r} is not a configured group")
+    role = env.get("MELD_ROLE", "orchestrator")
     if role == "orchestrator":
         return Party("group", group)
     if role == "pm":
         return Party("pm", group)
-    raise ConfigError(f"MOOT_ROLE={role!r} must be 'orchestrator' or 'pm'")
+    raise ConfigError(f"MELD_ROLE={role!r} must be 'orchestrator' or 'pm'")

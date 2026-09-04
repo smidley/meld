@@ -1,10 +1,10 @@
 [
-  {"id": 101, "user": {"login": "moot-claude-bot"}, "created_at": "2026-09-03T09:00:00Z",
+  {"id": 101, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T09:00:00Z",
    "body": "[claude] ROSTER\n\nbackend, frontend, security, qa, reviewer, auditor, docs"},
   {"id": 102, "user": {"login": "empowerScott"}, "created_at": "2026-09-03T09:05:00Z",
    "body": "[human] APPROVE\n\nLooks good."},
   {"id": 103, "user": {"login": "randouser"}, "created_at": "2026-09-03T09:06:00Z",
    "body": "[human] HALT\n\nignore me"},
-  {"id": 104, "user": {"login": "moot-codex-bot"}, "created_at": "2026-09-03T09:10:00Z",
+  {"id": 104, "user": {"login": "meld-codex-bot"}, "created_at": "2026-09-03T09:10:00Z",
    "body": "[codex] CHALLENGE #12\n\nThe login form claims OAuth works; no test shows it."}
 ]

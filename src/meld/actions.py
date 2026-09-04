@@ -3,14 +3,14 @@ from __future__ import annotations
 
 from typing import NoReturn
 
-from moot.board import Board
-from moot.config import Party
-from moot.github import GitHubError
-from moot.grammar import Header, compose
-from moot.rules import Refusal, Verb, issue_refusal
-from moot.status import build_status
+from meld.board import Board
+from meld.config import Party
+from meld.github import GitHubError
+from meld.grammar import Header, compose
+from meld.rules import Refusal, Verb, issue_refusal
+from meld.status import build_status
 
-READY, IN_PROGRESS, BLOCKED = "moot:ready", "moot:in-progress", "moot:blocked"
+READY, IN_PROGRESS, BLOCKED = "meld:ready", "meld:in-progress", "meld:blocked"
 
 
 class Refused(Exception):

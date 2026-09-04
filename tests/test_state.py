@@ -2,13 +2,13 @@ import json
 import os
 from pathlib import Path
 
-from moot.state import StateStore, board_digest, diff_digest, moot_home
+from meld.state import StateStore, board_digest, diff_digest, meld_home
 from tests.factories import CFG2, mk_board, mk_issue, mk_pr, mk_run
 
 
-def test_moot_home_default_and_override(tmp_path):
-    assert moot_home({}).name == ".moot"
-    assert moot_home({"MOOT_HOME": str(tmp_path)}) == tmp_path
+def test_meld_home_default_and_override(tmp_path):
+    assert meld_home({}).name == ".meld"
+    assert meld_home({"MELD_HOME": str(tmp_path)}) == tmp_path
 
 
 def test_write_and_load_runs_with_alive_probe(tmp_path):
@@ -44,14 +44,14 @@ def test_snapshot_round_trip(tmp_path):
 
 def test_digest_and_diff_name_what_changed():
     b1 = mk_board(CFG2, issues=[mk_issue(11)], pulls=[mk_pr(20, 13)], runs={"claude": {12: mk_run("claude", 12)}, "codex": {}})
-    b2 = mk_board(CFG2, issues=[mk_issue(11, status="in_progress", assignees=("moot-claude-bot",))],
-                  pulls=[mk_pr(20, 13, approvals=("moot-codex-bot",))],
+    b2 = mk_board(CFG2, issues=[mk_issue(11, status="in_progress", assignees=("meld-claude-bot",))],
+                  pulls=[mk_pr(20, 13, approvals=("meld-codex-bot",))],
                   runs={"claude": {12: mk_run("claude", 12, alive=False)}, "codex": {}}, halted=True)
     d1, d2 = board_digest(b1), board_digest(b2)
     assert diff_digest(d1, d1) == []
     changes = diff_digest(d1, d2)
     assert "issue #11: ready -> in_progress" in changes
-    assert "pr #20: approvals [] -> ['moot-codex-bot']" in changes
+    assert "pr #20: approvals [] -> ['meld-codex-bot']" in changes
     assert "run claude/#12: running -> finished" in changes
     assert "halted: False -> True" in changes
     assert diff_digest(None, d2) == ["initial snapshot"]
@@ -72,7 +72,7 @@ def test_corrupt_run_record_is_skipped_and_reported(tmp_path):
 
 
 def test_writes_are_atomic_and_pid_guard(tmp_path):
-    from moot.state import pid_alive
+    from meld.state import pid_alive
     store = StateStore(tmp_path, "claude")
     store.save_snapshot({"a": 1})
     assert not list((tmp_path / "state" / "claude").glob("*.tmp"))
@@ -106,8 +106,8 @@ def test_two_parties_of_one_group_do_not_share_a_snapshot(tmp_path):
 
 
 def test_write_atomic_writes_a_sibling_temp_then_replaces(tmp_path, monkeypatch):
-    import moot.atomic as atomic
-    from moot.atomic import write_atomic
+    import meld.atomic as atomic
+    from meld.atomic import write_atomic
 
     target = tmp_path / "snapshot.json"
     target.write_text("old")

@@ -1,6 +1,6 @@
 from click.testing import CliRunner
 
-from moot.cli import main
+from meld.cli import main
 
 
 def test_version_flag_prints_version():

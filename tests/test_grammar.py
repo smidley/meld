@@ -1,5 +1,5 @@
-from moot.config import Config, Party
-from moot.grammar import (
+from meld.config import Config, Party
+from meld.grammar import (
     Header,
     compose,
     has_verified_by,
@@ -13,9 +13,9 @@ CFG = Config.from_dict({
     "repo": {"name": "acme/widgets"},
     "humans": {"accounts": ["empowerScott"]},
     "groups": {
-        "claude": {"cli": "claude", "bot": "moot-claude-bot", "token_env": "T1",
+        "claude": {"cli": "claude", "bot": "meld-claude-bot", "token_env": "T1",
                    "orchestrator": {"model": "m", "effort": "high"}, "pm": {"model": "m", "effort": "medium"}},
-        "codex": {"cli": "codex", "bot": "moot-codex-bot", "token_env": "T2",
+        "codex": {"cli": "codex", "bot": "meld-codex-bot", "token_env": "T2",
                   "orchestrator": {"model": "m", "effort": "high"}, "pm": {"model": "m", "effort": "medium"}},
     },
 })
@@ -51,17 +51,17 @@ def test_has_verified_by_is_case_insensitive_and_needs_content():
 
 
 def test_authorization():
-    assert is_authorized("moot-claude-bot", Header(Party("group", "claude"), "ROSTER", None, None), CFG)
-    assert is_authorized("moot-claude-bot", Header(Party("pm", "claude"), "STATUS", None, None), CFG)
-    assert not is_authorized("moot-codex-bot", Header(Party("group", "claude"), "ROSTER", None, None), CFG)
+    assert is_authorized("meld-claude-bot", Header(Party("group", "claude"), "ROSTER", None, None), CFG)
+    assert is_authorized("meld-claude-bot", Header(Party("pm", "claude"), "STATUS", None, None), CFG)
+    assert not is_authorized("meld-codex-bot", Header(Party("group", "claude"), "ROSTER", None, None), CFG)
     assert is_authorized("empowerScott", Header(Party("human"), "HALT", None, None), CFG)
     assert not is_authorized("randouser", Header(Party("human"), "HALT", None, None), CFG)
-    assert is_authorized("moot-codex-bot", Header(Party("joint"), "PLAN", None, None), CFG)
+    assert is_authorized("meld-codex-bot", Header(Party("joint"), "PLAN", None, None), CFG)
     assert not is_authorized("empowerScott", Header(Party("joint"), "PLAN", None, None), CFG)
 
 
 def test_parse_comment_end_to_end():
-    raw = {"id": 5, "user": {"login": "moot-claude-bot"}, "created_at": "2026-09-03T10:00:00Z",
+    raw = {"id": 5, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T10:00:00Z",
            "body": "[claude] PROPOSE plan-1\n\nSplit into 4 issues."}
     c = parse_comment(raw, CFG)
     assert c.ok

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote, urlencode
 
-from moot.atomic import write_atomic
+from meld.atomic import write_atomic
 
 RunFn = Callable[..., subprocess.CompletedProcess]
 

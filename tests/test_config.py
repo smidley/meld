@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from moot.config import Config, ConfigError, Party, load_config, party_from_env
+from meld.config import Config, ConfigError, Party, load_config, party_from_env
 
 MINIMAL = """
 [repo]
@@ -13,8 +13,8 @@ accounts = ["empowerScott"]
 
 [groups.claude]
 cli = "claude"
-bot = "moot-claude-bot"
-token_env = "MOOT_TOKEN_CLAUDE"
+bot = "meld-claude-bot"
+token_env = "MELD_TOKEN_CLAUDE"
 [groups.claude.orchestrator]
 model = "claude-opus-5"
 effort = "high"
@@ -24,8 +24,8 @@ effort = "medium"
 
 [groups.codex]
 cli = "codex"
-bot = "moot-codex-bot"
-token_env = "MOOT_TOKEN_CODEX"
+bot = "meld-codex-bot"
+token_env = "MELD_TOKEN_CODEX"
 [groups.codex.orchestrator]
 model = "gpt-x"
 effort = "high"
@@ -36,7 +36,7 @@ effort = "medium"
 
 
 def write(tmp_path: Path, text: str) -> Path:
-    p = tmp_path / ".moot.toml"
+    p = tmp_path / ".meld.toml"
     p.write_text(text)
     return p
 
@@ -48,7 +48,7 @@ def test_loads_groups_and_defaults(tmp_path):
     assert cfg.private is True
     assert cfg.humans == ("empowerScott",)
     assert cfg.group_names == ("claude", "codex")
-    assert cfg.groups["claude"].bot == "moot-claude-bot"
+    assert cfg.groups["claude"].bot == "meld-claude-bot"
     assert cfg.groups["claude"].concurrency == 8
     assert cfg.groups["claude"].review_concurrency == 4
     assert cfg.groups["claude"].orchestrator.model == "claude-opus-5"
@@ -68,8 +68,8 @@ def test_effective_quorum_is_min_of_quorum_and_n_minus_one(tmp_path):
     three = MINIMAL + """
 [groups.gemini]
 cli = "gemini"
-bot = "moot-gemini-bot"
-token_env = "MOOT_TOKEN_GEMINI"
+bot = "meld-gemini-bot"
+token_env = "MELD_TOKEN_GEMINI"
 [groups.gemini.orchestrator]
 model = "g"
 effort = "high"
@@ -83,10 +83,10 @@ effort = "medium"
 
 def test_group_for_bot_and_is_human(tmp_path):
     cfg = load_config(write(tmp_path, MINIMAL))
-    assert cfg.group_for_bot("moot-codex-bot").name == "codex"
+    assert cfg.group_for_bot("meld-codex-bot").name == "codex"
     assert cfg.group_for_bot("nobody") is None
     assert cfg.is_human("empowerScott")
-    assert not cfg.is_human("moot-claude-bot")
+    assert not cfg.is_human("meld-claude-bot")
 
 
 def test_missing_repo_name_is_an_error(tmp_path):
@@ -96,7 +96,7 @@ def test_missing_repo_name_is_an_error(tmp_path):
 
 def test_group_missing_bot_is_an_error(tmp_path):
     with pytest.raises(ConfigError, match="groups.codex.bot"):
-        load_config(write(tmp_path, MINIMAL.replace('bot = "moot-codex-bot"', "")))
+        load_config(write(tmp_path, MINIMAL.replace('bot = "meld-codex-bot"', "")))
 
 
 def test_party_labels_and_parse(tmp_path):
@@ -115,12 +115,12 @@ def test_party_labels_and_parse(tmp_path):
 def test_party_from_env(tmp_path):
     cfg = load_config(write(tmp_path, MINIMAL))
     assert party_from_env(cfg, {}) == Party("human")
-    assert party_from_env(cfg, {"MOOT_GROUP": "claude"}) == Party("group", "claude")
-    assert party_from_env(cfg, {"MOOT_GROUP": "claude", "MOOT_ROLE": "pm"}) == Party("pm", "claude")
+    assert party_from_env(cfg, {"MELD_GROUP": "claude"}) == Party("group", "claude")
+    assert party_from_env(cfg, {"MELD_GROUP": "claude", "MELD_ROLE": "pm"}) == Party("pm", "claude")
     with pytest.raises(ConfigError):
-        party_from_env(cfg, {"MOOT_GROUP": "nope"})
+        party_from_env(cfg, {"MELD_GROUP": "nope"})
     with pytest.raises(ConfigError):
-        party_from_env(cfg, {"MOOT_GROUP": "claude", "MOOT_ROLE": "worker"})
+        party_from_env(cfg, {"MELD_GROUP": "claude", "MELD_ROLE": "worker"})
 
 
 def test_reserved_and_malformed_group_names_are_rejected(tmp_path):

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from moot.models import ModelRegistry, size_fits
+from meld.models import ModelRegistry, size_fits
 
 SAMPLE = """
 [claude.claude-opus-5]

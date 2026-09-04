@@ -3,12 +3,12 @@ from __future__ import annotations
 
 from typing import NoReturn
 
-from moot.actions import refuse
-from moot.board import Board
-from moot.config import Party
-from moot.grammar import Agreement, Header, agreement_for, allowed_verbs, compose, validate
-from moot.rules import Refusal, Verb
-from moot.status import build_status
+from meld.actions import refuse
+from meld.board import Board
+from meld.config import Party
+from meld.grammar import Agreement, Header, agreement_for, allowed_verbs, compose, validate
+from meld.rules import Refusal, Verb
+from meld.status import build_status
 
 
 class PostError(ValueError):

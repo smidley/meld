@@ -1,14 +1,14 @@
-from moot.config import Config
-from moot.grammar import agreement_for, parse_comment
+from meld.config import Config
+from meld.grammar import agreement_for, parse_comment
 
 CFG2 = Config.from_dict({
     "repo": {"name": "acme/widgets"},
     "humans": {"accounts": ["empowerScott"]},
     "agreement": {"amend_cap": 2},
     "groups": {
-        "claude": {"cli": "claude", "bot": "moot-claude-bot", "token_env": "T1",
+        "claude": {"cli": "claude", "bot": "meld-claude-bot", "token_env": "T1",
                    "orchestrator": {"model": "m", "effort": "high"}, "pm": {"model": "m", "effort": "medium"}},
-        "codex": {"cli": "codex", "bot": "moot-codex-bot", "token_env": "T2",
+        "codex": {"cli": "codex", "bot": "meld-codex-bot", "token_env": "T2",
                   "orchestrator": {"model": "m", "effort": "high"}, "pm": {"model": "m", "effort": "medium"}},
     },
 })
@@ -17,16 +17,16 @@ CFG3 = Config.from_dict({
     "humans": {"accounts": ["empowerScott"]},
     "agreement": {"amend_cap": 2},
     "groups": {
-        "claude": {"cli": "claude", "bot": "moot-claude-bot", "token_env": "T1",
+        "claude": {"cli": "claude", "bot": "meld-claude-bot", "token_env": "T1",
                    "orchestrator": {"model": "m", "effort": "high"}, "pm": {"model": "m", "effort": "medium"}},
-        "codex": {"cli": "codex", "bot": "moot-codex-bot", "token_env": "T2",
+        "codex": {"cli": "codex", "bot": "meld-codex-bot", "token_env": "T2",
                   "orchestrator": {"model": "m", "effort": "high"}, "pm": {"model": "m", "effort": "medium"}},
-        "gemini": {"cli": "gemini", "bot": "moot-gemini-bot", "token_env": "T3",
+        "gemini": {"cli": "gemini", "bot": "meld-gemini-bot", "token_env": "T3",
                    "orchestrator": {"model": "m", "effort": "high"}, "pm": {"model": "m", "effort": "medium"}},
     },
 })
 
-BOTS = {"claude": "moot-claude-bot", "codex": "moot-codex-bot", "gemini": "moot-gemini-bot"}
+BOTS = {"claude": "meld-claude-bot", "codex": "meld-codex-bot", "gemini": "meld-gemini-bot"}
 
 
 def c(cfg, i, group, verb, ref, text="body", joint=False, author=None):
@@ -80,7 +80,7 @@ def test_unauthorized_and_other_ref_comments_are_ignored():
 
 def test_draft_behaves_like_propose_and_joint_marks_posted():
     cs = [c(CFG2, 1, "codex", "DRAFT", "ask-1", "answer"), c(CFG2, 2, "claude", "AGREE", "ask-1"),
-          c(CFG2, 3, "codex", "ANSWER", "ask-1", "answer\n\nverified-by: moot status", joint=True)]
+          c(CFG2, 3, "codex", "ANSWER", "ask-1", "answer\n\nverified-by: meld status", joint=True)]
     a = agreement_for(cs, "ask-1", CFG2)
     assert a.status == "agreed" and a.joint_posted
 

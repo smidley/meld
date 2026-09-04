@@ -15,12 +15,14 @@ RunFn = Callable[..., subprocess.CompletedProcess]
 
 
 class GitHubError(RuntimeError):
-    pass
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 class RateLimited(GitHubError):
     def __init__(self, reset_at: int | None):
-        super().__init__(f"GitHub rate limit exceeded (resets at {reset_at})")
+        super().__init__(f"GitHub rate limit exceeded (resets at {reset_at})", status=None)
         self.reset_at = reset_at
 
 
@@ -57,7 +59,7 @@ class GitHub:
         try:
             status = int(lines[0].split()[1])
         except (IndexError, ValueError) as e:
-            raise GitHubError(f"could not parse gh response for {method} {endpoint}: {proc.stderr.strip() or raw[:200]}") from e
+            raise GitHubError(f"could not parse gh response for {method} {endpoint}: {proc.stderr.strip() or raw[:200]}", status=None) from e
         resp_headers = {}
         for line in lines[1:]:
             k, _, v = line.partition(": ")
@@ -94,7 +96,7 @@ class GitHub:
         if status == 304 and cached is not None:
             return cached["body"]
         if status >= 400:
-            raise GitHubError(f"GET {url} failed with HTTP {status}: {body}")
+            raise GitHubError(f"GET {url} failed with HTTP {status}: {body}", status=status)
         if cache is not None and "etag" in resp_headers:
             write_atomic(cache, json.dumps({"etag": resp_headers["etag"], "body": body}))
         return body
@@ -121,7 +123,7 @@ class GitHub:
     def _mutate(self, method: str, endpoint: str, body: dict | None) -> Any:
         status, _, resp = self._call(method, endpoint, body=body)
         if status >= 400:
-            raise GitHubError(f"{method} {endpoint} failed with HTTP {status}: {resp}")
+            raise GitHubError(f"{method} {endpoint} failed with HTTP {status}: {resp}", status=status)
         return resp
 
     def post(self, endpoint: str, body: dict) -> Any:
@@ -132,6 +134,9 @@ class GitHub:
 
     def delete(self, endpoint: str, body: dict | None = None) -> Any:
         return self._mutate("DELETE", endpoint, body)
+
+    def put(self, endpoint: str, body: dict) -> Any:
+        return self._mutate("PUT", endpoint, body)
 
     # ---- helpers ---------------------------------------------------------
 
@@ -181,7 +186,7 @@ class GitHub:
     def remove_label(self, number: int, label: str) -> None:
         status, _, resp = self._call("DELETE", self._r(f"issues/{number}/labels/{quote(label, safe='')}"))
         if status >= 400 and status != 404:
-            raise GitHubError(f"DELETE label {label} on #{number} failed with HTTP {status}: {resp}")
+            raise GitHubError(f"DELETE label {label} on #{number} failed with HTTP {status}: {resp}", status=status)
 
     def create_comment(self, number: int, body: str) -> dict:
         return self.post(self._r(f"issues/{number}/comments"), {"body": body})
@@ -197,3 +202,29 @@ class GitHub:
 
     def update_pull(self, number: int, body: str) -> dict:
         return self.patch(self._r(f"pulls/{number}"), {"body": body})
+
+    def get_pull(self, number: int, fresh: bool = False) -> dict:
+        return self.get(self._r(f"pulls/{number}"), use_cache=not fresh)
+
+    def pull_files(self, number: int) -> list[str]:
+        return [f["filename"] for f in self.get_paginated(self._r(f"pulls/{number}/files"))]
+
+    def create_review(self, number: int, event: str, body: str, commit_id: str, comments: list[dict] | None = None) -> dict:
+        """Submit one PR review. `comments` are diff comments ({path, line, body}); GitHub rejects lines outside the diff with 422."""
+        payload: dict[str, Any] = {"event": event, "body": body, "commit_id": commit_id}
+        if comments:
+            payload["comments"] = [{"path": c["path"], "line": int(c["line"]), "side": "RIGHT", "body": c["body"]} for c in comments]
+        return self.post(self._r(f"pulls/{number}/reviews"), payload)
+
+    def merge_pull(self, number: int, sha: str, title: str, method: str = "squash") -> dict:
+        """Squash-merge; `sha` makes GitHub refuse (409) if the head moved since we looked."""
+        return self.put(self._r(f"pulls/{number}/merge"), {"sha": sha, "merge_method": method, "commit_title": title})
+
+    def create_status(self, sha: str, state: str, context: str, description: str, target_url: str | None = None) -> dict:
+        body: dict[str, Any] = {"state": state, "context": context, "description": description[:140]}
+        if target_url:
+            body["target_url"] = target_url
+        return self.post(self._r(f"statuses/{sha}"), body)
+
+    def update_issue(self, number: int, **fields: Any) -> dict:
+        return self.patch(self._r(f"issues/{number}"), fields)

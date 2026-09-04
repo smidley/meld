@@ -188,3 +188,32 @@ def test_post_is_refusable_but_is_not_a_board_verb():
     issue = mk_issue(11)
     board = mk_board(CFG2, issues=[issue])
     assert "post" not in legal_issue_verbs(board, CFG2, CLAUDE_PM, issue, REG)
+
+
+# ---- reap and tag --------------------------------------------------------------
+
+def test_reap_legality_for_build_runs():
+    rec = mk_run("claude", 11, alive=False, collected=True)
+    open_issue = mk_issue(11, status="in_progress", assignees=("meld-claude-bot",))
+    assert rule(mk_board(CFG2, issues=[open_issue], runs={"claude": {11: rec}}), CLAUDE_PM, Verb.REAP, open_issue) == \
+        "issue is still open and its PR is not merged"
+    merged = mk_pr(21, 11, committer="meld-claude-bot", state="closed", merged=True)
+    assert rule(mk_board(CFG2, issues=[open_issue], pulls=[merged], runs={"claude": {11: rec}}), CLAUDE_PM, Verb.REAP, open_issue) is None
+    closed = mk_issue(11, state="closed", assignees=("meld-claude-bot",))
+    b = mk_board(CFG2, issues=[closed], runs={"claude": {11: rec}})
+    assert rule(b, CLAUDE_PM, Verb.REAP, closed) is None
+    assert rule(mk_board(CFG2, issues=[closed]), CLAUDE_PM, Verb.REAP, closed) == "no run record for #11 in claude"
+    uncollected = mk_board(CFG2, issues=[closed], runs={"claude": {11: mk_run("claude", 11, alive=False, collected=False)}})
+    assert rule(uncollected, CLAUDE_PM, Verb.REAP, closed) == "run has not been collected; collect first"
+    assert rule(b, CLAUDE_ORCH, Verb.REAP, closed) == "only the PM may reap"
+    assert "reap" in legal_issue_verbs(b, CFG2, CLAUDE_PM, closed, REG)
+
+
+def test_tag_legality():
+    i = mk_issue(11)
+    b = mk_board(CFG2, issues=[i])
+    assert rule(b, CLAUDE_ORCH, Verb.TAG, i) is None and rule(b, HUMAN, Verb.TAG, i) is None
+    assert rule(b, CLAUDE_PM, Verb.TAG, i) == "only the orchestrator or a human may tag"
+    closed = mk_issue(12, state="closed")
+    assert rule(mk_board(CFG2, issues=[closed]), CLAUDE_ORCH, Verb.TAG, closed) == "issue is closed"
+    assert "tag" in legal_issue_verbs(b, CFG2, CLAUDE_ORCH, i, REG) and "tag" not in legal_issue_verbs(b, CFG2, CLAUDE_PM, i, REG)

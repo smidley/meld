@@ -66,7 +66,7 @@ def test_status_command_reports_board_and_legal_actions(project: Path, monkeypat
     assert data["needs_human"][0]["issue"] == 14 and data["needs_human"][0]["age_minutes"] > 0
     pulls = {p["number"]: p for p in data["pulls"]}
     assert pulls[20]["committer_party"] == "codex" and pulls[20]["approvals"] == ["claude"]
-    assert pulls[20]["legal"] == ["approve", "request-changes", "push-fix", "merge"]
+    assert pulls[20]["legal"] == ["approve", "request-changes", "push-fix", "merge", "review"]
     assert pulls[19]["state"] == "closed" and pulls[19]["legal"] == []
     assert data["coordination"]["open_challenges"] == ["#12"] and data["coordination"]["ignored_comments"] == 1
     assert data["budget"]["cap"] == {"small": 200, "medium": 80, "large": 20}
@@ -106,7 +106,7 @@ def test_status_as_orchestrator_cannot_claim(project: Path, monkeypatch):
     result = CliRunner().invoke(cli.main, ["--config", str(project / ".meld.toml"), "--compact", "status"],
                                 env=env_for(project, role="orchestrator"))
     data = json.loads(result.output)
-    assert {i["number"]: i["legal"] for i in data["issues"]}[11] == []
+    assert {i["number"]: i["legal"] for i in data["issues"]}[11] == ["tag"]
 
 
 def test_status_as_human_uses_gh_identity(project: Path, monkeypatch):
@@ -118,7 +118,7 @@ def test_status_as_human_uses_gh_identity(project: Path, monkeypatch):
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
     assert data["party"] == "[human]" and data["actor"] == "empowerScott"
-    assert {i["number"]: i["legal"] for i in data["issues"]}[11] == ["claim"]
+    assert {i["number"]: i["legal"] for i in data["issues"]}[11] == ["claim", "tag"]
 
 
 def test_gh_failure_is_a_clean_cli_error(project: Path, monkeypatch):
@@ -162,7 +162,7 @@ def test_status_tolerates_an_unknown_head_committer(project: Path, monkeypatch):
     assert result.exit_code == 0, result.output
     pulls = {p["number"]: p for p in json.loads(result.output)["pulls"]}
     assert pulls[20]["committer_party"] is None
-    assert pulls[20]["legal"] == ["request-changes", "push-fix"]
+    assert pulls[20]["legal"] == ["request-changes", "push-fix", "review"]
 
 
 def test_models_command_lists_every_adapter_for_a_human(project: Path, monkeypatch):

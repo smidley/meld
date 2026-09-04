@@ -6,6 +6,7 @@ from enum import Enum
 
 from meld.board import Board, Issue, PullRequest
 from meld.config import Config, Party
+from meld.grammar import agreement_for
 from meld.models import SIZES, ModelRegistry, size_fits
 
 
@@ -22,12 +23,15 @@ class Verb(str, Enum):
     POST = "post"
     REAP = "reap"
     TAG = "tag"
+    REVIEW = "review"        # dispatch a review run on a PR
+    AUDIT = "audit"          # dispatch an audit run on a merged PR
+    CHALLENGE = "challenge"  # open or act on a CHALLENGE (see challenge_rule)
 
 
 # POST is deliberately absent from both: it is refusable but not a per-issue or per-PR verb,
 # so it never appears in an issue's or a PR's legal-action list.
-ISSUE_VERBS = (Verb.CLAIM, Verb.RELEASE, Verb.DISPATCH, Verb.COLLECT, Verb.REOPEN)
-PR_VERBS = (Verb.APPROVE, Verb.REQUEST_CHANGES, Verb.PUSH_FIX, Verb.MERGE)
+ISSUE_VERBS = (Verb.CLAIM, Verb.RELEASE, Verb.DISPATCH, Verb.COLLECT, Verb.REOPEN, Verb.TAG, Verb.REAP)
+PR_VERBS = (Verb.APPROVE, Verb.REQUEST_CHANGES, Verb.PUSH_FIX, Verb.MERGE, Verb.REVIEW, Verb.AUDIT, Verb.REAP)
 
 
 @dataclass(frozen=True)
@@ -190,6 +194,33 @@ def _reopen(board: Board, cfg: Config, actor: Actor, issue: Issue) -> str | None
     return None
 
 
+def _tag(board: Board, cfg: Config, actor: Actor, issue: Issue) -> str | None:
+    if not (actor.is_human or actor.party.kind == "group"):
+        return "only the orchestrator or a human may tag"
+    if issue.state != "open":
+        return "issue is closed"
+    return None
+
+
+def reap_rule(board: Board, cfg: Config, actor: Actor, number: int, issue: Issue | None, pr: PullRequest | None) -> str | None:
+    """A collected, dead run may be reaped once its work is over: a build once its issue is closed or its PR merged/closed;
+    a review or audit run as soon as it is collected."""
+    if not actor.is_pm:
+        return "only the PM may reap"
+    run = board.run_for(actor.group or "", number)
+    if run is None:
+        return f"no run record for #{number} in {actor.group}"
+    if run.alive:
+        return "worker is still running"
+    if not run.collected:
+        return "run has not been collected; collect first"
+    if run.kind != "build":
+        return None
+    linked = board.pr_for_issue(number) if issue is not None else pr
+    done = (issue is not None and issue.state == "closed") or (linked is not None and (linked.merged or linked.state == "closed"))
+    return None if done else "issue is still open and its PR is not merged"
+
+
 def issue_refusal(board: Board, cfg: Config, actor: Actor, verb: Verb, issue: Issue, models: ModelRegistry) -> Refusal | None:
     if verb == Verb.CLAIM:
         rule = _claim(board, cfg, actor, issue, models)
@@ -201,6 +232,10 @@ def issue_refusal(board: Board, cfg: Config, actor: Actor, verb: Verb, issue: Is
         rule = _release(board, cfg, actor, issue)
     elif verb == Verb.REOPEN:
         rule = _reopen(board, cfg, actor, issue)
+    elif verb == Verb.TAG:
+        rule = _tag(board, cfg, actor, issue)
+    elif verb == Verb.REAP:
+        rule = reap_rule(board, cfg, actor, issue.number, issue, None)
     else:
         rule = f"{verb.value} is not an issue verb"
     return Refusal(verb, f"#{issue.number}", rule) if rule else None
@@ -263,15 +298,71 @@ def _merge(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | No
     return None
 
 
+def _run_slot(board: Board, cfg: Config, actor: Actor, number: int) -> str | None:
+    group = cfg.groups[actor.group]  # type: ignore[index]
+    live = [r for r in board.runs.get(group.name, {}).values() if r.alive and r.kind in ("review", "audit")]
+    if len(live) >= group.review_concurrency:
+        return f"{group.name} is at its review concurrency cap ({len(live)}/{group.review_concurrency})"
+    existing = board.run_for(group.name, number)
+    if existing is not None and (existing.alive or not existing.collected):
+        return "a run already exists for this PR (running or uncollected)"
+    return None
+
+
+def _review(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | None:
+    if board.halted:
+        return "HALT is in effect"
+    if not actor.is_pm:
+        return "only the PM may dispatch a review"
+    blocker = _other_party_only(cfg, actor, pr, Verb.REVIEW)   # the head committer's group never reviews its own head
+    if blocker:
+        return blocker
+    if board.is_challenged(f"#{pr.number}"):
+        return "PR has an open CHALLENGE"
+    return _run_slot(board, cfg, actor, pr.number)
+
+
+def _audit(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | None:
+    if board.halted:
+        return "HALT is in effect"
+    if not actor.is_pm:
+        return "only the PM may dispatch an audit"
+    if not pr.merged:
+        return "audit targets a merged PR"
+    if party_of_login(cfg, pr.author) == actor.group:
+        return "cannot audit a PR authored by own group"
+    if actor.group in board.audits.get(pr.number, {}):
+        return f"{actor.group} already audited #{pr.number}"
+    return _run_slot(board, cfg, actor, pr.number)
+
+
+CONCERNS = ("correctness and security", "tests and product conventions", "architecture, performance, and visual design")
+
+
+def review_concern(cfg: Config, pr: PullRequest, group: str) -> str | None:
+    """Role-matched review (spec 21.3): with three or more groups, each reviewing group takes a different primary concern."""
+    excluded = {committer_party(cfg, pr), party_of_login(cfg, pr.author)}
+    reviewers = sorted(g.name for g in cfg.groups.values() if g.name not in excluded)
+    if len(reviewers) < 2 or group not in reviewers:
+        return None
+    return CONCERNS[reviewers.index(group) % len(CONCERNS)]
+
+
 def pr_refusal(board: Board, cfg: Config, actor: Actor, verb: Verb, pr: PullRequest) -> Refusal | None:
-    if pr.state != "open":
-        rule: str | None = "PR is not open"
+    if verb == Verb.REAP:
+        rule: str | None = reap_rule(board, cfg, actor, pr.number, None, pr)
+    elif verb == Verb.AUDIT:
+        rule = _audit(board, cfg, actor, pr)
+    elif pr.state != "open":
+        rule = "PR is not open"
     elif verb == Verb.APPROVE:
         rule = _approve(board, cfg, actor, pr)
     elif verb in (Verb.REQUEST_CHANGES, Verb.PUSH_FIX):
         rule = _other_party_only(cfg, actor, pr, verb)
     elif verb == Verb.MERGE:
         rule = _merge(board, cfg, actor, pr)
+    elif verb == Verb.REVIEW:
+        rule = _review(board, cfg, actor, pr)
     else:
         rule = f"{verb.value} is not a PR verb"
     return Refusal(verb, f"#{pr.number}", rule) if rule else None
@@ -279,3 +370,55 @@ def pr_refusal(board: Board, cfg: Config, actor: Actor, verb: Verb, pr: PullRequ
 
 def legal_pr_verbs(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> list[str]:
     return [v.value for v in PR_VERBS if pr_refusal(board, cfg, actor, v, pr) is None]
+
+
+# ---- challenges ------------------------------------------------------------------
+
+CHALLENGE_ACTIONS = ("open", "evidence", "retract", "uphold", "dismiss")
+
+
+def challenged_party(board: Board, cfg: Config, ref: str) -> str | None:
+    """Who must answer a challenge on `ref`: a PR's head committer's party (else its author's), an issue's first
+    configured assignee's party, or an agreement ref's proposer. None when nobody owns the claim."""
+    if ref.startswith("#") and ref[1:].isdigit():
+        n = int(ref[1:])
+        if n in board.pulls:
+            pr = board.pulls[n]
+            return committer_party(cfg, pr) or party_of_login(cfg, pr.author)
+        if n in board.issues:
+            for login in board.issues[n].assignees:
+                party = party_of_login(cfg, login)
+                if party:
+                    return party
+            return None
+    return agreement_for(board.comments, ref, cfg).proposer
+
+
+def challenge_rule(board: Board, cfg: Config, actor: Actor, action: str, ref: str) -> str | None:
+    if action not in CHALLENGE_ACTIONS:
+        return f"unknown challenge action '{action}'"
+    if not (actor.is_human or actor.party.kind == "group"):
+        return "only an orchestrator or a human may act on challenges"
+    current = board.challenges.get(ref)
+    target = challenged_party(board, cfg, ref)
+    if action == "open":
+        if current is not None:
+            return f"{ref} already has an open CHALLENGE by {current.challenger}"
+        if target is not None and target == actor.name:
+            return "a party cannot challenge its own claim"
+        return None
+    if current is None:
+        return f"{ref} has no open CHALLENGE"
+    if action == "evidence":
+        if actor.is_human or target is None or actor.name == target:
+            return None
+        return f"only the challenged party ({target}) or a human may post EVIDENCE"
+    if action == "retract":
+        if actor.is_human or actor.name == current.challenger or (target is not None and actor.name == target):
+            return None
+        return f"only the challenger ({current.challenger}) or the challenged party ({target}) or a human may RETRACT"
+    if actor.name == current.challenger:
+        return "the challenger cannot decide its own challenge"
+    if target is not None and actor.name == target:
+        return "the challenged party cannot decide the challenge against it"
+    return None

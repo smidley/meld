@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import NoReturn
 
-from meld.board import Board
+from meld.board import Board, derive_leases
 from meld.config import Party
 from meld.github import GitHubError
 from meld.grammar import Header, compose
@@ -74,6 +74,16 @@ def claim(ctx, number: int) -> dict:
             except GitHubError:
                 pass
         raise
+    # A LEASE comment outlives the claim it describes (meld release posts nothing to retract it).
+    # Without this, a stale LEASE from an earlier run of ours would revive on this fresh claim and
+    # let another PM release it once the old `until` passed, even though nothing we hold has expired.
+    # Superseding it with EXPIRED here, at the moment we reclaim the issue, closes that gap.
+    if actor.is_pm:
+        stale = derive_leases(board.comments).get(number)   # the raw thread, not board.leases: a lease we no longer hold is filtered there
+        if stale is not None and stale.group == actor.group:
+            ctx.gh.create_comment(board.coordination_issue, compose(
+                Header(Party("pm", actor.group), "EXPIRED", f"#{number}", None),
+                f"stale lease superseded by a new claim; the next `meld dispatch {number}` posts a fresh LEASE"))
     return {"claimed": number, "assignee": actor.login}
 
 

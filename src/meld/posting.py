@@ -17,7 +17,9 @@ class PostError(ValueError):
 
 # Written by meld itself (dispatch and tick) as `[<group>:pm]`; `meld post` refuses them for every
 # caller, so a lease can only be asserted by an actual run and only expired by a tick.
-FRAMEWORK_ONLY_VERBS = frozenset({"LEASE", "EXPIRED"})
+FRAMEWORK_ONLY_VERBS = frozenset({"LEASE", "EXPIRED", "IGNORED-COMMENT"})
+# Challenge verbs carry a label change and closer rules; `meld challenge` applies them, `meld post` refuses them.
+COMMAND_VERBS = frozenset({"CHALLENGE", "EVIDENCE", "RETRACT", "UPHELD", "DISMISSED"})
 
 
 def _refuse(ctx, board: Board, verb: str, ref: str | None, rule: str) -> NoReturn:
@@ -60,7 +62,9 @@ def post(ctx, verb: str, ref: str | None = None, qualifier: str | None = None, t
     if joint and actor.is_human:
         raise PostError("humans cannot post [joint] comments")
     if verb in FRAMEWORK_ONLY_VERBS:
-        raise PostError(f"{verb} is written by meld itself (dispatch and tick), never through meld post")
+        raise PostError(f"{verb} is written by meld itself (dispatch, tick, claim, and the PM summary), never through meld post")
+    if verb in COMMAND_VERBS:
+        raise PostError(f"{verb} is posted through `meld challenge <open|evidence|retract|uphold|dismiss> REF -m ...`, not meld post")
     party = Party("joint") if joint else actor.party
     if verb not in allowed_verbs(party):
         raise PostError(f"{verb} is not a verb {party.label} may post (allowed: {', '.join(sorted(allowed_verbs(party)))})")

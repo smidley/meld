@@ -7,11 +7,18 @@ CLAUDE_ORCH = Actor(Party("group", "claude"), "meld-claude-bot")
 CODEX_PM = Actor(Party("pm", "codex"), "meld-codex-bot")
 GEMINI_PM = Actor(Party("pm", "gemini"), "meld-gemini-bot")
 HUMAN = Actor(Party("human"), "empowerScott")
+ROSTER = frozenset({"backend", "reviewer", "auditor"})
+CODEX_ORCH = Actor(Party("group", "codex"), "meld-codex-bot", ROSTER)
 
 
 def rule(board, cfg, actor, verb, pr):
     r = pr_refusal(board, cfg, actor, verb, pr)
     return None if r is None else r.rule
+
+
+def prule(board, actor, verb, pr):
+    """Alias for the Task 4 review/audit/reap tests below, which never vary cfg from CFG2."""
+    return rule(board, CFG2, actor, verb, pr)
 
 
 def test_committer_and_approving_parties():
@@ -89,7 +96,8 @@ def test_pingpong_and_legal_pr_verbs():
     assert pingpong_exceeded(CFG2, pr)
     assert not pingpong_exceeded(CFG2, mk_pr(21, 14, extra_changes_requested_history=2))
     b = mk_board(CFG2, pulls=[pr])
-    assert legal_pr_verbs(b, CFG2, CLAUDE_PM, pr) == ["approve", "request-changes", "push-fix", "merge"]
+    # claude is not the head committer here, so review (new in Task 4) is also legal for it
+    assert legal_pr_verbs(b, CFG2, CLAUDE_PM, pr) == ["approve", "request-changes", "push-fix", "merge", "review"]
     assert legal_pr_verbs(b, CFG2, CODEX_PM, pr) == ["merge"]
 
 
@@ -105,4 +113,57 @@ def test_unknown_head_committer_blocks_approve_and_merge():
     for verb in (Verb.REQUEST_CHANGES, Verb.PUSH_FIX):
         assert rule(b, CFG2, CLAUDE_PM, verb, pr) is None
         assert rule(b, CFG2, CODEX_PM, verb, pr) is None
-    assert legal_pr_verbs(b, CFG2, CLAUDE_PM, pr) == ["request-changes", "push-fix"]
+    # an unknown committer cannot be reviewed away from (party_of_login is None, so claude != it),
+    # so review (new in Task 4) is also legal here even though approve/merge are blocked
+    assert legal_pr_verbs(b, CFG2, CLAUDE_PM, pr) == ["request-changes", "push-fix", "review"]
+
+
+from dataclasses import replace
+
+from meld.rules import CONCERNS, review_concern
+from tests.factories import CFG3, mk_run
+
+
+def test_review_dispatch_legality():
+    pr = mk_pr(20, 13, committer="meld-codex-bot")
+    b = mk_board(CFG2, pulls=[pr])
+    assert prule(b, CLAUDE_PM, Verb.REVIEW, pr) is None
+    assert "only other parties may review" in prule(b, CODEX_PM, Verb.REVIEW, pr)
+    assert prule(b, CLAUDE_ORCH, Verb.REVIEW, pr) == "only the PM may dispatch a review"
+    assert prule(mk_board(CFG2, pulls=[pr], halted=True), CLAUDE_PM, Verb.REVIEW, pr) == "HALT is in effect"
+    assert prule(mk_board(CFG2, pulls=[pr], open_challenges=frozenset({"#20"})), CLAUDE_PM, Verb.REVIEW, pr) == "PR has an open CHALLENGE"
+    unknown = mk_pr(21, 14, committer=None)   # unknown head committer: a review may be dispatched; approve is refused later
+    assert prule(mk_board(CFG2, pulls=[unknown]), CLAUDE_PM, Verb.REVIEW, unknown) is None
+    busy = mk_board(CFG2, pulls=[pr], runs={"claude": {n: mk_run("claude", n, kind="review", pr=n) for n in range(30, 34)}})
+    assert prule(busy, CLAUDE_PM, Verb.REVIEW, pr) == "claude is at its review concurrency cap (4/4)"
+    waiting = mk_board(CFG2, pulls=[pr], runs={"claude": {20: mk_run("claude", 20, alive=False, collected=False, kind="review", pr=20)}})
+    assert prule(waiting, CLAUDE_PM, Verb.REVIEW, pr) == "a run already exists for this PR (running or uncollected)"
+    assert "review" in legal_pr_verbs(b, CFG2, CLAUDE_PM, pr) and "review" not in legal_pr_verbs(b, CFG2, CODEX_PM, pr)
+
+
+def test_audit_dispatch_legality():
+    merged = mk_pr(19, 9, committer="meld-claude-bot", state="closed", merged=True)
+    b = mk_board(CFG2, pulls=[merged])
+    assert prule(b, CODEX_PM, Verb.AUDIT, merged) is None
+    assert prule(b, CLAUDE_PM, Verb.AUDIT, merged) == "cannot audit a PR authored by own group"
+    assert prule(b, CODEX_ORCH, Verb.AUDIT, merged) == "only the PM may dispatch an audit"
+    open_pr = mk_pr(20, 13)
+    assert prule(mk_board(CFG2, pulls=[open_pr]), CODEX_PM, Verb.AUDIT, open_pr) == "audit targets a merged PR"
+    assert prule(replace(b, audits={19: {"codex": "pass"}}), CODEX_PM, Verb.AUDIT, merged) == "codex already audited #19"
+    assert prule(mk_board(CFG2, pulls=[merged], halted=True), CODEX_PM, Verb.AUDIT, merged) == "HALT is in effect"
+    assert legal_pr_verbs(b, CFG2, CODEX_PM, merged) == ["audit"]     # a merged PR accepts nothing else
+
+
+def test_reap_legality_for_pr_runs():
+    pr = mk_pr(20, 13)
+    collected = mk_board(CFG2, pulls=[pr], runs={"claude": {20: mk_run("claude", 20, alive=False, collected=True, kind="review", pr=20)}})
+    assert prule(collected, CLAUDE_PM, Verb.REAP, pr) is None          # a collected review run is reapable while the PR is open
+    assert prule(mk_board(CFG2, pulls=[pr]), CLAUDE_PM, Verb.REAP, pr) == "no run record for #20 in claude"
+    assert prule(collected, CLAUDE_ORCH, Verb.REAP, pr) == "only the PM may reap"
+
+
+def test_review_concern_is_assigned_only_with_three_or_more_groups():
+    pr = mk_pr(20, 13, committer="meld-codex-bot")
+    assert review_concern(CFG2, pr, "claude") is None
+    assert review_concern(CFG3, pr, "claude") == CONCERNS[0] and review_concern(CFG3, pr, "gemini") == CONCERNS[1]
+    assert review_concern(CFG3, pr, "codex") is None                    # the head committer's group does not review

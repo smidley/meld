@@ -8,7 +8,7 @@ import meld.cli as cli
 from meld.actions import Refused, claim, release
 from meld.context import load_context
 from meld.github import GitHubError
-from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
+from tests.conftest import FIXTURES, PROJECT_TOML, env_for, load_board1_routes
 from tests.fakeadapter import no_skills
 from tests.fakegh import FakeGh
 
@@ -18,6 +18,10 @@ R = "repos/acme/widgets/"
 def label_ep(number: int, label: str) -> str:
     """The label endpoint as GitHub sees it: the label is one URL-quoted path segment."""
     return R + f"issues/{number}/labels/{quote(label, safe='')}"
+
+
+def fixture_comments() -> list[dict]:
+    return json.loads((FIXTURES / "board1" / "comments_10.json").read_text())
 
 
 def make(tmp_path, group="claude", role="pm"):
@@ -43,6 +47,8 @@ def test_claim_happy_path(tmp_path):
     assert mutations == [("POST", R + "issues/11/assignees"), ("POST", R + "issues/11/labels"),
                          ("DELETE", label_ep(11, "meld:ready"))]
     assert posted_headers(fake) == []
+    # no stale own lease in the fixture, so a successful claim posts no EXPIRED comment
+    assert not any(h.startswith("EXPIRED") for h in posted_headers(fake))
 
 
 def test_claim_lost_race_releases_and_refuses(tmp_path):
@@ -166,3 +172,20 @@ def test_cli_human_refusal_reports_no_violation_post(tmp_path, monkeypatch):
     assert data["verb"] == "claim" and "not ready" in data["rule"]
     assert data["violation_posted"] is None
     assert posted_headers(fake) == []
+
+
+def test_pm_claim_clears_its_own_stale_lease(tmp_path):
+    fake, ctx = make(tmp_path)   # claude PM
+    stale = {"id": 105, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T09:00:00Z",
+             "body": "[claude:pm] LEASE #11\n\nuntil: 2020-01-01T00:00:00Z\nrun: claude/#11\nkind: build"}
+    fake.route("GET", R + "issues/10/comments", fixture_comments() + [stale])
+    # Copy, verbatim, the assignee/label routes and the fresh-issue re-read route from the existing successful-claim test
+    # in this file so that claim(ctx, 11) succeeds here exactly as it does there.
+    fake.route("POST", R + "issues/11/assignees", {"assignees": [{"login": "meld-claude-bot"}]})
+    fake.route("GET", R + "issues/11", {"number": 11, "assignees": [{"login": "meld-claude-bot"}]})
+    fake.route("POST", R + "issues/11/labels", [{"name": "meld:in-progress"}])
+    fake.route("DELETE", label_ep(11, "meld:ready"), [])
+    fake.route("POST", R + "issues/10/comments", {"id": 900})
+    claim(ctx, 11)
+    posted = [c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/10/comments"]
+    assert posted and posted[-1].startswith("[claude:pm] EXPIRED #11\n")

@@ -1,5 +1,4 @@
 import os
-import time
 from pathlib import Path
 
 import pytest
@@ -52,3 +51,27 @@ def test_fake_adapter_launches_detached_process_and_logs(tmp_path: Path):
     assert proc.wait(timeout=10) == 3
     assert "hello from worker" in (tmp_path / "logs" / "w.log").read_text()
     assert adapter.launches == [spec]
+
+
+def test_scan_skills_skips_unreadable_and_undecodable_files(tmp_path: Path):
+    good = tmp_path / "good"
+    (good / "SKILL.md").parent.mkdir(parents=True)
+    (good / "SKILL.md").write_text("---\nname: good\ndescription: Fine.\n---\n")
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    (bad / "SKILL.md").write_bytes(b"\xff\xfe not utf-8")
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (locked / "SKILL.md").write_text("---\nname: locked\n---\n")
+    (locked / "SKILL.md").chmod(0)
+    try:
+        if os.geteuid() == 0:
+            assert [s.name for s in scan_skills([tmp_path])] == ["good", "locked"]
+        else:
+            assert [s.name for s in scan_skills([tmp_path])] == ["good"]
+    finally:
+        (locked / "SKILL.md").chmod(0o644)
+
+
+def test_parse_frontmatter_requires_a_closing_fence():
+    assert parse_frontmatter("---\nname: brand\ndescription: never closed\nbody text") == {}

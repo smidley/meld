@@ -49,13 +49,15 @@ def parse_frontmatter(text: str) -> dict[str, str]:
     if not lines or lines[0].strip() != "---":
         return {}
     out: dict[str, str] = {}
+    found_close = False
     for line in lines[1:]:
         if line.strip() == "---":
+            found_close = True
             break
         key, sep, value = line.partition(":")
         if sep:
             out[key.strip()] = value.strip().strip('"').strip("'")
-    return out
+    return out if found_close else {}
 
 
 def scan_skills(dirs: Iterable[Path], source: str = "skill") -> list[WorkerType]:
@@ -67,7 +69,10 @@ def scan_skills(dirs: Iterable[Path], source: str = "skill") -> list[WorkerType]
             f = skill_dir / "SKILL.md"
             if not f.is_file():
                 continue
-            text = f.read_text()
+            try:
+                text = f.read_text()
+            except (OSError, UnicodeDecodeError):
+                continue
             meta = parse_frontmatter(text)
             name = meta.get("name") or skill_dir.name
             found.setdefault(name, WorkerType(name=name, description=meta.get("description", ""), source=source, path=f, text=text))

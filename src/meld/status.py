@@ -28,6 +28,13 @@ def _age_minutes(iso: str, now: datetime) -> int:
     return max(0, int((now - then).total_seconds() // 60))
 
 
+def _lease_json(board: Board, issue) -> dict | None:
+    lease = board.leases.get(issue.number)
+    if lease is None:
+        return None
+    return {"group": lease.group, "until": lease.until, "expired": board.lease_expired(issue.number)}
+
+
 def render_status(board: Board, cfg: Config, actor: Actor, models: ModelRegistry, now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     needs_human = sorted(
@@ -38,7 +45,7 @@ def render_status(board: Board, cfg: Config, actor: Actor, models: ModelRegistry
     issues = [
         {"number": i.number, "title": i.title, "status": i.status, "assignees": list(i.assignees), "worker": i.worker,
          "model": i.model, "effort": i.effort, "size": i.size, "challenged": board.is_challenged(f"#{i.number}"),
-         "legal": legal_issue_verbs(board, cfg, actor, i, models)}
+         "legal": legal_issue_verbs(board, cfg, actor, i, models), "lease": _lease_json(board, i)}
         for i in sorted(board.issues.values(), key=lambda i: i.number)
     ]
     pulls = [

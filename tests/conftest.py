@@ -13,6 +13,7 @@ def load_board1_routes(fake: FakeGh, repo: str = "acme/widgets") -> None:
     d = FIXTURES / "board1"
     r = lambda p: f"repos/{repo}/{p}"  # noqa: E731
     fake.route("GET", r("milestones"), json.loads((d / "milestones.json").read_text()))
+    fake.route("GET", r("milestones/3"), json.loads((d / "milestones.json").read_text())[0])
     fake.route("GET", r("issues"), json.loads((d / "issues.json").read_text()))
     fake.route("GET", r("issues/10/comments"), json.loads((d / "comments_10.json").read_text()))
     fake.route("GET", r("pulls"), json.loads((d / "pulls.json").read_text()))

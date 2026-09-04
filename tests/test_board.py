@@ -1,5 +1,14 @@
-from meld.board import Issue, derive_halted, derive_open_challenges, derive_phase
-from tests.factories import CFG2, mk_board, mk_comment, mk_issue, mk_pr, mk_run
+from meld.board import (
+    Issue,
+    Lease,
+    derive_halted,
+    derive_leases,
+    derive_open_challenges,
+    derive_phase,
+    parse_lease_until,
+    utc_now_iso,
+)
+from tests.factories import CFG2, mk_board, mk_comment, mk_issue, mk_lease, mk_pr, mk_run
 
 
 def test_issue_status_precedence_and_labels():
@@ -57,3 +66,19 @@ def test_board_helpers():
     assert not mk_run("claude", 1, alive=True).finished
     assert mk_run("claude", 1, alive=False).finished
     assert not mk_run("claude", 1, alive=False, collected=True).finished
+
+
+def test_parse_lease_until_and_derive_leases():
+    assert parse_lease_until("until: 2026-09-03T13:00:00Z\nrun: claude/#12") == "2026-09-03T13:00:00Z"
+    assert parse_lease_until("no lease here") is None
+    cs = [mk_comment(CFG2, 1, "meld-claude-bot", "[claude:pm] LEASE #12\n\nuntil: 2026-09-03T13:00:00Z"),
+          mk_comment(CFG2, 2, "meld-claude-bot", "[claude:pm] LEASE #12\n\nuntil: 2026-09-03T13:30:00Z"),
+          mk_comment(CFG2, 3, "meld-codex-bot", "[codex:pm] LEASE #13\n\nuntil: 2026-09-03T14:00:00Z"),
+          mk_comment(CFG2, 4, "randouser", "[codex:pm] LEASE #14\n\nuntil: 2099-01-01T00:00:00Z"),
+          mk_comment(CFG2, 5, "meld-claude-bot", "[claude:pm] EXPIRED #13\n\nlease expired")]
+    leases = derive_leases(cs)
+    assert leases == {12: Lease(12, "claude", "2026-09-03T13:30:00Z", 2)}
+    assert len(utc_now_iso()) == 20 and utc_now_iso().endswith("Z")
+    b = mk_board(CFG2, issues=[mk_issue(12, status="in_progress", assignees=("meld-claude-bot",))],
+                 leases={12: mk_lease(12, until="2026-09-03T11:00:00Z")}, now="2026-09-03T12:00:00Z")
+    assert b.lease_expired(12) and not b.lease_expired(99)

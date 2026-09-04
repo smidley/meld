@@ -1,7 +1,9 @@
 """Typed board model. Pure data and derivations; no GitHub access here."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Iterable, Sequence
 
 from meld.grammar import ParsedComment
@@ -136,6 +138,41 @@ class RunRecord:
         return not self.alive and not self.collected
 
 
+_LEASE_UNTIL_RE = re.compile(r"^\s*until:\s*(\S+)\s*$", re.MULTILINE)
+
+
+@dataclass(frozen=True)
+class Lease:
+    issue: int
+    group: str
+    until: str
+    comment_id: int
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_lease_until(text: str) -> str | None:
+    m = _LEASE_UNTIL_RE.search(text or "")
+    return m.group(1) if m else None
+
+
+def derive_leases(comments: Sequence[ParsedComment]) -> dict[int, Lease]:
+    leases: dict[int, Lease] = {}
+    for c in _ordered(comments):
+        if not c.ok or c.header is None or not c.header.ref or not c.header.ref.startswith("#") or not c.header.ref[1:].isdigit():
+            continue
+        n = int(c.header.ref[1:])
+        if c.header.verb == "LEASE" and c.header.party.kind == "pm" and c.header.party.group:
+            until = parse_lease_until(c.text)
+            if until:
+                leases[n] = Lease(n, c.header.party.group, until, c.id)
+        elif (c.header.verb == "EXPIRED" and c.header.party.kind == "pm") or (c.header.verb == "RELEASE" and c.header.party.kind == "human"):
+            leases.pop(n, None)
+    return leases
+
+
 @dataclass(frozen=True)
 class Board:
     repo: str
@@ -150,6 +187,13 @@ class Board:
     spend: dict[str, dict[str, int]]
     open_challenges: frozenset[str]
     ignored_comments: int
+    leases: dict[int, Lease] = field(default_factory=dict)
+    plan_text: str = ""
+    now: str = ""
+
+    def lease_expired(self, issue: int) -> bool:
+        lease = self.leases.get(issue)
+        return bool(lease and self.now and lease.until < self.now)
 
     def in_progress_count(self, bot: str) -> int:
         return sum(1 for i in self.issues.values() if i.status == "in_progress" and bot in i.assignees)

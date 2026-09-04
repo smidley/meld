@@ -11,8 +11,10 @@ from meld.board import (
     Review,
     RunRecord,
     derive_halted,
+    derive_leases,
     derive_open_challenges,
     derive_phase,
+    utc_now_iso,
 )
 from meld.config import Config
 from meld.github import GitHub
@@ -31,18 +33,18 @@ def _labels(raw: dict) -> frozenset[str]:
     return frozenset(l["name"] for l in raw.get("labels", []))
 
 
-def _locate_active(gh: GitHub) -> tuple[int, int, list[dict]]:
-    """Find the active milestone with coordination issue. Returns (milestone_number, coordination_number, raw_issues)."""
+def _locate_active(gh: GitHub) -> tuple[int, int, list[dict], str]:
+    """Find the active milestone with coordination issue. Returns (milestone_number, coordination_number, raw_issues, description)."""
     for m in sorted(gh.list_open_milestones(), key=lambda m: m["number"]):
         raw_issues = gh.list_issues(m["number"])
         for issue in raw_issues:
             if COORDINATION_LABEL in _labels(issue):
-                return m["number"], issue["number"], raw_issues
+                return m["number"], issue["number"], raw_issues, m.get("description") or ""
     raise BoardError("no open milestone has an issue labelled meld:coordination; run `meld setup` first")
 
 
 def find_active_milestone(gh: GitHub) -> tuple[int, int]:
-    milestone, coordination, _ = _locate_active(gh)
+    milestone, coordination, _, _ = _locate_active(gh)
     return milestone, coordination
 
 
@@ -105,15 +107,16 @@ def _pull(gh: GitHub, raw: dict) -> PullRequest:
 
 
 def build_board(gh: GitHub, cfg: Config, runs: dict[str, dict[int, RunRecord]], spend: dict[str, dict[str, int]],
-                milestone: int | None = None) -> Board:
+                milestone: int | None = None, now: str | None = None) -> Board:
     if milestone is None:
-        milestone, coordination, raw_issues = _locate_active(gh)
+        milestone, coordination, raw_issues, description = _locate_active(gh)
     else:
         raw_issues = gh.list_issues(milestone)
         coord = [i for i in raw_issues if COORDINATION_LABEL in _labels(i)]
         if not coord:
             raise BoardError(f"milestone {milestone} has no issue labelled meld:coordination")
         coordination = coord[0]["number"]
+        description = gh.get_milestone(milestone).get("description") or ""
     coord_raw_list = [i for i in raw_issues if i["number"] == coordination]
     if not coord_raw_list:
         raise BoardError(f"coordination issue {coordination} not found in milestone {milestone} issues")
@@ -133,4 +136,5 @@ def build_board(gh: GitHub, cfg: Config, runs: dict[str, dict[int, RunRecord]], 
         repo=gh.repo, milestone=milestone, coordination_issue=coordination, phase=derive_phase(_labels(coord_raw)),
         halted=derive_halted(comments), issues=issues, pulls=pulls, comments=comments, runs=runs, spend=spend,
         open_challenges=derive_open_challenges(comments), ignored_comments=ignored,
+        leases=derive_leases(comments), plan_text=description, now=now or utc_now_iso(),
     )

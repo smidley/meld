@@ -52,6 +52,7 @@ def test_status_command_reports_board_and_legal_actions(project: Path, monkeypat
     assert issues[11]["legal"] == ["claim"]
     assert issues[12]["challenged"] and "dispatch" not in issues[12]["legal"] and "release" in issues[12]["legal"]
     assert issues[14]["status"] == "needs_human"
+    assert issues[12]["lease"] is None
     assert data["needs_human"][0]["issue"] == 14 and data["needs_human"][0]["age_minutes"] > 0
     pulls = {p["number"]: p for p in data["pulls"]}
     assert pulls[20]["committer_party"] == "codex" and pulls[20]["approvals"] == ["claude"]
@@ -61,6 +62,20 @@ def test_status_command_reports_board_and_legal_actions(project: Path, monkeypat
     assert data["budget"]["cap"] == {"small": 200, "medium": 80, "large": 20}
     assert "digest" in data
     assert data["state_errors"] == []
+
+
+def test_status_reports_leases(project: Path, monkeypatch):
+    fake = FakeGh()
+    load_board1_routes(fake)
+    comments = json.loads((Path(__file__).parent / "fixtures" / "board1" / "comments_10.json").read_text())
+    comments.append({"id": 110, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T09:20:00Z",
+                     "body": "[claude:pm] LEASE #12\n\nuntil: 2000-01-01T00:00:00Z"})
+    fake.route("GET", "repos/acme/widgets/issues/10/comments", comments)
+    monkeypatch.setattr(cli, "RUN", fake)
+    result = CliRunner().invoke(cli.main, ["--config", str(project / ".meld.toml"), "--compact", "status"], env=env_for(project))
+    data = json.loads(result.output)
+    lease = {i["number"]: i for i in data["issues"]}[12]["lease"]
+    assert lease == {"group": "claude", "until": "2000-01-01T00:00:00Z", "expired": True}
 
 
 def test_status_as_orchestrator_cannot_claim(project: Path, monkeypatch):

@@ -4,6 +4,7 @@ from pathlib import Path
 from click.testing import CliRunner
 
 import meld.cli as cli
+from meld.adapters import UnknownAdapter
 from meld.context import load_context
 from meld.roster import WorkerType
 from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
@@ -36,3 +37,32 @@ def test_roster_command(tmp_path: Path, monkeypatch):
     data = json.loads(result.output)
     assert {"name": "marketing", "description": "Launch copy and positioning.", "source": "skill"} in data
     assert [d["name"] for d in data][:2] == ["auditor", "backend"]
+
+
+def test_adapter_and_roster_memoized(tmp_path: Path):
+    (tmp_path / ".meld.toml").write_text(PROJECT_TOML)
+    fake = FakeGh()
+    load_board1_routes(fake)
+    call_count = [0]
+    def counting_factory(cli_name: str):
+        call_count[0] += 1
+        return FakeAdapter(skills=[SKILL])
+    ctx = load_context(tmp_path / ".meld.toml", env=env_for(tmp_path), run=fake, adapter_for=counting_factory)
+    assert ctx.adapter() is ctx.adapter()
+    assert ctx.roster_entries() is ctx.roster_entries()
+    assert ctx.actor()
+    assert ctx.actor()
+    assert call_count[0] == 1
+
+
+def test_roster_command_catches_unknown_adapter(tmp_path: Path, monkeypatch):
+    (tmp_path / ".meld.toml").write_text(PROJECT_TOML)
+    fake = FakeGh()
+    load_board1_routes(fake)
+    monkeypatch.setattr(cli, "RUN", fake)
+    def raise_unknown(cli_name: str):
+        raise UnknownAdapter("unknown adapter 'nope'")
+    monkeypatch.setattr(cli, "ADAPTER_FOR", raise_unknown)
+    result = CliRunner().invoke(cli.main, ["--config", str(tmp_path / ".meld.toml"), "--compact", "roster"], env=env_for(tmp_path))
+    assert result.exit_code == 1
+    assert "unknown adapter" in result.output

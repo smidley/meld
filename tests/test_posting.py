@@ -8,6 +8,7 @@ from meld.actions import Refused
 from meld.context import load_context
 from meld.posting import PostError, post
 from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
+from tests.fakeadapter import no_skills
 from tests.fakegh import FakeGh
 
 R = "repos/acme/widgets/"
@@ -29,7 +30,7 @@ def make(tmp_path, group="claude", role="orchestrator", comments=None, approved=
                 i["labels"] = [{"name": "meld:coordination"}]
         fake.route("GET", R + "issues", issues)
     fake.route("POST", R + "issues/10/comments", {"id": 555, "html_url": "https://github.com/acme/widgets/issues/10#issuecomment-555"})
-    ctx = load_context(tmp_path / ".meld.toml", env=env_for(tmp_path, group=group, role=role), run=fake)
+    ctx = load_context(tmp_path / ".meld.toml", env=env_for(tmp_path, group=group, role=role), run=fake, adapter_for=no_skills)
     return fake, ctx
 
 
@@ -263,7 +264,7 @@ def test_joint_majority_puts_dissent_before_the_addendum(tmp_path):
          "body": "[gemini] DISSENT dec-1\n\nSQLite is enough."},
     ])
     fake.route("POST", R + "issues/10/comments", {"id": 556, "html_url": "u"})
-    ctx = load_context(tmp_path / ".meld.toml", env=env_for(tmp_path, role="orchestrator"), run=fake)
+    ctx = load_context(tmp_path / ".meld.toml", env=env_for(tmp_path, role="orchestrator"), run=fake, adapter_for=no_skills)
     out = post(ctx, "DECISION", ref="dec-1", joint=True, text="Revisit in Q2.")
     assert out["header"] == "[joint] DECISION dec-1"
     body = posted(fake)[0]

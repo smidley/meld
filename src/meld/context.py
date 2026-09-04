@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import os
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Any, Callable, Mapping
 
 from meld.adapters import Adapter, get_adapter
 from meld.config import Config, ConfigError, Party, load_config, party_from_env
@@ -14,6 +14,8 @@ from meld.models import ModelRegistry
 from meld.roster import WorkerType, roster
 from meld.rules import Actor
 from meld.state import StateStore, meld_home
+
+_UNSET = object()
 
 
 @dataclass
@@ -26,15 +28,26 @@ class Context:
     repo_root: Path
     actor_login: str
     adapter_for: Callable[[str], Adapter] = get_adapter
+    _adapter_cache: Any = field(default=_UNSET, init=False, repr=False, compare=False)
+    _roster_cache: list[WorkerType] | None = field(default=None, init=False, repr=False, compare=False)
 
     def adapter(self) -> Adapter | None:
+        if self._adapter_cache is not _UNSET:
+            return self._adapter_cache
         if not self.party.group:
-            return None
-        return self.adapter_for(self.cfg.groups[self.party.group].cli)
+            result = None
+        else:
+            result = self.adapter_for(self.cfg.groups[self.party.group].cli)
+        self._adapter_cache = result
+        return result
 
     def roster_entries(self) -> list[WorkerType]:
+        if self._roster_cache is not None:
+            return self._roster_cache
         adapter = self.adapter()
-        return roster(self.repo_root, adapter.installed_skills() if adapter else ())
+        result = roster(self.repo_root, adapter.installed_skills() if adapter else ())
+        self._roster_cache = result
+        return result
 
     def actor(self) -> Actor:
         names = frozenset(w.name for w in self.roster_entries()) if self.party.group else frozenset()

@@ -31,3 +31,7 @@ class FakeAdapter:
 
     def supports_effort(self) -> bool:
         return True
+
+
+def no_skills(cli_name: str) -> FakeAdapter:
+    return FakeAdapter()

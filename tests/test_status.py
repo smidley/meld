@@ -8,6 +8,7 @@ import meld.cli as cli
 from meld.config import ConfigError
 from meld.context import find_config, load_context
 from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
+from tests.fakeadapter import no_skills
 from tests.fakegh import FakeGh
 
 
@@ -29,13 +30,13 @@ def test_load_context_requires_token_for_groups(project: Path):
     env = env_for(project)
     del env["MELD_TOKEN_CLAUDE"]
     with pytest.raises(ConfigError, match="MELD_TOKEN_CLAUDE"):
-        load_context(project / ".meld.toml", env=env, run=fake)
+        load_context(project / ".meld.toml", env=env, run=fake, adapter_for=no_skills)
 
 
 def test_load_context_human_uses_viewer_login(project: Path):
     fake = FakeGh()
     fake.route("GET", "user", {"login": "empowerScott"})
-    ctx = load_context(project / ".meld.toml", env=env_for(project, group=None), run=fake)
+    ctx = load_context(project / ".meld.toml", env=env_for(project, group=None), run=fake, adapter_for=no_skills)
     assert ctx.party.kind == "human" and ctx.actor_login == "empowerScott" and ctx.gh.token is None
 
 
@@ -134,9 +135,9 @@ def test_models_command_lists_adapter_models(project: Path, monkeypatch):
 def test_orchestrator_and_pm_split_state_but_share_the_cache(project: Path):
     fake = FakeGh()
     load_board1_routes(fake)
-    orch = load_context(project / ".meld.toml", env=env_for(project, role="orchestrator"), run=fake)
-    pm = load_context(project / ".meld.toml", env=env_for(project, role="pm"), run=fake)
-    human = load_context(project / ".meld.toml", env=env_for(project, group=None), run=fake)
+    orch = load_context(project / ".meld.toml", env=env_for(project, role="orchestrator"), run=fake, adapter_for=no_skills)
+    pm = load_context(project / ".meld.toml", env=env_for(project, role="pm"), run=fake, adapter_for=no_skills)
+    human = load_context(project / ".meld.toml", env=env_for(project, group=None), run=fake, adapter_for=no_skills)
     assert orch.store.state_dir != pm.store.state_dir
     assert orch.store.state_dir.name == "orchestrator" and pm.store.state_dir.name == "pm"
     assert orch.store.cache_dir == pm.store.cache_dir

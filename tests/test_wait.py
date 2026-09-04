@@ -6,6 +6,7 @@ from click.testing import CliRunner
 from meld.context import load_context
 from meld.waiting import wait_for_change
 from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
+from tests.fakeadapter import no_skills
 from tests.fakegh import FakeGh
 import meld.cli as cli
 
@@ -14,7 +15,7 @@ def make_ctx(tmp_path):
     (tmp_path / ".meld.toml").write_text(PROJECT_TOML)
     fake = FakeGh()
     load_board1_routes(fake)
-    ctx = load_context(tmp_path / ".meld.toml", env=env_for(tmp_path), run=fake)
+    ctx = load_context(tmp_path / ".meld.toml", env=env_for(tmp_path), run=fake, adapter_for=no_skills)
     return fake, ctx
 
 

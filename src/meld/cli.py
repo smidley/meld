@@ -9,7 +9,7 @@ import click
 
 from meld import __version__
 from meld.actions import Refused, claim as do_claim, release as do_release
-from meld.adapters import get_adapter
+from meld.adapters import UnknownAdapter, get_adapter
 from meld.assemble import BoardError
 from meld.config import ConfigError
 from meld.context import Context, load_context
@@ -47,7 +47,7 @@ def _load(ctx: click.Context) -> Context:
 def _guard(fn):
     try:
         return fn()
-    except (BoardError, GitHubError, ConfigError, DispatchError, GitError) as e:
+    except (BoardError, GitHubError, ConfigError, DispatchError, GitError, UnknownAdapter) as e:
         raise click.ClickException(str(e)) from e
 
 

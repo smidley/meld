@@ -36,6 +36,7 @@ def audit(ctx, number: int, *, now: datetime | None = None) -> dict:
         mark_submitted(ctx.store.home, group.name, "audit", number, {"outcome": "no-verdict"}, when)
         return {"audited": number, "verdict": None, "reason": reason}
     comments = [c for c in result.get("comments") or [] if isinstance(c, dict) and {"path", "line", "body"} <= set(c)]
+    comments = [{**c, "body": neutralise_closers(str(c["body"]))} for c in comments]
     text = (f"{neutralise_closers(result.get('summary', ''))}\n\n## Findings\n{format_findings(comments) or '- none'}\n\n"
             f"verified-by: {neutralise_closers(result.get('verified_by', ''))}")
     resp = ctx.gh.create_comment(board.coordination_issue, compose(Header(Party("pm", group.name), "AUDIT", target, verdict.upper()), text))
@@ -56,7 +57,9 @@ def reopen(ctx, number: int) -> dict:
     refusal = issue_refusal(board, ctx.cfg, actor, Verb.REOPEN, issue, ctx.models)
     if refusal:
         refuse(ctx, board, refusal)
-    fails = [c for c in board.comments if c.ok and c.header is not None and c.header.verb == "AUDIT" and c.header.ref == target and c.header.qualifier == "FAIL"]
+    refs = {target} | ({f"#{pr.number}"} if (pr := board.pr_for_issue(number)) else set())
+    fails = [c for c in board.comments if c.ok and c.header is not None and c.header.verb == "AUDIT" and c.header.ref in refs
+             and c.header.qualifier == "FAIL" and (actor.group is None or c.header.party.group == actor.group)]
     findings = fails[-1].text if fails else "(see the coordination issue)"
     ctx.gh.update_issue(number, state="open")
     if issue.assignees:

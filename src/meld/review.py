@@ -87,6 +87,7 @@ def review(ctx, number: int, *, now: datetime | None = None) -> dict:
     comments = [c for c in result.get("comments") or []
                 if isinstance(c, dict) and {"path", "line", "body"} <= set(c)
                 and (isinstance(c.get("line"), int) or str(c.get("line", "")).isdigit())]
+    comments = [{**c, "body": neutralise_closers(str(c["body"]))} for c in comments]
     body = f"{neutralise_closers(result.get('summary', ''))}\n\nverified-by: {neutralise_closers(result.get('verified_by', ''))}"
     sha = pr.head_sha
     already_submitted = False

@@ -4,7 +4,7 @@ import pytest
 
 from meld.actions import Refused
 from meld.audit import audit, reopen
-from meld.dispatch import collect, dispatch
+from meld.dispatch import collect, dispatch, neutralise_closers
 from tests.fakeadapter import FakeAdapter
 from tests.gitfixtures import sh
 from tests.productfixtures import R, fixture, make_product, wait_for_exit
@@ -60,6 +60,7 @@ def test_audit_posts_the_verdict_and_reopen_returns_the_issue_to_ready(tmp_path)
     assert {"labels": ["meld:ready"]} in [c.body for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/13/labels"]
     assert any(c.method == "DELETE" and c.endpoint == R + "issues/13/assignees" for c in fake.calls)
     assert any("reopened by `claude` after a failed audit" in c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/13/comments")
+    assert any("no cache step, criterion 2 unmet" in c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/13/comments")
 
 
 def test_audit_pass_posts_no_reopen_hint_and_refusals(tmp_path):
@@ -76,3 +77,17 @@ def test_audit_pass_posts_no_reopen_hint_and_refusals(tmp_path):
     fake2, orch, *_ = make_product(tmp_path / "o", role="orchestrator")
     with pytest.raises(Refused, match="only the PM may post an audit"):
         audit(orch, 20, now=NOW)
+
+
+def test_audit_neutralises_closing_keywords_in_finding_bodies(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path)
+    merged_pr_20(fake, repo)
+    script = AUDIT_FAIL_SCRIPT.replace("no cache step, criterion 2 unmet", "no cache step, fixes #3")
+    out = dispatch(ctx, 20, kind="audit", adapter=FakeAdapter(script=script), now=NOW)
+    wait_for_exit(out["pid"])
+    collect(ctx, 20, now=NOW)
+    audit(ctx, 20, now=NOW)
+    coord = [c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/10/comments"][-1]
+    assert neutralise_closers("fixes #3") in coord
+    assert "fixes #3" not in coord          # the raw, un-neutralised form must not survive
+    assert "`ci.yml:1`" in coord            # path/line are untouched by neutralisation

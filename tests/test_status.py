@@ -103,3 +103,15 @@ def test_models_command_lists_adapter_models(project: Path, monkeypatch):
     data = json.loads(result.output)
     assert data["adapter"] == "claude"
     assert any(m["id"] == "claude-sonnet-5" for m in data["models"])
+
+
+def test_orchestrator_and_pm_split_state_but_share_the_cache(project: Path):
+    fake = FakeGh()
+    load_board1_routes(fake)
+    orch = load_context(project / ".moot.toml", env=env_for(project, role="orchestrator"), run=fake)
+    pm = load_context(project / ".moot.toml", env=env_for(project, role="pm"), run=fake)
+    human = load_context(project / ".moot.toml", env=env_for(project, group=None), run=fake)
+    assert orch.store.state_dir != pm.store.state_dir
+    assert orch.store.state_dir.name == "orchestrator" and pm.store.state_dir.name == "pm"
+    assert orch.store.cache_dir == pm.store.cache_dir
+    assert human.store.state_dir == human.store.home / "state" / "human"

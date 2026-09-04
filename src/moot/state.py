@@ -34,12 +34,15 @@ def pid_alive(pid: int) -> bool:
 
 
 class StateStore:
-    def __init__(self, home: Path, group: str | None):
+    def __init__(self, home: Path, group: str | None, role: str | None = None):
         self.home = home
         self.group = group
+        self.role = role
         who = group or "human"
+        # The ETag cache is per group (one token, one conditional-request set); the board
+        # snapshot is per party, so an orchestrator and its PM never overwrite each other.
         self.cache_dir = home / "cache" / who
-        self.state_dir = home / "state" / who
+        self.state_dir = home / "state" / who / role if role else home / "state" / who
         self.runs_root = home / "runs"
         self.errors: list[str] = []
 

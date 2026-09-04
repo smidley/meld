@@ -77,3 +77,27 @@ def test_writes_are_atomic_and_pid_guard(tmp_path):
     store.write_run(mk_run("claude", 5))
     assert not list((tmp_path / "runs" / "claude").glob("*.tmp"))
     assert pid_alive(0) is False and pid_alive(-1) is False
+
+
+def test_dirs_are_per_group_cache_and_per_party_state(tmp_path):
+    orch = StateStore(tmp_path, "claude", "orchestrator")
+    assert orch.cache_dir == tmp_path / "cache" / "claude"
+    assert orch.state_dir == tmp_path / "state" / "claude" / "orchestrator"
+    assert orch.runs_root == tmp_path / "runs"
+    groupless = StateStore(tmp_path, "claude")
+    assert groupless.cache_dir == tmp_path / "cache" / "claude"
+    assert groupless.state_dir == tmp_path / "state" / "claude"
+    assert groupless.runs_root == tmp_path / "runs"
+    human = StateStore(tmp_path, None)
+    assert human.cache_dir == tmp_path / "cache" / "human"
+    assert human.state_dir == tmp_path / "state" / "human"
+    assert human.runs_root == tmp_path / "runs"
+
+
+def test_two_parties_of_one_group_do_not_share_a_snapshot(tmp_path):
+    orch = StateStore(tmp_path, "claude", "orchestrator")
+    pm = StateStore(tmp_path, "claude", "pm")
+    orch.save_snapshot({"seen": "orchestrator"})
+    pm.save_snapshot({"seen": "pm"})
+    assert orch.load_snapshot() == {"seen": "orchestrator"}
+    assert pm.load_snapshot() == {"seen": "pm"}

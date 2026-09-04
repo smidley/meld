@@ -44,7 +44,8 @@ def load_context(config_path: Path | None = None, env: Mapping[str, str] | None 
     path = config_path or find_config(cwd or Path.cwd())
     cfg = load_config(path)
     party = party_from_env(cfg, env)
-    store = StateStore(moot_home(env), party.group)
+    role = {"group": "orchestrator", "pm": "pm"}.get(party.kind)
+    store = StateStore(moot_home(env), party.group, role)
     token: str | None = None
     if party.group:
         g = cfg.groups[party.group]

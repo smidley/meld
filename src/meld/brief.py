@@ -88,7 +88,7 @@ def agent_instruction_files(worktree: Path) -> list[str]:
 
 
 def render_brief(*, role: WorkerType, kind: str, group: str, model: str, effort: str, issue: Issue | None, pr: PullRequest | None,
-                 plan_text: str, repo_root: Path, worktree: Path, base_branch: str) -> str:
+                 plan_text: str, repo_root: Path, worktree: Path, base_branch: str, concern: str | None = None) -> str:
     if issue is not None:
         title = f"# Meld brief: {role.name} for #{issue.number}"
         task = f"## Your task\n\n**#{issue.number}: {issue.title}**\n\n{issue.body.strip() or '(no description)'}\n"
@@ -98,9 +98,13 @@ def render_brief(*, role: WorkerType, kind: str, group: str, model: str, effort:
     else:
         assert pr is not None
         title = f"# Meld brief: {role.name} for PR #{pr.number}"
+        if kind == "audit" and pr.merge_commit_sha:
+            where = f"The checkout is the merge commit `{pr.merge_commit_sha[:7]}` that landed this PR on `{base_branch}`."
+        else:
+            where = "The checkout is the PR head."
         task = (f"## Your task\n\n**PR #{pr.number}: {pr.title}** (branch `{pr.head_ref}`, head `{pr.head_sha[:7]}`, "
                 f"authored by `{pr.author}`, last commit by `{pr.head_committer or 'unknown'}`).\n\n{pr.body.strip() or '(no description)'}\n"
-                f"\nThe checkout is the PR head. Your verdict goes in the `verdict` field of the result file.\n")
+                f"\n{where} Your verdict goes in the `verdict` field of the result file.\n")
         excerpt = plan_excerpt(plan_text, pr.issue_number) if pr.issue_number else ""
         hints = []
     role_text = (role.text or role.description).strip()
@@ -110,6 +114,9 @@ def render_brief(*, role: WorkerType, kind: str, group: str, model: str, effort:
         role_text = (lines[1] if len(lines) > 1 else "").lstrip("\n")
     parts = [title, "", f"You are the **{role.name}** worker of group **{group}**, running as `{model}` at effort: {effort}.", "",
              "## Who you are", "", role_text, "", task]
+    if concern:
+        parts += ["## Your primary concern", "",
+                  f"Other groups review this PR too; yours is **{concern}**. Report anything else you notice, but spend your effort there first.", ""]
     if excerpt:
         parts += ["## Plan excerpt", "", excerpt, ""]
     if hints:

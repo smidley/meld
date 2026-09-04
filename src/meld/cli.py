@@ -172,11 +172,12 @@ def post(ctx: click.Context, verb: str, ref: str | None, qualifier: str | None, 
 @click.argument("number", type=int)
 @click.option("--kind", type=click.Choice(["build", "review", "audit"]), default="build", show_default=True,
               help="build: a claimed issue; review/audit: a pull request.")
+@click.option("--worker", default=None, help="Review worker type: reviewer (default) or security.")
 @click.pass_context
-def dispatch(ctx: click.Context, number: int, kind: str) -> None:
+def dispatch(ctx: click.Context, number: int, kind: str, worker: str | None) -> None:
     """Spawn a headless worker in its own worktree for an issue (build) or a PR (review, audit)."""
     c = _load(ctx)
-    _run_action(ctx, lambda: do_dispatch(c, number, kind=kind))
+    _run_action(ctx, lambda: do_dispatch(c, number, kind=kind, worker=worker))
 
 
 @main.command()

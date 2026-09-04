@@ -221,8 +221,50 @@ def test_dispatch_review_is_refused_under_halt(tmp_path):
     fake.route("GET", R + "issues/10/comments", comments)
     with pytest.raises(Refused) as ei:
         dispatch(ctx, 20, kind="review", adapter=FakeAdapter(), now=NOW)
-    assert ei.value.refusal.rule == "HALT is in effect" and ei.value.violation_posted is True
+    assert ei.value.refusal.rule == "cannot review: HALT is in effect" and ei.value.violation_posted is True
     assert not (tmp_path / "home" / "runs" / "claude" / "20.json").exists()
+
+
+def test_dispatch_security_reviewer_and_worker_validation(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path)
+    publish_pr_branch(repo)
+    adapter = FakeAdapter()
+    out = dispatch(ctx, 20, kind="review", worker="security", adapter=adapter, now=NOW)
+    assert (Path(out["worktree"]) / BRIEF_FILE).read_text().startswith("# Meld brief: security for PR #20")
+    assert posted(fake, 20)[-1].startswith("Meld: `claude` dispatched a `security` worker")
+    wait_for_exit(out["pid"])
+    mark_collected(tmp_path, 20)
+    with pytest.raises(Refused, match="worker type 'backend' cannot run a review"):
+        dispatch(ctx, 20, kind="review", worker="backend", adapter=FakeAdapter(), now=NOW)
+    with pytest.raises(DispatchError, match="--worker applies to review runs only"):
+        dispatch(ctx, 11, worker="security", adapter=FakeAdapter(), now=NOW)
+
+
+def test_dispatch_audit_checks_out_the_merge_commit(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path)          # claude audits codex's merged PR #20
+    publish_pr_branch(repo)
+    sh(["git", "merge", "-q", "--no-ff", "-m", "CI pipeline (#20)", "meld/13-ci-pipeline"], repo)
+    merge_sha = sh(["git", "rev-parse", "HEAD"], repo)
+    sh(["git", "push", "-q", "origin", "main"], repo)
+    pulls = fixture("pulls.json")
+    for p in pulls:
+        if p["number"] == 20:
+            p.update({"state": "closed", "merged_at": "2026-09-03T11:00:00Z", "merge_commit_sha": merge_sha})
+    fake.route("GET", R + "pulls", pulls)
+    out = dispatch(ctx, 20, kind="audit", adapter=FakeAdapter(), now=NOW)
+    wt = Path(out["worktree"])
+    assert head_sha(wt) == merge_sha and out["branch"] == "meld/13-ci-pipeline"
+    assert f"The checkout is the merge commit `{merge_sha[:7]}`" in (wt / BRIEF_FILE).read_text()
+    assert posted(fake, 20)[-1].startswith("Meld: `claude` dispatched an `auditor` worker") and f"merge commit `{merge_sha[:7]}`" in posted(fake, 20)[-1]
+    wait_for_exit(out["pid"])
+
+
+def test_dispatch_audit_refusals_come_from_the_rules(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path)
+    with pytest.raises(Refused, match="cannot audit: audit targets a merged PR"):
+        dispatch(ctx, 20, kind="audit", adapter=FakeAdapter(), now=NOW)          # PR #20 is open in the fixture
+    with pytest.raises(Refused, match="cannot audit: cannot audit a PR authored by own group"):
+        dispatch(ctx, 19, kind="audit", adapter=FakeAdapter(), now=NOW)          # PR #19 was merged by claude
 
 
 def test_missing_cli_binary_is_a_clean_dispatch_error(tmp_path, monkeypatch):

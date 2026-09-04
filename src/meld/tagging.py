@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from meld.actions import refuse
 from meld.models import SIZES
-from meld.rules import Refusal, Verb
+from meld.rules import Refusal, Verb, issue_refusal
 from meld.status import build_status
 
 PREFIXES = ("worker", "model", "effort", "size")
@@ -13,11 +13,12 @@ def tag(ctx, number: int, *, worker: str | None = None, model: str | None = None
     _, board = build_status(ctx)
     actor = ctx.actor()
     target = f"#{number}"
-    if not (actor.is_human or actor.party.kind == "group"):
-        refuse(ctx, board, Refusal(Verb.TAG, target, "only the orchestrator or a human may tag"))
     issue = board.issues.get(number)
     if issue is None:
         refuse(ctx, board, Refusal(Verb.TAG, target, "issue is not in the active milestone"))
+    refusal = issue_refusal(board, ctx.cfg, actor, Verb.TAG, issue, ctx.models)
+    if refusal:
+        refuse(ctx, board, refusal)
     wanted = {"worker": worker, "model": model, "effort": effort, "size": size}
     if not any(wanted.values()):
         refuse(ctx, board, Refusal(Verb.TAG, target, "provide at least one of --worker, --model, --effort, --size"))

@@ -33,6 +33,9 @@ Intro paragraph.
 Closing notes mention #11 again.
 """
 
+REVIEWER = next(w for w in builtin_workers() if w.name == "reviewer")
+AUDITOR = next(w for w in builtin_workers() if w.name == "auditor")
+
 
 def test_plan_excerpt_collects_paragraphs_mentioning_the_issue():
     excerpt = plan_excerpt(PLAN, 11)
@@ -120,3 +123,13 @@ def test_render_brief_wires_file_hints_and_keeps_one_h1(tmp_path: Path):
     assert "- `src/app/health.py`\n- `tests/test_health.py`" in text
     assert text.count("\n# ") == 0 and text.startswith("# Meld brief")
     assert "## Who you are\n\nImplements server-side code" in text
+
+
+def test_pr_brief_names_the_primary_concern_and_the_checkout(tmp_path):
+    pr = replace(mk_pr(20, 13), merge_commit_sha="feedfacefeedfacefeedfacefeedfacefeedface", state="closed", merged=True)
+    text = render_brief(role=REVIEWER, kind="review", group="claude", model="m", effort="high", issue=None, pr=pr, plan_text="",
+                        repo_root=tmp_path, worktree=tmp_path, base_branch="main", concern="tests and product conventions")
+    assert "## Your primary concern" in text and "**tests and product conventions**" in text and "The checkout is the PR head." in text
+    audit = render_brief(role=AUDITOR, kind="audit", group="claude", model="m", effort="high", issue=None, pr=pr, plan_text="",
+                         repo_root=tmp_path, worktree=tmp_path, base_branch="main")
+    assert "## Your primary concern" not in audit and "The checkout is the merge commit `feedfac` that landed this PR on `main`." in audit

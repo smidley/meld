@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from meld.dispatch import DispatchError, collect as do_collect, dispatch as do_d
 from meld.github import GitHubError
 from meld.gitops import GitError
 from meld.posting import PostError, post as do_post
+from meld.runners import run_group
 from meld.state import CHANGE_KINDS
 from meld.status import build_status
 from meld.tagging import tag as do_tag
@@ -222,6 +224,20 @@ def tag(ctx: click.Context, number: int, worker: str | None, model: str | None, 
     """Set the worker, model, effort, and size labels on an issue (orchestrator or human)."""
     c = _load(ctx)
     _run_action(ctx, lambda: do_tag(c, number, worker=worker, model=model, effort=effort, size=size))
+
+
+@main.command()
+@click.argument("group")
+@click.option("--once", is_flag=True, help="Launch both roles once and return when they exit (no restarts).")
+@click.pass_context
+def run(ctx: click.Context, group: str, once: bool) -> None:
+    """Supervise a group's orchestrator and PM processes."""
+    env = {**os.environ, "MELD_GROUP": group, "MELD_ROLE": "orchestrator"}
+    try:
+        c = load_context(ctx.obj["config_path"], env=env, run=RUN, adapter_for=ADAPTER_FOR)
+    except ConfigError as e:
+        raise click.ClickException(str(e)) from e
+    emit(_guard(lambda: run_group(c, once=once, base_env=env)), ctx.obj["pretty"])
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ from meld.actions import Refused, claim as do_claim, release as do_release
 from meld.adapters import UnknownAdapter, get_adapter
 from meld.assemble import BoardError
 from meld.audit import audit as do_audit, reopen as do_reopen
+from meld.challenge import challenge as do_challenge
 from meld.config import ConfigError
 from meld.context import Context, load_context
 from meld.dispatch import DispatchError, collect as do_collect, dispatch as do_dispatch, reap as do_reap, tick as do_tick
@@ -163,6 +164,28 @@ def post(ctx: click.Context, verb: str, ref: str | None, qualifier: str | None, 
     text = body_file.read_text() if body_file else (message or "")
     try:
         emit(_guard(lambda: do_post(c, verb.upper(), ref=ref, qualifier=qualifier, text=text, joint=joint)), ctx.obj["pretty"])
+    except Refused as e:
+        emit(_refusal_json(e), ctx.obj["pretty"])
+        ctx.exit(2)
+    except PostError as e:
+        emit({"error": str(e)}, ctx.obj["pretty"])
+        ctx.exit(2)
+
+
+@main.command()
+@click.argument("action", type=click.Choice(["open", "evidence", "retract", "uphold", "dismiss"]))
+@click.argument("ref")
+@click.option("-m", "--message", "message", default=None, help="The doubted claim, the evidence (with a verified-by: line), or the decision.")
+@click.option("--body-file", type=click.Path(path_type=Path, exists=True), default=None, help="Read the text from a file.")
+@click.pass_context
+def challenge(ctx: click.Context, action: str, ref: str, message: str | None, body_file: Path | None) -> None:
+    """Open a CHALLENGE on a claim, answer it with EVIDENCE, or close it; the meld:challenged label follows."""
+    if message is not None and body_file is not None:
+        raise click.UsageError("-m/--message and --body-file are mutually exclusive")
+    c = _load(ctx)
+    text = body_file.read_text() if body_file else (message or "")
+    try:
+        emit(_guard(lambda: do_challenge(c, action, ref, text)), ctx.obj["pretty"])
     except Refused as e:
         emit(_refusal_json(e), ctx.obj["pretty"])
         ctx.exit(2)

@@ -86,6 +86,8 @@ class Config:
     lease_grace_minutes: int = 10
 
     def timeout_seconds(self, size: str) -> int:
+        if size not in self.timeouts:
+            raise ConfigError(f"unknown size {size!r}; expected one of {', '.join(self.timeouts)}")
         return parse_duration(self.timeouts[size])
 
     @classmethod

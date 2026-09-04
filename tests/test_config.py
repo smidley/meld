@@ -157,5 +157,7 @@ def test_parse_duration_and_timeout_seconds(tmp_path):
         parse_duration("soon")
     cfg = load_config(write(tmp_path, MINIMAL))
     assert (cfg.timeout_seconds("S"), cfg.timeout_seconds("M"), cfg.timeout_seconds("L")) == (1200, 2700, 5400)
+    with pytest.raises(ConfigError, match="unknown size 'XL'"):
+        cfg.timeout_seconds("XL")
     with pytest.raises(ConfigError, match="timeouts.M"):
         load_config(write(tmp_path, MINIMAL + '\n[timeouts]\nM = "fast"\n'))

@@ -389,7 +389,7 @@ The Codex adapter runs `codex exec -m <model> -c 'model_reasoning_effort="<effor
 | Failure | Detected by | Response |
 |---|---|---|
 | Worker exits without result | PM via run record | `blocked`, log tail posted, orchestrator re-tags and re-dispatches or splits |
-| Worker exceeds deadline | `meld tick` | SIGTERM then SIGKILL; `collect` marks blocked with the log tail |
+| Worker exceeds deadline | `meld tick` | SIGTERM then SIGKILL; `collect` marks a build issue `blocked` with the log tail, or records the timeout and log tail in the verdict file for review/audit runs |
 | Review ping-pong cap | rules | `blocked`; orchestrators must post a resolution |
 | Illegal verb | rules | Refused; `PROTOCOL-VIOLATION` posted |
 | CI red | PM via checks | Treated as request-changes; author group re-dispatches |
@@ -438,7 +438,7 @@ A survey of existing multi-agent coding systems (Symphony and its forks, Gas Tow
 2. **Citation verification before a finding is shown** (from claude-code-review-council). The reviewer worker's contract requires every cited file and line to be opened and checked against the checkout before it appears in the review; uncheckable citations are dropped and noted. Landed in plan 2's reviewer prompt.
 3. **Role-matched review** (from ai-pair). When more than one group reviews a PR, the review request assigns each a different primary concern (correctness and security, tests and conventions, architecture) so reviewers surface distinct issues. Lands in plan 3 with `review`.
 4. **Neutral check runs** (from Claude Code Review). Cross-group review results are published as a GitHub check run with a neutral conclusion, visible but never blocking on its own; merge remains gated by the quorum rule in `rules.py` and the human. Lands in plan 3 with `review` and `merge`.
-5. **Repo-local verification bar** (from Claude Code Review's `REVIEW.md`). A product may add `.meld/REVIEW.md` stating what counts as evidence for that repo; it is rendered into reviewer and auditor briefs. Landed in plan 2 with brief rendering.
+5. **Repo-local verification bar** (from Claude Code Review's `REVIEW.md`). A product may add `.meld/REVIEW.md` stating what counts as evidence for that repo; it is rendered into every worker's brief, not just reviewer and auditor. Landed in plan 2 with brief rendering.
 
 
 - Webhooks when running on an always-on box.

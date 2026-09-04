@@ -1,6 +1,7 @@
 """Real-CLI smoke tests. Opt in with MELD_SMOKE=1; each test needs the CLI on PATH and a logged-in account."""
 import os
 import shutil
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -32,6 +33,10 @@ def test_adapter_creates_a_file(tmp_path: Path, name: str, model: str):
     while proc.poll() is None and time.monotonic() < deadline:
         time.sleep(1)
     if proc.poll() is None:
-        proc.kill()
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
         pytest.fail(f"{name} did not finish within 300s; log:\n{(tmp_path / 'log.txt').read_text()[-2000:]}")
     assert (tmp_path / "hello.txt").read_text().strip() == "hello", (tmp_path / "log.txt").read_text()[-2000:]

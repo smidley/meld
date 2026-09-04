@@ -145,6 +145,7 @@ class RunRecord:
     lease_comment: int | None = None
     timed_out: bool = False
     head_sha: str = ""
+    worker: str = ""            # the worker type the run was dispatched with (reviewer, security, auditor, ...)
 
     @property
     def finished(self) -> bool:

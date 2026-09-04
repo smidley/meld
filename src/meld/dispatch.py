@@ -1,7 +1,6 @@
 """Dispatch, tick, collect, reap: the only module that spawns workers or touches worktrees."""
 from __future__ import annotations
 
-import json
 import os
 import re
 import shutil
@@ -262,7 +261,7 @@ def _dispatch_build(ctx, board: Board, actor: Actor, number: int, adapter: Adapt
     record = RunRecord(group=group.name, issue=number, kind="build", pr=None, pid=pid, started_at=_iso(when), worktree=str(wt),
                        log_path=str(log_path), model=issue.model or "", effort=issue.effort or "",
                        tier=ctx.models.tier_of(group.cli, issue.model or "") or "medium", milestone=board.milestone, alive=True,
-                       collected=False, deadline=_iso(deadline), branch=branch)
+                       collected=False, deadline=_iso(deadline), branch=branch, worker=worker.name)
     ctx.store.write_run(record)
     until = _iso(deadline + timedelta(minutes=ctx.cfg.lease_grace_minutes))
     lease = ctx.gh.create_comment(board.coordination_issue, compose(Header(Party("pm", group.name), "LEASE", f"#{number}", None),
@@ -286,7 +285,8 @@ def _dispatch_pr(ctx, board: Board, actor: Actor, number: int, kind: str, adapte
     group = ctx.cfg.groups[actor.group]  # type: ignore[index]
     role_name = worker_name or REVIEW_WORKERS[kind][0]
     if role_name not in REVIEW_WORKERS[kind]:
-        refuse(ctx, board, Refusal(Verb.DISPATCH, target, f"worker type '{role_name}' cannot run a {kind}; use one of: {', '.join(REVIEW_WORKERS[kind])}"))
+        refuse(ctx, board, Refusal(Verb.DISPATCH, target, f"worker type '{role_name}' cannot run {'an' if kind[0] in 'aeiou' else 'a'} {kind}; "
+                                                          f"use one of: {', '.join(REVIEW_WORKERS[kind])}"))
     adp = _adapter(ctx, group, adapter)
     worker = _worker_type(ctx, adp, role_name)
     if worker is None:
@@ -312,7 +312,7 @@ def _dispatch_pr(ctx, board: Board, actor: Actor, number: int, kind: str, adapte
     record = RunRecord(group=group.name, issue=number, kind=kind, pr=number, pid=pid, started_at=_iso(when), worktree=str(wt),
                        log_path=str(log_path), model=model, effort=effort, tier=ctx.models.tier_of(group.cli, model) or "medium",
                        milestone=board.milestone, alive=True, collected=False, deadline=_iso(deadline), branch=pr.head_ref,
-                       head_sha=pr.head_sha)
+                       head_sha=pr.head_sha, worker=worker.name)
     ctx.store.write_run(record)
     where = f"merge commit `{pr.merge_commit_sha[:7]}`" if at_merge else f"head `{pr.head_sha[:7]}`"   # type: ignore[index]
     article = "an" if worker.name[0] in "aeiou" else "a"
@@ -466,7 +466,7 @@ def _collect_verdict(ctx, group: GroupConfig, rec: RunRecord, when: datetime) ->
     result, reason = _read_outcome(rec)
     wt = Path(rec.worktree)
     worktree_sha = head_sha(wt) if wt.exists() else ""
-    payload = {"kind": rec.kind, "pr": rec.pr, "head_sha": rec.head_sha or worktree_sha, "worktree_sha": worktree_sha,
+    payload = {"kind": rec.kind, "pr": rec.pr, "worker": rec.worker, "head_sha": rec.head_sha or worktree_sha, "worktree_sha": worktree_sha,
                "collected_at": _iso(when), "timed_out": rec.timed_out, "reason": reason,
                "result": asdict(result) if result else None,
                "log_tail": tail_lines(Path(rec.log_path), ctx.cfg.worker_log_tail_lines)}

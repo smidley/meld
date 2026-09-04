@@ -56,6 +56,7 @@ def test_dispatch_build_happy_path(tmp_path):
         [("credential.helper", ""), ("commit.gpgsign", "false")]
     rec = json.loads((tmp_path / "home" / "runs" / "claude" / "11.json").read_text())
     assert rec["pid"] == out["pid"] and rec["deadline"] == "2026-09-03T12:20:00Z" and rec["branch"] == out["branch"] and rec["lease_comment"] == 310 and rec["kind"] == "build"
+    assert rec["worker"] == "backend"
     lease = [c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/10/comments"][0]
     assert lease.startswith("[claude:pm] LEASE #11\n") and "until: 2026-09-03T12:30:00Z" in lease
     assert posted(fake, 11)[0].startswith("Meld: `claude` dispatched a `backend` worker")
@@ -250,9 +251,10 @@ def test_dispatch_security_reviewer_and_worker_validation(tmp_path):
     out = dispatch(ctx, 20, kind="review", worker="security", adapter=adapter, now=NOW)
     assert (Path(out["worktree"]) / BRIEF_FILE).read_text().startswith("# Meld brief: security for PR #20")
     assert posted(fake, 20)[-1].startswith("Meld: `claude` dispatched a `security` worker")
+    assert json.loads((tmp_path / "home" / "runs" / "claude" / "20.json").read_text())["worker"] == "security"
     wait_for_exit(out["pid"])
     mark_collected(tmp_path, 20)
-    with pytest.raises(Refused, match="worker type 'backend' cannot run a review"):
+    with pytest.raises(Refused, match="worker type 'backend' cannot run a review; use one of: reviewer, security"):
         dispatch(ctx, 20, kind="review", worker="backend", adapter=FakeAdapter(), now=NOW)
     with pytest.raises(DispatchError, match="--worker applies to review runs only"):
         dispatch(ctx, 11, worker="security", adapter=FakeAdapter(), now=NOW)
@@ -283,6 +285,12 @@ def test_dispatch_audit_refusals_come_from_the_rules(tmp_path):
         dispatch(ctx, 20, kind="audit", adapter=FakeAdapter(), now=NOW)          # PR #20 is open in the fixture
     with pytest.raises(Refused, match="cannot audit: cannot audit a PR authored by own group"):
         dispatch(ctx, 19, kind="audit", adapter=FakeAdapter(), now=NOW)          # PR #19 was merged by claude
+    fake2, codex, repo2, _ = make_product(tmp_path / "codex", group="codex")
+    publish_pr_branch(repo2)
+    sh(["git", "merge", "-q", "--no-ff", "-m", "Old merged (#19)", "meld/13-ci-pipeline"], repo2)
+    sh(["git", "push", "-q", "origin", "main"], repo2)
+    with pytest.raises(Refused, match="worker type 'reviewer' cannot run an audit; use one of: auditor"):
+        dispatch(codex, 19, kind="audit", worker="reviewer", adapter=FakeAdapter(), now=NOW)
 
 
 def test_missing_cli_binary_is_a_clean_dispatch_error(tmp_path, monkeypatch):

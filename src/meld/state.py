@@ -110,6 +110,7 @@ class StateStore:
             deadline=str(data.get("deadline", "")), branch=str(data.get("branch", "")),
             lease_comment=(int(data["lease_comment"]) if data.get("lease_comment") is not None else None),
             timed_out=bool(data.get("timed_out", False)), head_sha=str(data.get("head_sha", "")),
+            worker=str(data.get("worker", "")),
         )
 
     def load_runs(self, alive: Callable[[int], bool] = pid_alive) -> dict[str, dict[int, RunRecord]]:

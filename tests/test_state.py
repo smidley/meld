@@ -2,7 +2,7 @@ import json
 import os
 from pathlib import Path
 
-from meld.state import StateStore, board_digest, diff_digest, meld_home
+from meld.state import StateStore, board_digest, diff_digest, meld_home, diff_changes, filter_changes
 from tests.factories import CFG2, mk_board, mk_issue, mk_pr, mk_run
 
 
@@ -127,3 +127,20 @@ def test_write_atomic_writes_a_sibling_temp_then_replaces(tmp_path, monkeypatch)
     # until the replace, so no reader can ever observe a partial write
     assert seen["tmp_content"] == "new" and seen["target_before"] == "old"
     assert target.read_text() == "new" and not list(tmp_path.glob("*.tmp"))
+
+
+def test_diff_changes_are_structured_and_filterable():
+    b1 = mk_board(CFG2, issues=[mk_issue(11)], pulls=[mk_pr(20, 13)])
+    b2 = mk_board(CFG2, issues=[mk_issue(11, status="in_progress", assignees=("meld-claude-bot",))],
+                  pulls=[mk_pr(20, 13, approvals=("meld-codex-bot",))], halted=True)
+    d1, d2 = board_digest(b1), board_digest(b2)
+    changes = diff_changes(d1, d2)
+    assert [c.kind for c in changes] == ["halted", "issue", "pr"]
+    issue = changes[1]
+    assert (issue.ref, issue.before, issue.after, issue.text) == ("#11", "ready", "in_progress", "issue #11: ready -> in_progress")
+    assert [c.text for c in changes] == diff_digest(d1, d2)
+    assert [c.kind for c in filter_changes(changes, {"pr"})] == ["pr"]
+    assert filter_changes(changes, None) == changes
+    initial = diff_changes(None, d2)
+    assert [c.kind for c in initial] == ["snapshot"] and initial[0].text == "initial snapshot"
+    assert filter_changes(initial, {"comments"}) == initial

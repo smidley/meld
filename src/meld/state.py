@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Callable, Iterable, Mapping
 
 from meld.atomic import write_atomic
 from meld.board import Board, RunRecord
@@ -132,46 +132,76 @@ def board_digest(board: Board) -> dict:
     }
 
 
-def diff_digest(old: dict | None, new: dict) -> list[str]:
+CHANGE_KINDS = ("snapshot", "phase", "halted", "issue", "pr", "run", "comments", "challenges")
+
+
+@dataclass(frozen=True)
+class Change:
+    """One difference between two board digests, with a machine-readable kind and a human line."""
+    kind: str
+    ref: str
+    before: object
+    after: object
+    text: str
+
+
+def diff_changes(old: dict | None, new: dict) -> list[Change]:
     if old is None:
-        return ["initial snapshot"]
-    changes: list[str] = []
+        return [Change("snapshot", "", None, None, "initial snapshot")]
+    out: list[Change] = []
     for key in ("phase", "halted"):
         if old.get(key) != new.get(key):
-            changes.append(f"{key}: {old.get(key)} -> {new.get(key)}")
+            out.append(Change(key, "", old.get(key), new.get(key), f"{key}: {old.get(key)} -> {new.get(key)}"))
     for n in sorted(set(old.get("issues", {})) | set(new.get("issues", {})), key=int):
         a, b = old.get("issues", {}).get(n), new.get("issues", {}).get(n)
+        ref = f"#{n}"
         if a is None:
-            changes.append(f"issue #{n}: new ({b['status']})")
+            out.append(Change("issue", ref, None, b["status"], f"issue #{n}: new ({b['status']})"))
         elif b is None:
-            changes.append(f"issue #{n}: gone")
+            out.append(Change("issue", ref, a["status"], None, f"issue #{n}: gone"))
         elif a["status"] != b["status"]:
-            changes.append(f"issue #{n}: {a['status']} -> {b['status']}")
+            out.append(Change("issue", ref, a["status"], b["status"], f"issue #{n}: {a['status']} -> {b['status']}"))
         elif a != b:
-            changes.append(f"issue #{n}: labels or assignees changed")
+            out.append(Change("issue", ref, a, b, f"issue #{n}: labels or assignees changed"))
     for n in sorted(set(old.get("pulls", {})) | set(new.get("pulls", {})), key=int):
         a, b = old.get("pulls", {}).get(n), new.get("pulls", {}).get(n)
+        ref = f"pr #{n}"
         if a is None:
-            changes.append(f"pr #{n}: new")
+            out.append(Change("pr", ref, None, b, f"pr #{n}: new"))
         elif b is None:
-            changes.append(f"pr #{n}: gone")
+            out.append(Change("pr", ref, a, None, f"pr #{n}: gone"))
         else:
             if a["head"] != b["head"]:
-                changes.append(f"pr #{n}: new head {b['head']}")
+                out.append(Change("pr", ref, a["head"], b["head"], f"pr #{n}: new head {b['head']}"))
             if a["approvals"] != b["approvals"]:
-                changes.append(f"pr #{n}: approvals {a['approvals']} -> {b['approvals']}")
+                out.append(Change("pr", ref, a["approvals"], b["approvals"], f"pr #{n}: approvals {a['approvals']} -> {b['approvals']}"))
             if a["changes_requested"] != b["changes_requested"]:
-                changes.append(f"pr #{n}: changes_requested {a['changes_requested']} -> {b['changes_requested']}")
+                out.append(Change("pr", ref, a["changes_requested"], b["changes_requested"],
+                                  f"pr #{n}: changes_requested {a['changes_requested']} -> {b['changes_requested']}"))
             if a["checks"] != b["checks"]:
-                changes.append(f"pr #{n}: checks {a['checks']} -> {b['checks']}")
+                out.append(Change("pr", ref, a["checks"], b["checks"], f"pr #{n}: checks {a['checks']} -> {b['checks']}"))
             if a["state"] != b["state"]:
-                changes.append(f"pr #{n}: {a['state']} -> {b['state']}")
+                out.append(Change("pr", ref, a["state"], b["state"], f"pr #{n}: {a['state']} -> {b['state']}"))
     for k in sorted(set(old.get("runs", {})) | set(new.get("runs", {}))):
         a, b = old.get("runs", {}).get(k), new.get("runs", {}).get(k)
         if a != b:
-            changes.append(f"run {k}: {a or 'none'} -> {b or 'none'}")
+            out.append(Change("run", k, a, b, f"run {k}: {a or 'none'} -> {b or 'none'}"))
     if old.get("last_comment_id") != new.get("last_comment_id"):
-        changes.append(f"comments: new up to #{new.get('last_comment_id')}")
+        out.append(Change("comments", "", old.get("last_comment_id"), new.get("last_comment_id"),
+                          f"comments: new up to #{new.get('last_comment_id')}"))
     if old.get("open_challenges") != new.get("open_challenges"):
-        changes.append(f"open_challenges: {old.get('open_challenges')} -> {new.get('open_challenges')}")
-    return changes
+        out.append(Change("challenges", "", old.get("open_challenges"), new.get("open_challenges"),
+                          f"open_challenges: {old.get('open_challenges')} -> {new.get('open_challenges')}"))
+    return out
+
+
+def filter_changes(changes: list[Change], kinds: Iterable[str] | None) -> list[Change]:
+    """Keep only the requested kinds; an initial snapshot always counts."""
+    if not kinds:
+        return list(changes)
+    wanted = set(kinds) | {"snapshot"}
+    return [c for c in changes if c.kind in wanted]
+
+
+def diff_digest(old: dict | None, new: dict) -> list[str]:
+    return [c.text for c in diff_changes(old, new)]

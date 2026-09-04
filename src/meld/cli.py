@@ -14,6 +14,7 @@ from meld.config import ConfigError
 from meld.context import Context, load_context
 from meld.github import GitHubError
 from meld.posting import PostError, post as do_post
+from meld.state import CHANGE_KINDS
 from meld.status import build_status
 from meld.waiting import wait_for_change
 
@@ -81,8 +82,10 @@ def models(ctx: click.Context, adapter: str | None) -> None:
 @main.command()
 @click.option("--timeout", type=float, default=None, help="Seconds to wait before returning unchanged (default: polling.wait_timeout_seconds).")
 @click.option("--interval", type=float, default=None, help="Seconds between polls (default: polling.interval_seconds).")
+@click.option("--filter", "kinds", default=None,
+              help="Comma-separated change kinds that count as a change: " + ",".join(k for k in CHANGE_KINDS if k != "snapshot") + " (default: all).")
 @click.pass_context
-def wait(ctx: click.Context, timeout: float | None, interval: float | None) -> None:
+def wait(ctx: click.Context, timeout: float | None, interval: float | None, kinds: str | None) -> None:
     """Block until the board changes, then print status plus a changes list."""
     c = _load(ctx)
     t = timeout if timeout is not None else c.cfg.wait_timeout_seconds
@@ -91,7 +94,13 @@ def wait(ctx: click.Context, timeout: float | None, interval: float | None) -> N
         raise click.BadParameter("must be greater than 0", param_hint="--interval")
     if t < 0:
         raise click.BadParameter("must not be negative", param_hint="--timeout")
-    data = _guard(lambda: wait_for_change(c, timeout=t, interval=i))
+    wanted: set[str] | None = None
+    if kinds:
+        wanted = {k.strip() for k in kinds.split(",") if k.strip()}
+        unknown = sorted(wanted - set(CHANGE_KINDS))
+        if unknown:
+            raise click.BadParameter(f"unknown change kind(s): {', '.join(unknown)}", param_hint="--filter")
+    data = _guard(lambda: wait_for_change(c, timeout=t, interval=i, kinds=wanted))
     emit(data, ctx.obj["pretty"])
 
 

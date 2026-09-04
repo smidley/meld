@@ -19,6 +19,7 @@ from meld.gitops import (
     checkout_pr_head,
     commits_ahead,
     create_worktree,
+    delete_local_branch,
     exclude_paths,
     head_sha,
     noreply_email,
@@ -373,3 +374,34 @@ def _collect_verdict(ctx, group: GroupConfig, rec: RunRecord, when: datetime) ->
     path.write_text(json.dumps(payload, indent=2))
     ctx.store.write_run(replace(rec, collected=True))
     return {"collected": rec.issue, "kind": rec.kind, "stored": str(path), "verdict": result.verdict if result else None}
+
+
+def reap(ctx, number: int) -> dict:
+    """Remove a finished run's worktree and archive its record once its work is merged or closed."""
+    _, board = build_status(ctx)
+    actor = ctx.actor()
+    target = f"#{number}"
+    if not actor.is_pm:
+        refuse(ctx, board, Refusal(Verb.REAP, target, "only the PM may reap"))
+    group = ctx.cfg.groups[actor.group]  # type: ignore[index]
+    rec = board.run_for(group.name, number)
+    if rec is None:
+        refuse(ctx, board, Refusal(Verb.REAP, target, f"no run record for {target} in {group.name}"))
+    if rec.alive:
+        refuse(ctx, board, Refusal(Verb.REAP, target, "worker is still running"))
+    if not rec.collected:
+        refuse(ctx, board, Refusal(Verb.REAP, target, "run has not been collected; collect first"))
+    issue = board.issues.get(number)
+    pr = board.pr_for_issue(number) or board.pulls.get(number)
+    finished = rec.kind != "build" or (issue is not None and issue.state == "closed") or (pr is not None and (pr.merged or pr.state == "closed"))
+    if not finished:
+        refuse(ctx, board, Refusal(Verb.REAP, target, "issue is still open and its PR is not merged"))
+    wt = Path(rec.worktree)
+    removed = False
+    if worktree_exists(ctx.repo_root, wt) or wt.exists():
+        remove_worktree(ctx.repo_root, wt)
+        removed = True
+    if rec.kind == "build" and rec.branch:
+        delete_local_branch(ctx.repo_root, rec.branch)
+    archived = ctx.store.archive_run(group.name, number)
+    return {"reaped": number, "worktree_removed": removed, "archived": str(archived)}

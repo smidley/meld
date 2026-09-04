@@ -36,3 +36,14 @@ def test_role_prompt_ends_with_the_launch_block(tmp_path: Path):
     assert "On launch 1, post `[<group>] CONFIG`" in orch and "When the reason is `crash` or `recycle`, post `RESUMED`" in orch
     assert "post `[<group>:pm] RESUMED` only when the reason is `crash` or `recycle`" in first
     assert "retry it once before reporting it" in first
+
+
+def test_role_prompt_has_product_standards_and_the_plan_3_commands(tmp_path):
+    text = role_prompt("pm", CFG2, CFG2.groups["claude"], tmp_path)
+    assert "## Product standards" in text and "## Your roster" in text and text.index("## Product standards") < text.index("## Your roster")
+    for cmd in ("meld review N", "meld merge N", "meld audit N", "meld reopen N", "meld challenge <open|evidence|retract|uphold|dismiss> REF -m TEXT",
+                "meld dispatch N [--kind review|audit] [--worker security]"):
+        assert cmd in text, cmd
+    (tmp_path / ".meld").mkdir()
+    (tmp_path / ".meld" / "STANDARDS.md").write_text("Ship dark mode everywhere.\n")
+    assert "Ship dark mode everywhere." in role_prompt("orchestrator", CFG2, CFG2.groups["claude"], tmp_path)

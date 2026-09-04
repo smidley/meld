@@ -28,7 +28,8 @@ class ClaudeAdapter:
             "--permission-mode", "bypassPermissions",
             "--strict-mcp-config", "--mcp-config", json.dumps(_MCP_CONFIG),
             "--settings", json.dumps(_SETTINGS),
-            "--setting-sources", "project",
+            # user: installed skills (~/.claude/skills, plugin caches) load; hooks stay disabled and MCP stays empty via _SETTINGS/_MCP_CONFIG
+            "--setting-sources", "user,project",
             "--max-turns", str(spec.max_turns),
         ]
 

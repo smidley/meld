@@ -6,6 +6,7 @@ import pytest
 
 from meld.brief import (
     BRIEF_FILE,
+    DEFAULT_STANDARDS,
     RESULT_FILE,
     ResultError,
     WorkerResult,
@@ -13,12 +14,13 @@ from meld.brief import (
     decision_titles,
     file_hints,
     plan_excerpt,
+    product_standards,
     read_result,
     render_brief,
     review_bar,
     worker_contract,
 )
-from meld.roster import builtin_workers
+from meld.roster import WorkerType, builtin_workers
 from tests.factories import mk_issue, mk_pr
 
 PLAN = """# Plan
@@ -133,3 +135,22 @@ def test_pr_brief_names_the_primary_concern_and_the_checkout(tmp_path):
     audit = render_brief(role=AUDITOR, kind="audit", group="claude", model="m", effort="high", issue=None, pr=pr, plan_text="",
                          repo_root=tmp_path, worktree=tmp_path, base_branch="main")
     assert "## Your primary concern" not in audit and "The checkout is the merge commit `feedfac` that landed this PR on `main`." in audit
+
+
+def test_brief_carries_product_standards_and_skills(tmp_path):
+    issue = mk_issue(11)
+    backend = next(w for w in builtin_workers() if w.name == "backend")
+    skills = [WorkerType("brand", "House brand voice and visual identity.", "skill", None, ""),
+              WorkerType("security-review", "OWASP-style review of a change.", "skill", None, "")]
+    text = render_brief(role=backend, kind="build", group="claude", model="m", effort="medium", issue=issue, pr=None, plan_text="",
+                        repo_root=tmp_path, worktree=tmp_path, base_branch="main", skills=skills)
+    assert "## Product standards" in text and DEFAULT_STANDARDS.splitlines()[0] in text
+    assert "## Skills available" in text and "- `brand`: House brand voice and visual identity." in text and "Invoke a skill by name" in text
+    (tmp_path / ".meld").mkdir()
+    (tmp_path / ".meld" / "STANDARDS.md").write_text("# Widgets standards\n\nEvery screen ships with a Lighthouse score above 90.\n")
+    custom = render_brief(role=backend, kind="build", group="claude", model="m", effort="medium", issue=issue, pr=None, plan_text="",
+                          repo_root=tmp_path, worktree=tmp_path, base_branch="main")
+    # a bare substring check would false-positive: the worker contract's own item 10 names the heading in backticks
+    # ("`## Skills available`") even when the section itself is absent, so this checks for the rendered heading line.
+    assert "Lighthouse score above 90" in custom and DEFAULT_STANDARDS.splitlines()[0] not in custom and "\n## Skills available\n" not in custom
+    assert product_standards(tmp_path).startswith("# Widgets standards")

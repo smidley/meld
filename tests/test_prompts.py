@@ -1,3 +1,6 @@
+from importlib import resources
+
+from meld.brief import worker_contract
 from meld.roster import builtin_workers
 
 REQUIRED = ("## Focus", "## Method", "## Definition of done", "## Evidence you must record")
@@ -19,3 +22,12 @@ def test_reviewer_and_auditor_prompts_carry_the_verification_rules():
         assert needle in reviewer, needle
     for needle in ("acceptance criteria", "pass", "fail", "re-run", "verified_by"):
         assert needle in auditor, needle
+
+
+def test_worker_contract_and_preamble_carry_the_quality_bar():
+    contract = worker_contract()
+    assert "Meet the product standards" in contract and "Skills available" in contract
+    reviewer = next(w for w in builtin_workers() if w.name == "reviewer").text
+    assert "correctness, security, performance, visual design and accessibility" in reviewer and "primary concern" in reviewer
+    preamble = resources.files("meld").joinpath("prompts", "_preamble.md").read_text()
+    assert "Ship for real users" in preamble and "meld challenge" in preamble

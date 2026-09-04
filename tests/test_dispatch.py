@@ -14,6 +14,7 @@ from meld.brief import BRIEF_FILE
 from meld.context import load_context
 from meld.dispatch import DispatchError, dispatch, git_identity, worker_env
 from meld.gitops import head_sha, worktree_exists
+from meld.roster import WorkerType
 from tests.conftest import env_for
 from tests.fakeadapter import FakeAdapter, no_skills
 from tests.gitfixtures import sh
@@ -61,6 +62,23 @@ def test_dispatch_build_happy_path(tmp_path):
     wait_for_exit(out["pid"])
     assert sh(["git", "log", "-1", "--format=%an <%ae>"], wt) == "meld-claude-bot <7+meld-claude-bot@users.noreply.github.com>"
     assert (wt / ".meld-result.json").exists()
+    # a bare substring check would false-positive: the worker contract's own item 10 names the heading in backticks
+    # ("`## Skills available`") even when the section itself is absent, so this checks for the rendered heading line.
+    assert "\n## Skills available\n" not in (wt / BRIEF_FILE).read_text()
+    # a group whose adapter reports an installed skill gets a "## Skills available" section in its brief. Skills reach
+    # render_brief through ctx.roster_entries() (bound to the context's own adapter_for), not the adapter= override
+    # dispatch() takes purely to stand in for the real launch -- so the skill is injected via a fresh context's
+    # adapter_for, the same mechanism launch_role/role_prompt use to pick up installed skills.
+    rec_path = tmp_path / "home" / "runs" / "claude" / "11.json"
+    rec = json.loads(rec_path.read_text())
+    rec["collected"] = True
+    rec_path.write_text(json.dumps(rec))
+    skilled = load_context(repo / ".meld.toml", env=env_for(tmp_path, group="claude", role="pm"), run=fake,
+                           adapter_for=lambda name: FakeAdapter(skills=[WorkerType("brand", "Brand voice.", "skill", None, "")]))
+    second = dispatch(skilled, 11, adapter=FakeAdapter(), now=NOW)
+    text2 = (Path(second["worktree"]) / BRIEF_FILE).read_text()
+    assert "## Skills available" in text2 and "- `brand`: Brand voice." in text2
+    wait_for_exit(second["pid"])
 
 
 def test_dispatch_reuses_an_existing_worktree(tmp_path):

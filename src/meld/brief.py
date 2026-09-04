@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
+from typing import Sequence
 
 from meld.board import Issue, PullRequest
 from meld.gitops import branch_name
@@ -18,6 +19,16 @@ VERDICTS = ("approve", "request-changes", "push-fix", "pass", "fail")
 _AGENT_FILES = ("CLAUDE.md", "AGENTS.md", ".github/copilot-instructions.md")
 _PATH_TOKEN_RE = re.compile(r"`([A-Za-z0-9_./-]+\.[A-Za-z0-9]+)`")
 _FILES_HEADING_RE = re.compile(r"^\s*(?:#+\s*)?files:?\s*$", re.IGNORECASE)
+STANDARDS_FILE = ".meld/STANDARDS.md"
+DEFAULT_STANDARDS = """Build for real users, not for a demo. Visual design, performance, and security are acceptance criteria with the same weight as correctness: anything a user sees must look intentional, consistent, and accessible and respond quickly; every input, secret, and dependency is handled as if the product were already public.
+Decide with industry standards, current documentation, and your own research rather than asking. Surface only decisions that need a human's approval (money, credentials, product direction, irreversible changes) through the framework's needs-human path.
+Where a skill is available for the task at hand (design, security review, performance, a framework's conventions), use it before improvising, and say which one you used."""
+
+
+def product_standards(repo_root: Path) -> str:
+    """The product's own quality bar (.meld/STANDARDS.md) when it has one, else the framework default."""
+    f = repo_root / STANDARDS_FILE
+    return f.read_text().strip() if f.is_file() else DEFAULT_STANDARDS
 
 
 class ResultError(ValueError):
@@ -88,7 +99,8 @@ def agent_instruction_files(worktree: Path) -> list[str]:
 
 
 def render_brief(*, role: WorkerType, kind: str, group: str, model: str, effort: str, issue: Issue | None, pr: PullRequest | None,
-                 plan_text: str, repo_root: Path, worktree: Path, base_branch: str, concern: str | None = None) -> str:
+                 plan_text: str, repo_root: Path, worktree: Path, base_branch: str, concern: str | None = None,
+                 skills: Sequence[WorkerType] = ()) -> str:
     if issue is not None:
         title = f"# Meld brief: {role.name} for #{issue.number}"
         task = f"## Your task\n\n**#{issue.number}: {issue.title}**\n\n{issue.body.strip() or '(no description)'}\n"
@@ -127,6 +139,10 @@ def render_brief(*, role: WorkerType, kind: str, group: str, model: str, effort:
     bar = review_bar(repo_root)
     if bar:
         parts += ["## Verification bar for this repository", "", bar.strip(), ""]
+    parts += ["## Product standards", "", product_standards(repo_root), ""]
+    if skills:
+        parts += ["## Skills available", ""] + [f"- `{s.name}`: {s.description}" for s in skills] + \
+                 ["", "Invoke a skill by name when it matches the task; do not reinvent what a skill already does well.", ""]
     agent_files = agent_instruction_files(worktree)
     if agent_files:
         parts += ["## Repository instructions", ""] + [f"- `{f}`" for f in agent_files] + ["", "These win over anything generic below.", ""]

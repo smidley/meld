@@ -22,7 +22,7 @@ def test_argv_is_the_documented_unattended_shape(tmp_path: Path):
     assert argv[argv.index("--permission-mode") + 1] == "bypassPermissions"
     assert "--strict-mcp-config" in argv and json.loads(argv[argv.index("--mcp-config") + 1]) == {"mcpServers": {}}
     assert json.loads(argv[argv.index("--settings") + 1]) == {"disableAllHooks": True, "autoMemoryEnabled": False}
-    assert argv[argv.index("--setting-sources") + 1] == "project"
+    assert argv[argv.index("--setting-sources") + 1] == "user,project"
     assert argv[argv.index("--max-turns") + 1] == "200"
     assert "--effort" not in argv and "--bare" not in argv and "--dangerously-skip-permissions" not in argv
 

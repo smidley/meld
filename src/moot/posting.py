@@ -2,15 +2,40 @@
 from __future__ import annotations
 
 from moot.config import Party
-from moot.grammar import Header, agreement_for, allowed_verbs, compose, validate
+from moot.grammar import Agreement, Header, agreement_for, allowed_verbs, compose, validate
 
 
 class PostError(ValueError):
     pass
 
 
+def _indent(text: str) -> str:
+    """Indent continuation lines so markdown keeps multi-line text inside its bullet."""
+    return text.replace("\n", "\n  ")
+
+
+def _bullet(label: str, text: str) -> str:
+    return f"- **{label}**: {_indent(text)}"
+
+
 def _dissent_section(dissent: dict[str, str]) -> str:
-    return "\n".join(f"- **{g}**: {t}" for g, t in sorted(dissent.items()))
+    return "\n".join(_bullet(g, t) for g, t in sorted(dissent.items()))
+
+
+def _joint_body(agreement: Agreement, ref: str, qualifier: str | None, text: str) -> str:
+    """The body of a [joint] comment: the agreed text verbatim, never the caller's substitute."""
+    addendum = text.strip()
+    if agreement.status in ("agreed", "majority"):
+        body = agreement.text or ""
+        if agreement.status == "majority":
+            body = f"{body}\n\n## DISSENT\n{_dissent_section(agreement.dissent)}"
+        if addendum:
+            body = f"{body}\n\n## Addendum\n{addendum}"
+        return body
+    if qualifier != "DISAGREE":
+        raise PostError(f"agreement on {ref} has no majority; post with qualifier DISAGREE")
+    proposal = f"- **{agreement.proposer}** (proposal): {_indent(agreement.text or '')}"
+    return f"## Positions\n{proposal}\n{_dissent_section(agreement.dissent)}\n\n{addendum}".strip()
 
 
 def post(ctx, verb: str, ref: str | None = None, qualifier: str | None = None, text: str = "", joint: bool = False) -> dict:
@@ -36,16 +61,9 @@ def post(ctx, verb: str, ref: str | None = None, qualifier: str | None = None, t
             raise PostError("PLAN may only be posted during planning")
         if verb == "PLAN-ADD" and board.phase != "executing":
             raise PostError("PLAN-ADD may only be posted during executing")
-        base = text.strip() or (agreement.text or "")
-        if agreement.status == "agreed":
-            body_text = base
-        elif agreement.status == "majority":
-            body_text = f"{base}\n\n## DISSENT\n{_dissent_section(agreement.dissent)}"
-        else:
-            if qualifier != "DISAGREE":
-                raise PostError(f"agreement on {ref} has no majority; post with qualifier DISAGREE")
-            positions = f"- **{agreement.proposer}** (proposal): {agreement.text}\n{_dissent_section(agreement.dissent)}"
-            body_text = f"## Positions\n{positions}\n\n{text.strip()}".strip()
+        if agreement.joint_posted:
+            raise PostError(f"{ref} already has a [joint] comment")
+        body_text = _joint_body(agreement, ref, qualifier, text)
     elif verb in ("PROPOSE", "DRAFT") and party.kind in ("group", "pm"):
         agreement = agreement_for(board.comments, ref, ctx.cfg)
         if agreement.text is not None:

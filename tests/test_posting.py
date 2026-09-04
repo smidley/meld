@@ -141,3 +141,56 @@ def test_cli_post_with_message_and_error_exit(tmp_path, monkeypatch):
     bad = CliRunner().invoke(cli.main, ["--config", str(tmp_path / ".moot.toml"), "--compact", "post", "CHALLENGE", "-m", "x"],
                              env=env_for(tmp_path, role="orchestrator"))
     assert bad.exit_code == 2 and "requires a ref" in json.loads(bad.output)["error"]
+
+
+AGREED_PLAN = BASE_COMMENTS + [
+    {"id": 102, "user": {"login": "moot-claude-bot"}, "created_at": "2026-09-03T09:10:00Z",
+     "body": "[claude] PROPOSE plan-1\n\n1. health endpoint\n2. login form\n\nverified-by: moot roster"},
+    {"id": 103, "user": {"login": "moot-codex-bot"}, "created_at": "2026-09-03T09:11:00Z", "body": "[codex] AGREE plan-1\n\nok"},
+]
+
+
+def test_joint_publishes_the_agreed_text_and_appends_an_addendum(tmp_path):
+    fake, ctx = make(tmp_path, comments=AGREED_PLAN, approved=False)
+    out = post(ctx, "PLAN", ref="plan-1", joint=True, text="Sequencing note: ship the endpoint first.")
+    assert out["header"] == "[joint] PLAN plan-1"
+    body = posted(fake)[0]
+    agreed = "1. health endpoint\n2. login form\n\nverified-by: moot roster"
+    assert body == f"[joint] PLAN plan-1\n\n{agreed}\n\n## Addendum\nSequencing note: ship the endpoint first.\n"
+    # the caller's -m never substitutes for the agreed text
+    assert body.split("\n\n", 1)[1].startswith("1. health endpoint")
+
+
+def test_joint_refused_when_already_posted(tmp_path):
+    comments = AGREED_PLAN + [
+        {"id": 104, "user": {"login": "moot-claude-bot"}, "created_at": "2026-09-03T09:12:00Z",
+         "body": "[joint] PLAN plan-1\n\n1. health endpoint\n\nverified-by: moot roster"},
+    ]
+    _, ctx = make(tmp_path, comments=comments, approved=False)
+    with pytest.raises(PostError, match="plan-1 already has a \\[joint\\] comment"):
+        post(ctx, "PLAN", ref="plan-1", joint=True)
+
+
+def test_multiline_dissent_is_indented_inside_its_bullet(tmp_path):
+    comments = BASE_COMMENTS + [
+        {"id": 102, "user": {"login": "moot-codex-bot"}, "created_at": "2026-09-03T09:10:00Z",
+         "body": "[codex] DRAFT ask-1\n\nUse Postgres.\nIt scales."},
+        {"id": 103, "user": {"login": "moot-claude-bot"}, "created_at": "2026-09-03T09:11:00Z",
+         "body": "[claude] DISSENT ask-1\n\nSQLite is enough for v1.\nOne file, no ops."},
+    ]
+    fake, codex = make(tmp_path, group="codex", comments=comments)
+    post(codex, "ANSWER", ref="ask-1", qualifier="DISAGREE", joint=True, text="verified-by: moot status")
+    body = posted(fake)[0]
+    assert "- **codex** (proposal): Use Postgres.\n  It scales." in body
+    assert "- **claude**: SQLite is enough for v1.\n  One file, no ops." in body
+
+
+def test_joint_plan_add_refused_during_planning(tmp_path):
+    comments = BASE_COMMENTS + [
+        {"id": 102, "user": {"login": "moot-claude-bot"}, "created_at": "2026-09-03T09:10:00Z",
+         "body": "[claude] PROPOSE add-1\n\nAdd #15 rate limiting.\n\nverified-by: moot status"},
+        {"id": 103, "user": {"login": "moot-codex-bot"}, "created_at": "2026-09-03T09:11:00Z", "body": "[codex] AGREE add-1\n\nok"},
+    ]
+    _, ctx = make(tmp_path, comments=comments, approved=False)
+    with pytest.raises(PostError, match="PLAN-ADD may only be posted during executing"):
+        post(ctx, "PLAN-ADD", ref="add-1", joint=True)

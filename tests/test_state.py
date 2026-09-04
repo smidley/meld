@@ -1,4 +1,6 @@
 import json
+import os
+from pathlib import Path
 
 from moot.state import StateStore, board_digest, diff_digest, moot_home
 from tests.factories import CFG2, mk_board, mk_issue, mk_pr, mk_run
@@ -101,3 +103,27 @@ def test_two_parties_of_one_group_do_not_share_a_snapshot(tmp_path):
     pm.save_snapshot({"seen": "pm"})
     assert orch.load_snapshot() == {"seen": "orchestrator"}
     assert pm.load_snapshot() == {"seen": "pm"}
+
+
+def test_write_atomic_writes_a_sibling_temp_then_replaces(tmp_path, monkeypatch):
+    import moot.atomic as atomic
+    from moot.atomic import write_atomic
+
+    target = tmp_path / "snapshot.json"
+    target.write_text("old")
+    seen: dict[str, str] = {}
+    real_replace = os.replace
+
+    def spy(src, dst):
+        seen["src"], seen["dst"] = str(src), str(dst)
+        seen["tmp_content"] = Path(src).read_text()
+        seen["target_before"] = Path(dst).read_text()
+        real_replace(src, dst)
+
+    monkeypatch.setattr(atomic.os, "replace", spy)
+    write_atomic(target, "new")
+    assert seen["src"] == str(tmp_path / "snapshot.json.tmp") and seen["dst"] == str(target)
+    # the whole new body reaches the temp file, and the target still holds the old bytes
+    # until the replace, so no reader can ever observe a partial write
+    assert seen["tmp_content"] == "new" and seen["target_before"] == "old"
+    assert target.read_text() == "new" and not list(tmp_path.glob("*.tmp"))

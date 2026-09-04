@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlencode
 
+from moot.atomic import write_atomic
+
 RunFn = Callable[..., subprocess.CompletedProcess]
 
 
@@ -78,15 +80,23 @@ class GitHub:
         headers: dict[str, str] = {}
         cached: dict | None = None
         if use_cache and cache is not None and cache.exists():
-            cached = json.loads(cache.read_text())
-            headers["If-None-Match"] = cached["etag"]
+            # A corrupt or truncated cache entry is treated as no cache at all: send no
+            # If-None-Match, fetch normally, and overwrite the bad file on success.
+            try:
+                entry = json.loads(cache.read_text())
+                etag, body_cached = entry["etag"], entry["body"]
+            except (json.JSONDecodeError, OSError, KeyError, TypeError, IndexError):
+                cached = None
+            else:
+                cached = {"etag": etag, "body": body_cached}
+                headers["If-None-Match"] = etag
         status, resp_headers, body = self._call("GET", url, headers=headers)
         if status == 304 and cached is not None:
             return cached["body"]
         if status >= 400:
             raise GitHubError(f"GET {url} failed with HTTP {status}: {body}")
         if cache is not None and "etag" in resp_headers:
-            cache.write_text(json.dumps({"etag": resp_headers["etag"], "body": body}))
+            write_atomic(cache, json.dumps({"etag": resp_headers["etag"], "body": body}))
         return body
 
     def get_paginated(self, endpoint: str, params: dict[str, Any] | None = None) -> list:

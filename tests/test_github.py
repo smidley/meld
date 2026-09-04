@@ -121,3 +121,43 @@ def test_get_issue_fresh_bypasses_etag_cache(tmp_path):
     assert gh.get_issue(7)["assignees"] == []            # cached 304 path still answers stale
     assert gh.get_issue(7, fresh=True)["assignees"] == [{"login": "b"}]
     assert "if-none-match" not in fake.calls[-1].headers
+
+
+def test_corrupt_cache_entry_is_ignored_and_rewritten(tmp_path):
+    fake, gh = make(tmp_path)
+    fake.route("GET", "repos/acme/widgets/issues/7", {"number": 7, "title": "first"}, etag='W/"v1"')
+    assert gh.get_issue(7)["title"] == "first"
+    cache_files = list((tmp_path / "cache").glob("*.json"))
+    assert len(cache_files) == 1
+    cache_files[0].write_text('{"etag": "W/\\"v1\\"", "bo')  # truncated mid-write
+    fake.route("GET", "repos/acme/widgets/issues/7", {"number": 7, "title": "second"}, etag='W/"v2"')
+    assert gh.get_issue(7)["title"] == "second"
+    assert "if-none-match" not in fake.calls[-1].headers
+    assert json.loads(cache_files[0].read_text()) == {"etag": 'W/"v2"', "body": {"number": 7, "title": "second"}}
+
+
+def test_cache_entry_missing_a_key_is_ignored(tmp_path):
+    fake, gh = make(tmp_path)
+    fake.route("GET", "repos/acme/widgets/issues/7", {"number": 7}, etag='W/"v1"')
+    gh.get_issue(7)
+    cache_file = next((tmp_path / "cache").glob("*.json"))
+    cache_file.write_text(json.dumps({"etag": 'W/"v1"'}))  # no "body"
+    assert gh.get_issue(7) == {"number": 7}
+    assert "if-none-match" not in fake.calls[-1].headers
+
+
+def test_cache_is_written_through_write_atomic(tmp_path, monkeypatch):
+    import moot.github as gh_mod
+    from moot.atomic import write_atomic as real_write_atomic
+    seen = []
+
+    def spy(path, text):
+        seen.append(path)
+        real_write_atomic(path, text)
+
+    monkeypatch.setattr(gh_mod, "write_atomic", spy)
+    fake, gh = make(tmp_path)
+    fake.route("GET", "repos/acme/widgets/issues/7", {"number": 7}, etag='W/"v1"')
+    gh.get_issue(7)
+    assert seen == [next((tmp_path / "cache").glob("*.json"))]
+    assert not list((tmp_path / "cache").glob("*.tmp"))

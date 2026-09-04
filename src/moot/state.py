@@ -7,14 +7,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Callable, Mapping
 
+from moot.atomic import write_atomic
 from moot.board import Board, RunRecord
-
-
-def _write_atomic(path: Path, text: str) -> None:
-    """Write text to a temporary file, then atomically replace the target."""
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text)
-    os.replace(tmp, path)
 
 
 def moot_home(env: Mapping[str, str]) -> Path:
@@ -63,7 +57,7 @@ class StateStore:
 
     def save_snapshot(self, digest: dict) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
-        _write_atomic(self.snapshot_path, json.dumps(digest, sort_keys=True))
+        write_atomic(self.snapshot_path, json.dumps(digest, sort_keys=True))
 
     # ---- run records -------------------------------------------------------
 
@@ -73,7 +67,7 @@ class StateStore:
         data = asdict(record)
         data.pop("alive", None)
         path = d / f"{record.issue}.json"
-        _write_atomic(path, json.dumps(data, sort_keys=True))
+        write_atomic(path, json.dumps(data, sort_keys=True))
         return path
 
     def _read_record(self, path: Path, alive: Callable[[int], bool]) -> RunRecord:

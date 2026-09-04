@@ -1,15 +1,27 @@
 import json
+from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
 import meld.cli as cli
-from meld.config import ConfigError
+from meld.config import ConfigError, Party
 from meld.context import find_config, load_context
+from meld.rules import Actor
+from meld.status import render_status
 from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
+from tests.factories import CFG2, REG, mk_board, mk_pr
 from tests.fakeadapter import no_skills
 from tests.fakegh import FakeGh
+
+# Task 8's audit-schedule test needs actor fixtures; mirrors the local CLAUDE_PM/CODEX_PM/HUMAN
+# constants already duplicated in tests/test_rules_issues.py and tests/test_rules_prs.py (this
+# repo defines them per test file rather than sharing them from tests/factories.py).
+CLAUDE_PM = Actor(Party("pm", "claude"), "meld-claude-bot")
+CODEX_PM = Actor(Party("pm", "codex"), "meld-codex-bot")
+HUMAN = Actor(Party("human"), "empowerScott")
 
 
 @pytest.fixture
@@ -188,3 +200,18 @@ def test_models_command_still_honours_an_explicit_adapter_for_a_human(project: P
                                 env=env_for(project, group=None))
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["adapter"] == "codex"
+
+
+def test_status_reports_the_audit_schedule_for_the_calling_group():
+    merged = replace(mk_pr(19, 9, committer="meld-claude-bot", state="closed", merged=True), merged_at="2026-09-03T06:00:00Z")
+    board = mk_board(CFG2, pulls=[merged])
+    now = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
+    codex = render_status(board, CFG2, CODEX_PM, REG, now)["audit"]
+    assert codex == {"pending": [19], "merges_pending": 1, "oldest_pending_hours": 6.0, "due": True}
+    claude = render_status(board, CFG2, CLAUDE_PM, REG, now)["audit"]
+    assert claude == {"pending": [], "merges_pending": 0, "oldest_pending_hours": None, "due": False}
+    fresh = replace(merged, merged_at="2026-09-03T11:30:00Z")
+    assert render_status(mk_board(CFG2, pulls=[fresh]), CFG2, CODEX_PM, REG, now)["audit"]["due"] is False
+    done = replace(board, audits={19: {"codex": "pass"}})
+    assert render_status(done, CFG2, CODEX_PM, REG, now)["audit"]["pending"] == []
+    assert render_status(board, CFG2, HUMAN, REG, now)["audit"]["pending"] == []

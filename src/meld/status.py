@@ -75,8 +75,23 @@ def render_status(board: Board, cfg: Config, actor: Actor, models: ModelRegistry
         "coordination": {"comments": len(board.comments), "last_comment_id": max((c.id for c in board.comments), default=0),
                          "open_challenges": sorted(board.open_challenges), "ignored_comments": board.ignored_comments,
                          "agreements": agreements},
+        "audit": audit_summary(board, cfg, actor, now),
         "digest": board_digest(board),
     }
+
+
+def audit_summary(board: Board, cfg: Config, actor: Actor, now: datetime) -> dict:
+    """What the calling group owes the audit rule (spec 14): merged PRs it did not author and has not yet audited,
+    and whether the batch is due (audit.batch_merges pending, or the oldest pending merge older than audit.batch_hours)."""
+    if actor.group is None:
+        return {"pending": [], "merges_pending": 0, "oldest_pending_hours": None, "due": False}
+    pending = sorted((p for p in board.pulls.values()
+                      if p.merged and party_of_login(cfg, p.author) != actor.group and actor.group not in board.audits.get(p.number, {})),
+                     key=lambda p: p.number)
+    ages = [_age_minutes(p.merged_at, now) for p in pending if p.merged_at]
+    hours = round(max(ages) / 60, 1) if ages else None
+    due = bool(pending) and (len(pending) >= cfg.audit_batch_merges or (hours is not None and hours >= cfg.audit_batch_hours))
+    return {"pending": [p.number for p in pending], "merges_pending": len(pending), "oldest_pending_hours": hours, "due": due}
 
 
 def build_status(ctx, now: datetime | None = None) -> tuple[dict, Board]:

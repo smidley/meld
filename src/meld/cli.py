@@ -12,6 +12,7 @@ from meld import __version__
 from meld.actions import Refused, claim as do_claim, release as do_release
 from meld.adapters import UnknownAdapter, get_adapter
 from meld.assemble import BoardError
+from meld.audit import audit as do_audit, reopen as do_reopen
 from meld.config import ConfigError
 from meld.context import Context, load_context
 from meld.dispatch import DispatchError, collect as do_collect, dispatch as do_dispatch, reap as do_reap, tick as do_tick
@@ -224,6 +225,24 @@ def merge(ctx: click.Context, number: int) -> None:
     """Squash-merge a PR once the quorum rule, required checks, and open challenges allow it."""
     c = _load(ctx)
     _run_action(ctx, lambda: do_merge(c, number))
+
+
+@main.command()
+@click.argument("number", type=int)
+@click.pass_context
+def audit(ctx: click.Context, number: int) -> None:
+    """Post the collected auditor verdict on a merged PR as an AUDIT comment (PASS or FAIL)."""
+    c = _load(ctx)
+    _run_action(ctx, lambda: do_audit(c, number))
+
+
+@main.command()
+@click.argument("number", type=int)
+@click.pass_context
+def reopen(ctx: click.Context, number: int) -> None:
+    """Reopen a closed issue after a failed audit and return it to ready."""
+    c = _load(ctx)
+    _run_action(ctx, lambda: do_reopen(c, number))
 
 
 @main.command()

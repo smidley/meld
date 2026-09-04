@@ -19,6 +19,7 @@ from meld.gitops import GitError
 from meld.posting import PostError, post as do_post
 from meld.state import CHANGE_KINDS
 from meld.status import build_status
+from meld.tagging import tag as do_tag
 from meld.waiting import wait_for_change
 
 RUN = subprocess.run  # tests monkeypatch this with a FakeGh
@@ -208,6 +209,19 @@ def roster(ctx: click.Context) -> None:
     """List the worker types available to the calling party."""
     c = _load(ctx)
     emit([{"name": w.name, "description": w.description, "source": w.source} for w in _guard(c.roster_entries)], ctx.obj["pretty"])
+
+
+@main.command()
+@click.argument("number", type=int)
+@click.option("--worker", default=None)
+@click.option("--model", default=None)
+@click.option("--effort", default=None)
+@click.option("--size", default=None, type=click.Choice(["S", "M", "L"]))
+@click.pass_context
+def tag(ctx: click.Context, number: int, worker: str | None, model: str | None, effort: str | None, size: str | None) -> None:
+    """Set the worker, model, effort, and size labels on an issue (orchestrator or human)."""
+    c = _load(ctx)
+    _run_action(ctx, lambda: do_tag(c, number, worker=worker, model=model, effort=effort, size=size))
 
 
 if __name__ == "__main__":

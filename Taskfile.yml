@@ -1,0 +1,20 @@
+version: "3"
+
+env:
+  PYTHONPATH: src
+
+tasks:
+  test:
+    desc: Run the unit test suite
+    cmds:
+      - uv run pytest -q
+
+  test:smoke:
+    desc: Run opt-in smoke tests against real CLIs (Plan 2)
+    cmds:
+      - MELD_SMOKE=1 uv run pytest tests/smoke -q
+
+  status:
+    desc: Print the board for the current party (MELD_GROUP / MELD_ROLE from env)
+    cmds:
+      - uv run meld status

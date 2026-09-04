@@ -1,0 +1,42 @@
+# Per adapter, per model. context_class and tier are small|medium|large.
+# efforts is the ordered list the adapter accepts, cheapest first.
+
+[claude.claude-opus-5]
+context_class = "large"
+efforts = ["low", "medium", "high", "max"]
+tier = "large"
+
+[claude.claude-sonnet-5]
+context_class = "large"
+efforts = ["low", "medium", "high", "max"]
+tier = "medium"
+
+[claude.claude-haiku-4-5-20251001]
+context_class = "medium"
+efforts = ["low", "medium", "high"]
+tier = "small"
+
+# Codex entries, sourced from the installed CLI on this machine (codex-cli 0.144.6):
+# `codex debug models` (the "any codex models-style subcommand" listed by `codex --help`)
+# renders the live model catalog as JSON. `~/.codex/config.toml` has this install's active
+# default (`model = "gpt-5.6-sol"`), confirmed live by `codex doctor` ("model gpt-5.6-sol
+# · openai"). gpt-5.4 and gpt-5.4-mini are excluded: the catalog's own "upgrade" entries
+# show them replaced by gpt-5.6-terra and gpt-5.6-luna respectively, with a retirement
+# date (2026-08-31) already past today (2026-09-03). gpt-reserve and codex-auto-review are
+# excluded: both are marked visibility "hide" in the catalog (internal/reserved, not
+# offered to users). See task-3-report.md for the full evidence trail.
+
+[codex."gpt-5.6-sol"]
+context_class = "large"
+efforts = ["low", "medium", "high", "xhigh", "max", "ultra"]
+tier = "large"
+
+[codex."gpt-5.6-terra"]
+context_class = "large"
+efforts = ["low", "medium", "high", "xhigh", "max", "ultra"]
+tier = "medium"
+
+[codex."gpt-5.6-luna"]
+context_class = "large"
+efforts = ["low", "medium", "high", "xhigh", "max"]
+tier = "small"

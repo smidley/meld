@@ -1,5 +1,6 @@
-.moot-home/
 __pycache__/
-.venv/
 *.pyc
+.venv/
 .pytest_cache/
+dist/
+.meld-home/

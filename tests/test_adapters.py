@@ -34,7 +34,6 @@ def test_parse_frontmatter_and_scan_skills(tmp_path: Path):
     assert skills[0].path == a / "brand" / "SKILL.md" and skills[0].text.startswith("---")
 
 
-@pytest.mark.skipif(not (Path(__file__).parents[1] / "src" / "meld" / "adapters" / "codex.py").exists(), reason="adapters land in Tasks 8-9")
 def test_registry_names_and_unknown():
     assert ADAPTER_NAMES == ("claude", "codex")
     with pytest.raises(UnknownAdapter):

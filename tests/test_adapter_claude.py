@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 import meld.adapters.claude as claude_mod
-from meld.adapters.base import LaunchSpec
+from meld.adapters.base import SCRUBBED_EXACT, LaunchSpec
 from meld.adapters.claude import ClaudeAdapter
 
 
@@ -21,7 +21,10 @@ def test_argv_is_the_documented_unattended_shape(tmp_path: Path):
     assert argv[argv.index("--output-format") + 1] == "json"
     assert argv[argv.index("--permission-mode") + 1] == "bypassPermissions"
     assert "--strict-mcp-config" in argv and json.loads(argv[argv.index("--mcp-config") + 1]) == {"mcpServers": {}}
-    assert json.loads(argv[argv.index("--settings") + 1]) == {"disableAllHooks": True, "autoMemoryEnabled": False}
+    settings = json.loads(argv[argv.index("--settings") + 1])
+    assert settings == {"disableAllHooks": True, "autoMemoryEnabled": False, "env": {name: "" for name in SCRUBBED_EXACT}}
+    # every scrubbed name is blanked, so a user/project settings.json `env` block (loaded via --setting-sources) cannot re-inject one
+    assert {"GH_TOKEN", "GITHUB_TOKEN", "MELD_GROUP", "MELD_ROLE", "MELD_PUSH_TOKEN"} <= set(settings["env"]) and set(settings["env"].values()) == {""}
     assert argv[argv.index("--setting-sources") + 1] == "user,project"
     assert argv[argv.index("--max-turns") + 1] == "200"
     assert "--effort" not in argv and "--bare" not in argv and "--dangerously-skip-permissions" not in argv

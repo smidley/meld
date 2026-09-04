@@ -219,6 +219,9 @@ def test_collect_is_superseded_when_another_group_now_holds_the_issue(tmp_path):
     assert [c for c in fake.calls[calls_before:] if c.method != "GET"] == []      # no push, PR, labels, or comments
     assert not remote_branch_exists(repo, "meld/11-add-health-endpoint")
     assert worktree_exists(repo, Path(out["worktree"]))                          # kept for inspection
+    assert sh(["git", "rev-parse", "--abbrev-ref", "HEAD"], Path(out["worktree"])) == "HEAD"   # detached: the branch name is free
+    assert "refs/heads/meld/11-add-health-endpoint" not in sh(["git", "worktree", "list", "--porcelain"], repo)
+    assert sh(["git", "rev-parse", "meld/11-add-health-endpoint"], repo) == sh(["git", "rev-parse", "HEAD"], Path(out["worktree"]))  # commits kept
     assert json.loads((tmp_path / "home" / "runs" / "claude" / "11.json").read_text())["collected"] is True
     with pytest.raises(Refused, match="already collected"):
         collect(ctx, 11, now=NOW)

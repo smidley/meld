@@ -69,6 +69,12 @@ def checkout_pr_head(repo_root: Path, path: Path, branch: str, run: RunFn = subp
     git(["worktree", "add", "--detach", str(path), f"origin/{branch}"], repo_root, run)
 
 
+def detach_head(path: Path, run: RunFn = subprocess.run) -> None:
+    """Detach the worktree's HEAD at its current commit, releasing the branch name for another worktree
+    (git refuses to check out a branch that is checked out elsewhere in the same clone)."""
+    git(["checkout", "--quiet", "--detach"], path, run)
+
+
 def head_sha(path: Path, run: RunFn = subprocess.run) -> str:
     return git(["rev-parse", "HEAD"], path, run)
 

@@ -23,6 +23,7 @@ from meld.gitops import (
     commits_ahead,
     create_worktree,
     delete_local_branch,
+    detach_head,
     exclude_paths,
     head_sha,
     noreply_email,
@@ -154,8 +155,10 @@ def lease_body(group: str, number: int, until: str, kind: str) -> str:
 
 
 # Git settings forced on every worker at the command-line level (they also override the same keys in the
-# clone's own config): no credential helpers, no commit signing with the human's key, no hooks.
-_WORKER_GIT_CONFIG = (("credential.helper", ""), ("commit.gpgsign", "false"), ("core.hooksPath", "/dev/null"))
+# clone's own config): no credential helpers, no commit signing with the human's key. Hooks are NOT forced
+# off here: the human's global hooksPath is already unreachable through the empty GIT_CONFIG_GLOBAL, and a
+# product's own repo-local hooks (linters, commit checks) should run for a worker as they would for anyone.
+_WORKER_GIT_CONFIG = (("credential.helper", ""), ("commit.gpgsign", "false"))
 
 
 def worker_env(base: Mapping[str, str], *, identity: tuple[str, str], gh_config_dir: Path, git_config_global: Path) -> dict[str, str]:
@@ -405,8 +408,12 @@ def _collect_build(ctx, board: Board, group: GroupConfig, rec: RunRecord, issue)
     if issue.status != "in_progress" or group.bot not in issue.assignees:
         # The claim moved on while the worker ran (our lease expired and another group re-claimed, a human
         # released or re-labelled): the run is over, but nothing of it may reach GitHub. The worktree stays
-        # for inspection.
+        # for inspection, detached so the branch name is free for whoever now holds the issue (git refuses
+        # to check out a branch that another worktree of the same clone has checked out).
         holder = ", ".join(issue.assignees) or "nobody"
+        wt = Path(rec.worktree)
+        if wt.is_dir():
+            detach_head(wt)
         ctx.store.write_run(replace(rec, collected=True))
         return {"collected": number, "outcome": "superseded",
                 "reason": f"issue is {issue.status} and assigned to {holder}; {group.name} no longer holds it"}

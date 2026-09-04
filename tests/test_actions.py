@@ -189,3 +189,20 @@ def test_pm_claim_clears_its_own_stale_lease(tmp_path):
     claim(ctx, 11)
     posted = [c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/10/comments"]
     assert posted and posted[-1].startswith("[claude:pm] EXPIRED #11\n")
+
+
+def test_human_claim_posts_no_expired_comment(tmp_path):
+    # A human actor is never a PM (actor.is_pm is False), so the EXPIRED-lease check in claim() is
+    # skipped unconditionally -- this holds even with the same stale claude PM lease on the thread
+    # that triggers an EXPIRED post for a PM claimant in test_pm_claim_clears_its_own_stale_lease.
+    fake, human = make(tmp_path, group=None)
+    stale = {"id": 105, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T09:00:00Z",
+             "body": "[claude:pm] LEASE #11\n\nuntil: 2020-01-01T00:00:00Z\nrun: claude/#11\nkind: build"}
+    fake.route("GET", R + "issues/10/comments", fixture_comments() + [stale])
+    # Mirror the PM happy-path routes (test_claim_happy_path) with the human login instead of the bot's.
+    fake.route("POST", R + "issues/11/assignees", {"assignees": [{"login": "empowerScott"}]})
+    fake.route("GET", R + "issues/11", {"number": 11, "assignees": [{"login": "empowerScott"}]})
+    fake.route("POST", R + "issues/11/labels", [{"name": "meld:in-progress"}])
+    fake.route("DELETE", label_ep(11, "meld:ready"), [])
+    assert claim(human, 11) == {"claimed": 11, "assignee": "empowerScott"}
+    assert not any(c.method == "POST" and c.endpoint == R + "issues/10/comments" for c in fake.calls)

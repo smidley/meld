@@ -167,3 +167,8 @@ def test_review_concern_is_assigned_only_with_three_or_more_groups():
     assert review_concern(CFG2, pr, "claude") is None
     assert review_concern(CFG3, pr, "claude") == CONCERNS[0] and review_concern(CFG3, pr, "gemini") == CONCERNS[1]
     assert review_concern(CFG3, pr, "codex") is None                    # the head committer's group does not review
+    # after a push-fix, the PR's author (claude) is a different party than the head committer (codex):
+    # the author remains an eligible reviewer, per spec 13 step 3 (A's PM dispatches its own reviewer on the new head)
+    pr = mk_pr(20, 13, committer="meld-codex-bot", author="meld-claude-bot")
+    assert review_concern(CFG3, pr, "claude") == CONCERNS[0] and review_concern(CFG3, pr, "gemini") == CONCERNS[1]
+    assert review_concern(CFG3, pr, "codex") is None                    # the head committer's group still does not review

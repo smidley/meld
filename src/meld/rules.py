@@ -340,8 +340,11 @@ CONCERNS = ("correctness and security", "tests and product conventions", "archit
 
 
 def review_concern(cfg: Config, pr: PullRequest, group: str) -> str | None:
-    """Role-matched review (spec 21.3): with three or more groups, each reviewing group takes a different primary concern."""
-    excluded = {committer_party(cfg, pr), party_of_login(cfg, pr.author)}
+    """Role-matched review (spec 21.3): with three or more groups, each reviewing group takes a different primary concern.
+    Only the head committer's own party is excluded from reviewing (matching `_review`'s eligibility rule) — the PR's
+    author remains eligible, since spec 13 step 3 has group A's PM dispatch its own reviewer on a head that group B
+    push-fixed onto A's PR."""
+    excluded = {committer_party(cfg, pr)} - {None}
     reviewers = sorted(g.name for g in cfg.groups.values() if g.name not in excluded)
     if len(reviewers) < 2 or group not in reviewers:
         return None

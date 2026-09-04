@@ -21,6 +21,15 @@ Design: `docs/superpowers/specs/2026-09-03-moot-design.md`. Plans: `docs/superpo
 | `moot post VERB [REF] [-m TEXT] [--joint]` | Post a coordination comment in the header grammar |
 | `moot models [--adapter X]` | Models and efforts an adapter accepts |
 
+## Exit codes
+
+`0` success. `1` an error (bad config, a GitHub failure, an unusable board). `2` refused by the rules, or a usage error. A rules refusal prints its reason as JSON:
+
+    {"refused": "claim #12 refused: issue is in_progress, not ready", "verb": "claim", "target": "#12",
+     "rule": "issue is in_progress, not ready", "violation_posted": true}
+
+`violation_posted` is `true` when the refusal was announced on the coordination issue as `PROTOCOL-VIOLATION`, `false` when that post was attempted and failed, and `null` when none was attempted — a human's refusal, or a lost claim race, which is first-assignment-wins working as designed rather than an illegal call.
+
 The calling party comes from `MOOT_GROUP` and `MOOT_ROLE` (`orchestrator` or `pm`); unset means human, authenticated as `gh`'s current user. Group tokens come from the `token_env` named in `.moot.toml`. Local state lives under `MOOT_HOME` (default `~/.moot`) and can be deleted at any time.
 
 ## Known issue: macOS hidden `.pth` files

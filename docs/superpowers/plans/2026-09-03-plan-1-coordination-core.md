@@ -3457,7 +3457,8 @@ git commit -m "feat: worker roster from built-in prompts and product overrides"
   "runs": [{"group", "issue", "kind", "pr", "pid", "state": "running"|"finished"|"collected", "started_at"}],
   "coordination": {"comments": int, "last_comment_id": int, "open_challenges": [ref], "ignored_comments": int,
                    "agreements": {ref: status}},
-  "digest": {...board_digest...}
+  "digest": {...board_digest...},
+  "state_errors": [str]   # one message per unreadable local state file; empty when state is clean
 }
 ```
 
@@ -4016,7 +4017,7 @@ git commit -m "feat: moot wait blocks until the board changes with rate-limit ba
   - `refuse(ctx, board, refusal) -> NoReturn` — for group parties posts `[<party>] PROTOCOL-VIOLATION <target>` on the coordination issue, then raises `Refused`; humans get no comment.
   - `claim(ctx, number: int) -> dict` → `{"claimed": number, "assignee": login}`; performs assign, re-read, race check, label swap `moot:ready` → `moot:in-progress`.
   - `release(ctx, number: int, force: bool = False) -> dict` → `{"released": number, "previous_assignees": [...]}`; removes assignees, swaps `moot:in-progress`/`moot:blocked` → `moot:ready`; `--force` is human-only and posts `[human] RELEASE #n`.
-  - CLI: `moot claim N`, `moot release N [--force]`; on `Refused` prints `{"refused": ..., "verb": ..., "target": ..., "rule": ...}` and exits 2.
+  - CLI: `moot claim N`, `moot release N [--force]`; on `Refused` prints `{"refused": ..., "verb": ..., "target": ..., "rule": ..., "violation_posted": ...}` and exits 2. `violation_posted` is tri-state: `True` when a `PROTOCOL-VIOLATION` comment was posted, `False` when posting one was attempted and failed, `None` when none was attempted (a human's refusal, or a lost claim race, which is not a protocol violation).
 
 - [ ] **Step 1: Write the failing tests**
 

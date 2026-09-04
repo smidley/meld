@@ -77,7 +77,7 @@ moot/
       claude.py
       codex.py
   src/moot/data/models.toml   # per adapter: models, efforts, context class, tier
-  prompts/
+  src/moot/prompts/           # packaged with the module, not a top-level directory
     _preamble.md  orchestrator.md  pm.md  coordination-issue.md
     workers/  backend.md frontend.md security.md qa.md reviewer.md auditor.md docs.md
   tests/
@@ -220,11 +220,12 @@ Verbs:
 | `ANSWER` | joint | Agreed reply to an `ASK`; qualifier `DISAGREE` when no majority |
 | `REVIEW-REQUEST #<pr>` | group:pm | Ask other groups to review |
 | `STATUS` | group:pm | Periodic summary; leads with needs-human and budget |
-| `NEEDS-HUMAN #<issue>`, `BUDGET` | group | Blocking asks to the human |
+| `NEEDS-HUMAN #<issue>`, `BUDGET` | group or group:pm | Blocking asks to the human |
 | `CHALLENGE <ref>`, `EVIDENCE <ref>`, `RETRACT <ref>`, `UPHELD <ref>`, `DISMISSED <ref>` | group or human | Hallucination protection (section 14) |
-| `AUDIT <ref>`, `DRIFT` | group | Independent audit findings; plan drift |
+| `AUDIT <ref>` | group or group:pm | Independent audit findings |
+| `DRIFT` | group | Plan drift |
 | `DECISION <id>` | joint | Agreed decision, mirrored to a file |
-| `PROPOSE-WORKER <name>` | group | New worker type proposal with draft prompt |
+| `PROPOSE-WORKER <name>` | group or group:pm | New worker type proposal with draft prompt |
 | `WORKER <name>` | joint | Agreed new worker type, closing a `PROPOSE-WORKER` round |
 | `PING`, `SOLO`, `RESUMED`, `PROTOCOL-VIOLATION` | group | Liveness and enforcement notices |
 
@@ -232,12 +233,16 @@ Required fields by verb are enforced by the parser: `PLAN`, `DECISION`, `ANSWER`
 
 ### Agreement protocol
 
-Used for `PLAN`, `PLAN-ADD`, `DECISION`, `ANSWER`, and `PROPOSE-WORKER`.
+Used for `PLAN`, `PLAN-ADD`, `DECISION`, `ANSWER`, and `PROPOSE-WORKER`. Each round closes with the
+matching joint verb; a `PROPOSE-WORKER <name>` round closes with `WORKER <name>`, not with a joint
+`PROPOSE-WORKER` (there is no such joint verb).
 
 1. One group posts `PROPOSE <id>` (or `DRAFT <id>` for chat) with full text.
 2. Every other group posts `AGREE <id>` or `AMEND <id>` with edited full text. An amend restarts the round with the amended text as the proposal.
 3. When every group has agreed to the same text, the proposing group runs `moot post --joint <VERB> <id>`, which verifies the agreement on GitHub and writes the `[joint]` comment. Nothing else may write `[joint]`.
-4. If `agreement.amend_cap` rounds pass without unanimity: with a strict majority, the majority text is posted as `[joint]` with a `DISSENT` section listing minority positions; with no majority (including any 2-group tie) the item is posted as `[joint] <VERB> <id> DISAGREE` containing all positions, and the human decides.
+4. A `DISSENT` counts as a cast vote rather than leaving the round open, so the outcome is decided as soon as every group has either agreed or dissented — not when a round cap expires. With a strict majority, the majority text is posted as `[joint]` with a `DISSENT` section listing minority positions; with no majority (including any 2-group tie) the item is posted as `[joint] <VERB> <id> DISAGREE` containing all positions, and the human decides.
+5. `agreement.amend_cap` bounds only the number of `AMEND` and re-proposal rounds. Once it is reached, a group must post `AGREE` or `DISSENT` instead of amending again; it does not by itself decide the outcome. A group that dissented is not locked in: a later `AGREE` from that group supersedes its dissent, as an `AMEND` by any group restarts the round.
+6. The `[joint]` comment carries the agreed text verbatim. A caller may add its own note, which is appended under an `## Addendum` heading; it never replaces the agreed text. A ref that already has a `[joint]` comment cannot get a second one.
 
 ## 8. Issue lifecycle and legal actions
 
@@ -257,14 +262,14 @@ Two milestone-level states sit above this: `planning` until `moot:plan-approved`
 - **claim**: caller is a PM or a human; milestone is `executing`; issue is `ready`; no assignee; caller's roster contains the issue's `worker:` label; caller's count of `in-progress` issues below `concurrency`; caller's budget tier for the issue's model not exhausted; no `HALT`.
 - **dispatch**: caller is a PM; caller's bot is assignee; no live run record for the issue; `model`, `effort`, `size` labels present and valid for the caller's adapter; `size` compatible with the model's context class; issue not `needs-human` or `challenged`; no `HALT`.
 - **release**: caller is assignee's group or human; issue in `in-progress` or `blocked`. `--force` is human-only and posts a note.
-- **review approve**: caller's group did not author the last commit on the PR head; PR not `challenged`. Request-changes and push-fix are legal for any non-author-of-head group. Push-fix by group X makes X the last committer.
-- **merge**: approvals on the current head from at least `min(review.quorum, N-1)` distinct groups, none of which authored the head, with human approvals counting as a group; required checks green; no open `CHALLENGE` on the PR; no `HALT`. Either group's PM may call it.
+- **review approve**: caller's group did not author the last commit on the PR head; PR not `challenged`; the head committer is known. Request-changes and push-fix are legal for any non-author-of-head group, including when the head committer is unknown, because neither approves anything. Push-fix by group X makes X the last committer. A last commit that maps to no GitHub account leaves the head committer unknown and refuses approve, rather than falling back to the PR author.
+- **merge**: approvals on the current head from at least `min(review.quorum, N-1)` distinct groups, none of which authored the head, with human approvals counting as a group; required checks green; no open `CHALLENGE` on the PR; the head committer is known, since the non-committer rule cannot be evaluated without it; no `HALT`. Either group's PM may call it.
 - **reopen**: an `AUDIT` comment with a `fail` finding naming the issue exists and was posted by the caller's group; the issue is closed; the caller's group did not author the PR that closed it. Returns the issue to `ready` with the findings attached.
 - **collect**: caller's bot is assignee (or requested the review or audit); a run record exists whose process has exited and has not been collected.
-- **post**: always legal for any party, except `--joint`, which requires verified agreement. A `PROPOSE` or `DRAFT` on a ref that already has proposal text is refused; a re-proposal after that point is an `AMEND` and counts a round.
+- **post**: always legal for any party, except `--joint`, which requires verified agreement. A `PROPOSE` or `DRAFT` on a ref that already has proposal text is refused; a re-proposal after that point is an `AMEND` and counts a round. Refusals here come in two kinds. A **rule-level** refusal — no agreement yet, caller is not the proposer, wrong milestone phase, a ref that already has a `[joint]` comment, a re-proposal on an active ref, the amend cap reached — posts `PROTOCOL-VIOLATION` like any other illegal call. A **usage error** — a verb the party may not post, a human writing `[joint]`, `--joint` without a ref, a missing ref or `verified-by:` line, `DISAGREE` without the qualifier — is the caller's own mistake, reaches no other party, and posts nothing.
 - **plan**: legal only in `planning`, or for `PLAN-ADD` in `executing`.
 
-Illegal calls return a refusal naming the rule and post `PROTOCOL-VIOLATION` on the coordination issue so other groups and the human see it.
+Illegal calls return a refusal naming the rule and post `PROTOCOL-VIOLATION` on the coordination issue so other groups and the human see it. Two cases are refusals without a violation: a **lost claim race**, which is first-assignment-wins working as designed rather than an illegal call, and any refusal of a human, who answers to nobody on the board. The refusal JSON therefore reports `violation_posted` as `true`, `false` (posting it was attempted and failed), or `null` (none was attempted).
 
 ## 9. Roles
 
@@ -314,7 +319,7 @@ The orchestrator prompt carries the rubric as a table with three worked examples
 - Fetch coordination comments newer than the stored cursor (`since`).
 - Fetch open issues in the active milestone with labels and assignees, open PRs on `moot/` branches with reviews and check status.
 - Read this group's run records and check whether each PID is alive.
-- Diff against `$MOOT_HOME/state/<group>/snapshot.json`; return on any change.
+- Diff against `$MOOT_HOME/state/<group>/<role>/snapshot.json`; return on any change. The snapshot is **per party** — a group's orchestrator, that group's PM, and the human each keep their own — because both roles of a group poll the same board and a shared snapshot would let whichever polls second consume the other's changes. The conditional-request ETag cache is **per group**, at `$MOOT_HOME/cache/<group>`, since both roles authenticate with the same token; it is written atomically and a corrupt entry is treated as no cache.
 
 Three or four conditional API calls per cycle, roughly 400 requests an hour idle against a 5,000 per hour per-token limit. Rate-limit responses trigger exponential backoff and are reported in the returned JSON. Handoff latency is bounded by the interval, about 30 seconds; the timeout only bounds idle re-reads. The wait timeout stays below the calling CLI's command timeout by construction (adapter reports its ceiling; `moot doctor` verifies). `moot claim` re-reads the issue with the ETag cache bypassed before deciding the race.
 
@@ -436,6 +441,13 @@ A survey of existing multi-agent coding systems (Symphony and its forks, Gas Tow
 - Per-group machines and a shared `$MOOT_HOME` alternative.
 - A third adapter to prove the N-group claims end to end.
 - A read-only GitHub token for workers that need to read issues beyond their brief.
+
+### Carried into plan 3 from the plan-1 final review
+
+1. **A `[joint]` comment is only as trustworthy as its author.** `is_authorized` accepts a `[joint]` header from *any* configured bot, so a hand-written `[joint]` comment parses as `ok` and reads as the close of an agreement round. Plan 3's `decide`, `plan`, and auto-approval paths must require that the joint comment's author is the proposer's bot and that the agreement had reached `agreed`, `majority`, or `disagree` at the time it was written. An `Agreement.joint_verified` field is the suggested seam.
+2. **Challenge closers are unrestricted.** `derive_open_challenges` lets any authorized party close a challenge with `UPHELD`, `DISMISSED`, or `RETRACT`. Plan 3's challenge verb must restrict who may close one per section 14: the challenger may `RETRACT`, and a party other than the challenged one decides `UPHELD` or `DISMISSED`.
+3. **`moot doctor` checklist.** It must verify that each group's token identity equals the bot login configured for that group; that a git identity is configured per bot for worktree commits; that hidden `.pth` files are detected (see the README); and that every model named in `.moot.toml` exists in `models.toml` for that group's adapter.
+4. **Git identity per bot (plan 2).** Plan 2 must set each bot's git `user.name` and `user.email` in its worktrees so a PR's head committer resolves to that bot's account. Without it the head committer is unknown and `approve` and `merge` are refused (section 8).
 
 ## 22. Glossary
 

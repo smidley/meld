@@ -4,6 +4,7 @@ from click.testing import CliRunner
 import meld.cli as cli
 from meld.actions import Refused
 from meld.challenge import challenge
+from meld.github import GitHubError
 from meld.posting import PostError
 from tests.conftest import env_for
 from tests.productfixtures import R, fixture, make_product
@@ -23,6 +24,9 @@ def test_open_challenge_posts_and_labels(tmp_path):
     assert out == {"challenge": "open", "ref": "#13", "verb": "CHALLENGE", "comment_id": 310, "label": "added", "challenged_party": "codex"}
     assert coord_posts(fake)[-1].startswith("[claude] CHALLENGE #13\n") and "show the run" in coord_posts(fake)[-1]
     assert [c.body for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/13/labels"] == [{"labels": ["meld:challenged"]}]
+    # the label lands before the comment: a failed comment leaves a retryable state, a failed label after a comment would not
+    posts = [c.endpoint for c in fake.calls if c.method == "POST"]
+    assert posts.index(R + "issues/13/labels") < posts.index(R + "issues/10/comments")
     with pytest.raises(PostError, match="say what is doubted"):
         challenge(ctx, "open", "#11", "   ")
     fake_pm, pm, *_ = make_product(tmp_path / "pm")
@@ -48,10 +52,35 @@ def test_challenge_closers_follow_the_rules(tmp_path):
     fake_h.route("DELETE", R + "issues/13/labels/meld%3Achallenged", [])
     out = challenge(human, "dismiss", "#13", "the evidence holds")
     assert out["verb"] == "DISMISSED" and out["label"] == "removed" and coord_posts(fake_h)[-1].startswith("[human] DISMISSED #13\n")
+    writes = [(c.method, c.endpoint) for c in fake_h.calls if c.method != "GET"]
+    assert writes.index(("DELETE", R + "issues/13/labels/meld%3Achallenged")) < writes.index(("POST", R + "issues/10/comments"))
     fake_r, claude2, *_ = make_product(tmp_path / "r", role="orchestrator")
     fake_r.route("GET", R + "issues/10/comments", OPENED)
     fake_r.route("DELETE", R + "issues/13/labels/meld%3Achallenged", [])
     assert challenge(claude2, "retract", "#13", "my mistake")["label"] == "removed"
+
+
+def test_open_challenge_whose_comment_fails_leaves_a_clean_retry(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, role="orchestrator")
+    fake.route("POST", R + "issues/13/labels", [])
+    fake.route("POST", R + "issues/10/comments", {"message": "boom"}, status=500)
+    with pytest.raises(GitHubError):
+        challenge(ctx, "open", "#13", "the CI claim names no command")
+    assert [c.body for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/13/labels"] == [{"labels": ["meld:challenged"]}]
+    fake.route("POST", R + "issues/10/comments", {"id": 311})
+    assert challenge(ctx, "open", "#13", "the CI claim names no command")["comment_id"] == 311   # no CHALLENGE was derived from the failed attempt
+
+
+def test_a_bare_number_is_the_same_ref_as_its_hash_form(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, role="orchestrator")
+    fake.route("POST", R + "issues/13/labels", [])
+    out = challenge(ctx, "open", "13", "the CI claim names no command")
+    assert out["ref"] == "#13" and out["label"] == "added" and out["challenged_party"] == "codex"
+    assert coord_posts(fake)[-1].startswith("[claude] CHALLENGE #13\n")
+    assert [c.body for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/13/labels"] == [{"labels": ["meld:challenged"]}]
+    fake.route("GET", R + "issues/10/comments", OPENED)   # the open challenge is on "#13"
+    with pytest.raises(Refused, match="#13 already has an open CHALLENGE"):
+        challenge(ctx, "open", "13", "again")
 
 
 def test_challenge_on_an_agreement_ref_labels_nothing(tmp_path):

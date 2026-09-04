@@ -7,7 +7,7 @@ from meld.actions import BLOCKED, IN_PROGRESS, READY, refuse
 from meld.config import Party
 from meld.dispatch import IN_REVIEW, DispatchError, _iso, _now, neutralise_closers
 from meld.grammar import Header, compose
-from meld.results import format_findings, load_result, mark_submitted
+from meld.results import cap_body, format_findings, load_result, mark_submitted
 from meld.rules import Refusal, Verb, issue_refusal
 from meld.status import build_status
 
@@ -35,10 +35,17 @@ def audit(ctx, number: int, *, now: datetime | None = None) -> dict:
         ctx.gh.create_comment(number, f"Meld: `{group.name}` auditor produced no usable verdict: {reason}. Re-dispatch the audit.")
         mark_submitted(ctx.store.home, group.name, "audit", number, {"outcome": "no-verdict"}, when)
         return {"audited": number, "verdict": None, "reason": reason}
-    comments = [c for c in result.get("comments") or [] if isinstance(c, dict) and {"path", "line", "body"} <= set(c)]
+    if board.audits.get(number, {}).get(group.name) == verdict:
+        # An earlier attempt already posted this verdict (the board derives `audits` from the coordination thread)
+        # and failed downstream; posting again would duplicate the AUDIT comment. Consume the file and stop.
+        mark_submitted(ctx.store.home, group.name, "audit", number, {"outcome": "already-posted", "verdict": verdict}, when)
+        return {"audited": number, "verdict": verdict, "issue": pr.issue_number, "comment_id": None, "already_posted": True}
+    comments = [c for c in result.get("comments") or []
+                if isinstance(c, dict) and {"path", "line", "body"} <= set(c)
+                and (isinstance(c.get("line"), int) or str(c.get("line", "")).isdigit())]
     comments = [{**c, "body": neutralise_closers(str(c["body"]))} for c in comments]
-    text = (f"{neutralise_closers(result.get('summary', ''))}\n\n## Findings\n{format_findings(comments) or '- none'}\n\n"
-            f"verified-by: {neutralise_closers(result.get('verified_by', ''))}")
+    text = cap_body(f"{neutralise_closers(result.get('summary', ''))}\n\n## Findings\n{format_findings(comments) or '- none'}\n\n"
+                    f"verified-by: {neutralise_closers(result.get('verified_by', ''))}")
     resp = ctx.gh.create_comment(board.coordination_issue, compose(Header(Party("pm", group.name), "AUDIT", target, verdict.upper()), text))
     if verdict == "fail" and pr.issue_number is not None:
         ctx.gh.create_comment(pr.issue_number, f"Meld: `{group.name}` audited PR #{number} and found it does not meet its acceptance criteria; "
@@ -61,11 +68,15 @@ def reopen(ctx, number: int) -> dict:
     fails = [c for c in board.comments if c.ok and c.header is not None and c.header.verb == "AUDIT" and c.header.ref in refs
              and c.header.qualifier == "FAIL" and (actor.group is None or c.header.party.group == actor.group)]
     findings = fails[-1].text if fails else "(see the coordination issue)"
-    ctx.gh.update_issue(number, state="open")
-    if issue.assignees:
-        ctx.gh.remove_assignees(number, list(issue.assignees))
+    # Reopening the issue is the LAST call: `reopen` is only legal on a closed issue, so as long as the issue stays
+    # closed, a failure in any earlier step (labels, assignees, the findings comment) leaves `meld reopen` legal and
+    # the retry simply redoes the idempotent steps. Opening first would leave an open, assigned, in-review issue with
+    # no legal verb to finish the job.
     ctx.gh.add_labels(number, [READY])
     for label in (IN_REVIEW, IN_PROGRESS, BLOCKED):
         ctx.gh.remove_label(number, label)
+    if issue.assignees:
+        ctx.gh.remove_assignees(number, list(issue.assignees))
     ctx.gh.create_comment(number, f"Meld: reopened by `{actor.name}` after a failed audit.\n\n{findings}")
+    ctx.gh.update_issue(number, state="open")
     return {"reopened": number, "by": actor.name}

@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -98,3 +99,24 @@ def test_read_result_missing_valid_and_malformed(tmp_path: Path):
     with pytest.raises(ResultError, match="verdict"):
         read_result(tmp_path)
     assert BRIEF_FILE == ".meld-brief.md" and "needs_human" in worker_contract()
+
+
+def test_file_hints_extracts_paths_from_annotated_entries():
+    body = "Files:\n- `src/app/health.py`:\n- src/app/routes.py: wire it up\n* tests/test_health.py, new\n"
+    assert file_hints(body) == ["src/app/health.py", "src/app/routes.py", "tests/test_health.py"]
+
+
+def test_plan_excerpt_normalizes_crlf():
+    assert "\r" not in plan_excerpt("- #11 first\r\n\r\n- #12 other\r\n", 11)
+    assert plan_excerpt("- #11 first\r\n\r\n- #12 other\r\n", 11) == "- #11 first"
+
+
+def test_render_brief_wires_file_hints_and_keeps_one_h1(tmp_path: Path):
+    backend = next(w for w in builtin_workers() if w.name == "backend")
+    issue = mk_issue(11, title="Add health endpoint")
+    issue = replace(issue, body="Add it.\n\nFiles:\n- `src/app/health.py`: new module\n- tests/test_health.py\n")
+    text = render_brief(role=backend, kind="build", group="claude", model="claude-sonnet-5", effort="medium", issue=issue, pr=None,
+                        plan_text="", repo_root=tmp_path, worktree=tmp_path, base_branch="main")
+    assert "- `src/app/health.py`\n- `tests/test_health.py`" in text
+    assert text.count("\n# ") == 0 and text.startswith("# Meld brief")
+    assert "## Who you are\n\nImplements server-side code" in text

@@ -39,8 +39,9 @@ def worker_contract() -> str:
 
 
 def plan_excerpt(plan_text: str, issue_number: int) -> str:
+    plan_text = (plan_text or "").replace("\r\n", "\n").replace("\r", "\n")
     pattern = re.compile(rf"#{issue_number}(?!\d)")
-    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", plan_text or "") if p.strip()]
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", plan_text) if p.strip()]
     return "\n\n".join(p for p in paragraphs if pattern.search(p))
 
 
@@ -52,7 +53,14 @@ def file_hints(issue_body: str) -> list[str]:
             for follow in lines[i + 1:]:
                 if not follow.strip():
                     break
-                hints.append(follow.strip().lstrip("-*").strip().strip("`"))
+                # Strip leading bullets and whitespace
+                stripped = follow.strip().lstrip("-*").strip()
+                # Extract first whitespace-delimited token
+                token = stripped.split()[0] if stripped else ""
+                # Strip trailing colons/commas first, then surrounding backticks
+                token = token.rstrip(":,").strip("`")
+                if token:
+                    hints.append(token)
             if hints:
                 return hints
     return [m for m in _PATH_TOKEN_RE.findall(issue_body or "") if "/" in m or m.endswith((".py", ".md", ".toml", ".ts", ".js"))]
@@ -95,8 +103,13 @@ def render_brief(*, role: WorkerType, kind: str, group: str, model: str, effort:
                 f"\nThe checkout is the PR head. Your verdict goes in the `verdict` field of the result file.\n")
         excerpt = plan_excerpt(plan_text, pr.issue_number) if pr.issue_number else ""
         hints = []
+    role_text = (role.text or role.description).strip()
+    # Drop a leading # heading line from role.text to avoid duplicate H1
+    if role_text.startswith("# "):
+        lines = role_text.split("\n", 1)
+        role_text = (lines[1] if len(lines) > 1 else "").lstrip("\n")
     parts = [title, "", f"You are the **{role.name}** worker of group **{group}**, running as `{model}` at effort: {effort}.", "",
-             "## Who you are", "", role.text.strip() or role.description, "", task]
+             "## Who you are", "", role_text, "", task]
     if excerpt:
         parts += ["## Plan excerpt", "", excerpt, ""]
     if hints:

@@ -72,3 +72,8 @@ def mark_submitted(home: Path, group: str, kind: str, number: int, extra: dict, 
     write_atomic(target, json.dumps(data, indent=2))
     result_path(home, group, kind, number).unlink()
     return target
+
+
+def format_findings(comments: list[dict]) -> str:
+    """One bullet per reviewer/auditor comment, for PR bodies and coordination posts."""
+    return "\n".join(f"- `{c['path']}:{c['line']}` {c['body']}" for c in comments)

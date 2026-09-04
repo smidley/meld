@@ -18,6 +18,8 @@ from meld.dispatch import DispatchError, collect as do_collect, dispatch as do_d
 from meld.github import GitHubError
 from meld.gitops import GitError
 from meld.posting import PostError, post as do_post
+from meld.results import ResultsError
+from meld.review import merge as do_merge, review as do_review
 from meld.runners import run_group
 from meld.state import CHANGE_KINDS
 from meld.status import build_status
@@ -50,7 +52,7 @@ def _load(ctx: click.Context) -> Context:
 def _guard(fn):
     try:
         return fn()
-    except (BoardError, GitHubError, ConfigError, DispatchError, GitError, UnknownAdapter) as e:
+    except (BoardError, GitHubError, ConfigError, DispatchError, GitError, UnknownAdapter, ResultsError) as e:
         raise click.ClickException(str(e)) from e
 
 
@@ -204,6 +206,24 @@ def reap(ctx: click.Context, number: int) -> None:
     """Remove a finished run's worktree and archive its record."""
     c = _load(ctx)
     _run_action(ctx, lambda: do_reap(c, number))
+
+
+@main.command()
+@click.argument("number", type=int)
+@click.pass_context
+def review(ctx: click.Context, number: int) -> None:
+    """Submit the collected reviewer verdict on a PR as a GitHub review: approve, request changes, or push the fix."""
+    c = _load(ctx)
+    _run_action(ctx, lambda: do_review(c, number))
+
+
+@main.command()
+@click.argument("number", type=int)
+@click.pass_context
+def merge(ctx: click.Context, number: int) -> None:
+    """Squash-merge a PR once the quorum rule, required checks, and open challenges allow it."""
+    c = _load(ctx)
+    _run_action(ctx, lambda: do_merge(c, number))
 
 
 @main.command()

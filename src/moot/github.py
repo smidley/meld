@@ -85,7 +85,7 @@ class GitHub:
             try:
                 entry = json.loads(cache.read_text())
                 etag, body_cached = entry["etag"], entry["body"]
-            except (json.JSONDecodeError, OSError, KeyError, TypeError, IndexError):
+            except (json.JSONDecodeError, UnicodeDecodeError, OSError, KeyError, TypeError):
                 cached = None
             else:
                 cached = {"etag": etag, "body": body_cached}

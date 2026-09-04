@@ -73,3 +73,6 @@ def test_head_committer_is_none_when_the_last_commit_maps_to_no_account(board1_g
     b = build_board(gh, CFG2, {}, {})
     assert b.pulls[20].head_committer is None
     assert b.pulls[20].author == "moot-codex-bot"   # the PR author is never used as a stand-in
+    # an empty login is falsy but not None, and must normalise to None too
+    fake.route("GET", "repos/acme/widgets/pulls/20/commits", [{"sha": "abc123", "author": None, "committer": {"login": ""}}])
+    assert build_board(gh, CFG2, {}, {}).pulls[20].head_committer is None

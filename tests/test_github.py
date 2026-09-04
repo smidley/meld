@@ -168,3 +168,19 @@ def test_remove_label_quotes_the_label_path_segment(tmp_path):
     fake.route("DELETE", "repos/acme/widgets/issues/7/labels/needs%20triage%3A%20now", [])
     gh.remove_label(7, "needs triage: now")
     assert fake.calls[-1].endpoint == "repos/acme/widgets/issues/7/labels/needs%20triage%3A%20now"
+
+
+def test_cache_truncated_mid_character_is_ignored(tmp_path):
+    fake, gh = make(tmp_path)
+    fake.route("GET", "repos/acme/widgets/issues/7", {"number": 7, "title": "café"}, etag='W/"v1"')
+    gh.get_issue(7)
+    cache_file = next((tmp_path / "cache").glob("*.json"))
+    # A partial write can cut a multibyte character in half. read_text then raises
+    # UnicodeDecodeError, not JSONDecodeError, and it must still count as "no cache".
+    # (json.dumps escapes non-ASCII by default, so the bytes are written explicitly.)
+    entry = '{"etag": "W/\\"v1\\"", "body": {"number": 7, "title": "caf\u00e9"}}'.encode()
+    cache_file.write_bytes(entry[:-4])
+    with pytest.raises(UnicodeDecodeError):
+        cache_file.read_text()
+    assert gh.get_issue(7) == {"number": 7, "title": "café"}
+    assert "if-none-match" not in fake.calls[-1].headers

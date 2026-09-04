@@ -81,7 +81,10 @@ def _pull(gh: GitHub, raw: dict) -> PullRequest:
     merged = raw.get("merged_at") is not None
     state = raw.get("state", "open")
     reviews: tuple[Review, ...] = ()
-    head_committer = author
+    # Unknown until the commit list says otherwise. Falling back to the PR author would
+    # let a group approve its own head whenever a commit has no linked GitHub account;
+    # closed and merged PRs are never read, and accept no verbs anyway.
+    head_committer: str | None = None
     checks = "none"
     if state == "open":
         reviews = tuple(
@@ -92,7 +95,7 @@ def _pull(gh: GitHub, raw: dict) -> PullRequest:
         commits = gh.pull_commits(number)
         if commits:
             last = commits[-1]
-            head_committer = ((last.get("author") or {}).get("login") or (last.get("committer") or {}).get("login") or author)
+            head_committer = (last.get("author") or {}).get("login") or (last.get("committer") or {}).get("login") or None
         checks = checks_state(gh.check_runs(head_sha))
     return PullRequest(
         number=number, title=raw.get("title", ""), body=raw.get("body") or "", head_ref=raw["head"]["ref"], head_sha=head_sha,

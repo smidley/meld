@@ -91,3 +91,18 @@ def test_pingpong_and_legal_pr_verbs():
     b = mk_board(CFG2, pulls=[pr])
     assert legal_pr_verbs(b, CFG2, CLAUDE_PM, pr) == ["approve", "request-changes", "push-fix", "merge"]
     assert legal_pr_verbs(b, CFG2, CODEX_PM, pr) == ["merge"]
+
+
+def test_unknown_head_committer_blocks_approve_and_merge():
+    unknown = "head committer unknown; cannot verify who made the last commit"
+    pr = mk_pr(20, 13, committer=None, author="moot-codex-bot", approvals=("moot-claude-bot",))
+    b = mk_board(CFG2, pulls=[pr])
+    assert committer_party(CFG2, pr) is None
+    assert rule(b, CFG2, CLAUDE_PM, Verb.APPROVE, pr) == unknown
+    assert rule(b, CFG2, HUMAN, Verb.APPROVE, pr) == unknown
+    assert rule(b, CFG2, CODEX_PM, Verb.MERGE, pr) == unknown
+    # neither verb can approve anything, so both stay legal for every party
+    for verb in (Verb.REQUEST_CHANGES, Verb.PUSH_FIX):
+        assert rule(b, CFG2, CLAUDE_PM, verb, pr) is None
+        assert rule(b, CFG2, CODEX_PM, verb, pr) is None
+    assert legal_pr_verbs(b, CFG2, CLAUDE_PM, pr) == ["request-changes", "push-fix"]

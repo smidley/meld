@@ -63,3 +63,13 @@ def test_build_board_with_explicit_milestone_missing_coordination(board1_gh):
     fake.route("GET", "repos/acme/widgets/issues", [])
     with pytest.raises(BoardError, match="coordination"):
         build_board(gh, CFG2, {}, {}, milestone=3)
+
+
+def test_head_committer_is_none_when_the_last_commit_maps_to_no_account(board1_gh):
+    fake, gh = board1_gh
+    fake.route("GET", "repos/acme/widgets/pulls/20/commits",
+               [{"sha": "abc122", "author": {"login": "moot-codex-bot"}, "committer": {"login": "moot-codex-bot"}},
+                {"sha": "abc123", "author": None, "committer": None}])
+    b = build_board(gh, CFG2, {}, {})
+    assert b.pulls[20].head_committer is None
+    assert b.pulls[20].author == "moot-codex-bot"   # the PR author is never used as a stand-in

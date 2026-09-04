@@ -115,3 +115,15 @@ def test_orchestrator_and_pm_split_state_but_share_the_cache(project: Path):
     assert orch.store.state_dir.name == "orchestrator" and pm.store.state_dir.name == "pm"
     assert orch.store.cache_dir == pm.store.cache_dir
     assert human.store.state_dir == human.store.home / "state" / "human"
+
+
+def test_status_tolerates_an_unknown_head_committer(project: Path, monkeypatch):
+    fake = FakeGh()
+    load_board1_routes(fake)
+    fake.route("GET", "repos/acme/widgets/pulls/20/commits", [{"sha": "abc123", "author": None, "committer": None}])
+    monkeypatch.setattr(cli, "RUN", fake)
+    result = CliRunner().invoke(cli.main, ["--config", str(project / ".moot.toml"), "--compact", "status"], env=env_for(project))
+    assert result.exit_code == 0, result.output
+    pulls = {p["number"]: p for p in json.loads(result.output)["pulls"]}
+    assert pulls[20]["committer_party"] is None
+    assert pulls[20]["legal"] == ["request-changes", "push-fix"]

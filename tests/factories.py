@@ -45,7 +45,7 @@ def mk_issue(number: int, status: str = "ready", worker: str | None = "backend",
                  updated_at=updated_at)
 
 
-def mk_pr(number: int, issue: int, head_sha: str = "abc123", committer: str = "moot-claude-bot",
+def mk_pr(number: int, issue: int, head_sha: str = "abc123", committer: str | None = "moot-claude-bot",
           author: str | None = None, approvals: tuple[str, ...] = (), stale_approvals: tuple[str, ...] = (),
           changes_requested: tuple[str, ...] = (), extra_changes_requested_history: int = 0,
           checks: str = "green", state: str = "open", merged: bool = False,
@@ -57,7 +57,7 @@ def mk_pr(number: int, issue: int, head_sha: str = "abc123", committer: str = "m
         reviews.append(Review(a, "APPROVED", "old000", f"2026-09-03T10:{t:02d}:00Z"))
     for _ in range(extra_changes_requested_history):
         t += 1
-        reviews.append(Review(committer + "-other", "CHANGES_REQUESTED", "old000", f"2026-09-03T10:{t:02d}:00Z"))
+        reviews.append(Review((committer or "nobody") + "-other", "CHANGES_REQUESTED", "old000", f"2026-09-03T10:{t:02d}:00Z"))
     for a in changes_requested:
         t += 1
         reviews.append(Review(a, "CHANGES_REQUESTED", head_sha, f"2026-09-03T10:{t:02d}:00Z"))
@@ -65,7 +65,7 @@ def mk_pr(number: int, issue: int, head_sha: str = "abc123", committer: str = "m
         t += 1
         reviews.append(Review(a, "APPROVED", head_sha, f"2026-09-03T10:{t:02d}:00Z"))
     return PullRequest(number=number, title=f"PR {number}", body=f"Closes #{issue}\n\nverified-by: pytest",
-                       head_ref=f"moot/{issue}-slug", head_sha=head_sha, author=author or committer,
+                       head_ref=f"moot/{issue}-slug", head_sha=head_sha, author=author or committer or "",
                        head_committer=committer, issue_number=issue, reviews=tuple(reviews), checks=checks,
                        labels=frozenset(extra_labels), state=state, merged=merged)
 

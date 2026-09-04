@@ -85,7 +85,7 @@ class PullRequest:
     head_ref: str
     head_sha: str
     author: str
-    head_committer: str
+    head_committer: str | None      # None when the last commit maps to no GitHub account
     issue_number: int | None
     reviews: tuple[Review, ...]
     checks: str

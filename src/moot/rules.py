@@ -200,8 +200,11 @@ def legal_issue_verbs(board: Board, cfg: Config, actor: Actor, issue: Issue, mod
 
 # ---- PR verbs ----------------------------------------------------------------
 
+UNKNOWN_COMMITTER = "head committer unknown; cannot verify who made the last commit"
+
+
 def committer_party(cfg: Config, pr: PullRequest) -> str | None:
-    return party_of_login(cfg, pr.head_committer)
+    return None if pr.head_committer is None else party_of_login(cfg, pr.head_committer)
 
 
 def approving_parties(cfg: Config, pr: PullRequest) -> frozenset[str]:
@@ -219,6 +222,8 @@ def _approve(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | 
         return f"{actor.name} made the last commit on this PR and cannot approve its own head"
     if board.is_challenged(f"#{pr.number}"):
         return "PR has an open CHALLENGE"
+    if pr.head_committer is None:
+        return UNKNOWN_COMMITTER
     return None
 
 
@@ -235,6 +240,8 @@ def _merge(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | No
         return "only a PM or a human may merge"
     if board.is_challenged(f"#{pr.number}"):
         return "PR has an open CHALLENGE"
+    if pr.head_committer is None:
+        return UNKNOWN_COMMITTER
     if pr.checks != "green":
         return f"required checks are {pr.checks}, not green"
     have = approving_parties(cfg, pr)

@@ -1,0 +1,75 @@
+import json
+from datetime import datetime, timezone
+
+import pytest
+
+from meld.dispatch import DispatchError, dispatch, tick
+from meld.state import pid_alive
+from tests.fakeadapter import FakeAdapter
+from tests.productfixtures import R, SLEEP_SCRIPT, claim_issue_11, fixture, make_product, wait_for_exit
+
+PAST = datetime(2020, 1, 1, tzinfo=timezone.utc)
+NOW = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
+
+
+def coordination_posts(fake):
+    return [c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/10/comments"]
+
+
+def test_tick_kills_overdue_runs_and_marks_them_timed_out(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path)
+    claim_issue_11(fake)
+    out = dispatch(ctx, 11, adapter=FakeAdapter(script=SLEEP_SCRIPT), now=PAST)  # deadline is in 2020
+    assert pid_alive(out["pid"])
+    result = tick(ctx, now=NOW)
+    assert result["killed"] == [{"issue": 11, "how": "terminated"}] and result["checked"] == 1
+    wait_for_exit(out["pid"], timeout=5)
+    rec = json.loads((tmp_path / "home" / "runs" / "claude" / "11.json").read_text())
+    assert rec["timed_out"] is True
+    assert tick(ctx, now=NOW)["checked"] == 0  # dead runs are not re-checked
+
+
+def test_tick_creates_a_missing_lease(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path)
+    claim_issue_11(fake)
+    out = dispatch(ctx, 11, adapter=FakeAdapter(script=SLEEP_SCRIPT), now=NOW)
+    rec_path = tmp_path / "home" / "runs" / "claude" / "11.json"
+    rec = json.loads(rec_path.read_text())
+    rec["lease_comment"] = None
+    rec_path.write_text(json.dumps(rec))
+    before = len(coordination_posts(fake))
+    result = tick(ctx, now=NOW)
+    assert result["leases_created"] == [11] and result["killed"] == []
+    assert coordination_posts(fake)[before].startswith("[claude:pm] LEASE #11\n") and "until: 2026-09-03T12:30:00Z" in coordination_posts(fake)[before]
+    assert json.loads(rec_path.read_text())["lease_comment"] == 310
+    from meld.dispatch import kill_run
+    from meld.board import RunRecord
+    kill_run(RunRecord(**{**rec, "alive": True}), grace_seconds=2)
+
+
+def test_tick_releases_another_groups_expired_lease(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path)
+    issues = fixture("issues.json")
+    for i in issues:
+        if i["number"] == 13:  # in_review in the fixture; make it codex's in-progress claim
+            i["labels"] = [l for l in i["labels"] if l["name"] != "meld:in-review"] + [{"name": "meld:in-progress"}]
+    fake.route("GET", R + "issues", issues)
+    comments = fixture("comments_10.json") + [{"id": 120, "user": {"login": "meld-codex-bot"}, "created_at": "2026-09-03T09:30:00Z",
+                                               "body": "[codex:pm] LEASE #13\n\nuntil: 2026-09-03T11:00:00Z\nrun: codex/#13"}]
+    fake.route("GET", R + "issues/10/comments", comments)
+    fake.route("DELETE", R + "issues/13/assignees", {})
+    fake.route("POST", R + "issues/13/labels", [])
+    fake.route("DELETE", R + "issues/13/labels/meld%3Ain-progress", [])
+    result = tick(ctx, now=NOW)
+    assert result["expired"] == [13]
+    mutations = [(c.method, c.endpoint) for c in fake.calls if c.method != "GET" and "issues/13" in c.endpoint]
+    assert ("DELETE", R + "issues/13/assignees") in mutations and ("POST", R + "issues/13/labels") in mutations
+    assert coordination_posts(fake)[-1].startswith("[claude:pm] EXPIRED #13\n") and "expired at 2026-09-03T11:00:00Z" in coordination_posts(fake)[-1]
+    fresh = tick(ctx, now=datetime(2026, 9, 3, 10, 0, tzinfo=timezone.utc))  # not yet expired at 10:00
+    assert fresh["expired"] == []
+
+
+def test_tick_is_pm_only(tmp_path):
+    fake, orch, *_ = make_product(tmp_path, role="orchestrator")
+    with pytest.raises(DispatchError, match="PM"):
+        tick(orch, now=NOW)

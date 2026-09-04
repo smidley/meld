@@ -12,7 +12,7 @@ from meld.actions import Refused, claim as do_claim, release as do_release
 from meld.assemble import BoardError
 from meld.config import ConfigError
 from meld.context import Context, load_context
-from meld.dispatch import DispatchError, dispatch as do_dispatch
+from meld.dispatch import DispatchError, dispatch as do_dispatch, tick as do_tick
 from meld.github import GitHubError
 from meld.gitops import GitError
 from meld.posting import PostError, post as do_post
@@ -172,6 +172,14 @@ def dispatch(ctx: click.Context, number: int, kind: str) -> None:
     """Spawn a headless worker in its own worktree for an issue (build) or a PR (review, audit)."""
     c = _load(ctx)
     _run_action(ctx, lambda: do_dispatch(c, number, kind=kind))
+
+
+@main.command()
+@click.pass_context
+def tick(ctx: click.Context) -> None:
+    """PM housekeeping: kill overdue workers, create missing leases, release other groups' expired leases."""
+    c = _load(ctx)
+    _run_action(ctx, lambda: do_tick(c))
 
 
 if __name__ == "__main__":

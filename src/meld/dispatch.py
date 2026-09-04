@@ -8,7 +8,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from meld.actions import IN_PROGRESS, refuse
+from meld.actions import IN_PROGRESS, refuse, release
 from meld.adapters import Adapter, LaunchSpec, get_adapter, scrub_env
 from meld.board import Board, RunRecord
 from meld.brief import BRIEF_FILE, RESULT_FILE, render_brief
@@ -225,3 +225,39 @@ def _dispatch_pr(ctx, board: Board, actor: Actor, number: int, kind: str, adapte
                                   f"against head `{pr.head_sha[:7]}`. Deadline {_iso(deadline)}.")
     return {"dispatched": number, "kind": kind, "pid": pid, "worktree": str(wt), "branch": pr.head_ref, "deadline": _iso(deadline),
             "lease_until": None, "worktree_mode": "fresh"}
+
+
+def tick(ctx, *, now: datetime | None = None, sleep=time.sleep) -> dict:
+    """PM housekeeping: kill overdue workers, create missing leases, release other groups' expired leases."""
+    _, board = build_status(ctx)
+    actor = ctx.actor()
+    if not actor.is_pm:
+        raise DispatchError(f"tick is a PM verb; you are {actor.party.label}")
+    group = ctx.cfg.groups[actor.group]  # type: ignore[index]
+    when = _now(now)
+    now_iso = _iso(when)
+    out: dict = {"checked": 0, "killed": [], "leases_created": [], "expired": []}
+    for rec in list(board.runs.get(group.name, {}).values()):
+        if not rec.alive:
+            continue
+        out["checked"] += 1
+        if rec.deadline and rec.deadline < now_iso:
+            how = kill_run(rec, sleep=sleep)
+            ctx.store.write_run(replace(rec, alive=False, timed_out=True))
+            out["killed"].append({"issue": rec.issue, "how": how})
+        elif rec.kind == "build" and rec.lease_comment is None:
+            base = _from_iso(rec.deadline) if rec.deadline else when
+            until = _iso(base + timedelta(minutes=ctx.cfg.lease_grace_minutes))
+            lease = ctx.gh.create_comment(board.coordination_issue, compose(Header(Party("pm", group.name), "LEASE", f"#{rec.issue}", None),
+                                                                            lease_body(group.name, rec.issue, until, rec.kind)))
+            ctx.store.write_run(replace(rec, lease_comment=int(lease["id"])))
+            out["leases_created"].append(rec.issue)
+    for n, lease in sorted(board.leases.items()):
+        issue = board.issues.get(n)
+        if lease.group == group.name or issue is None or issue.status != "in_progress" or not (board.now and lease.until < now_iso):
+            continue
+        release(ctx, n)
+        ctx.gh.create_comment(board.coordination_issue, compose(Header(Party("pm", group.name), "EXPIRED", f"#{n}", None),
+                                                                f"Released #{n}: lease by {lease.group} expired at {lease.until} (now {now_iso})."))
+        out["expired"].append(n)
+    return out

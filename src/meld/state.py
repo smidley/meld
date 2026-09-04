@@ -109,7 +109,7 @@ class StateStore:
             alive=alive(int(data["pid"])), collected=bool(data.get("collected", False)),
             deadline=str(data.get("deadline", "")), branch=str(data.get("branch", "")),
             lease_comment=(int(data["lease_comment"]) if data.get("lease_comment") is not None else None),
-            timed_out=bool(data.get("timed_out", False)),
+            timed_out=bool(data.get("timed_out", False)), head_sha=str(data.get("head_sha", "")),
         )
 
     def load_runs(self, alive: Callable[[int], bool] = pid_alive) -> dict[str, dict[int, RunRecord]]:

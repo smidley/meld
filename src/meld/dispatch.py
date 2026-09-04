@@ -33,6 +33,7 @@ from meld.gitops import (
     worktree_exists,
 )
 from meld.grammar import Header, compose
+from meld.results import store_result
 from meld.roster import WorkerType, roster
 from meld.rules import Actor, Refusal, Verb, issue_refusal, party_of_login, pr_refusal
 from meld.state import pid_alive
@@ -312,7 +313,8 @@ def _dispatch_pr(ctx, board: Board, actor: Actor, number: int, kind: str, adapte
                             number=number, when=when, env=env, identity=git_identity(ctx, group))
     record = RunRecord(group=group.name, issue=number, kind=kind, pr=number, pid=pid, started_at=_iso(when), worktree=str(wt),
                        log_path=str(log_path), model=model, effort=effort, tier=ctx.models.tier_of(group.cli, model) or "medium",
-                       milestone=board.milestone, alive=True, collected=False, deadline=_iso(deadline), branch=pr.head_ref)
+                       milestone=board.milestone, alive=True, collected=False, deadline=_iso(deadline), branch=pr.head_ref,
+                       head_sha=pr.head_sha)
     ctx.store.write_run(record)
     ctx.gh.create_comment(number, f"Meld: `{group.name}` dispatched a `{worker.name}` worker on `{model}` at effort {effort} "
                                   f"against head `{pr.head_sha[:7]}`. Deadline {_iso(deadline)}.")
@@ -463,14 +465,12 @@ def _collect_build(ctx, board: Board, group: GroupConfig, rec: RunRecord, issue)
 def _collect_verdict(ctx, group: GroupConfig, rec: RunRecord, when: datetime) -> dict:
     result, reason = _read_outcome(rec)
     wt = Path(rec.worktree)
-    sha = head_sha(wt) if wt.exists() else ""
-    results_dir = ctx.store.home / "results" / group.name
-    results_dir.mkdir(parents=True, exist_ok=True)
-    path = results_dir / f"{rec.kind}-{rec.issue}.json"
-    payload = {"kind": rec.kind, "pr": rec.pr, "head_sha": sha, "collected_at": _iso(when), "timed_out": rec.timed_out,
-               "reason": reason, "result": asdict(result) if result else None,
+    worktree_sha = head_sha(wt) if wt.exists() else ""
+    payload = {"kind": rec.kind, "pr": rec.pr, "head_sha": rec.head_sha or worktree_sha, "worktree_sha": worktree_sha,
+               "collected_at": _iso(when), "timed_out": rec.timed_out, "reason": reason,
+               "result": asdict(result) if result else None,
                "log_tail": tail_lines(Path(rec.log_path), ctx.cfg.worker_log_tail_lines)}
-    path.write_text(json.dumps(payload, indent=2))
+    path = store_result(ctx.store.home, group.name, rec.kind, rec.issue, payload, _iso(when))
     ctx.store.write_run(replace(rec, collected=True))
     return {"collected": rec.issue, "kind": rec.kind, "stored": str(path), "verdict": result.verdict if result else None}
 

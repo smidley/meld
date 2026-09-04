@@ -12,9 +12,14 @@ tasks:
   test:smoke:
     desc: Run opt-in smoke tests against real CLIs (Plan 2)
     cmds:
-      - MELD_SMOKE=1 uv run pytest tests/smoke -q
+      - MELD_SMOKE=1 uv run pytest tests/smoke -q -p no:cacheprovider
 
   status:
     desc: Print the board for the current party (MELD_GROUP / MELD_ROLE from env)
     cmds:
       - uv run meld status
+
+  run:
+    desc: Supervise a group's orchestrator and PM (GROUP=claude|codex)
+    cmds:
+      - uv run meld run {{.GROUP}}

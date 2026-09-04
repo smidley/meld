@@ -275,9 +275,9 @@ Illegal calls return a refusal naming the rule and post `PROTOCOL-VIOLATION` on 
 
 All roles are headless runs. Per group, two are long-lived and one is short-lived.
 
-**Orchestrator** (long-lived, restarted every `runners.restart_hours`). Loop: `meld wait` filtered to coordination comments, chat, blocked and needs-human issues, roster changes, and drift; act; repeat. Responsibilities: decompose the goal into issues; tag each with `worker`, `model`, `effort`, `size` using the rubric; negotiate with other orchestrators; answer human chat via the agreement protocol; resolve blocked issues; re-tag on retries; propose worker types when the roster has a gap; post `ROSTER`, `CONFIG`, `DRIFT`. It never writes product code and never dispatches.
+**Orchestrator** (long-lived, restarted every `runners.restart_hours`). Loop: `meld wait` filtered to coordination comments, chat, blocked and needs-human issues, roster changes, and drift; act; repeat. Responsibilities: decompose the goal into issues; tag each with `worker`, `model`, `effort`, `size` via `meld tag` using the rubric; negotiate with other orchestrators; answer human chat via the agreement protocol; resolve blocked issues; re-tag on retries; propose worker types when the roster has a gap; post `ROSTER`, `CONFIG`, `DRIFT`. It never writes product code and never dispatches.
 
-**PM** (long-lived, same restart schedule, sibling process). Loop: `meld wait`; act; repeat. Responsibilities in `executing` only: claim `ready` issues up to the cap; dispatch with the tagged model and effort; `collect` finished workers; reap merged ones; move labels; post `REVIEW-REQUEST`; dispatch reviewers for other groups' requests; dispatch auditors after merged batches; call `merge` when legal; post `STATUS` on cadence, leading with needs-human and budget; auto-approve decision and lesson PRs whose content matches the agreed comment. It never chooses models. If it disagrees with a tag it posts to the coordination issue and the orchestrator re-tags.
+**PM** (long-lived, same restart schedule, sibling process). Loop: `meld tick` first each cycle (timeouts, leases); `meld wait`; act; repeat. Responsibilities in `executing` only: claim `ready` issues up to the cap; dispatch with the tagged model and effort; `collect` finished workers; reap merged ones; move labels; post `REVIEW-REQUEST`; dispatch reviewers for other groups' requests; dispatch auditors after merged batches; call `merge` when legal; post `STATUS` on cadence, leading with needs-human and budget; auto-approve decision and lesson PRs whose content matches the agreed comment. It never chooses models. If it disagrees with a tag it posts to the coordination issue and the orchestrator re-tags.
 
 **Workers** (fresh run per task). Day-one roster: `backend`, `frontend`, `security`, `qa`, `reviewer`, `auditor`, `docs`. A worker prompt is a role brief plus the fixed contract: read `.meld-brief.md` first; work only in this worktree; commit small; run the product's tests; write `.meld-result.json` (outcome, summary, `verified-by`, for reviewers a verdict) and exit. Workers have no GitHub credentials and never push, open PRs, comment, label, or merge. The framework does all of that from the result file.
 
@@ -299,22 +299,24 @@ The orchestrator prompt carries the rubric as a table with three worked examples
 
 ## 11. Dispatch and worker runtime
 
-`meld dispatch <issue>` (or `--pr <n>` for reviewer and auditor runs):
+`meld dispatch <n> [--kind review|audit]` (`<n>` is a PR number for reviewer and auditor runs):
 
 1. Re-check legality (section 8).
-2. Create a worktree from the default branch at `$MELD_HOME/worktrees/<group>/<issue>-<slug>` on branch `meld/<issue>-<slug>`. On retry, check out the existing remote branch instead. Reviewer runs check out the PR head.
+2. Create a worktree from the default branch at `$MELD_HOME/worktrees/<group>/<issue>-<slug>` on branch `meld/<issue>-<slug>`; a retry whose worktree is still on disk reuses it as-is, otherwise a pushed remote branch is checked out instead of branching fresh from the default branch. Reviewer and auditor runs check out the PR head instead.
 3. Render `.meld-brief.md`: role prompt, the fixed contract, issue body, the plan excerpt for this issue, file hints from the orchestrator, relevant decisions from `meld recall` (section 15), and the product's agent-instruction file path. Not the whole plan, not the coordination thread.
-4. Spawn the headless run via the adapter with the tagged model and effort, non-interactive, cwd set to the worktree, filesystem permissions scoped to it, no GitHub token in the environment, wall-clock timeout from `size`.
+4. Spawn the headless run via the adapter — a build uses the issue's tagged model and effort, a reviewer or auditor run uses the group's orchestrator model and effort — non-interactive, cwd set to the worktree, filesystem permissions scoped to it, no GitHub token in the environment, wall-clock timeout from `size`.
 5. Write the run record `$MELD_HOME/runs/<group>/<issue>.json` (PID, start, worktree, log path, model, effort) and post the start comment.
 6. Return immediately.
 
-**Post-run**: `meld status` reports a run as `finished` once its process has exited. The PM then calls `meld collect <issue>`, which does all side effects: read `.meld-result.json`; if commits exist, push the branch and open (or update) the PR with `Closes #<issue>` and the `verified-by:` line; post the finish comment; move the issue to `in-review`. For reviewer runs, submit the verdict via `meld review` (approve, request-changes with the worker's comments, or push-fix which pushes the reviewer's commits and requests re-review from the author group). For auditor runs, post `AUDIT` and, when findings are `fail`, call `reopen`.
+**Leases**: dispatching a build also posts a `[<group>:pm] LEASE #<issue>` comment on the coordination issue, whose `until` is the worker's deadline plus `lease.grace_minutes`. No per-cycle renewal is needed: `meld tick` fills in a lease that is missing for one of the calling group's own live runs, and releases any other group's lease whose `until` has passed, posting `[<group>:pm] EXPIRED #<issue>` and returning that issue to `ready`.
+
+**Post-run**: `meld status` reports a run as `finished` once its process has exited. The PM then calls `meld collect <issue>`, which does all side effects: read `.meld-result.json`; if commits exist, push the branch and open (or update) the PR with `Closes #<issue>` and the `verified-by:` line; post the finish comment; move the issue to `in-review`. For reviewer and auditor runs, `collect` instead writes the verdict to `$MELD_HOME/results/<group>/<kind>-<issue>.json` (head SHA, whether it timed out, the worker's result, and the log tail) and marks the run collected; plan 3's `meld review` and `meld audit` read that file to act on it — submitting the review (approve, request-changes with the worker's comments, or push-fix which pushes the reviewer's commits and requests re-review from the author group) or posting `AUDIT` and, on a `fail` finding, calling `reopen`.
 
 **Failures**: exit without a result file, or a result with outcome `failed`, moves the issue to `blocked` with the last 50 log lines posted. A timeout kills the process, keeps the branch, and does the same. `meld reap` removes the worktree and archives the record after merge or close.
 
 ## 12. Polling
 
-`meld wait [--timeout S] [--filter ...]` blocks until the board changes or the timeout elapses, then returns the `meld status` JSON plus a `changes` list. Inside, every `polling.interval_seconds`:
+`meld wait [--timeout S] [--interval S] [--filter <kinds>]` blocks until the board changes or the timeout elapses, then returns the `meld status` JSON plus a `changes` list. `--filter` takes a comma-separated subset of the change kinds — `phase`, `halted`, `issue`, `pr`, `run`, `comments`, `challenges` — and only those kinds count as a change; omitted, every kind does. An initial snapshot (no prior state to diff against) always counts, filter or not. Inside, every `polling.interval_seconds`:
 
 - Fetch coordination comments newer than the stored cursor (`since`).
 - Fetch open issues in the active milestone with labels and assignees, open PRs on `meld/` branches with reviews and check status.
@@ -376,16 +378,18 @@ Canonical memory is versioned files in the product repo.
 
 ## 16. Adapters (N groups)
 
-An adapter implements: `render_prompts(role, brief) -> files`, `launch(role, model, effort, cwd, timeout, env) -> process`, `valid_models() -> from models.toml`, `installed_skills() -> roster entries`, `command_timeout_ceiling()`. Claude and Codex ship in v1. Adding a system is one adapter module, one `models.toml` section, one bot account, and one `[groups.<name>]` block. Nothing in `rules.py`, `grammar.py`, or the prompts refers to a specific CLI.
+An adapter implements: `launch(spec: LaunchSpec) -> subprocess.Popen`, `installed_skills() -> list[WorkerType]`, `command_timeout_ceiling_seconds() -> int`, `supports_effort() -> bool`. `LaunchSpec` carries `role`, `model`, `effort`, `cwd`, `prompt`, `log_path`, `timeout_seconds`, `env`, and `max_turns`; model validity and tiers live in `models.toml`, not in the adapter. Claude and Codex ship in v1. Adding a system is one adapter module, one `models.toml` section, one bot account, and one `[groups.<name>]` block. Nothing in `rules.py`, `grammar.py`, or the prompts refers to a specific CLI.
 
-Both v1 adapters run roles as single headless invocations (`claude -p`, `codex exec`) with the model and effort passed in the form each CLI accepts, output as JSON, permissions scoped to the worktree, and no interactive approval prompts.
+The Claude adapter runs `claude -p <prompt> --model <model> --output-format json --permission-mode bypassPermissions --strict-mcp-config --mcp-config '{"mcpServers": {}}' --settings '{"disableAllHooks": true, "autoMemoryEnabled": false}' --setting-sources project --max-turns <n>`. Its environment sets `CLAUDE_CODE_EFFORT_LEVEL` to the effort, disables auto-memory and nonessential traffic, and drops the `CLAUDECODE`/`CLAUDE_CODE_ENTRYPOINT` variables a worker would otherwise inherit from meld's own process.
+
+The Codex adapter runs `codex exec -m <model> -c 'model_reasoning_effort="<effort>"' -s workspace-write -a never -C <cwd> --json -o <cwd>/.meld-last-message.txt --ignore-user-config --ephemeral <prompt>`, with the environment passed through unchanged. Both adapters run in the worktree with stdin closed and stdout and stderr appended to the log file, no interactive approval prompts.
 
 ## 17. Error handling and budgets
 
 | Failure | Detected by | Response |
 |---|---|---|
 | Worker exits without result | PM via run record | `blocked`, log tail posted, orchestrator re-tags and re-dispatches or splits |
-| Worker timeout | PM via run record | Kill, branch kept, same as above |
+| Worker exceeds deadline | `meld tick` | SIGTERM then SIGKILL; `collect` marks blocked with the log tail |
 | Review ping-pong cap | rules | `blocked`; orchestrators must post a resolution |
 | Illegal verb | rules | Refused; `PROTOCOL-VIOLATION` posted |
 | CI red | PM via checks | Treated as request-changes; author group re-dispatches |
@@ -430,17 +434,18 @@ No test claims to measure decision quality. That is done by watching the first m
 
 A survey of existing multi-agent coding systems (Symphony and its forks, Gas Town/Beads, Code Conductor, claude-code-review-council, ai-pair, Claude Code Review) found no project combining Meld's mechanisms, but five of their ideas are adopted for the later plans:
 
-1. **Lease-plus-heartbeat claims** (from Beads). A claim carries a TTL that the PM's loop renews while the worker runs; an expired claim auto-reverts the issue to `ready` and posts a note. Replaces bare first-assignment-wins as the crash-recovery path. Lands in plan 2 with dispatch and collect.
-2. **Citation verification before a finding is shown** (from claude-code-review-council). The reviewer worker's contract requires every cited file and line to be opened and checked against the checkout before it appears in the review; uncheckable citations are dropped and noted. Lands in plan 2's reviewer prompt.
+1. **Lease-plus-heartbeat claims** (from Beads). A claim carries a TTL that the PM's loop renews while the worker runs; an expired claim auto-reverts the issue to `ready` and posts a note. Replaces bare first-assignment-wins as the crash-recovery path. Landed in plan 2 with dispatch and collect, with a TTL variation: the lease is fixed at dispatch to the worker's deadline plus `lease.grace_minutes` rather than renewed on a heartbeat while the worker runs (section 11); `tick` still fills in a lease that's missing and still releases one that has expired.
+2. **Citation verification before a finding is shown** (from claude-code-review-council). The reviewer worker's contract requires every cited file and line to be opened and checked against the checkout before it appears in the review; uncheckable citations are dropped and noted. Landed in plan 2's reviewer prompt.
 3. **Role-matched review** (from ai-pair). When more than one group reviews a PR, the review request assigns each a different primary concern (correctness and security, tests and conventions, architecture) so reviewers surface distinct issues. Lands in plan 3 with `review`.
 4. **Neutral check runs** (from Claude Code Review). Cross-group review results are published as a GitHub check run with a neutral conclusion, visible but never blocking on its own; merge remains gated by the quorum rule in `rules.py` and the human. Lands in plan 3 with `review` and `merge`.
-5. **Repo-local verification bar** (from Claude Code Review's `REVIEW.md`). A product may add `.meld/REVIEW.md` stating what counts as evidence for that repo; it is rendered into reviewer and auditor briefs. Lands in plan 2 with brief rendering.
+5. **Repo-local verification bar** (from Claude Code Review's `REVIEW.md`). A product may add `.meld/REVIEW.md` stating what counts as evidence for that repo; it is rendered into reviewer and auditor briefs. Landed in plan 2 with brief rendering.
 
 
 - Webhooks when running on an always-on box.
 - Per-group machines and a shared `$MELD_HOME` alternative.
 - A third adapter to prove the N-group claims end to end.
 - A read-only GitHub token for workers that need to read issues beyond their brief.
+- PID reuse is not detected; a run record's pid plus deadline is the liveness signal.
 
 ### Carried into plan 3 from the plan-1 final review
 
@@ -448,6 +453,7 @@ A survey of existing multi-agent coding systems (Symphony and its forks, Gas Tow
 2. **Challenge closers are unrestricted.** `derive_open_challenges` lets any authorized party close a challenge with `UPHELD`, `DISMISSED`, or `RETRACT`. Plan 3's challenge verb must restrict who may close one per section 14: the challenger may `RETRACT`, and a party other than the challenged one decides `UPHELD` or `DISMISSED`.
 3. **`meld doctor` checklist.** It must verify that each group's token identity equals the bot login configured for that group; that a git identity is configured per bot for worktree commits; that hidden `.pth` files are detected (see the README); and that every model named in `.meld.toml` exists in `models.toml` for that group's adapter.
 4. **Git identity per bot (plan 2).** Plan 2 must set each bot's git `user.name` and `user.email` in its worktrees so a PR's head committer resolves to that bot's account. Without it the head committer is unknown and `approve` and `merge` are refused (section 8).
+5. **`meld review`/`meld audit` consume `$MELD_HOME/results/<group>/<kind>-<n>.json`.** Plan 2's `collect` stops at writing a reviewer or auditor run's verdict to that file; it does not submit a review or post an audit finding. Plan 3's `review` and `audit` verbs must read the file at that path to act on it.
 
 ## 22. Glossary
 

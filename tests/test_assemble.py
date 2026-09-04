@@ -105,3 +105,12 @@ def test_build_board_drops_a_lease_once_another_group_holds_the_issue(board1_gh)
     fake.route("GET", "repos/acme/widgets/issues/10/comments", comments)
     b = build_board(gh, CFG2, {}, {})
     assert 13 not in b.leases and b.leases[14].group == "codex"   # #14 is assigned to meld-codex-bot
+
+
+def test_board_carries_files_challenges_audits_and_merge_metadata(board1_gh):
+    fake, gh = board1_gh
+    board = build_board(gh, CFG2, {}, {}, milestone=3, now="2026-09-03T12:00:00Z")
+    assert board.pulls[20].files == ("ci.yml", ".github/workflows/ci.yml")
+    assert board.pulls[19].merged and board.pulls[19].merged_at and board.pulls[19].files == ()   # merged PRs skip the files fetch
+    assert board.challenges["#12"].challenger == "codex" and board.open_challenges == frozenset({"#12"})
+    assert board.audits == {}

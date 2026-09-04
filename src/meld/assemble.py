@@ -11,9 +11,10 @@ from meld.board import (
     Review,
     RunRecord,
     assigned_leases,
+    derive_audits,
+    derive_challenges,
     derive_halted,
     derive_leases,
-    derive_open_challenges,
     derive_phase,
     utc_now_iso,
 )
@@ -89,6 +90,7 @@ def _pull(gh: GitHub, raw: dict) -> PullRequest:
     # closed and merged PRs are never read, and accept no verbs anyway.
     head_committer: str | None = None
     checks = "none"
+    files: tuple[str, ...] = ()
     if state == "open":
         reviews = tuple(
             Review(author=(r.get("user") or {}).get("login", ""), state=r.get("state", ""), commit_id=r.get("commit_id", ""),
@@ -100,10 +102,12 @@ def _pull(gh: GitHub, raw: dict) -> PullRequest:
             last = commits[-1]
             head_committer = (last.get("author") or {}).get("login") or (last.get("committer") or {}).get("login") or None
         checks = checks_state(gh.check_runs(head_sha))
+        files = tuple(gh.pull_files(number))
     return PullRequest(
         number=number, title=raw.get("title", ""), body=raw.get("body") or "", head_ref=raw["head"]["ref"], head_sha=head_sha,
         author=author, head_committer=head_committer, issue_number=issue_number_from_pr(raw.get("body") or "", raw["head"]["ref"]),
         reviews=reviews, checks=checks, labels=_labels(raw), state=state, merged=merged,
+        files=files, merge_commit_sha=raw.get("merge_commit_sha"), merged_at=raw.get("merged_at") or "",
     )
 
 
@@ -133,10 +137,12 @@ def build_board(gh: GitHub, cfg: Config, runs: dict[str, dict[int, RunRecord]], 
         if raw.get("state") == "closed" and raw.get("merged_at") is None:
             continue
         pulls[raw["number"]] = _pull(gh, raw)
+    challenges = derive_challenges(comments)
     return Board(
         repo=gh.repo, milestone=milestone, coordination_issue=coordination, phase=derive_phase(_labels(coord_raw)),
         halted=derive_halted(comments), issues=issues, pulls=pulls, comments=comments, runs=runs, spend=spend,
-        open_challenges=derive_open_challenges(comments), ignored_comments=ignored,
+        open_challenges=frozenset(challenges), ignored_comments=ignored,
         leases=assigned_leases(derive_leases(comments), issues, {g.name: g.bot for g in cfg.groups.values()}),
         plan_text=description, now=now or utc_now_iso(),
+        challenges=challenges, audits=derive_audits(comments),
     )

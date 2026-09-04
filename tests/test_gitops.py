@@ -86,3 +86,21 @@ def test_push_keeps_token_out_of_argv(tmp_path):
     assert env["MELD_PUSH_TOKEN"] == "ghp_secret"
     assert any(a.startswith("credential.helper=!f()") for a in cmd)
     assert remote_branch_exists(repo, "meld/7-x")
+
+
+def test_push_without_token_leaves_git_credentials_alone(tmp_path):
+    origin, repo = make_origin_and_clone(tmp_path)
+    wt = tmp_path / "wt" / "y"
+    create_worktree(repo, wt, "meld/8-y", "main")
+    (wt / "b.txt").write_text("b\n")
+    sh(["git", "add", "b.txt"], wt)
+    sh(["git", "commit", "-q", "-m", "b"], wt)
+    seen: list[list[str]] = []
+
+    def recording_run(cmd, **kwargs):
+        seen.append(list(cmd))
+        return subprocess.run(cmd, **kwargs)
+
+    push_branch(wt, "meld/8-y", token=None, run=recording_run)
+    assert not any("credential.helper" in a for a in seen[-1])
+    assert remote_branch_exists(repo, "meld/8-y")

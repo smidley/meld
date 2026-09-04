@@ -82,12 +82,14 @@ def is_dirty(path: Path, run: RunFn = subprocess.run) -> bool:
 
 
 def push_branch(path: Path, branch: str, token: str | None, run: RunFn = subprocess.run, base_env: dict | None = None) -> None:
-    """Push `branch` to origin. The token reaches git only through the MELD_PUSH_TOKEN variable read by an inline helper."""
+    """Push `branch` to origin. With a token, git authenticates through an inline helper that reads MELD_PUSH_TOKEN
+    from the environment (the token never appears in argv); without one, git's own configured credentials apply."""
     env = dict(os.environ if base_env is None else base_env)
+    args: list[str] = []
     if token:
         env["MELD_PUSH_TOKEN"] = token
-    git(["-c", "credential.helper=", "-c", f"credential.helper={_CREDENTIAL_HELPER}", "push", "--set-upstream", "origin", branch],
-        path, run, env=env)
+        args += ["-c", "credential.helper=", "-c", f"credential.helper={_CREDENTIAL_HELPER}"]
+    git([*args, "push", "--set-upstream", "origin", branch], path, run, env=env)
 
 
 def remove_worktree(repo_root: Path, path: Path, run: RunFn = subprocess.run) -> None:

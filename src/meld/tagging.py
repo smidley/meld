@@ -27,6 +27,8 @@ def tag(ctx, number: int, *, worker: str | None = None, model: str | None = None
         group = ctx.cfg.groups[actor.group]  # type: ignore[index]
         final_model = model or issue.model
         final_effort = effort or issue.effort
+        if effort is not None and final_model is None:
+            refuse(ctx, board, Refusal(Verb.TAG, target, f"effort '{effort}' cannot be validated without a model; pass --model too"))
         if (model or effort) and final_model and final_effort:
             errors = ctx.models.validate(group.cli, final_model, final_effort)
             if errors:

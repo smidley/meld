@@ -11,6 +11,7 @@ from meld.tagging import tag
 from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
 from tests.fakeadapter import no_skills
 from tests.fakegh import FakeGh
+from tests.productfixtures import fixture
 
 R = "repos/acme/widgets/"
 
@@ -29,6 +30,17 @@ def make(tmp_path, group="claude", role="orchestrator"):
 
 def label_calls(fake):
     return [(c.method, c.endpoint.split("issues/11/labels", 1)[1], c.body) for c in fake.calls if c.method != "GET" and "issues/11/labels" in c.endpoint]
+
+
+def make_untagged(tmp_path, group="claude", role="orchestrator"):
+    """Like make(), but issue 11 starts with only meld:ready -- no worker/model/effort/size labels."""
+    fake, ctx = make(tmp_path, group=group, role=role)
+    issues = fixture("issues.json")
+    for i in issues:
+        if i["number"] == 11:
+            i["labels"] = [{"name": "meld:ready"}]
+    fake.route("GET", R + "issues", issues)
+    return fake, ctx
 
 
 def test_tag_replaces_labels_and_validates(tmp_path):
@@ -73,3 +85,15 @@ def test_cli_tag(tmp_path, monkeypatch):
                                 env=env_for(tmp_path, role="orchestrator"))
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["labels"]["size"] == "M"
+
+
+def test_tag_refuses_an_effort_it_cannot_validate_without_a_model(tmp_path):
+    fake, ctx = make_untagged(tmp_path)
+    with pytest.raises(Refused, match="without a model"):
+        tag(ctx, 11, effort="high")
+    out = tag(ctx, 11, worker="backend", model="claude-opus-5", effort="high", size="S")
+    assert out == {"tagged": 11, "labels": {"worker": "backend", "model": "claude-opus-5", "effort": "high", "size": "S"}}
+    assert label_calls(fake) == [("POST", "", {"labels": ["worker:backend", "model:claude-opus-5", "effort:high", "size:S"]})]
+    with pytest.raises(Refused, match="not valid"):
+        tag(ctx, 11, model="claude-opus-5", effort="turbo")
+

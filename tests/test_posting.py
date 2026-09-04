@@ -4,6 +4,7 @@ import pytest
 from click.testing import CliRunner
 
 import moot.cli as cli
+from moot.actions import Refused
 from moot.context import load_context
 from moot.posting import PostError, post
 from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
@@ -34,6 +35,10 @@ def make(tmp_path, group="claude", role="orchestrator", comments=None, approved=
 
 def posted(fake):
     return [c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint.endswith("/comments")]
+
+
+def posted_headers(fake):
+    return [b.splitlines()[0] for b in posted(fake)]
 
 
 def test_post_simple_verb(tmp_path):
@@ -79,15 +84,19 @@ def test_joint_refused_when_open_or_not_proposer_or_wrong_phase(tmp_path):
          "body": "[claude] PROPOSE plan-1\n\nplan\n\nverified-by: x"},
     ]
     _, ctx = make(tmp_path, comments=open_comments, approved=False)
-    with pytest.raises(PostError, match="agreement on plan-1 is open"):
+    with pytest.raises(Refused, match="agreement on plan-1 is open") as ei:
         post(ctx, "PLAN", ref="plan-1", joint=True)
+    assert ei.value.refusal.verb.value == "post" and ei.value.refusal.target == "plan-1"
     agreed = open_comments + [{"id": 103, "user": {"login": "moot-codex-bot"}, "created_at": "2026-09-03T09:11:00Z", "body": "[codex] AGREE plan-1\n\nok"}]
     _, codex = make(tmp_path, group="codex", comments=agreed, approved=False)
-    with pytest.raises(PostError, match="only the proposer \\(claude\\)"):
+    with pytest.raises(Refused, match="only the proposer \\(claude\\)"):
         post(codex, "PLAN", ref="plan-1", joint=True)
-    _, executing = make(tmp_path, comments=agreed, approved=True)
-    with pytest.raises(PostError, match="PLAN may only be posted during planning"):
+    fake_exec, executing = make(tmp_path, comments=agreed, approved=True)
+    with pytest.raises(Refused, match="PLAN may only be posted during planning") as ei:
         post(executing, "PLAN", ref="plan-1", joint=True)
+    # a rule-level post refusal is announced on the coordination issue
+    assert posted_headers(fake_exec) == ["[claude] PROTOCOL-VIOLATION plan-1"]
+    assert ei.value.violation_posted is True
 
 
 def test_joint_disagree_requires_qualifier_and_lists_positions(tmp_path):
@@ -114,7 +123,7 @@ def test_amend_cap_enforced(tmp_path):
         {"id": 105, "user": {"login": "moot-codex-bot"}, "created_at": "2026-09-03T09:13:00Z", "body": "[codex] AMEND plan-1\n\nv4"},
     ]
     _, ctx = make(tmp_path, comments=comments)
-    with pytest.raises(PostError, match="amend cap \\(3\\) reached"):
+    with pytest.raises(Refused, match="amend cap \\(3\\) reached"):
         post(ctx, "AMEND", ref="plan-1", text="v5")
     assert post(ctx, "AGREE", ref="plan-1", text="fine")["header"] == "[claude] AGREE plan-1"
 
@@ -124,7 +133,7 @@ def test_reproposal_is_refused(tmp_path):
         {"id": 102, "user": {"login": "moot-codex-bot"}, "created_at": "2026-09-03T09:10:00Z", "body": "[codex] PROPOSE plan-1\n\nv1"},
     ]
     _, ctx = make(tmp_path, comments=comments)
-    with pytest.raises(PostError, match="already has a proposal; post AMEND"):
+    with pytest.raises(Refused, match="already has a proposal; post AMEND"):
         post(ctx, "PROPOSE", ref="plan-1", text="v2")
 
 
@@ -167,7 +176,7 @@ def test_joint_refused_when_already_posted(tmp_path):
          "body": "[joint] PLAN plan-1\n\n1. health endpoint\n\nverified-by: moot roster"},
     ]
     _, ctx = make(tmp_path, comments=comments, approved=False)
-    with pytest.raises(PostError, match="plan-1 already has a \\[joint\\] comment"):
+    with pytest.raises(Refused, match="plan-1 already has a \\[joint\\] comment"):
         post(ctx, "PLAN", ref="plan-1", joint=True)
 
 
@@ -192,5 +201,25 @@ def test_joint_plan_add_refused_during_planning(tmp_path):
         {"id": 103, "user": {"login": "moot-codex-bot"}, "created_at": "2026-09-03T09:11:00Z", "body": "[codex] AGREE add-1\n\nok"},
     ]
     _, ctx = make(tmp_path, comments=comments, approved=False)
-    with pytest.raises(PostError, match="PLAN-ADD may only be posted during executing"):
+    with pytest.raises(Refused, match="PLAN-ADD may only be posted during executing"):
         post(ctx, "PLAN-ADD", ref="add-1", joint=True)
+
+
+def test_cli_post_rule_refusal_exits_two_with_the_refusal_json(tmp_path, monkeypatch):
+    (tmp_path / ".moot.toml").write_text(PROJECT_TOML)
+    fake = FakeGh()
+    load_board1_routes(fake)
+    fake.route("GET", R + "issues/10/comments", BASE_COMMENTS + [
+        {"id": 102, "user": {"login": "moot-codex-bot"}, "created_at": "2026-09-03T09:10:00Z",
+         "body": "[codex] PROPOSE plan-1\n\nv1"},
+    ])
+    fake.route("POST", R + "issues/10/comments", {"id": 9, "html_url": "u"})
+    monkeypatch.setattr(cli, "RUN", fake)
+    result = CliRunner().invoke(cli.main, ["--config", str(tmp_path / ".moot.toml"), "--compact",
+                                           "post", "PROPOSE", "plan-1", "-m", "v2"],
+                                env=env_for(tmp_path, role="orchestrator"))
+    assert result.exit_code == 2, result.output
+    data = json.loads(result.output)
+    assert data["verb"] == "post" and data["target"] == "plan-1"
+    assert "already has a proposal" in data["rule"] and data["violation_posted"] is True
+    assert posted_headers(fake) == ["[claude] PROTOCOL-VIOLATION plan-1"]

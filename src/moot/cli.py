@@ -81,13 +81,16 @@ def wait(ctx: click.Context, timeout: float | None, interval: float | None) -> N
     emit(data, ctx.obj["pretty"])
 
 
+def _refusal_json(e: Refused) -> dict:
+    return {"refused": str(e), "verb": e.refusal.verb.value, "target": e.refusal.target, "rule": e.refusal.rule,
+            "violation_posted": e.violation_posted}
+
+
 def _run_action(ctx: click.Context, fn) -> None:
     try:
         emit(_guard(fn), ctx.obj["pretty"])
     except Refused as e:
-        emit({"refused": str(e), "verb": e.refusal.verb.value, "target": e.refusal.target, "rule": e.refusal.rule,
-              "violation_posted": e.post_error is None},
-             ctx.obj["pretty"])
+        emit(_refusal_json(e), ctx.obj["pretty"])
         ctx.exit(2)
 
 
@@ -125,6 +128,9 @@ def post(ctx: click.Context, verb: str, ref: str | None, qualifier: str | None, 
     text = body_file.read_text() if body_file else (message or "")
     try:
         emit(_guard(lambda: do_post(c, verb.upper(), ref=ref, qualifier=qualifier, text=text, joint=joint)), ctx.obj["pretty"])
+    except Refused as e:
+        emit(_refusal_json(e), ctx.obj["pretty"])
+        ctx.exit(2)
     except PostError as e:
         emit({"error": str(e)}, ctx.obj["pretty"])
         ctx.exit(2)

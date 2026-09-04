@@ -1,12 +1,23 @@
 """Post a coordination comment in the header grammar, including verified [joint] comments."""
 from __future__ import annotations
 
+from typing import NoReturn
+
+from moot.actions import refuse
+from moot.board import Board
 from moot.config import Party
 from moot.grammar import Agreement, Header, agreement_for, allowed_verbs, compose, validate
+from moot.rules import Refusal, Verb
+from moot.status import build_status
 
 
 class PostError(ValueError):
-    pass
+    """A usage error: the call is malformed, not a legal call that the rules refuse."""
+
+
+def _refuse(ctx, board: Board, verb: str, ref: str | None, rule: str) -> NoReturn:
+    """Refuse a rule-level violation: a group party also posts PROTOCOL-VIOLATION."""
+    refuse(ctx, board, Refusal(Verb.POST, ref or verb, rule))
 
 
 def _indent(text: str) -> str:
@@ -39,8 +50,6 @@ def _joint_body(agreement: Agreement, ref: str, qualifier: str | None, text: str
 
 
 def post(ctx, verb: str, ref: str | None = None, qualifier: str | None = None, text: str = "", joint: bool = False) -> dict:
-    from moot.status import build_status
-
     _, board = build_status(ctx)
     actor = ctx.actor()
     if joint and actor.is_human:
@@ -54,26 +63,26 @@ def post(ctx, verb: str, ref: str | None = None, qualifier: str | None = None, t
             raise PostError("joint comments require a ref")
         agreement = agreement_for(board.comments, ref, ctx.cfg)
         if agreement.status in ("none", "open"):
-            raise PostError(f"agreement on {ref} is {agreement.status}; cannot post [joint]")
+            _refuse(ctx, board, verb, ref, f"agreement on {ref} is {agreement.status}; cannot post [joint]")
         if agreement.proposer != actor.group:
-            raise PostError(f"only the proposer ({agreement.proposer}) may post the joint comment for {ref}")
+            _refuse(ctx, board, verb, ref, f"only the proposer ({agreement.proposer}) may post the joint comment for {ref}")
         if verb == "PLAN" and board.phase != "planning":
-            raise PostError("PLAN may only be posted during planning")
+            _refuse(ctx, board, verb, ref, "PLAN may only be posted during planning")
         if verb == "PLAN-ADD" and board.phase != "executing":
-            raise PostError("PLAN-ADD may only be posted during executing")
+            _refuse(ctx, board, verb, ref, "PLAN-ADD may only be posted during executing")
         if agreement.joint_posted:
-            raise PostError(f"{ref} already has a [joint] comment")
+            _refuse(ctx, board, verb, ref, f"{ref} already has a [joint] comment")
         body_text = _joint_body(agreement, ref, qualifier, text)
     elif verb in ("PROPOSE", "DRAFT") and party.kind in ("group", "pm"):
         agreement = agreement_for(board.comments, ref, ctx.cfg)
         if agreement.text is not None:
-            raise PostError(f"{ref} already has a proposal; post AMEND (or AGREE/DISSENT) instead")
+            _refuse(ctx, board, verb, ref, f"{ref} already has a proposal; post AMEND (or AGREE/DISSENT) instead")
     elif verb == "AMEND" and party.kind in ("group", "pm"):
         if not ref:
             raise PostError("AMEND requires a ref")
         agreement = agreement_for(board.comments, ref, ctx.cfg)
         if not agreement.can_amend(ctx.cfg):
-            raise PostError(f"amend cap ({ctx.cfg.amend_cap}) reached for {ref}; post AGREE or DISSENT")
+            _refuse(ctx, board, verb, ref, f"amend cap ({ctx.cfg.amend_cap}) reached for {ref}; post AGREE or DISSENT")
     header = Header(party, verb, ref, qualifier)
     errors = validate(header, body_text)
     if errors:

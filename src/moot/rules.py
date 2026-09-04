@@ -19,8 +19,11 @@ class Verb(str, Enum):
     REQUEST_CHANGES = "request-changes"
     PUSH_FIX = "push-fix"
     MERGE = "merge"
+    POST = "post"
 
 
+# POST is deliberately absent from both: it is refusable but not a per-issue or per-PR verb,
+# so it never appears in an issue's or a PR's legal-action list.
 ISSUE_VERBS = (Verb.CLAIM, Verb.RELEASE, Verb.DISPATCH, Verb.COLLECT, Verb.REOPEN)
 PR_VERBS = (Verb.APPROVE, Verb.REQUEST_CHANGES, Verb.PUSH_FIX, Verb.MERGE)
 

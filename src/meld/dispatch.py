@@ -1,24 +1,28 @@
 """Dispatch, tick, collect, reap: the only module that spawns workers or touches worktrees."""
 from __future__ import annotations
 
+import json
 import os
 import signal
 import time
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from meld.actions import IN_PROGRESS, refuse, release
+from meld.actions import BLOCKED, IN_PROGRESS, refuse, release
 from meld.adapters import Adapter, LaunchSpec, get_adapter, scrub_env
 from meld.board import Board, RunRecord
-from meld.brief import BRIEF_FILE, RESULT_FILE, render_brief
+from meld.brief import BRIEF_FILE, RESULT_FILE, ResultError, WorkerResult, read_result, render_brief
 from meld.config import GroupConfig, Party
 from meld.gitops import (
     branch_name,
     checkout_pr_head,
+    commits_ahead,
     create_worktree,
     exclude_paths,
+    head_sha,
     noreply_email,
+    push_branch,
     remove_worktree,
     set_identity,
     slugify,
@@ -34,6 +38,8 @@ WORKER_PROMPT = ("Read .meld-brief.md in the current directory and carry it out 
                  "When you finish, write .meld-result.json as the brief instructs, then stop.")
 KINDS = ("build", "review", "audit")
 _ISO = "%Y-%m-%dT%H:%M:%SZ"
+IN_REVIEW = "meld:in-review"
+NEEDS_HUMAN = "meld:needs-human"
 
 
 class DispatchError(RuntimeError):
@@ -261,3 +267,109 @@ def tick(ctx, *, now: datetime | None = None, sleep=time.sleep) -> dict:
                                                                 f"Released #{n}: lease by {lease.group} expired at {lease.until} (now {now_iso})."))
         out["expired"].append(n)
     return out
+
+
+def _swap_labels(ctx, number: int, add: str, remove: tuple[str, ...]) -> None:
+    ctx.gh.add_labels(number, [add])
+    for label in remove:
+        ctx.gh.remove_label(number, label)
+
+
+def collect(ctx, number: int, *, now: datetime | None = None) -> dict:
+    _, board = build_status(ctx)
+    actor = ctx.actor()
+    target = f"#{number}"
+    if not actor.is_pm:
+        refuse(ctx, board, Refusal(Verb.COLLECT, target, "only the PM may collect"))
+    group = ctx.cfg.groups[actor.group]  # type: ignore[index]
+    rec = board.run_for(group.name, number)
+    if rec is None:
+        refuse(ctx, board, Refusal(Verb.COLLECT, target, f"no run record for {target} in {group.name}"))
+    if rec.alive:
+        refuse(ctx, board, Refusal(Verb.COLLECT, target, "worker is still running"))
+    if rec.collected:
+        refuse(ctx, board, Refusal(Verb.COLLECT, target, "run already collected"))
+    when = _now(now)
+    if rec.kind == "build":
+        issue = board.issues.get(number)
+        if issue is None:
+            refuse(ctx, board, Refusal(Verb.COLLECT, target, "issue is not in the active milestone"))
+        refusal = issue_refusal(board, ctx.cfg, actor, Verb.COLLECT, issue, ctx.models)
+        if refusal:
+            refuse(ctx, board, refusal)
+        return _collect_build(ctx, board, group, rec, issue, when)
+    return _collect_verdict(ctx, group, rec, when)
+
+
+def _read_outcome(rec: RunRecord) -> tuple[WorkerResult | None, str | None]:
+    """Return (result, reason_if_not_done)."""
+    if rec.timed_out:
+        return None, f"timed out at {rec.deadline}"
+    try:
+        result = read_result(Path(rec.worktree))
+    except ResultError as e:
+        return None, str(e)
+    if result is None:
+        return None, f"exited without writing {RESULT_FILE}"
+    if result.outcome == "failed":
+        return result, f"worker reported failed: {result.summary}"
+    return result, None
+
+
+def _collect_build(ctx, board: Board, group: GroupConfig, rec: RunRecord, issue, when: datetime) -> dict:
+    number = rec.issue
+    wt = Path(rec.worktree)
+    result, reason = _read_outcome(rec)
+    tail = tail_lines(Path(rec.log_path), ctx.cfg.worker_log_tail_lines)
+    if reason is None and result is not None and result.outcome == "blocked":
+        _swap_labels(ctx, number, NEEDS_HUMAN, (IN_PROGRESS,))
+        ask = result.needs_human or result.summary or "The worker did not say what it needs."
+        ctx.gh.create_comment(board.coordination_issue, compose(Header(Party("pm", group.name), "NEEDS-HUMAN", f"#{number}", None),
+                                                                f"{ask}\n\nWorker summary: {result.summary}\nverified-by: {result.verified_by}"))
+        ctx.gh.create_comment(number, f"Meld: `{group.name}` worker is blocked and needs a human: {ask}")
+        ctx.store.write_run(replace(rec, collected=True))
+        return {"collected": number, "outcome": "blocked", "needs_human": ask}
+    commits: list[str] = []
+    if reason is None:
+        commits = commits_ahead(wt, f"origin/{ctx.cfg.default_branch}")
+        if not commits:
+            reason = "worker reported done but made no commits"
+    if reason is not None:
+        _swap_labels(ctx, number, BLOCKED, (IN_PROGRESS,))
+        summary = f"\n\nWorker summary: {result.summary}" if result else ""
+        ctx.gh.create_comment(number, f"Meld: `{group.name}` worker did not complete #{number}: {reason}.{summary}\n\n"
+                                      f"Last {ctx.cfg.worker_log_tail_lines} log lines:\n\n```\n{tail}\n```")
+        ctx.store.write_run(replace(rec, collected=True))
+        return {"collected": number, "outcome": "failed", "reason": reason}
+    assert result is not None
+    push_branch(wt, rec.branch, ctx.gh.token)
+    body = f"Closes #{number}\n\n{result.summary}\n\nverified-by: {result.verified_by}"
+    existing = board.pr_for_issue(number)
+    if existing is not None and existing.state == "open":
+        ctx.gh.update_pull(existing.number, body)
+        pr_number = existing.number
+    else:
+        pr_number = int(ctx.gh.create_pull(issue.title, rec.branch, ctx.cfg.default_branch, body)["number"])
+    _swap_labels(ctx, number, IN_REVIEW, (IN_PROGRESS,))
+    sha = head_sha(wt)
+    ctx.gh.create_comment(number, f"Meld: `{group.name}` worker finished: {len(commits)} commit(s) {commits[0][:7]}..{commits[-1][:7]}, PR #{pr_number}.\n\n"
+                                  f"verified-by: {result.verified_by}")
+    ctx.gh.create_comment(board.coordination_issue, compose(Header(Party("pm", group.name), "REVIEW-REQUEST", f"#{pr_number}", None),
+                                                            f"Issue #{number}, head {sha[:7]}. Please dispatch a reviewer."))
+    ctx.store.write_run(replace(rec, collected=True, pr=pr_number))
+    return {"collected": number, "outcome": "done", "pr": pr_number, "commits": len(commits)}
+
+
+def _collect_verdict(ctx, group: GroupConfig, rec: RunRecord, when: datetime) -> dict:
+    result, reason = _read_outcome(rec)
+    wt = Path(rec.worktree)
+    sha = head_sha(wt) if wt.exists() else ""
+    results_dir = ctx.store.home / "results" / group.name
+    results_dir.mkdir(parents=True, exist_ok=True)
+    path = results_dir / f"{rec.kind}-{rec.issue}.json"
+    payload = {"kind": rec.kind, "pr": rec.pr, "head_sha": sha, "collected_at": _iso(when), "timed_out": rec.timed_out,
+               "reason": reason, "result": asdict(result) if result else None,
+               "log_tail": tail_lines(Path(rec.log_path), ctx.cfg.worker_log_tail_lines)}
+    path.write_text(json.dumps(payload, indent=2))
+    ctx.store.write_run(replace(rec, collected=True))
+    return {"collected": rec.issue, "kind": rec.kind, "stored": str(path), "verdict": result.verdict if result else None}

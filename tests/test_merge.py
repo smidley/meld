@@ -45,6 +45,17 @@ def test_merge_refusals(tmp_path):
         merge(ctx, 18)
 
 
+def test_merge_of_an_already_merged_pr_is_a_no_op_success(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path)   # PR #19 merged long ago (claude authored it; no approvals on record)
+    pulls = fixture("pulls.json")
+    for p in pulls:
+        if p["number"] == 19:
+            p["merge_commit_sha"] = "m019"
+    fake.route("GET", R + "pulls", pulls)
+    assert merge(ctx, 19) == {"merged": 19, "sha": "m019", "issue": 9, "approvals": [], "already_merged": True}
+    assert not [c for c in fake.calls if c.method in ("PUT", "POST")]     # no merge call, no PROTOCOL-VIOLATION
+
+
 def test_cli_merge(tmp_path, monkeypatch):
     fake, ctx, repo, origin = make_product(tmp_path)
     fake.route("PUT", R + "pulls/20/merge", {"sha": "m123", "merged": True})

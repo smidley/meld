@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from meld.results import ResultsError, load_result, mark_submitted, result_path, store_result, update_result
+from meld.results import BODY_LIMIT, TRUNCATED, ResultsError, cap_body, format_findings, load_result, mark_submitted, result_path, store_result, update_result
 
 
 def test_store_result_never_overwrites_an_unconsumed_verdict(tmp_path):
@@ -49,3 +49,18 @@ def test_load_result_rejects_malformed_json(tmp_path):
     with pytest.raises(ResultsError):
         load_result(tmp_path, "claude", "audit", 19)
     assert load_result(tmp_path, "claude", "audit", 18) is None
+
+
+def test_format_findings_keeps_worker_backticks_out_of_the_code_span():
+    findings = format_findings([{"path": "src/a.py", "line": 12, "body": "nit"},
+                                {"path": "weird`file.py", "line": "7` **bold**", "body": "a `code` word stays in the body"}])
+    assert findings == "- `src/a.py:12` nit\n- `weirdfile.py:7 **bold**` a `code` word stays in the body"
+
+
+def test_cap_body_truncates_long_bodies_with_a_marker():
+    assert cap_body("short") == "short"
+    exact = "x" * BODY_LIMIT
+    assert cap_body(exact) == exact
+    capped = cap_body("y" * (BODY_LIMIT + 5000))
+    assert len(capped) == BODY_LIMIT + len(TRUNCATED) and capped.endswith(TRUNCATED) and capped.startswith("y" * BODY_LIMIT)
+    assert cap_body("abcdef", limit=3) == "abc" + TRUNCATED

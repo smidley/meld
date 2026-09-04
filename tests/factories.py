@@ -49,7 +49,7 @@ def mk_pr(number: int, issue: int, head_sha: str = "abc123", committer: str | No
           author: str | None = None, approvals: tuple[str, ...] = (), stale_approvals: tuple[str, ...] = (),
           changes_requested: tuple[str, ...] = (), extra_changes_requested_history: int = 0,
           checks: str = "green", state: str = "open", merged: bool = False,
-          extra_labels: tuple[str, ...] = ()) -> PullRequest:
+          extra_labels: tuple[str, ...] = (), statuses: dict[str, str] | None = None) -> PullRequest:
     reviews: list[Review] = []
     t = 0
     for a in stale_approvals:
@@ -67,7 +67,7 @@ def mk_pr(number: int, issue: int, head_sha: str = "abc123", committer: str | No
     return PullRequest(number=number, title=f"PR {number}", body=f"Closes #{issue}\n\nverified-by: pytest",
                        head_ref=f"meld/{issue}-slug", head_sha=head_sha, author=author or committer or "",
                        head_committer=committer, issue_number=issue, reviews=tuple(reviews), checks=checks,
-                       labels=frozenset(extra_labels), state=state, merged=merged)
+                       labels=frozenset(extra_labels), state=state, merged=merged, statuses=dict(statuses or {}))
 
 
 def mk_comment(cfg: Config, id: int, author: str, body: str, created_at: str | None = None) -> ParsedComment:

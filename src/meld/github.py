@@ -174,6 +174,11 @@ class GitHub:
     def check_runs(self, sha: str) -> dict:
         return self.get(self._r(f"commits/{sha}/check-runs"))
 
+    def combined_status(self, sha: str) -> dict[str, str]:
+        """Commit statuses on `sha` as {context: state}; GitHub already reports only the latest status per context."""
+        resp = self.get(self._r(f"commits/{sha}/status"))
+        return {s["context"]: s["state"] for s in (resp or {}).get("statuses", [])}
+
     def add_assignees(self, number: int, logins: list[str]) -> dict:
         return self.post(self._r(f"issues/{number}/assignees"), {"assignees": logins})
 

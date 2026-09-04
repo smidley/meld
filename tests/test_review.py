@@ -1,15 +1,18 @@
 import json
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from meld.actions import Refused
+from meld.context import load_context
 from meld.dispatch import DispatchError, collect, dispatch
 from meld.github import GitHubError
-from meld.results import load_result, store_result
-from meld.review import review, submit_review
-from tests.fakeadapter import FakeAdapter
+from meld.results import BODY_LIMIT, TRUNCATED, load_result, store_result, update_result
+from meld.review import merge, review, submit_review
+from tests.conftest import env_for
+from tests.fakeadapter import FakeAdapter, no_skills
 from tests.gitfixtures import sh
 from tests.productfixtures import NO_RESULT_SCRIPT, R, REVIEW_SCRIPT, fixture, make_product, wait_for_exit
 from tests.test_collect import routes_for_labels
@@ -29,6 +32,11 @@ subprocess.run(["git", "commit", "-q", "-m", "fix: guard the null case"], check=
 pathlib.Path(".meld-result.json").write_text(json.dumps({"outcome": "done", "summary": "added the missing guard", "verified_by": "pytest -q -> ok",
     "verdict": "push-fix", "comments": []}))
 """
+NO_COMMIT_PUSH_FIX_SCRIPT = """
+import json, pathlib
+pathlib.Path(".meld-result.json").write_text(json.dumps({"outcome": "done", "summary": "meant to add the guard", "verified_by": "n/a",
+    "verdict": "push-fix", "comments": []}))
+"""
 
 
 def reviewed_pr(tmp_path, script):
@@ -36,7 +44,7 @@ def reviewed_pr(tmp_path, script):
     publish_pr_branch(repo)
     routes_for_labels(fake, 13)
     fake.route("DELETE", R + "issues/13/labels/meld%3Ain-review", [])
-    fake.route("GET", R + "pulls/20/reviews", [])   # no prior review on this head; the idempotency guard must not skip a fresh post
+    fake.route("GET", R + "pulls/20/reviews", [])   # no prior review on this head (board1's fixture approval belongs to other scenarios)
     fake.route("POST", R + "pulls/20/reviews", {"id": 501, "html_url": "https://github.com/acme/widgets/pull/20#pullrequestreview-501"})
     fake.route("POST", R + "statuses/abc123", {"id": 77})
     out = dispatch(ctx, 20, kind="review", adapter=FakeAdapter(script=script), now=NOW)
@@ -90,13 +98,14 @@ def test_review_request_changes_at_the_pingpong_cap_blocks_the_issue(tmp_path):
 
 def test_review_request_changes_retry_does_not_double_count_ping_pong(tmp_path):
     fake, ctx, repo, wt = reviewed_pr(tmp_path, CHANGES_SCRIPT)
-    # A prior attempt already posted our CHANGES_REQUESTED on abc123 but didn't reach mark_submitted (e.g. a
-    # later step failed); another account's older round is also on record. Cap is 3.
+    # A prior attempt already posted our CHANGES_REQUESTED on abc123 (recorded in the verdict file the moment it landed)
+    # but didn't reach mark_submitted (e.g. a later step failed); another account's older round is also on record. Cap is 3.
+    update_result(tmp_path / "home", "claude", "review", 20, {"review_id": 777, "review_url": "u777", "review_event": "REQUEST_CHANGES"})
     fake.route("GET", R + "pulls/20/reviews",
                [{"user": {"login": "meld-codex-bot"}, "state": "CHANGES_REQUESTED", "commit_id": "old000", "submitted_at": "2026-09-03T09:00:00Z"},
                 {"user": {"login": "meld-claude-bot"}, "state": "CHANGES_REQUESTED", "commit_id": "abc123", "submitted_at": "2026-09-03T11:30:00Z"}])
     out = review(ctx, 20, now=NOW)
-    assert out["issue_status"] == "in_progress"           # not blocked: our own already-posted review must not be double-counted
+    assert out["issue_status"] == "in_progress" and out["review_id"] == 777   # not blocked: our own already-posted review must not be double-counted
     assert not calls(fake, "POST", "pulls/20/reviews")    # no duplicate review filed on the retry
     assert calls(fake, "POST", "issues/13/labels") == [{"labels": ["meld:in-progress"]}]
 
@@ -123,6 +132,7 @@ def test_review_of_a_moved_head_is_stale(tmp_path):
             p["head"]["sha"] = "def456"
     fake.route("GET", R + "pulls", pulls)
     fake.route("GET", R + "commits/def456/check-runs", fixture("checkruns_abc123.json"))
+    fake.route("GET", R + "commits/def456/status", fixture("status_abc123.json"))
     out = review(ctx, 20, now=NOW)
     assert out["event"] is None and out["reason"] == "stale head"
     assert not calls(fake, "POST", "pulls/20/reviews")
@@ -139,23 +149,55 @@ def test_review_without_a_verdict_asks_for_a_redispatch(tmp_path):
 
 
 def test_review_refuses_to_approve_own_head(tmp_path):
-    fake, ctx, repo, origin = make_product(tmp_path, group="codex")   # codex made PR #20's last commit
+    fake, ctx, repo, origin = make_product(tmp_path, group="codex")   # codex authored PR #20 and made its last commit
     store_result(tmp_path / "home", "codex", "review", 20,
                  {"head_sha": "abc123", "result": {"verdict": "approve", "summary": "x", "verified_by": "y", "comments": []}}, "2026-09-03T12:00:00Z")
-    with pytest.raises(Refused, match="cannot approve its own head"):
+    with pytest.raises(Refused, match="codex made the last commit on this PR and cannot review its own head"):
         review(ctx, 20, now=NOW)
+    assert load_result(tmp_path / "home", "codex", "review", 20) is not None   # refused, not consumed
+    # a non-author group that holds the head is refused by the ordinary committer rule
+    fake_c, claude, *_ = make_product(tmp_path / "c")
+    fake_c.route("GET", R + "pulls/20/commits", [{"sha": "abc123", "author": {"login": "meld-claude-bot"}, "committer": {"login": "meld-claude-bot"}}])
+    store_result(tmp_path / "c" / "home", "claude", "review", 20,
+                 {"head_sha": "abc123", "result": {"verdict": "approve", "summary": "x", "verified_by": "y", "comments": []}}, "2026-09-03T12:00:00Z")
+    with pytest.raises(Refused, match="claude made the last commit on this PR and cannot approve its own head"):
+        review(claude, 20, now=NOW)
 
 
-def test_review_approve_is_idempotent_when_already_posted(tmp_path):
-    fake, ctx, repo, wt = reviewed_pr(tmp_path, REVIEW_SCRIPT)
-    fake.route("GET", R + "pulls/20/reviews", fixture("reviews_20.json"))   # claude already APPROVED abc123 (board1 default)
+def test_review_retry_after_a_failure_downstream_of_the_post_files_no_second_review(tmp_path):
+    fake, ctx, repo, wt = reviewed_pr(tmp_path, CHANGES_SCRIPT)
+    fake.route("POST", R + "issues/13/labels", {"message": "boom"}, status=500)   # the label swap right after the review post fails
+    with pytest.raises(GitHubError):
+        review(ctx, 20, now=NOW)
+    assert len(calls(fake, "POST", "pulls/20/reviews")) == 1
+    stored = load_result(tmp_path / "home", "claude", "review", 20)
+    assert stored["review_id"] == 501 and stored["review_event"] == "REQUEST_CHANGES"   # recorded the moment the review landed
+    fake.route("POST", R + "issues/13/labels", [])
+    fake.route("GET", R + "pulls/20/reviews", [{"id": 501, "user": {"login": "meld-claude-bot"}, "state": "CHANGES_REQUESTED", "commit_id": "abc123",
+                                                "submitted_at": "2026-09-03T12:00:00Z"}])   # as GitHub shows it now
     out = review(ctx, 20, now=NOW)
-    assert out["event"] == "APPROVE" and out["review_id"] is None
-    assert not calls(fake, "POST", "pulls/20/reviews")            # no duplicate review filed
-    assert calls(fake, "POST", "statuses/abc123")                 # the status is still posted
-    submitted = list((tmp_path / "home" / "results" / "claude" / "submitted").glob("review-20-abc123-*.json"))
-    assert submitted
-    assert json.loads(submitted[0].read_text())["outcome"] == "already-submitted"
+    assert out["event"] == "REQUEST_CHANGES" and out["review_id"] == 501 and out["issue_status"] == "in_progress"
+    assert len(calls(fake, "POST", "pulls/20/reviews")) == 1                    # no duplicate review filed on the retry
+    assert len(calls(fake, "POST", "statuses/abc123")) == 2                     # the status is re-posted (harmless: same context, same state)
+    assert calls(fake, "POST", "issues/13/labels") == [{"labels": ["meld:in-progress"]}] * 2   # the failed attempt and the retry
+    (submitted,) = (tmp_path / "home" / "results" / "claude" / "submitted").glob("review-20-abc123-*.json")
+    assert json.loads(submitted.read_text())["outcome"] == "already-submitted"
+
+
+def test_a_second_verdict_from_another_worker_posts_its_own_review(tmp_path):
+    fake, ctx, repo, wt = reviewed_pr(tmp_path, REVIEW_SCRIPT)
+    assert review(ctx, 20, now=NOW)["review_id"] == 501
+    # GitHub now shows our APPROVED on abc123; the sequential `security` review is a new verdict on the same head
+    fake.route("GET", R + "pulls/20/reviews", fixture("reviews_20.json"))
+    fake.route("POST", R + "pulls/20/reviews", {"id": 502, "html_url": "https://github.com/acme/widgets/pull/20#pullrequestreview-502"})
+    out = dispatch(ctx, 20, kind="review", worker="security", adapter=FakeAdapter(script=REVIEW_SCRIPT), now=NOW)
+    wait_for_exit(out["pid"])
+    collect(ctx, 20, now=NOW)
+    assert load_result(tmp_path / "home", "claude", "review", 20)["worker"] == "security"
+    out = review(ctx, 20, now=NOW)
+    assert out["review_id"] == 502 and len(calls(fake, "POST", "pulls/20/reviews")) == 2
+    submitted = (tmp_path / "home" / "results" / "claude" / "submitted").glob("review-20-abc123-*.json")
+    assert sorted(json.loads(f.read_text())["worker"] for f in submitted) == ["reviewer", "security"]
 
 
 def test_review_approve_survives_a_failing_status_post(tmp_path):
@@ -187,6 +229,7 @@ def test_review_push_fix_resumes_after_a_failed_review_post(tmp_path):
             p["head"]["sha"] = new_head
     fake.route("GET", R + "pulls", pulls)
     fake.route("GET", R + f"commits/{new_head}/check-runs", fixture("checkruns_abc123.json"))
+    fake.route("GET", R + f"commits/{new_head}/status", fixture("status_abc123.json"))
     fake.route("GET", R + "pulls/20/reviews", [])
     # As real GitHub would show after our push: the PR's last commit is now ours, not codex's. Without the
     # resuming_push carve-out this would make pr_refusal's own-head check wrongly refuse the resume.
@@ -201,6 +244,92 @@ def test_review_push_fix_resumes_after_a_failed_review_post(tmp_path):
     assert sh(["git", "rev-parse", "origin/meld/13-ci-pipeline"], repo) == new_head    # exactly one push across both attempts
     coord = [c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/10/comments"]
     assert coord[-1].startswith("[claude:pm] REVIEW-REQUEST #20\n")           # the REVIEW-REQUEST is posted
+
+
+def test_review_push_fix_without_commits_is_a_no_action_outcome(tmp_path):
+    fake, ctx, repo, wt = reviewed_pr(tmp_path, NO_COMMIT_PUSH_FIX_SCRIPT)
+    before = sh(["git", "rev-parse", "origin/meld/13-ci-pipeline"], repo)
+    out = review(ctx, 20, now=NOW)
+    assert out == {"reviewed": 20, "verdict": "push-fix", "event": None, "reason": "no commits"}
+    assert not calls(fake, "POST", "pulls/20/reviews") and not calls(fake, "POST", "statuses/abc123")
+    assert any("push-fix verdict but no commits were found in the review worktree; re-dispatch" in c.body["body"]
+               for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/20/comments")
+    assert sh(["git", "rev-parse", "origin/meld/13-ci-pipeline"], repo) == before          # nothing was pushed
+    (submitted,) = (tmp_path / "home" / "results" / "claude" / "submitted").glob("review-20-abc123-*.json")
+    assert json.loads(submitted.read_text())["outcome"] == "no-commits"
+    with pytest.raises(DispatchError, match="no collected review result"):                  # consumed, like a missing verdict
+        review(ctx, 20, now=NOW)
+
+
+def test_review_push_fix_from_a_reaped_worktree_is_a_no_action_outcome(tmp_path):
+    fake, ctx, repo, wt = reviewed_pr(tmp_path, PUSH_FIX_SCRIPT)
+    shutil.rmtree(wt)          # $MELD_HOME is disposable: the worktree, fix commit included, vanished before meld review ran
+    out = review(ctx, 20, now=NOW)
+    assert out["event"] is None and out["reason"] == "no commits"
+    assert not calls(fake, "POST", "pulls/20/reviews")
+
+
+def test_review_push_fix_resume_refuses_a_worktree_that_moved_after_the_push(tmp_path):
+    fake, ctx, repo, wt = reviewed_pr(tmp_path, PUSH_FIX_SCRIPT)
+    update_result(tmp_path / "home", "claude", "review", 20, {"pushed": "0" * 40, "pushed_at": "2026-09-03T11:59:00Z"})   # a recorded push this worktree does not match
+    with pytest.raises(DispatchError, match="the worktree moved after the push"):
+        review(ctx, 20, now=NOW)
+    assert not calls(fake, "POST", "pulls/20/reviews")
+    assert load_result(tmp_path / "home", "claude", "review", 20) is not None     # kept for inspection, not consumed
+
+
+def test_review_body_is_capped(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path)   # claude PM approves codex's PR #20 with a verbose summary
+    fake.route("POST", R + "pulls/20/reviews", {"id": 503, "html_url": "u503"})
+    fake.route("POST", R + "statuses/abc123", {"id": 77})
+    store_result(tmp_path / "home", "claude", "review", 20,
+                 {"head_sha": "abc123", "result": {"verdict": "approve", "summary": "s" * (BODY_LIMIT + 1000), "verified_by": "y", "comments": []}},
+                 "2026-09-03T12:00:00Z")
+    assert review(ctx, 20, now=NOW)["review_id"] == 503
+    (body,) = calls(fake, "POST", "pulls/20/reviews")
+    assert body["body"].endswith(TRUNCATED) and len(body["body"]) == BODY_LIMIT + len(TRUNCATED)
+
+
+def test_author_group_re_review_after_a_push_fix_is_a_comment_review_whose_status_clears_the_quorum(tmp_path):
+    fake, ctx, repo, wt = reviewed_pr(tmp_path, PUSH_FIX_SCRIPT)          # claude push-fixes codex's PR #20 ...
+    new_head = sh(["git", "rev-parse", "HEAD"], wt)
+    fake.route("POST", R + f"statuses/{new_head}", {"id": 78})
+    assert review(ctx, 20, now=NOW)["event"] == "COMMENT"                 # ... and asks codex to review the new head
+    # GitHub after the push: the head is claude's commit on a PR codex's bot opened
+    pulls = fixture("pulls.json")
+    for p in pulls:
+        if p["number"] == 20:
+            p["head"]["sha"] = new_head
+    fake.route("GET", R + "pulls", pulls)
+    fake.route("GET", R + "pulls/20/commits",
+               [{"sha": "abc123", "author": {"login": "meld-codex-bot"}, "committer": {"login": "meld-codex-bot"}},
+                {"sha": new_head, "author": {"login": "meld-claude-bot"}, "committer": {"login": "meld-claude-bot"}}])
+    fake.route("GET", R + "pulls/20/reviews", [{"id": 501, "user": {"login": "meld-claude-bot"}, "state": "COMMENTED", "commit_id": new_head,
+                                                "submitted_at": "2026-09-03T12:00:00Z"}])
+    fake.route("GET", R + f"commits/{new_head}/check-runs", fixture("checkruns_abc123.json"))
+    fake.route("GET", R + f"commits/{new_head}/status", {"state": "pending", "statuses": [{"context": "meld/review/claude", "state": "pending"}]})
+    codex = load_context(repo / ".meld.toml", env=env_for(tmp_path, group="codex", role="pm"), run=fake, adapter_for=no_skills)
+    # codex authored the PR but no longer holds the head, so dispatching its own reviewer is legal (spec 13 step 3)
+    out = dispatch(codex, 20, kind="review", adapter=FakeAdapter(script=REVIEW_SCRIPT), now=NOW)
+    wait_for_exit(out["pid"])
+    collect(codex, 20, now=NOW)
+    fake.route("POST", R + "pulls/20/reviews", {"id": 601, "html_url": "https://github.com/acme/widgets/pull/20#pullrequestreview-601"})
+    out = review(codex, 20, now=NOW)
+    assert out["event"] == "COMMENT" and out["as_author"] is True and out["review_id"] == 601 and out["head"] == new_head and out["verdict"] == "approve"
+    posted = calls(fake, "POST", "pulls/20/reviews")[-1]
+    assert posted["event"] == "COMMENT" and posted["commit_id"] == new_head            # never an APPROVE: GitHub would 422 the author's account
+    assert posted["body"].startswith("Verdict: approve — posted as a comment review because GitHub forbids a PR author's account from approving its own PR; "
+                                     "the `meld/review/codex` commit status carries this verdict.\n\nlooks right")
+    status = calls(fake, "POST", f"statuses/{new_head}")[-1]
+    assert status["context"] == "meld/review/codex" and status["state"] == "success" and status["description"] == "codex review: approve"
+    assert not [c for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/10/comments" and "PROTOCOL-VIOLATION" in c.body["body"]]
+    # merge: no GitHub approval exists on the head, but codex's `success` status on it is the author group's approval
+    fake.route("GET", R + f"commits/{new_head}/status", {"state": "success", "statuses": [{"context": "meld/review/claude", "state": "pending"},
+                                                                                           {"context": "meld/review/codex", "state": "success"}]})
+    fake.route("PUT", R + "pulls/20/merge", {"sha": "m200", "merged": True})
+    assert merge(ctx, 20) == {"merged": 20, "sha": "m200", "issue": 13, "approvals": ["codex"]}
+    (put,) = [c.body for c in fake.calls if c.method == "PUT"]
+    assert put["sha"] == new_head
 
 
 def test_submit_review_folds_findings_into_the_body_on_422():

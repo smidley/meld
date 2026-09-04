@@ -252,16 +252,40 @@ def legal_issue_verbs(board: Board, cfg: Config, actor: Actor, issue: Issue, mod
 # ---- PR verbs ----------------------------------------------------------------
 
 UNKNOWN_COMMITTER = "head committer unknown; cannot verify who made the last commit"
+# GitHub returns 422 when the account that opened a PR submits an APPROVE or REQUEST_CHANGES review on it. Meld's PR
+# author is the author group's bot (collect opens the PR with the group's token), so after another group push-fixes
+# the head (spec 13 step 3) the author group's verdict can only reach GitHub as a COMMENT review; `meld review` does
+# that and records the verdict in the group's commit status, which is what the quorum then counts.
+AUTHOR_RULE = ("GitHub does not let a PR author's account approve or request changes on its own PR; "
+               "post the verdict as a comment review (meld review does this for you)")
+VERB_FOR = {"approve": Verb.APPROVE, "request-changes": Verb.REQUEST_CHANGES, "push-fix": Verb.PUSH_FIX}
+
+
+def status_context(group: str) -> str:
+    """The commit-status context `meld review` writes for a group's verdict on a head."""
+    return f"meld/review/{group}"
 
 
 def committer_party(cfg: Config, pr: PullRequest) -> str | None:
     return None if pr.head_committer is None else party_of_login(cfg, pr.head_committer)
 
 
+def author_party(cfg: Config, pr: PullRequest) -> str | None:
+    return party_of_login(cfg, pr.author)
+
+
 def approving_parties(cfg: Config, pr: PullRequest) -> frozenset[str]:
     committer = committer_party(cfg, pr)
-    parties = (party_of_login(cfg, login) for login in pr.approvals_on_head())
-    return frozenset(p for p in parties if p is not None and p != committer)
+    parties = {party_of_login(cfg, login) for login in pr.approvals_on_head()}
+    have = {p for p in parties if p is not None and p != committer}
+    # The author group's approval never appears in GitHub's review list (see AUTHOR_RULE): it reaches GitHub as a
+    # COMMENT review, and its `meld/review/<group>` status on this exact head is the record of it. Only `meld review`,
+    # running with that group's token, writes the context, and a status is per-sha, so a later push leaves it behind.
+    # Humans are not counted this way: a human's own PR is reviewed by every group, and a human approves in the UI.
+    author = author_party(cfg, pr)
+    if author is not None and author in cfg.groups and author != committer and pr.statuses.get(status_context(author)) == "success":
+        have.add(author)
+    return frozenset(have)
 
 
 def pingpong_exceeded(cfg: Config, pr: PullRequest) -> bool:
@@ -271,6 +295,8 @@ def pingpong_exceeded(cfg: Config, pr: PullRequest) -> bool:
 def _approve(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | None:
     if actor.name == committer_party(cfg, pr):
         return f"{actor.name} made the last commit on this PR and cannot approve its own head"
+    if actor.name == author_party(cfg, pr):
+        return AUTHOR_RULE
     if board.is_challenged(f"#{pr.number}"):
         return "PR has an open CHALLENGE"
     if pr.head_committer is None:
@@ -364,8 +390,10 @@ def pr_refusal(board: Board, cfg: Config, actor: Actor, verb: Verb, pr: PullRequ
         rule = "PR is not open"
     elif verb == Verb.APPROVE:
         rule = _approve(board, cfg, actor, pr)
-    elif verb in (Verb.REQUEST_CHANGES, Verb.PUSH_FIX):
-        rule = _other_party_only(cfg, actor, pr, verb)
+    elif verb == Verb.REQUEST_CHANGES:
+        rule = _other_party_only(cfg, actor, pr, verb) or (AUTHOR_RULE if actor.name == author_party(cfg, pr) else None)
+    elif verb == Verb.PUSH_FIX:
+        rule = _other_party_only(cfg, actor, pr, verb)   # committer-only: a push approves nothing, and GitHub allows an author's COMMENT review
     elif verb == Verb.MERGE:
         rule = _merge(board, cfg, actor, pr)
     elif verb == Verb.REVIEW:
@@ -377,6 +405,25 @@ def pr_refusal(board: Board, cfg: Config, actor: Actor, verb: Verb, pr: PullRequ
 
 def legal_pr_verbs(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> list[str]:
     return [v.value for v in PR_VERBS if pr_refusal(board, cfg, actor, v, pr) is None]
+
+
+def review_verdict_rule(board: Board, cfg: Config, actor: Actor, pr: PullRequest, verdict: str) -> str | None:
+    """Why `meld review` may not submit `verdict` on `pr`, or None. The author party's approve and request-changes are
+    refused as GitHub verbs (AUTHOR_RULE) but legal here as a COMMENT review plus status, under the same conditions
+    every other approver meets: the PR is open, the author is not the head committer, the head committer is known,
+    and (for approve) the PR carries no open CHALLENGE. Every other case defers to `pr_refusal`."""
+    if actor.name == author_party(cfg, pr) and verdict in ("approve", "request-changes"):
+        if pr.state != "open":
+            return "PR is not open"
+        if actor.name == committer_party(cfg, pr):
+            return f"{actor.name} made the last commit on this PR and cannot review its own head"
+        if pr.head_committer is None:
+            return UNKNOWN_COMMITTER
+        if verdict == "approve" and board.is_challenged(f"#{pr.number}"):
+            return "PR has an open CHALLENGE"
+        return None
+    refusal = pr_refusal(board, cfg, actor, VERB_FOR[verdict], pr)
+    return None if refusal is None else refusal.rule
 
 
 # ---- challenges ------------------------------------------------------------------

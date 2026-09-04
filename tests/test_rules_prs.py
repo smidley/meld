@@ -1,5 +1,17 @@
 from meld.config import Party
-from meld.rules import Actor, Verb, approving_parties, committer_party, legal_pr_verbs, pingpong_exceeded, pr_refusal
+from meld.rules import (
+    AUTHOR_RULE,
+    Actor,
+    Verb,
+    approving_parties,
+    author_party,
+    committer_party,
+    legal_pr_verbs,
+    pingpong_exceeded,
+    pr_refusal,
+    review_verdict_rule,
+    status_context,
+)
 from tests.factories import CFG2, CFG3, mk_board, mk_pr
 
 CLAUDE_PM = Actor(Party("pm", "claude"), "meld-claude-bot")
@@ -36,7 +48,9 @@ def test_approve_rules():
     assert rule(b, CFG2, CODEX_PM, Verb.APPROVE, pr) == "codex made the last commit on this PR and cannot approve its own head"
     fixed = mk_pr(21, 14, committer="meld-claude-bot", author="meld-codex-bot")  # claude pushed a fix onto codex's PR
     b2 = mk_board(CFG2, pulls=[fixed])
-    assert rule(b2, CFG2, CODEX_PM, Verb.APPROVE, fixed) is None
+    # codex no longer holds the head, but GitHub refuses an APPROVE from the account that opened the PR: the GitHub verb
+    # is refused, and codex's verdict reaches the quorum through its `meld/review/codex` status instead (below).
+    assert rule(b2, CFG2, CODEX_PM, Verb.APPROVE, fixed) == AUTHOR_RULE
     assert rule(b2, CFG2, CLAUDE_PM, Verb.APPROVE, fixed) == "claude made the last commit on this PR and cannot approve its own head"
     challenged = mk_board(CFG2, pulls=[pr], open_challenges=frozenset({"#20"}))
     assert rule(challenged, CFG2, CLAUDE_PM, Verb.APPROVE, pr) == "PR has an open CHALLENGE"
@@ -109,13 +123,82 @@ def test_unknown_head_committer_blocks_approve_and_merge():
     assert rule(b, CFG2, CLAUDE_PM, Verb.APPROVE, pr) == unknown
     assert rule(b, CFG2, HUMAN, Verb.APPROVE, pr) == unknown
     assert rule(b, CFG2, CODEX_PM, Verb.MERGE, pr) == unknown
-    # neither verb can approve anything, so both stay legal for every party
+    # neither verb can approve anything, so both stay legal for a non-author party; the author (codex) may still
+    # push-fix its own PR, but GitHub refuses its REQUEST_CHANGES review like its APPROVE
     for verb in (Verb.REQUEST_CHANGES, Verb.PUSH_FIX):
         assert rule(b, CFG2, CLAUDE_PM, verb, pr) is None
-        assert rule(b, CFG2, CODEX_PM, verb, pr) is None
+    assert rule(b, CFG2, CODEX_PM, Verb.PUSH_FIX, pr) is None
+    assert rule(b, CFG2, CODEX_PM, Verb.REQUEST_CHANGES, pr) == AUTHOR_RULE
     # an unknown committer cannot be reviewed away from (party_of_login is None, so claude != it),
     # so review (new in Task 4) is also legal here even though approve/merge are blocked
     assert legal_pr_verbs(b, CFG2, CLAUDE_PM, pr) == ["request-changes", "push-fix", "review"]
+
+
+def test_author_party_is_refused_the_github_verbs_but_keeps_push_fix_and_review():
+    fixed = mk_pr(21, 14, committer="meld-claude-bot", author="meld-codex-bot")   # claude push-fixed codex's PR
+    b = mk_board(CFG2, pulls=[fixed])
+    assert author_party(CFG2, fixed) == "codex" and committer_party(CFG2, fixed) == "claude"
+    assert rule(b, CFG2, CODEX_PM, Verb.APPROVE, fixed) == AUTHOR_RULE
+    assert rule(b, CFG2, CODEX_PM, Verb.REQUEST_CHANGES, fixed) == AUTHOR_RULE
+    assert rule(b, CFG2, CODEX_PM, Verb.PUSH_FIX, fixed) is None
+    assert legal_pr_verbs(b, CFG2, CODEX_PM, fixed) == ["push-fix", "review"]      # review: codex is not the head committer
+    # a human's own PR: GitHub refuses the human's approval too, so status stops advertising it
+    human_pr = mk_pr(22, 15, committer="meld-claude-bot", author="empowerScott")
+    assert rule(mk_board(CFG2, pulls=[human_pr]), CFG2, HUMAN, Verb.APPROVE, human_pr) == AUTHOR_RULE
+    # the committer rule still wins when the author also holds the head
+    own = mk_pr(20, 13, committer="meld-codex-bot")
+    assert rule(mk_board(CFG2, pulls=[own]), CFG2, CODEX_PM, Verb.APPROVE, own) == "codex made the last commit on this PR and cannot approve its own head"
+
+
+def test_approving_parties_counts_the_author_group_through_its_success_status():
+    fixed = mk_pr(21, 14, committer="meld-claude-bot", author="meld-codex-bot")
+    assert approving_parties(CFG2, fixed) == frozenset()
+    ok = mk_pr(21, 14, committer="meld-claude-bot", author="meld-codex-bot", statuses={status_context("codex"): "success"})
+    assert approving_parties(CFG2, ok) == {"codex"}
+    assert rule(mk_board(CFG2, pulls=[ok]), CFG2, CLAUDE_PM, Verb.MERGE, ok) is None      # the status clears the N=2 quorum
+    assert rule(mk_board(CFG2, pulls=[ok]), CFG2, CODEX_PM, Verb.MERGE, ok) is None
+    for state in ("pending", "failure", "error"):
+        assert approving_parties(CFG2, mk_pr(21, 14, committer="meld-claude-bot", author="meld-codex-bot",
+                                             statuses={status_context("codex"): state})) == frozenset()
+    # only the author's own context counts, and only for the author
+    assert approving_parties(CFG2, mk_pr(21, 14, committer="meld-claude-bot", author="meld-codex-bot",
+                                         statuses={status_context("claude"): "success"})) == frozenset()
+    # never when the author still holds the head (its status cannot legally exist, and a forged one must not count)
+    assert approving_parties(CFG2, mk_pr(20, 13, committer="meld-codex-bot", statuses={status_context("codex"): "success"})) == frozenset()
+    # a human author is not a group: humans approve in the UI, and every group reviews a human PR
+    human_pr = mk_pr(22, 15, committer="meld-claude-bot", author="empowerScott", statuses={"meld/review/human:empowerScott": "success"})
+    assert approving_parties(CFG2, human_pr) == frozenset()
+    # GitHub approvals and the status path add up under N=3
+    two = mk_pr(21, 14, committer="meld-claude-bot", author="meld-codex-bot", approvals=("meld-gemini-bot",), statuses={status_context("codex"): "success"})
+    assert approving_parties(CFG3, two) == {"codex", "gemini"}
+    assert rule(mk_board(CFG3, pulls=[two]), CFG3, GEMINI_PM, Verb.MERGE, two) is None
+
+
+def test_review_verdict_rule_lets_the_author_group_review_a_head_another_group_pushed():
+    fixed = mk_pr(21, 14, committer="meld-claude-bot", author="meld-codex-bot")
+    b = mk_board(CFG2, pulls=[fixed])
+    assert review_verdict_rule(b, CFG2, CODEX_PM, fixed, "approve") is None                 # legal, as a comment review
+    assert review_verdict_rule(b, CFG2, CODEX_PM, fixed, "request-changes") is None
+    assert review_verdict_rule(b, CFG2, CODEX_PM, fixed, "push-fix") is None
+    assert review_verdict_rule(b, CFG2, CLAUDE_PM, fixed, "approve") == "claude made the last commit on this PR and cannot approve its own head"
+    challenged = mk_board(CFG2, pulls=[fixed], open_challenges=frozenset({"#21"}))
+    assert review_verdict_rule(challenged, CFG2, CODEX_PM, fixed, "approve") == "PR has an open CHALLENGE"
+    assert review_verdict_rule(challenged, CFG2, CODEX_PM, fixed, "request-changes") is None   # like every request-changes
+    # while the author still holds the head, nothing changes: its own head is not reviewable
+    own = mk_pr(20, 13, committer="meld-codex-bot")
+    assert review_verdict_rule(mk_board(CFG2, pulls=[own]), CFG2, CODEX_PM, own, "approve") == \
+        "codex made the last commit on this PR and cannot review its own head"
+    assert review_verdict_rule(mk_board(CFG2, pulls=[own]), CFG2, CODEX_PM, own, "request-changes") == \
+        "codex made the last commit on this PR and cannot review its own head"
+    unknown = mk_pr(21, 14, committer=None, author="meld-codex-bot")
+    assert review_verdict_rule(mk_board(CFG2, pulls=[unknown]), CFG2, CODEX_PM, unknown, "approve") == \
+        "head committer unknown; cannot verify who made the last commit"
+    closed = mk_pr(22, 15, committer="meld-claude-bot", author="meld-codex-bot", state="closed", merged=True)
+    assert review_verdict_rule(mk_board(CFG2, pulls=[closed]), CFG2, CODEX_PM, closed, "approve") == "PR is not open"
+    # everyone else gets exactly pr_refusal's answer
+    assert review_verdict_rule(b, CFG2, CLAUDE_PM, fixed, "request-changes") == "claude made the last commit on this PR; only other parties may request-changes"
+    plain = mk_pr(20, 13, committer="meld-codex-bot")
+    assert review_verdict_rule(mk_board(CFG2, pulls=[plain]), CFG2, CLAUDE_PM, plain, "approve") is None
 
 
 from dataclasses import replace

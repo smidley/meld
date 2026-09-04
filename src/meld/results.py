@@ -86,6 +86,21 @@ def mark_submitted(home: Path, group: str, kind: str, number: int, extra: dict, 
     return target
 
 
+BODY_LIMIT = 60000            # GitHub rejects comment and review bodies over 65536 characters; stay clear of it
+TRUNCATED = "… (truncated)"
+
+
+def _plain(value: object) -> str:
+    """A path or line as text with backticks removed, so a worker-written path cannot end the code span it sits in."""
+    return str(value).replace("`", "")
+
+
 def format_findings(comments: list[dict]) -> str:
     """One bullet per reviewer/auditor comment, for PR bodies and coordination posts."""
-    return "\n".join(f"- `{c['path']}:{c['line']}` {c['body']}" for c in comments)
+    return "\n".join(f"- `{_plain(c['path'])}:{_plain(c['line'])}` {c['body']}" for c in comments)
+
+
+def cap_body(text: str, limit: int = BODY_LIMIT) -> str:
+    """Cut a review or audit body at `limit` characters with a visible marker, so a verbose worker cannot push the
+    request past GitHub's size limit and lose the whole post."""
+    return text if len(text) <= limit else text[:limit] + TRUNCATED

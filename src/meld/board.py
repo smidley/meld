@@ -98,6 +98,7 @@ class PullRequest:
     files: tuple[str, ...] = ()
     merge_commit_sha: str | None = None
     merged_at: str = ""
+    statuses: dict[str, str] = field(default_factory=dict)   # commit-status context -> state, on the head
 
     def touches(self, patterns: Iterable[str]) -> bool:
         """True when any changed file matches any glob (fnmatch: `*` also crosses `/`)."""

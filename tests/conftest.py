@@ -20,6 +20,7 @@ def load_board1_routes(fake: FakeGh, repo: str = "acme/widgets") -> None:
     fake.route("GET", r("pulls/20/reviews"), json.loads((d / "reviews_20.json").read_text()))
     fake.route("GET", r("pulls/20/commits"), json.loads((d / "commits_20.json").read_text()))
     fake.route("GET", r("commits/abc123/check-runs"), json.loads((d / "checkruns_abc123.json").read_text()))
+    fake.route("GET", r("commits/abc123/status"), json.loads((d / "status_abc123.json").read_text()))
     fake.route("GET", r("pulls/20/files"), json.loads((d / "files_20.json").read_text()))
     fake.route("GET", "user", {"login": "empowerScott"})
 

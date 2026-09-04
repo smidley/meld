@@ -91,6 +91,7 @@ def _pull(gh: GitHub, raw: dict) -> PullRequest:
     head_committer: str | None = None
     checks = "none"
     files: tuple[str, ...] = ()
+    statuses: dict[str, str] = {}
     if state == "open":
         reviews = tuple(
             Review(author=(r.get("user") or {}).get("login", ""), state=r.get("state", ""), commit_id=r.get("commit_id", ""),
@@ -103,11 +104,15 @@ def _pull(gh: GitHub, raw: dict) -> PullRequest:
             head_committer = (last.get("author") or {}).get("login") or (last.get("committer") or {}).get("login") or None
         checks = checks_state(gh.check_runs(head_sha))
         files = tuple(gh.pull_files(number))
+        statuses = gh.combined_status(head_sha)   # the `meld/review/<group>` contexts feed rules.approving_parties
+    # `merge_commit_sha` is only the real merge commit once the PR is merged: on an open PR GitHub fills it with the
+    # sha of a speculative test merge (or null while it recomputes one), so consumers must gate on `pr.merged`
+    # before treating it as a commit that exists on the default branch (dispatch does, for audit checkouts).
     return PullRequest(
         number=number, title=raw.get("title", ""), body=raw.get("body") or "", head_ref=raw["head"]["ref"], head_sha=head_sha,
         author=author, head_committer=head_committer, issue_number=issue_number_from_pr(raw.get("body") or "", raw["head"]["ref"]),
         reviews=reviews, checks=checks, labels=_labels(raw), state=state, merged=merged,
-        files=files, merge_commit_sha=raw.get("merge_commit_sha"), merged_at=raw.get("merged_at") or "",
+        files=files, merge_commit_sha=raw.get("merge_commit_sha"), merged_at=raw.get("merged_at") or "", statuses=statuses,
     )
 
 

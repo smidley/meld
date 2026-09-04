@@ -230,6 +230,19 @@ def test_review_merge_status_and_issue_endpoints(board1_gh):
     assert bodies[("PATCH", "repos/acme/widgets/issues/13")] == {"state": "open"}
 
 
+def test_combined_status_maps_context_to_state(board1_gh):
+    fake, gh = board1_gh
+    fake.route("GET", "repos/acme/widgets/commits/abc123/status",
+               {"state": "failure", "sha": "abc123",
+                "statuses": [{"context": "meld/review/claude", "state": "success", "description": "claude review: approve"},
+                             {"context": "ci/lint", "state": "failure"}]})
+    assert gh.combined_status("abc123") == {"meld/review/claude": "success", "ci/lint": "failure"}
+    fake.route("GET", "repos/acme/widgets/commits/def456/status", {"state": "pending", "statuses": []})
+    assert gh.combined_status("def456") == {}
+    assert [c.endpoint for c in fake.calls if c.method == "GET"][-2:] == ["repos/acme/widgets/commits/abc123/status",
+                                                                         "repos/acme/widgets/commits/def456/status"]
+
+
 def test_create_review_without_comments_omits_the_key(board1_gh):
     fake, gh = board1_gh
     fake.route("POST", "repos/acme/widgets/pulls/20/reviews", {"id": 502})

@@ -55,7 +55,3 @@ def roster(repo_root: Path | None, extra: Iterable[WorkerType] = ()) -> list[Wor
     for w in extra:
         by_name.setdefault(w.name, w)
     return sorted(by_name.values(), key=lambda w: w.name)
-
-
-def roster_names(repo_root: Path | None, extra: Iterable[WorkerType] = ()) -> frozenset[str]:
-    return frozenset(w.name for w in roster(repo_root, extra))

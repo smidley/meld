@@ -8,6 +8,7 @@ import meld.cli as cli
 from meld.config import ConfigError
 from meld.context import find_config, load_context
 from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
+from tests.fakeadapter import no_skills
 from tests.fakegh import FakeGh
 
 
@@ -29,13 +30,22 @@ def test_load_context_requires_token_for_groups(project: Path):
     env = env_for(project)
     del env["MELD_TOKEN_CLAUDE"]
     with pytest.raises(ConfigError, match="MELD_TOKEN_CLAUDE"):
-        load_context(project / ".meld.toml", env=env, run=fake)
+        load_context(project / ".meld.toml", env=env, run=fake, adapter_for=no_skills)
+
+
+def test_load_context_refuses_to_run_inside_a_worker(project: Path):
+    fake = FakeGh()
+    fake.route("GET", "user", {"login": "empowerScott"})
+    for env in (env_for(project), env_for(project, group=None)):
+        with pytest.raises(ConfigError, match="meld may not be run by a worker"):
+            load_context(project / ".meld.toml", env={**env, "MELD_WORKER": "1"}, run=fake, adapter_for=no_skills)
+    assert fake.calls == []  # refused before touching GitHub
 
 
 def test_load_context_human_uses_viewer_login(project: Path):
     fake = FakeGh()
     fake.route("GET", "user", {"login": "empowerScott"})
-    ctx = load_context(project / ".meld.toml", env=env_for(project, group=None), run=fake)
+    ctx = load_context(project / ".meld.toml", env=env_for(project, group=None), run=fake, adapter_for=no_skills)
     assert ctx.party.kind == "human" and ctx.actor_login == "empowerScott" and ctx.gh.token is None
 
 
@@ -52,6 +62,7 @@ def test_status_command_reports_board_and_legal_actions(project: Path, monkeypat
     assert issues[11]["legal"] == ["claim"]
     assert issues[12]["challenged"] and "dispatch" not in issues[12]["legal"] and "release" in issues[12]["legal"]
     assert issues[14]["status"] == "needs_human"
+    assert issues[12]["lease"] is None
     assert data["needs_human"][0]["issue"] == 14 and data["needs_human"][0]["age_minutes"] > 0
     pulls = {p["number"]: p for p in data["pulls"]}
     assert pulls[20]["committer_party"] == "codex" and pulls[20]["approvals"] == ["claude"]
@@ -61,6 +72,31 @@ def test_status_command_reports_board_and_legal_actions(project: Path, monkeypat
     assert data["budget"]["cap"] == {"small": 200, "medium": 80, "large": 20}
     assert "digest" in data
     assert data["state_errors"] == []
+
+
+def test_status_reports_leases(project: Path, monkeypatch):
+    fake = FakeGh()
+    load_board1_routes(fake)
+    comments = json.loads((Path(__file__).parent / "fixtures" / "board1" / "comments_10.json").read_text())
+    comments.append({"id": 110, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T09:20:00Z",
+                     "body": "[claude:pm] LEASE #12\n\nuntil: 2000-01-01T00:00:00Z"})
+    fake.route("GET", "repos/acme/widgets/issues/10/comments", comments)
+    monkeypatch.setattr(cli, "RUN", fake)
+    result = CliRunner().invoke(cli.main, ["--config", str(project / ".meld.toml"), "--compact", "status"], env=env_for(project))
+    data = json.loads(result.output)
+    lease = {i["number"]: i for i in data["issues"]}[12]["lease"]
+    assert lease == {"group": "claude", "until": "2000-01-01T00:00:00Z", "expired": True}
+
+    # A lease on an issue that has since left in-progress (e.g. moved to in-review)
+    # must not be reported: the lease only governs who may RELEASE an in-progress claim.
+    issues = json.loads((Path(__file__).parent / "fixtures" / "board1" / "issues.json").read_text())
+    for i in issues:
+        if i["number"] == 12:
+            i["labels"] = [{"name": "meld:in-review"} if l["name"] == "meld:in-progress" else l for l in i["labels"]]
+    fake.route("GET", "repos/acme/widgets/issues", issues)
+    result2 = CliRunner().invoke(cli.main, ["--config", str(project / ".meld.toml"), "--compact", "status"], env=env_for(project))
+    data2 = json.loads(result2.output)
+    assert {i["number"]: i for i in data2["issues"]}[12]["lease"] is None
 
 
 def test_status_as_orchestrator_cannot_claim(project: Path, monkeypatch):
@@ -108,9 +144,9 @@ def test_models_command_lists_adapter_models(project: Path, monkeypatch):
 def test_orchestrator_and_pm_split_state_but_share_the_cache(project: Path):
     fake = FakeGh()
     load_board1_routes(fake)
-    orch = load_context(project / ".meld.toml", env=env_for(project, role="orchestrator"), run=fake)
-    pm = load_context(project / ".meld.toml", env=env_for(project, role="pm"), run=fake)
-    human = load_context(project / ".meld.toml", env=env_for(project, group=None), run=fake)
+    orch = load_context(project / ".meld.toml", env=env_for(project, role="orchestrator"), run=fake, adapter_for=no_skills)
+    pm = load_context(project / ".meld.toml", env=env_for(project, role="pm"), run=fake, adapter_for=no_skills)
+    human = load_context(project / ".meld.toml", env=env_for(project, group=None), run=fake, adapter_for=no_skills)
     assert orch.store.state_dir != pm.store.state_dir
     assert orch.store.state_dir.name == "orchestrator" and pm.store.state_dir.name == "pm"
     assert orch.store.cache_dir == pm.store.cache_dir

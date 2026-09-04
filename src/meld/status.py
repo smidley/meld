@@ -28,6 +28,15 @@ def _age_minutes(iso: str, now: datetime) -> int:
     return max(0, int((now - then).total_seconds() // 60))
 
 
+def _lease_json(board: Board, issue) -> dict | None:
+    if issue.status != "in_progress":
+        return None
+    lease = board.leases.get(issue.number)
+    if lease is None:
+        return None
+    return {"group": lease.group, "until": lease.until, "expired": board.lease_expired(issue.number)}
+
+
 def render_status(board: Board, cfg: Config, actor: Actor, models: ModelRegistry, now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     needs_human = sorted(
@@ -38,7 +47,7 @@ def render_status(board: Board, cfg: Config, actor: Actor, models: ModelRegistry
     issues = [
         {"number": i.number, "title": i.title, "status": i.status, "assignees": list(i.assignees), "worker": i.worker,
          "model": i.model, "effort": i.effort, "size": i.size, "challenged": board.is_challenged(f"#{i.number}"),
-         "legal": legal_issue_verbs(board, cfg, actor, i, models)}
+         "legal": legal_issue_verbs(board, cfg, actor, i, models), "lease": _lease_json(board, i)}
         for i in sorted(board.issues.values(), key=lambda i: i.number)
     ]
     pulls = [
@@ -51,7 +60,8 @@ def render_status(board: Board, cfg: Config, actor: Actor, models: ModelRegistry
     ]
     runs = [
         {"group": r.group, "issue": r.issue, "kind": r.kind, "pr": r.pr, "pid": r.pid,
-         "state": "running" if r.alive else "collected" if r.collected else "finished", "started_at": r.started_at}
+         "state": "running" if r.alive else "collected" if r.collected else "finished", "started_at": r.started_at,
+         "deadline": r.deadline, "branch": r.branch, "timed_out": r.timed_out}
         for g in sorted(board.runs) for r in sorted(board.runs[g].values(), key=lambda r: r.issue)
     ]
     refs = sorted({c.header.ref for c in board.comments if c.ok and c.header and c.header.ref and c.header.verb in AGREEMENT_VERBS})

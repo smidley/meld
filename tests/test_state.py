@@ -2,7 +2,9 @@ import json
 import os
 from pathlib import Path
 
-from meld.state import StateStore, board_digest, diff_digest, meld_home
+import pytest
+
+from meld.state import StateStore, board_digest, diff_digest, meld_home, diff_changes, filter_changes
 from tests.factories import CFG2, mk_board, mk_issue, mk_pr, mk_run
 
 
@@ -127,3 +129,80 @@ def test_write_atomic_writes_a_sibling_temp_then_replaces(tmp_path, monkeypatch)
     # until the replace, so no reader can ever observe a partial write
     assert seen["tmp_content"] == "new" and seen["target_before"] == "old"
     assert target.read_text() == "new" and not list(tmp_path.glob("*.tmp"))
+
+
+def test_pid_alive_reaps_own_exited_child_and_archive_run(tmp_path):
+    import os, subprocess, sys, time
+    from meld.state import pid_alive
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:  # wait for the child to exit WITHOUT reaping it
+        try:
+            os.kill(proc.pid, 0)
+        except ProcessLookupError:  # pragma: no cover - cannot happen for an unreaped child
+            break
+        if (Path(f"/proc/{proc.pid}").exists() and "Z" in Path(f"/proc/{proc.pid}/stat").read_text()) or sys.platform == "darwin":
+            time.sleep(0.2)
+            break
+        time.sleep(0.05)
+    os.kill(proc.pid, 0)  # still answers: the exited child is a zombie until someone reaps it
+    assert pid_alive(proc.pid) is False  # pid_alive reaps it via waitpid and reports it dead
+    with pytest.raises(ProcessLookupError):
+        os.kill(proc.pid, 0)  # proof that pid_alive really reaped it
+    store = StateStore(tmp_path, "claude")
+    store.write_run(mk_run("claude", 12))
+    archived = store.archive_run("claude", 12)
+    assert archived.parent == tmp_path / "runs" / "claude" / "archive" and archived.name.startswith("12-")
+    assert not (tmp_path / "runs" / "claude" / "12.json").exists()
+    assert store.load_runs(alive=lambda p: False) == {"claude": {}}
+    assert store.load_spend(3) == {"claude": {"medium": 1}}
+
+
+def test_run_record_extensions_round_trip(tmp_path):
+    store = StateStore(tmp_path, "claude")
+    rec = mk_run("claude", 12)
+    from dataclasses import replace
+    store.write_run(replace(rec, deadline="2026-09-03T13:00:00Z", branch="meld/12-login", lease_comment=110, timed_out=True))
+    loaded = store.load_runs(alive=lambda p: False)["claude"][12]
+    assert (loaded.deadline, loaded.branch, loaded.lease_comment, loaded.timed_out) == ("2026-09-03T13:00:00Z", "meld/12-login", 110, True)
+
+
+def test_diff_changes_are_structured_and_filterable():
+    b1 = mk_board(CFG2, issues=[mk_issue(11)], pulls=[mk_pr(20, 13)])
+    b2 = mk_board(CFG2, issues=[mk_issue(11, status="in_progress", assignees=("meld-claude-bot",))],
+                  pulls=[mk_pr(20, 13, approvals=("meld-codex-bot",))], halted=True)
+    d1, d2 = board_digest(b1), board_digest(b2)
+    changes = diff_changes(d1, d2)
+    assert [c.kind for c in changes] == ["halted", "issue", "pr"]
+    issue = changes[1]
+    assert (issue.ref, issue.before, issue.after, issue.text) == ("#11", "ready", "in_progress", "issue #11: ready -> in_progress")
+    assert [c.text for c in changes] == diff_digest(d1, d2)
+    assert [c.kind for c in filter_changes(changes, {"pr"})] == ["pr"]
+    assert filter_changes(changes, None) == changes
+    initial = diff_changes(None, d2)
+    assert [c.kind for c in initial] == ["snapshot"] and initial[0].text == "initial snapshot"
+    assert filter_changes(initial, {"comments"}) == initial
+
+
+def test_write_run_archives_a_collected_record_before_a_new_run_and_spend_counts_both(tmp_path):
+    from dataclasses import replace
+    store = StateStore(tmp_path, "claude")
+    first = mk_run("claude", 12, tier="medium")
+    store.write_run(first)
+    store.write_run(replace(first, lease_comment=5))                # the same run updated in place
+    store.write_run(replace(first, alive=False, collected=True))    # and finished
+    assert not (tmp_path / "runs" / "claude" / "archive").exists()
+    store.write_run(mk_run("claude", 12, tier="large"))             # a retry on the same issue
+    archived = list((tmp_path / "runs" / "claude" / "archive").glob("12-*.json"))
+    assert len(archived) == 1 and json.loads(archived[0].read_text())["tier"] == "medium"
+    assert store.load_runs(alive=lambda p: True)["claude"][12].tier == "large"
+    assert store.load_spend(3) == {"claude": {"medium": 1, "large": 1}}
+
+
+def test_archive_run_never_overwrites_an_earlier_archive(tmp_path):
+    store = StateStore(tmp_path, "claude")
+    for _ in range(3):
+        store.write_run(mk_run("claude", 7))
+        store.archive_run("claude", 7)
+    assert len(list((tmp_path / "runs" / "claude" / "archive").glob("7-*.json"))) == 3
+    assert store.load_spend(3) == {"claude": {"medium": 3}}

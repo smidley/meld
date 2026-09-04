@@ -1,6 +1,6 @@
 from meld.config import Party
 from meld.rules import ISSUE_VERBS, PR_VERBS, Actor, Refusal, Verb, issue_refusal, legal_issue_verbs, party_of_login
-from tests.factories import CFG2, REG, mk_board, mk_comment, mk_issue, mk_pr, mk_run
+from tests.factories import CFG2, REG, mk_board, mk_comment, mk_issue, mk_lease, mk_pr, mk_run
 
 ROSTER = frozenset({"backend", "frontend", "security", "qa", "reviewer", "auditor", "docs"})
 CLAUDE_PM = Actor(Party("pm", "claude"), "meld-claude-bot", ROSTER)
@@ -124,6 +124,17 @@ def test_release_rules():
         "issue is ready; release is only legal from in-progress or blocked"
     blocked = mk_issue(14, status="blocked", assignees=("meld-claude-bot",))
     assert rule(mk_board(CFG2, issues=[blocked]), CLAUDE_PM, Verb.RELEASE, blocked) is None
+
+
+def test_any_pm_may_release_an_expired_lease():
+    claimed = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",))
+    live = mk_board(CFG2, issues=[claimed], leases={12: mk_lease(12, until="2026-09-03T13:00:00Z")}, now="2026-09-03T12:00:00Z")
+    assert rule(live, CODEX_PM, Verb.RELEASE, claimed) == "issue is not assigned to meld-codex-bot"
+    expired = mk_board(CFG2, issues=[claimed], leases={12: mk_lease(12, until="2026-09-03T11:00:00Z")}, now="2026-09-03T12:00:00Z")
+    assert rule(expired, CODEX_PM, Verb.RELEASE, claimed) is None
+    assert rule(expired, CLAUDE_ORCH, Verb.RELEASE, claimed) is None  # the owner may always release its own
+    codex_orch = Actor(Party("group", "codex"), "meld-codex-bot", ROSTER)
+    assert rule(expired, codex_orch, Verb.RELEASE, claimed) == "issue is not assigned to meld-codex-bot"
 
 
 # ---- reopen ------------------------------------------------------------------

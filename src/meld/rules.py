@@ -20,6 +20,8 @@ class Verb(str, Enum):
     PUSH_FIX = "push-fix"
     MERGE = "merge"
     POST = "post"
+    REAP = "reap"
+    TAG = "tag"
 
 
 # POST is deliberately absent from both: it is refusable but not a per-issue or per-PR verb,
@@ -148,15 +150,25 @@ def _collect(board: Board, cfg: Config, actor: Actor, issue: Issue) -> str | Non
     return None
 
 
+def lease_rule(board: Board, issue: Issue) -> str | None:
+    """Why a non-owner may still release: the owner's lease has expired."""
+    lease = board.leases.get(issue.number)
+    if lease is None:
+        return None
+    return f"lease by {lease.group} expired at {lease.until}" if board.lease_expired(issue.number) else None
+
+
 def _release(board: Board, cfg: Config, actor: Actor, issue: Issue) -> str | None:
     if issue.status not in ("in_progress", "blocked"):
         return f"issue is {issue.status}; release is only legal from in-progress or blocked"
     if actor.is_human:
         return None
     group = cfg.groups[actor.group]  # type: ignore[index]
-    if group.bot not in issue.assignees:
-        return f"issue is not assigned to {group.bot}"
-    return None
+    if group.bot in issue.assignees:
+        return None
+    if actor.is_pm and lease_rule(board, issue):
+        return None
+    return f"issue is not assigned to {group.bot}"
 
 
 def _reopen(board: Board, cfg: Config, actor: Actor, issue: Issue) -> str | None:

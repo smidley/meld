@@ -80,3 +80,10 @@ def test_compose_round_trips():
     body = compose(h, "Please review.\n\nverified-by: pytest")
     assert body.startswith("[codex:pm] REVIEW-REQUEST #42\n\n")
     assert parse_header(body.splitlines()[0], CFG) == h
+
+
+def test_pm_lease_and_expired_verbs():
+    assert parse_header("[codex:pm] LEASE #12", CFG) == Header(Party("pm", "codex"), "LEASE", "#12", None)
+    assert parse_header("[codex:pm] EXPIRED #12", CFG) == Header(Party("pm", "codex"), "EXPIRED", "#12", None)
+    assert parse_header("[codex] LEASE #12", CFG) is None
+    assert validate(Header(Party("pm", "codex"), "LEASE", None, None), "until: x") == ["LEASE requires a ref"]

@@ -1,7 +1,7 @@
 """Builders for pure board objects used across rules/status tests."""
 from __future__ import annotations
 
-from meld.board import Board, Issue, PullRequest, Review, RunRecord
+from meld.board import Board, Issue, Lease, PullRequest, Review, RunRecord
 from meld.config import Config
 from meld.grammar import ParsedComment, parse_comment
 from meld.models import ModelRegistry, ModelSpec
@@ -84,11 +84,17 @@ def mk_run(group: str, issue: int, alive: bool = True, collected: bool = False, 
 
 def mk_board(cfg: Config, issues=(), pulls=(), comments=(), phase: str = "executing", halted: bool = False,
              runs: dict[str, dict[int, RunRecord]] | None = None, spend: dict[str, dict[str, int]] | None = None,
-             open_challenges: frozenset[str] = frozenset()) -> Board:
+             open_challenges: frozenset[str] = frozenset(), leases: dict[int, Lease] | None = None,
+             plan_text: str = "", now: str = "2026-09-03T12:00:00Z") -> Board:
     return Board(repo=cfg.repo_name, milestone=3, coordination_issue=10, phase=phase, halted=halted,
                  issues={i.number: i for i in issues}, pulls={p.number: p for p in pulls}, comments=tuple(comments),
                  runs=runs or {g: {} for g in cfg.group_names}, spend=spend or {g: {} for g in cfg.group_names},
-                 open_challenges=open_challenges, ignored_comments=0)
+                 open_challenges=open_challenges, ignored_comments=0,
+                 leases=leases or {}, plan_text=plan_text, now=now)
+
+
+def mk_lease(issue: int, group: str = "claude", until: str = "2026-09-03T13:00:00Z", comment_id: int = 900) -> Lease:
+    return Lease(issue, group, until, comment_id)
 
 
 def _spec(adapter: str, model_id: str, context_class: str, tier: str) -> ModelSpec:

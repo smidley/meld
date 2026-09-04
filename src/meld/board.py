@@ -1,8 +1,10 @@
 """Typed board model. Pure data and derivations; no GitHub access here."""
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Iterable, Sequence
+import re
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Iterable, Mapping, Sequence
 
 from meld.grammar import ParsedComment
 
@@ -130,10 +132,75 @@ class RunRecord:
     milestone: int
     alive: bool
     collected: bool
+    deadline: str = ""
+    branch: str = ""
+    lease_comment: int | None = None
+    timed_out: bool = False
 
     @property
     def finished(self) -> bool:
         return not self.alive and not self.collected
+
+
+# Strict ISO-8601 UTC (`Z`) shape only: lease_expired compares `until` to `board.now`
+# lexicographically, which is only a valid stand-in for chronological order when both
+# strings share this exact zero-padded, zone-suffixed shape. Anything looser (an offset
+# like "+00:00", a missing "Z", free text) would make a malformed lease compare as
+# "less than" nothing and so never expire, so it is rejected here rather than accepted
+# and mis-ordered later.
+_LEASE_UNTIL_RE = re.compile(r"^\s*until:\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\s*$", re.MULTILINE)
+
+
+@dataclass(frozen=True)
+class Lease:
+    issue: int
+    group: str
+    until: str
+    comment_id: int
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_lease_until(text: str) -> str | None:
+    m = _LEASE_UNTIL_RE.search(text or "")
+    return m.group(1) if m else None
+
+
+def derive_leases(comments: Sequence[ParsedComment]) -> dict[int, Lease]:
+    """The lease each LEASE comment still asserts, before `assigned_leases` checks it against the board."""
+    leases: dict[int, Lease] = {}
+    for c in _ordered(comments):
+        if not c.ok or c.header is None or not c.header.ref or not c.header.ref.startswith("#") or not c.header.ref[1:].isdigit():
+            continue
+        n = int(c.header.ref[1:])
+        if c.header.verb == "LEASE" and c.header.party.kind == "pm" and c.header.party.group:
+            until = parse_lease_until(c.text)
+            if until:
+                leases[n] = Lease(n, c.header.party.group, until, c.id)
+        elif (c.header.verb == "EXPIRED" and c.header.party.kind == "pm") or (c.header.verb == "RELEASE" and c.header.party.kind == "human"):
+            leases.pop(n, None)
+    return leases
+
+
+# A lease is valid only while the leasing group's bot is assigned to the issue. The LEASE
+# comment outlives the claim it describes: `meld release` posts nothing, so once the leasing
+# group lets go and another group claims the issue, the old comment would still read as a
+# lease on the new claim, and once its `until` passed any PM could release the new owner
+# (a LEASE forged by hand would do the same on purpose). Assignment, not the thread, is the
+# claim lock (spec section 6), so it decides validity too. The check lives here, next to the
+# derivation, but is applied by the board assembler, which knows each group's bot; Board
+# itself stays free of Config.
+def assigned_leases(leases: Mapping[int, Lease], issues: Mapping[int, Issue], bot_of_group: Mapping[str, str]) -> dict[int, Lease]:
+    """Keep only the leases whose group's bot is currently assigned to the leased issue."""
+    out: dict[int, Lease] = {}
+    for n, lease in leases.items():
+        issue = issues.get(n)
+        bot = bot_of_group.get(lease.group)
+        if issue is not None and bot is not None and bot in issue.assignees:
+            out[n] = lease
+    return out
 
 
 @dataclass(frozen=True)
@@ -150,6 +217,13 @@ class Board:
     spend: dict[str, dict[str, int]]
     open_challenges: frozenset[str]
     ignored_comments: int
+    leases: dict[int, Lease] = field(default_factory=dict)
+    plan_text: str = ""
+    now: str = ""
+
+    def lease_expired(self, issue: int) -> bool:
+        lease = self.leases.get(issue)
+        return bool(lease and self.now and lease.until < self.now)
 
     def in_progress_count(self, bot: str) -> int:
         return sum(1 for i in self.issues.values() if i.status == "in_progress" and bot in i.assignees)

@@ -13,6 +13,7 @@ def load_board1_routes(fake: FakeGh, repo: str = "acme/widgets") -> None:
     d = FIXTURES / "board1"
     r = lambda p: f"repos/{repo}/{p}"  # noqa: E731
     fake.route("GET", r("milestones"), json.loads((d / "milestones.json").read_text()))
+    fake.route("GET", r("milestones/3"), json.loads((d / "milestones.json").read_text())[0])
     fake.route("GET", r("issues"), json.loads((d / "issues.json").read_text()))
     fake.route("GET", r("issues/10/comments"), json.loads((d / "comments_10.json").read_text()))
     fake.route("GET", r("pulls"), json.loads((d / "pulls.json").read_text()))
@@ -20,6 +21,22 @@ def load_board1_routes(fake: FakeGh, repo: str = "acme/widgets") -> None:
     fake.route("GET", r("pulls/20/commits"), json.loads((d / "commits_20.json").read_text()))
     fake.route("GET", r("commits/abc123/check-runs"), json.loads((d / "checkruns_abc123.json").read_text()))
     fake.route("GET", "user", {"login": "empowerScott"})
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_cli_adapter(monkeypatch):
+    """CLI tests never scan the host's ~/.claude or ~/.codex: the CLI resolves adapters through a fake with no skills."""
+    import meld.cli as cli  # imported here, not at module load, so conftest never forces the CLI's import graph early
+    from tests.fakeadapter import no_skills
+    monkeypatch.setattr(cli, "ADAPTER_FOR", no_skills)
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_git(monkeypatch):
+    """No host gitconfig (gpgsign, hooks, credential helpers, identity) reaches any git the suite or the code under
+    test runs; fixtures set a local identity wherever they commit."""
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
 
 
 @pytest.fixture

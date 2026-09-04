@@ -8,6 +8,7 @@ from meld.actions import Refused
 from meld.context import load_context
 from meld.posting import PostError, post
 from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
+from tests.fakeadapter import no_skills
 from tests.fakegh import FakeGh
 
 R = "repos/acme/widgets/"
@@ -29,7 +30,7 @@ def make(tmp_path, group="claude", role="orchestrator", comments=None, approved=
                 i["labels"] = [{"name": "meld:coordination"}]
         fake.route("GET", R + "issues", issues)
     fake.route("POST", R + "issues/10/comments", {"id": 555, "html_url": "https://github.com/acme/widgets/issues/10#issuecomment-555"})
-    ctx = load_context(tmp_path / ".meld.toml", env=env_for(tmp_path, group=group, role=role), run=fake)
+    ctx = load_context(tmp_path / ".meld.toml", env=env_for(tmp_path, group=group, role=role), run=fake, adapter_for=no_skills)
     return fake, ctx
 
 
@@ -55,6 +56,32 @@ def test_verb_not_allowed_for_party(tmp_path):
     _, human = make(tmp_path, group=None)
     with pytest.raises(PostError, match="humans cannot post \\[joint\\]"):
         post(human, "PLAN", ref="plan-1", joint=True, text="x")
+
+
+def test_lease_and_expired_are_framework_only(tmp_path):
+    _, pm = make(tmp_path, role="pm")
+    with pytest.raises(PostError, match="LEASE is written by meld itself"):
+        post(pm, "LEASE", ref="#12", text="until: 2099-01-01T00:00:00Z")
+    with pytest.raises(PostError, match="EXPIRED is written by meld itself"):
+        post(pm, "EXPIRED", ref="#12", text="released")
+    _, orch = make(tmp_path, role="orchestrator")
+    with pytest.raises(PostError, match="LEASE is written by meld itself"):
+        post(orch, "LEASE", ref="#12", text="until: 2099-01-01T00:00:00Z")
+    _, human = make(tmp_path, group=None)
+    with pytest.raises(PostError, match="EXPIRED is written by meld itself"):
+        post(human, "EXPIRED", ref="#12", text="x")
+
+
+def test_cli_post_lease_is_a_usage_error(tmp_path, monkeypatch):
+    (tmp_path / ".meld.toml").write_text(PROJECT_TOML)
+    fake = FakeGh()
+    load_board1_routes(fake)
+    fake.route("POST", R + "issues/10/comments", {"id": 7, "html_url": "u"})
+    monkeypatch.setattr(cli, "RUN", fake)
+    result = CliRunner().invoke(cli.main, ["--config", str(tmp_path / ".meld.toml"), "--compact", "post", "LEASE", "#12",
+                                           "-m", "until: 2099-01-01T00:00:00Z"], env=env_for(tmp_path, role="pm"))
+    assert result.exit_code == 2 and "never through meld post" in json.loads(result.output)["error"]
+    assert posted(fake) == []
 
 
 def test_validation_errors_surface(tmp_path):
@@ -263,7 +290,7 @@ def test_joint_majority_puts_dissent_before_the_addendum(tmp_path):
          "body": "[gemini] DISSENT dec-1\n\nSQLite is enough."},
     ])
     fake.route("POST", R + "issues/10/comments", {"id": 556, "html_url": "u"})
-    ctx = load_context(tmp_path / ".meld.toml", env=env_for(tmp_path, role="orchestrator"), run=fake)
+    ctx = load_context(tmp_path / ".meld.toml", env=env_for(tmp_path, role="orchestrator"), run=fake, adapter_for=no_skills)
     out = post(ctx, "DECISION", ref="dec-1", joint=True, text="Revisit in Q2.")
     assert out["header"] == "[joint] DECISION dec-1"
     body = posted(fake)[0]

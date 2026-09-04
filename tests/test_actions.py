@@ -9,6 +9,7 @@ from meld.actions import Refused, claim, release
 from meld.context import load_context
 from meld.github import GitHubError
 from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
+from tests.fakeadapter import no_skills
 from tests.fakegh import FakeGh
 
 R = "repos/acme/widgets/"
@@ -23,7 +24,7 @@ def make(tmp_path, group="claude", role="pm"):
     (tmp_path / ".meld.toml").write_text(PROJECT_TOML)
     fake = FakeGh()
     load_board1_routes(fake)
-    ctx = load_context(tmp_path / ".meld.toml", env=env_for(tmp_path, group=group, role=role), run=fake)
+    ctx = load_context(tmp_path / ".meld.toml", env=env_for(tmp_path, group=group, role=role), run=fake, adapter_for=no_skills)
     return fake, ctx
 
 

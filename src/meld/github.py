@@ -185,3 +185,15 @@ class GitHub:
 
     def create_comment(self, number: int, body: str) -> dict:
         return self.post(self._r(f"issues/{number}/comments"), {"body": body})
+
+    def get_milestone(self, number: int) -> dict:
+        return self.get(self._r(f"milestones/{number}"))
+
+    def update_comment(self, comment_id: int, body: str) -> dict:
+        return self.patch(self._r(f"issues/comments/{comment_id}"), {"body": body})
+
+    def create_pull(self, title: str, head: str, base: str, body: str) -> dict:
+        return self.post(self._r("pulls"), {"title": title, "head": head, "base": base, "body": body})
+
+    def update_pull(self, number: int, body: str) -> dict:
+        return self.patch(self._r(f"pulls/{number}"), {"body": body})

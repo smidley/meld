@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from meld.roster import WorkerType, builtin_workers, parse_worker_file, product_workers, roster, roster_names
+from meld.roster import WorkerType, builtin_workers, parse_worker_file, product_workers, roster
 
 
 def test_builtin_roster_has_the_seven_day_one_types():
@@ -36,7 +36,7 @@ def test_product_workers_override_builtins_and_add_new(tmp_path: Path):
     assert by_name["marketing"].source == "product"
     assert by_name["frontend"].source == "builtin"
     assert len(full) == 8
-    assert roster_names(tmp_path) == frozenset({"auditor", "backend", "docs", "frontend", "qa", "reviewer", "security", "marketing"})
+    assert {w.name for w in full} == {"auditor", "backend", "docs", "frontend", "qa", "reviewer", "security", "marketing"}
 
 
 def test_roster_without_repo_root_and_with_extra():

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -9,15 +10,22 @@ import click
 
 from meld import __version__
 from meld.actions import Refused, claim as do_claim, release as do_release
+from meld.adapters import UnknownAdapter, get_adapter
 from meld.assemble import BoardError
 from meld.config import ConfigError
 from meld.context import Context, load_context
+from meld.dispatch import DispatchError, collect as do_collect, dispatch as do_dispatch, reap as do_reap, tick as do_tick
 from meld.github import GitHubError
+from meld.gitops import GitError
 from meld.posting import PostError, post as do_post
+from meld.runners import run_group
+from meld.state import CHANGE_KINDS
 from meld.status import build_status
+from meld.tagging import tag as do_tag
 from meld.waiting import wait_for_change
 
 RUN = subprocess.run  # tests monkeypatch this with a FakeGh
+ADAPTER_FOR = get_adapter
 
 
 def emit(data: object, pretty: bool) -> None:
@@ -36,13 +44,13 @@ def main(ctx: click.Context, config_path: Path | None, pretty: bool) -> None:
 
 
 def _load(ctx: click.Context) -> Context:
-    return _guard(lambda: load_context(ctx.obj["config_path"], run=RUN))
+    return _guard(lambda: load_context(ctx.obj["config_path"], run=RUN, adapter_for=ADAPTER_FOR))
 
 
 def _guard(fn):
     try:
         return fn()
-    except (BoardError, GitHubError, ConfigError) as e:
+    except (BoardError, GitHubError, ConfigError, DispatchError, GitError, UnknownAdapter) as e:
         raise click.ClickException(str(e)) from e
 
 
@@ -81,8 +89,10 @@ def models(ctx: click.Context, adapter: str | None) -> None:
 @main.command()
 @click.option("--timeout", type=float, default=None, help="Seconds to wait before returning unchanged (default: polling.wait_timeout_seconds).")
 @click.option("--interval", type=float, default=None, help="Seconds between polls (default: polling.interval_seconds).")
+@click.option("--filter", "kinds", default=None,
+              help="Comma-separated change kinds that count as a change: " + ",".join(k for k in CHANGE_KINDS if k != "snapshot") + " (default: all).")
 @click.pass_context
-def wait(ctx: click.Context, timeout: float | None, interval: float | None) -> None:
+def wait(ctx: click.Context, timeout: float | None, interval: float | None, kinds: str | None) -> None:
     """Block until the board changes, then print status plus a changes list."""
     c = _load(ctx)
     t = timeout if timeout is not None else c.cfg.wait_timeout_seconds
@@ -91,7 +101,13 @@ def wait(ctx: click.Context, timeout: float | None, interval: float | None) -> N
         raise click.BadParameter("must be greater than 0", param_hint="--interval")
     if t < 0:
         raise click.BadParameter("must not be negative", param_hint="--timeout")
-    data = _guard(lambda: wait_for_change(c, timeout=t, interval=i))
+    wanted: set[str] | None = None
+    if kinds:
+        wanted = {k.strip() for k in kinds.split(",") if k.strip()}
+        unknown = sorted(wanted - set(CHANGE_KINDS))
+        if unknown:
+            raise click.BadParameter(f"unknown change kind(s): {', '.join(unknown)}", param_hint="--filter")
+    data = _guard(lambda: wait_for_change(c, timeout=t, interval=i, kinds=wanted))
     emit(data, ctx.obj["pretty"])
 
 
@@ -150,6 +166,78 @@ def post(ctx: click.Context, verb: str, ref: str | None, qualifier: str | None, 
     except PostError as e:
         emit({"error": str(e)}, ctx.obj["pretty"])
         ctx.exit(2)
+
+
+@main.command()
+@click.argument("number", type=int)
+@click.option("--kind", type=click.Choice(["build", "review", "audit"]), default="build", show_default=True,
+              help="build: a claimed issue; review/audit: a pull request.")
+@click.pass_context
+def dispatch(ctx: click.Context, number: int, kind: str) -> None:
+    """Spawn a headless worker in its own worktree for an issue (build) or a PR (review, audit)."""
+    c = _load(ctx)
+    _run_action(ctx, lambda: do_dispatch(c, number, kind=kind))
+
+
+@main.command()
+@click.pass_context
+def tick(ctx: click.Context) -> None:
+    """PM housekeeping: kill overdue workers, create missing leases, release other groups' expired leases."""
+    c = _load(ctx)
+    _run_action(ctx, lambda: do_tick(c))
+
+
+@main.command()
+@click.argument("number", type=int)
+@click.pass_context
+def collect(ctx: click.Context, number: int) -> None:
+    """Finish a worker run: push and open the PR, or mark the issue blocked or needs-human."""
+    c = _load(ctx)
+    _run_action(ctx, lambda: do_collect(c, number))
+
+
+@main.command()
+@click.argument("number", type=int)
+@click.pass_context
+def reap(ctx: click.Context, number: int) -> None:
+    """Remove a finished run's worktree and archive its record."""
+    c = _load(ctx)
+    _run_action(ctx, lambda: do_reap(c, number))
+
+
+@main.command()
+@click.pass_context
+def roster(ctx: click.Context) -> None:
+    """List the worker types available to the calling party."""
+    c = _load(ctx)
+    emit([{"name": w.name, "description": w.description, "source": w.source} for w in _guard(c.roster_entries)], ctx.obj["pretty"])
+
+
+@main.command()
+@click.argument("number", type=int)
+@click.option("--worker", default=None)
+@click.option("--model", default=None)
+@click.option("--effort", default=None)
+@click.option("--size", default=None, type=click.Choice(["S", "M", "L"]))
+@click.pass_context
+def tag(ctx: click.Context, number: int, worker: str | None, model: str | None, effort: str | None, size: str | None) -> None:
+    """Set the worker, model, effort, and size labels on an issue (orchestrator or human)."""
+    c = _load(ctx)
+    _run_action(ctx, lambda: do_tag(c, number, worker=worker, model=model, effort=effort, size=size))
+
+
+@main.command()
+@click.argument("group")
+@click.option("--once", is_flag=True, help="Launch both roles once and return when they exit (no restarts).")
+@click.pass_context
+def run(ctx: click.Context, group: str, once: bool) -> None:
+    """Supervise a group's orchestrator and PM processes."""
+    env = {**os.environ, "MELD_GROUP": group, "MELD_ROLE": "orchestrator"}
+    try:
+        c = load_context(ctx.obj["config_path"], env=env, run=RUN, adapter_for=ADAPTER_FOR)
+    except ConfigError as e:
+        raise click.ClickException(str(e)) from e
+    emit(_guard(lambda: run_group(c, once=once, base_env=env)), ctx.obj["pretty"])
 
 
 if __name__ == "__main__":

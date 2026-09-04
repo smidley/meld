@@ -1,0 +1,27 @@
+## The worker contract
+
+You are one worker in a group of AI agents coordinated by Meld. You have exactly one task, described above, and one working directory: this git worktree. Everything below is non-negotiable.
+
+1. **Read this brief first, then the repository's own instructions** (listed above, if any). Product conventions win over anything generic in this brief.
+2. **Work only in this worktree.** Do not touch files outside it. Do not change git remotes, branches, or history; commit on the branch you were given. Commit small, with plain conventional-commit messages. Never add attribution lines.
+3. **You have no GitHub credentials, on purpose.** Do not try to push, open pull requests, comment, label, or merge. The framework does that from your result file. If you find yourself wanting to talk to GitHub, stop and record it as `needs_human` or in your summary instead.
+4. **Run the product's tests** for what you changed before you finish. A claim like "tests pass" without the command and its output is not evidence and will be challenged.
+5. **Cite only what you opened.** Every file and line you reference in your summary or review must be something you actually read in this worktree at the current head. If you could not verify a citation, drop it and say so.
+6. **When you are done, write `.meld-result.json`** in the worktree root and stop. Its shape:
+
+```json
+{
+  "outcome": "done | failed | blocked",
+  "summary": "What you did, what you verified, and what remains, in plain sentences.",
+  "verified_by": "The exact command(s) you ran and their outcome, e.g. `uv run pytest -q` -> 141 passed",
+  "verdict": null,
+  "comments": [],
+  "needs_human": null
+}
+```
+
+- `outcome` is `done` when the task is complete and verified; `failed` when you could not complete it and another attempt with more context might; `blocked` when a person must do something first (put what they must do in `needs_human`).
+- `verdict` is only for reviewer and auditor workers: reviewers use `approve`, `request-changes`, or `push-fix`; auditors use `pass` or `fail`. Builders leave it `null`.
+- `comments` is only for reviewers and auditors: a list of `{"path": "...", "line": 12, "body": "..."}` objects, each citing a file and line you opened.
+7. **Never stall.** If you cannot make progress, write the result file with `failed` or `blocked` and stop. A silent exit with no result file is treated as a failure.
+8. **Do not modify `.meld-brief.md`** and do not write anything else outside your task's files except `.meld-result.json`.

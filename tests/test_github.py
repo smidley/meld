@@ -170,6 +170,25 @@ def test_remove_label_quotes_the_label_path_segment(tmp_path):
     assert fake.calls[-1].endpoint == "repos/acme/widgets/issues/7/labels/needs%20triage%3A%20now"
 
 
+def test_update_comment_and_get_milestone(tmp_path):
+    fake, gh = make(tmp_path)
+    fake.route("PATCH", "repos/acme/widgets/issues/comments/110", {"id": 110})
+    fake.route("GET", "repos/acme/widgets/milestones/3", {"number": 3, "description": "plan"})
+    assert gh.update_comment(110, "new body")["id"] == 110
+    assert fake.calls[0].method == "PATCH" and fake.calls[0].body == {"body": "new body"}
+    assert gh.get_milestone(3)["description"] == "plan"
+
+
+def test_create_and_update_pull(tmp_path):
+    fake, gh = make(tmp_path)
+    fake.route("POST", "repos/acme/widgets/pulls", {"number": 21, "html_url": "u"})
+    fake.route("PATCH", "repos/acme/widgets/pulls/21", {"number": 21})
+    assert gh.create_pull("t", "meld/11-x", "main", "Closes #11")["number"] == 21
+    assert fake.calls[0].body == {"title": "t", "head": "meld/11-x", "base": "main", "body": "Closes #11"}
+    gh.update_pull(21, "new body")
+    assert fake.calls[1].method == "PATCH" and fake.calls[1].body == {"body": "new body"}
+
+
 def test_cache_truncated_mid_character_is_ignored(tmp_path):
     fake, gh = make(tmp_path)
     fake.route("GET", "repos/acme/widgets/issues/7", {"number": 7, "title": "café"}, etag='W/"v1"')

@@ -33,6 +33,8 @@ class GroupConfig:
     review_concurrency: int
     orchestrator: RoleConfig
     pm: RoleConfig
+    git_name: str | None = None
+    git_email: str | None = None
 
 
 def _require(data: Mapping[str, Any], key: str, path: str) -> Any:
@@ -43,6 +45,18 @@ def _require(data: Mapping[str, Any], key: str, path: str) -> Any:
 
 def _role(data: Mapping[str, Any], path: str) -> RoleConfig:
     return RoleConfig(model=str(_require(data, "model", path)), effort=str(_require(data, "effort", path)))
+
+
+_DURATION_RE = re.compile(r"^\s*(\d+)\s*([smh]?)\s*$")
+_DURATION_UNITS = {"": 1, "s": 1, "m": 60, "h": 3600}
+
+
+def parse_duration(text: str) -> int:
+    """Parse '90s', '20m', '2h', or a bare number of seconds into seconds."""
+    m = _DURATION_RE.match(str(text))
+    if not m:
+        raise ConfigError(f"invalid duration {text!r}; use e.g. 90s, 20m, 2h")
+    return int(m.group(1)) * _DURATION_UNITS[m.group(2)]
 
 
 @dataclass(frozen=True)
@@ -67,6 +81,14 @@ class Config:
     budget_wallclock_hours: int
     notify_webhook_env: str | None
     notify_repeat_after_minutes: int
+    worker_log_tail_lines: int = 50
+    worker_max_turns: int = 200
+    lease_grace_minutes: int = 10
+
+    def timeout_seconds(self, size: str) -> int:
+        if size not in self.timeouts:
+            raise ConfigError(f"unknown size {size!r}; expected one of {', '.join(self.timeouts)}")
+        return parse_duration(self.timeouts[size])
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "Config":
@@ -91,6 +113,8 @@ class Config:
                 review_concurrency=int(g.get("review_concurrency", 4)),
                 orchestrator=_role(_require(g, "orchestrator", path), f"{path}.orchestrator"),
                 pm=_role(_require(g, "pm", path), f"{path}.pm"),
+                git_name=(str(g["git_name"]) if g.get("git_name") else None),
+                git_email=(str(g["git_email"]) if g.get("git_email") else None),
             )
         review = data.get("review", {})
         agreement = data.get("agreement", {})
@@ -99,6 +123,14 @@ class Config:
         timeouts = data.get("timeouts", {})
         budget = data.get("budget", {})
         notify = data.get("notify", {})
+        worker = data.get("worker", {})
+        lease = data.get("lease", {})
+        timeouts_cfg = {"S": str(timeouts.get("S", "20m")), "M": str(timeouts.get("M", "45m")), "L": str(timeouts.get("L", "90m"))}
+        for size, value in timeouts_cfg.items():
+            try:
+                parse_duration(value)
+            except ConfigError as e:
+                raise ConfigError(f"timeouts.{size}: {e}") from e
         return cls(
             repo_name=str(_require(repo, "name", "repo")),
             default_branch=str(repo.get("default_branch", "main")),
@@ -115,7 +147,7 @@ class Config:
             roster_refresh_minutes=int(runners.get("roster_refresh_minutes", 60)),
             silence_grace_minutes=int(runners.get("silence_grace_minutes", 30)),
             summary_cadence_minutes=int(runners.get("summary_cadence_minutes", 60)),
-            timeouts={"S": str(timeouts.get("S", "20m")), "M": str(timeouts.get("M", "45m")), "L": str(timeouts.get("L", "90m"))},
+            timeouts=timeouts_cfg,
             budget={
                 "small": int(budget.get("small", 200)),
                 "medium": int(budget.get("medium", 80)),
@@ -124,6 +156,9 @@ class Config:
             budget_wallclock_hours=int(budget.get("wallclock_hours", 72)),
             notify_webhook_env=notify.get("slack_dm_webhook_env"),
             notify_repeat_after_minutes=int(notify.get("repeat_after_minutes", 120)),
+            worker_log_tail_lines=int(worker.get("log_tail_lines", 50)),
+            worker_max_turns=int(worker.get("max_turns", 200)),
+            lease_grace_minutes=int(lease.get("grace_minutes", 10)),
         )
 
     @property

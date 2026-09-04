@@ -140,12 +140,14 @@ def test_pr_brief_names_the_primary_concern_and_the_checkout(tmp_path):
 def test_brief_carries_product_standards_and_skills(tmp_path):
     issue = mk_issue(11)
     backend = next(w for w in builtin_workers() if w.name == "backend")
+    security_review_path = Path("/Users/x/.claude/skills/security-review/SKILL.md")
     skills = [WorkerType("brand", "House brand voice and visual identity.", "skill", None, ""),
-              WorkerType("security-review", "OWASP-style review of a change.", "skill", None, "")]
+              WorkerType("security-review", "OWASP-style review of a change.", "skill", security_review_path, "")]
     text = render_brief(role=backend, kind="build", group="claude", model="m", effort="medium", issue=issue, pr=None, plan_text="",
                         repo_root=tmp_path, worktree=tmp_path, base_branch="main", skills=skills)
     assert "## Product standards" in text and DEFAULT_STANDARDS.splitlines()[0] in text
     assert "## Skills available" in text and "- `brand`: House brand voice and visual identity." in text and "Invoke a skill by name" in text
+    assert f"- `security-review` ({security_review_path}): OWASP-style review of a change." in text
     (tmp_path / ".meld").mkdir()
     (tmp_path / ".meld" / "STANDARDS.md").write_text("# Widgets standards\n\nEvery screen ships with a Lighthouse score above 90.\n")
     custom = render_brief(role=backend, kind="build", group="claude", model="m", effort="medium", issue=issue, pr=None, plan_text="",
@@ -154,3 +156,23 @@ def test_brief_carries_product_standards_and_skills(tmp_path):
     # ("`## Skills available`") even when the section itself is absent, so this checks for the rendered heading line.
     assert "Lighthouse score above 90" in custom and DEFAULT_STANDARDS.splitlines()[0] not in custom and "\n## Skills available\n" not in custom
     assert product_standards(tmp_path).startswith("# Widgets standards")
+
+
+def test_empty_standards_file_falls_back_to_the_default(tmp_path):
+    (tmp_path / ".meld").mkdir()
+    (tmp_path / ".meld" / "STANDARDS.md").write_text("   \n\n\t\n")
+    assert product_standards(tmp_path) == DEFAULT_STANDARDS
+
+
+def test_render_brief_caps_the_skills_section(tmp_path):
+    issue = mk_issue(11)
+    backend = next(w for w in builtin_workers() if w.name == "backend")
+    many = [WorkerType(f"skill-{i:02d}", f"Does thing {i}.", "skill", None, "") for i in range(35)]
+    text = render_brief(role=backend, kind="build", group="claude", model="m", effort="medium", issue=issue, pr=None, plan_text="",
+                        repo_root=tmp_path, worktree=tmp_path, base_branch="main", skills=many)
+    bullets = [line for line in text.splitlines() if line.startswith("- `skill-")]
+    assert len(bullets) == 30 and "`skill-00`" in bullets[0] and "`skill-29`" in bullets[-1]
+    assert "… and 5 more installed skills; ask your PM to narrow the roster if you need one of them." in text
+    few_text = render_brief(role=backend, kind="build", group="claude", model="m", effort="medium", issue=issue, pr=None, plan_text="",
+                            repo_root=tmp_path, worktree=tmp_path, base_branch="main", skills=many[:3])
+    assert "more installed skills" not in few_text

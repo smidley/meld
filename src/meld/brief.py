@@ -20,15 +20,17 @@ _AGENT_FILES = ("CLAUDE.md", "AGENTS.md", ".github/copilot-instructions.md")
 _PATH_TOKEN_RE = re.compile(r"`([A-Za-z0-9_./-]+\.[A-Za-z0-9]+)`")
 _FILES_HEADING_RE = re.compile(r"^\s*(?:#+\s*)?files:?\s*$", re.IGNORECASE)
 STANDARDS_FILE = ".meld/STANDARDS.md"
+MAX_SKILLS = 30
 DEFAULT_STANDARDS = """Build for real users, not for a demo. Visual design, performance, and security are acceptance criteria with the same weight as correctness: anything a user sees must look intentional, consistent, and accessible and respond quickly; every input, secret, and dependency is handled as if the product were already public.
 Decide with industry standards, current documentation, and your own research rather than asking. Surface only decisions that need a human's approval (money, credentials, product direction, irreversible changes) through the framework's needs-human path.
 Where a skill is available for the task at hand (design, security review, performance, a framework's conventions), use it before improvising, and say which one you used."""
 
 
 def product_standards(repo_root: Path) -> str:
-    """The product's own quality bar (.meld/STANDARDS.md) when it has one, else the framework default."""
+    """The product's own quality bar (.meld/STANDARDS.md) when it has one, else the framework default; an empty file counts as none."""
     f = repo_root / STANDARDS_FILE
-    return f.read_text().strip() if f.is_file() else DEFAULT_STANDARDS
+    text = f.read_text().strip() if f.is_file() else ""
+    return text or DEFAULT_STANDARDS
 
 
 class ResultError(ValueError):
@@ -141,8 +143,14 @@ def render_brief(*, role: WorkerType, kind: str, group: str, model: str, effort:
         parts += ["## Verification bar for this repository", "", bar.strip(), ""]
     parts += ["## Product standards", "", product_standards(repo_root), ""]
     if skills:
-        parts += ["## Skills available", ""] + [f"- `{s.name}`: {s.description}" for s in skills] + \
-                 ["", "Invoke a skill by name when it matches the task; do not reinvent what a skill already does well.", ""]
+        ordered = sorted(skills, key=lambda s: s.name)
+        shown = ordered[:MAX_SKILLS]
+        bullets = [f"- `{s.name}` ({s.path}): {s.description}" if s.path else f"- `{s.name}`: {s.description}" for s in shown]
+        parts += ["## Skills available", ""] + bullets
+        overflow = len(ordered) - len(shown)
+        if overflow:
+            parts += [f"… and {overflow} more installed skills; ask your PM to narrow the roster if you need one of them."]
+        parts += ["", "Invoke a skill by name when it matches the task; do not reinvent what a skill already does well.", ""]
     agent_files = agent_instruction_files(worktree)
     if agent_files:
         parts += ["## Repository instructions", ""] + [f"- `{f}`" for f in agent_files] + ["", "These win over anything generic below.", ""]

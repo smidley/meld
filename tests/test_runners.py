@@ -1,11 +1,20 @@
 import json
+import os
+import signal
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
+import pytest
+from click.testing import CliRunner
+
+import meld.cli as cli
 from meld.runners import launch_role, role_env, run_group
 from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
 from tests.fakeadapter import FakeAdapter
 from tests.fakegh import FakeGh
 from meld.context import load_context
+from meld.state import pid_alive
 
 
 def make(tmp_path: Path):
@@ -69,3 +78,83 @@ def test_run_group_restarts_exited_roles_with_backoff(tmp_path):
     out = run_group(ctx, adapter=adapter, cycles=4, interval=0.01, sleep=sleep, clock=clock, base_env=env)
     assert out["roles"]["orchestrator"]["launches"] >= 2 and out["roles"]["orchestrator"]["last_exit"] == 1
     assert 5.0 in slept  # first backoff is 5 s (virtual)
+
+
+@dataclass
+class RecordingAdapter(FakeAdapter):
+    """A FakeAdapter that also remembers the Popen objects launch() returned."""
+    procs: list = field(default_factory=list)
+
+    def launch(self, spec):
+        proc = super().launch(spec)
+        self.procs.append(proc)
+        return proc
+
+
+@dataclass
+class FlakyAdapter(FakeAdapter):
+    """A FakeAdapter whose second launch() call raises, simulating a mid-startup failure."""
+    calls: int = 0
+    procs: list = field(default_factory=list)
+
+    def launch(self, spec):
+        self.calls += 1
+        if self.calls == 2:
+            raise RuntimeError("boom")
+        proc = super().launch(spec)
+        self.procs.append(proc)
+        return proc
+
+
+def test_run_group_stops_promptly_and_reports_signal_exit_on_shutdown(tmp_path):
+    ctx, env = make(tmp_path)
+    adapter = RecordingAdapter(script="import time; time.sleep(30)")
+    prev_term = signal.getsignal(signal.SIGTERM)
+    prev_int = signal.getsignal(signal.SIGINT)
+    calls = {"n": 0}
+
+    def sleep(s):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            os.kill(os.getpid(), signal.SIGTERM)
+        time.sleep(s)
+
+    started = time.monotonic()
+    out = run_group(ctx, adapter=adapter, interval=0.05, base_env=env, sleep=sleep)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 15.0  # the backoff/interval sleep must be cut short, not ridden out
+    assert out["roles"]["orchestrator"]["last_exit"] == -signal.SIGTERM
+    assert out["roles"]["pm"]["last_exit"] == -signal.SIGTERM
+    assert len(adapter.procs) == 2
+    for proc in adapter.procs:
+        assert not pid_alive(proc.pid)
+    assert signal.getsignal(signal.SIGTERM) == prev_term
+    assert signal.getsignal(signal.SIGINT) == prev_int
+
+
+def test_run_group_cleans_up_first_role_when_second_launch_fails(tmp_path):
+    ctx, env = make(tmp_path)
+    adapter = FlakyAdapter(script="import time; time.sleep(30)")
+    prev_term = signal.getsignal(signal.SIGTERM)
+    prev_int = signal.getsignal(signal.SIGINT)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        run_group(ctx, adapter=adapter, interval=0.05, base_env=env)
+
+    assert len(adapter.procs) == 1  # the second (failed) launch never produced a process to track
+    assert not pid_alive(adapter.procs[0].pid)  # but the first role's child was cleaned up, not orphaned
+    assert signal.getsignal(signal.SIGTERM) == prev_term
+    assert signal.getsignal(signal.SIGINT) == prev_int
+
+
+def test_cli_run_rejects_unknown_group_cleanly(tmp_path, monkeypatch):
+    (tmp_path / ".meld.toml").write_text(PROJECT_TOML)
+    fake = FakeGh()
+    load_board1_routes(fake)
+    monkeypatch.setattr(cli, "RUN", fake)
+    monkeypatch.setattr(cli, "ADAPTER_FOR", lambda name: FakeAdapter())
+    result = CliRunner().invoke(cli.main, ["--config", str(tmp_path / ".meld.toml"), "--compact", "run", "nope", "--once"],
+                                env=env_for(tmp_path))
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output

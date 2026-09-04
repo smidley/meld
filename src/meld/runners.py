@@ -11,10 +11,13 @@ from pathlib import Path
 from meld.adapters import Adapter, LaunchSpec
 from meld.config import GroupConfig
 from meld.prompts import ROLES, role_prompt
-from meld.state import pid_alive
 
 ROLE_MAX_TURNS = 10000
 _MAX_BACKOFF = 300.0
+
+
+class _StopRequested(Exception):
+    """Raised by the supervisor's signal handler, only while it is inside its own sleep."""
 
 
 @dataclass
@@ -54,14 +57,15 @@ def _terminate(proc, *, grace: float = 10.0, sleep=time.sleep) -> None:
     except ProcessLookupError:
         return
     waited = 0.0
-    while pid_alive(proc.pid) and waited < grace:
+    while proc.poll() is None and waited < grace:
         sleep(0.1)
         waited += 0.1
-    if pid_alive(proc.pid):
+    if proc.poll() is None:
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+        proc.wait()
 
 
 def run_group(ctx, *, adapter: Adapter | None = None, once: bool = False, cycles: int | None = None, interval: float = 5.0,
@@ -70,16 +74,33 @@ def run_group(ctx, *, adapter: Adapter | None = None, once: bool = False, cycles
     adp = adapter if adapter is not None else ctx.adapter()
     if adp is None:
         raise ValueError("meld run needs a group party; set MELD_GROUP or pass the group name")
-    procs = {role: launch_role(ctx, group, adp, role, base_env=base_env, clock=clock) for role in ROLES}
-    stop = {"now": False}
+
+    state = {"stop": False, "sleeping": False}
 
     def on_signal(signum, frame):  # noqa: ARG001
-        stop["now"] = True
+        state["stop"] = True
+        if state["sleeping"]:
+            raise _StopRequested()
+
+    def _pause(seconds: float) -> None:
+        # Sleeps the supervisor takes on its own behalf (backoff, poll interval) go through
+        # here so on_signal can cut them short; _terminate's sleeps do not, since it is
+        # already tearing a process down and an early exit there would leave that in doubt.
+        state["sleeping"] = True
+        try:
+            sleep(seconds)
+        except _StopRequested:
+            pass
+        finally:
+            state["sleeping"] = False
 
     previous = {sig: signal.signal(sig, on_signal) for sig in (signal.SIGTERM, signal.SIGINT)}
+    procs: dict[str, RoleProcess] = {}
     try:
+        for role in ROLES:
+            procs[role] = launch_role(ctx, group, adp, role, base_env=base_env, clock=clock)
         cycle = 0
-        while not stop["now"]:
+        while not state["stop"]:
             cycle += 1
             for role, rp in procs.items():
                 code = rp.proc.poll()
@@ -88,7 +109,7 @@ def run_group(ctx, *, adapter: Adapter | None = None, once: bool = False, cycles
                     if once:
                         continue
                     backoff = min(5.0 * (2 ** rp.restarts), _MAX_BACKOFF)
-                    sleep(backoff)
+                    _pause(backoff)
                     fresh = launch_role(ctx, group, adp, role, base_env=base_env, clock=clock)
                     fresh.restarts, fresh.launches, fresh.last_exit = rp.restarts + 1, rp.launches + 1, code
                     procs[role] = fresh
@@ -101,11 +122,14 @@ def run_group(ctx, *, adapter: Adapter | None = None, once: bool = False, cycles
                 break
             if cycles is not None and cycle >= cycles:
                 break
-            sleep(interval)
+            _pause(interval)
+    except BaseException:
+        state["stop"] = True
+        raise
     finally:
         for sig, handler in previous.items():
             signal.signal(sig, handler)
-        if stop["now"]:
+        if state["stop"]:
             for rp in procs.values():
                 _terminate(rp.proc, sleep=sleep)
     return {"group": group.name, "roles": {role: {"launches": rp.launches, "last_exit": rp.proc.poll() if rp.proc.poll() is not None else rp.last_exit}

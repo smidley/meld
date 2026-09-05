@@ -212,6 +212,23 @@ def test_joint_refused_when_already_posted(tmp_path):
         post(ctx, "PLAN", ref="plan-1", joint=True)
 
 
+CLOSED_PLAN = AGREED_PLAN + [
+    {"id": 104, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T09:12:00Z",
+     "body": "[joint] PLAN plan-1\n\n1. health endpoint\n2. login form\n\nverified-by: meld roster"},
+]
+
+
+def test_agreement_verbs_are_refused_once_a_joint_comment_closed_the_ref(tmp_path):
+    for group, verb in (("codex", "AMEND"), ("codex", "DISSENT"), ("claude", "AGREE"), ("codex", "PROPOSE"), ("codex", "DRAFT")):
+        fake, ctx = make(tmp_path, group=group, comments=CLOSED_PLAN, approved=False)
+        with pytest.raises(Refused, match="plan-1 is closed by a \\[joint\\] comment; open a new ref"):
+            post(ctx, verb, ref="plan-1", text="v2")
+        assert posted_headers(fake) == [f"[{group}] PROTOCOL-VIOLATION plan-1"]
+    # the human's AMEND is a human input on the plan, not an agreement-round verb, and is still posted
+    fake, human = make(tmp_path, group=None, comments=CLOSED_PLAN, approved=False)
+    assert post(human, "AMEND", ref="plan-1", text="ship the endpoint first")["header"] == "[human] AMEND plan-1"
+
+
 def test_multiline_dissent_is_indented_inside_its_bullet(tmp_path):
     comments = BASE_COMMENTS + [
         {"id": 102, "user": {"login": "meld-codex-bot"}, "created_at": "2026-09-03T09:10:00Z",

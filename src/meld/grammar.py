@@ -167,6 +167,11 @@ def agreement_for(comments: Sequence[ParsedComment], ref: str, cfg: Config) -> A
             closed = text is not None and ((agreed >= set(cfg.group_names)) or ((agreed | set(dissent)) >= set(cfg.group_names)))
             joint_verified = closed and proposer is not None and cmt.author == cfg.groups[proposer].bot
             continue
+        if joint_posted:
+            # A [joint] comment closes the ref, verified or not: nothing posted after it can reopen the round or
+            # rewrite its text, proposer, or votes (an AMEND after the joint would otherwise make the amender the
+            # "proposer" of text nobody agreed to, under a joint comment that still reads as verified).
+            continue
         if h.party.kind not in ("group", "pm") or h.party.group is None:
             continue
         g = h.party.group

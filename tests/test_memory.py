@@ -161,6 +161,18 @@ def test_decide_refusals(tmp_path):
         decide(human, "dec-1", now=NOW)
 
 
+def test_an_amend_after_the_joint_cannot_make_the_amender_the_proposer(tmp_path):
+    # F1: once the [joint] DECISION is posted the round is frozen, so codex's later AMEND changes neither the text nor
+    # the proposer -- without the freeze, codex would become the proposer of its own text under claude's verified joint.
+    fake, codex, repo, origin = make_product(tmp_path, group="codex", role="orchestrator")
+    with_thread(fake, DECISION_THREAD + [{"id": 204, "user": {"login": "meld-codex-bot"}, "created_at": "2026-09-03T10:13:00Z",
+                                          "body": "[codex] AMEND dec-1\n\nUse MySQL for the ledger.\n\nverified-by: nothing"}])
+    fake.route("POST", R + "pulls", {"number": 40, "html_url": "https://github.com/acme/widgets/pull/40"})
+    with pytest.raises(Refused, match="only the proposer \\(claude\\)"):
+        decide(codex, "dec-1", now=NOW)
+    assert not [c for c in fake.calls if c.method == "POST" and c.endpoint == R + "pulls"]
+
+
 def test_remember_appends_a_lesson_and_refuses_unresolved_items(tmp_path):
     fake, ctx, repo, origin = make_product(tmp_path, role="orchestrator")
     fake.route("POST", R + "pulls", {"number": 41, "html_url": "https://github.com/acme/widgets/pull/41"})

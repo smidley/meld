@@ -20,6 +20,7 @@ from meld.brief import (
     review_bar,
     worker_contract,
 )
+from meld.memory import recall_snippets
 from meld.roster import WorkerType, builtin_workers
 from tests.factories import mk_issue, mk_pr
 
@@ -35,6 +36,7 @@ Intro paragraph.
 Closing notes mention #11 again.
 """
 
+BACKEND = next(w for w in builtin_workers() if w.name == "backend")
 REVIEWER = next(w for w in builtin_workers() if w.name == "reviewer")
 AUDITOR = next(w for w in builtin_workers() if w.name == "auditor")
 
@@ -176,3 +178,22 @@ def test_render_brief_caps_the_skills_section(tmp_path):
     few_text = render_brief(role=backend, kind="build", group="claude", model="m", effort="medium", issue=issue, pr=None, plan_text="",
                             repo_root=tmp_path, worktree=tmp_path, base_branch="main", skills=many[:3])
     assert "more installed skills" not in few_text
+
+
+def test_brief_carries_relevant_memory_and_result_reads_skills_used(tmp_path):
+    (tmp_path / ".meld" / "memory").mkdir(parents=True)
+    (tmp_path / ".meld" / "memory" / "lessons.md").write_text("# Lessons\n\n## 2026-09-01 — #7 (codex)\n\nHealth endpoints must not touch the database.\n")
+    issue = mk_issue(11, title="Add health endpoint")
+    text = render_brief(role=BACKEND, kind="build", group="claude", model="m", effort="medium", issue=issue, pr=None, plan_text="",
+                        repo_root=tmp_path, worktree=tmp_path, base_branch="main", recall=recall_snippets(tmp_path, "Add health endpoint"))
+    assert "## Relevant memory" in text and "must not touch the database" in text and text.index("## Relevant memory") < text.index("## Product standards")
+    plain = render_brief(role=BACKEND, kind="build", group="claude", model="m", effort="medium", issue=issue, pr=None, plan_text="",
+                         repo_root=tmp_path, worktree=tmp_path, base_branch="main")
+    assert "## Relevant memory" not in plain
+    (tmp_path / ".meld-result.json").write_text(json.dumps({"outcome": "done", "summary": "s", "verified_by": "v", "skills_used": ["brand", "security-review"]}))
+    assert read_result(tmp_path).skills_used == ("brand", "security-review")
+    (tmp_path / ".meld-result.json").write_text(json.dumps({"outcome": "done", "summary": "s", "verified_by": "v"}))
+    assert read_result(tmp_path).skills_used == ()
+    (tmp_path / ".meld-result.json").write_text(json.dumps({"outcome": "done", "summary": "s", "verified_by": "v", "skills_used": "brand"}))
+    with pytest.raises(ResultError, match="skills_used"):
+        read_result(tmp_path)

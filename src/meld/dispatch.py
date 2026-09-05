@@ -14,7 +14,7 @@ from typing import Mapping
 from meld.actions import BLOCKED, IN_PROGRESS, refuse, release
 from meld.adapters import Adapter, LaunchSpec, scrub_env
 from meld.board import Board, RunRecord
-from meld.brief import BRIEF_FILE, RESULT_FILE, ResultError, WorkerResult, read_result, render_brief
+from meld.brief import BRIEF_FILE, RESULT_FILE, ResultError, WorkerResult, read_result, recall_snippets, render_brief
 from meld.config import GroupConfig, Party
 from meld.gitops import (
     branch_name,
@@ -255,7 +255,8 @@ def _dispatch_build(ctx, board: Board, actor: Actor, number: int, adapter: Adapt
     exclude_paths(wt)
     brief = render_brief(role=worker, kind="build", group=group.name, model=issue.model or "", effort=issue.effort or "", issue=issue,
                          pr=None, plan_text=board.plan_text, repo_root=ctx.repo_root, worktree=wt, base_branch=ctx.cfg.default_branch,
-                         skills=[w for w in ctx.roster_entries() if w.source == "skill"])
+                         skills=[w for w in ctx.roster_entries() if w.source == "skill"],
+                         recall=recall_snippets(ctx.repo_root, f"{issue.title}\n{issue.body}"))
     timeout = ctx.cfg.timeout_seconds(issue.size or "M")
     deadline = when + timedelta(seconds=timeout)
     pid, log_path = _launch(ctx, group, adp, worktree=wt, brief=brief, model=issue.model or "", effort=issue.effort or "",
@@ -306,7 +307,8 @@ def _dispatch_pr(ctx, board: Board, actor: Actor, number: int, kind: str, adapte
     concern = review_concern(ctx.cfg, pr, group.name) if kind == "review" and role_name == "reviewer" else None
     brief = render_brief(role=worker, kind=kind, group=group.name, model=model, effort=effort, issue=None, pr=pr,
                          plan_text=board.plan_text, repo_root=ctx.repo_root, worktree=wt, base_branch=ctx.cfg.default_branch, concern=concern,
-                         skills=[w for w in ctx.roster_entries() if w.source == "skill"])
+                         skills=[w for w in ctx.roster_entries() if w.source == "skill"],
+                         recall=recall_snippets(ctx.repo_root, pr.title))
     timeout = ctx.cfg.timeout_seconds("M")
     deadline = when + timedelta(seconds=timeout)
     pid, log_path = _launch(ctx, group, adp, worktree=wt, brief=brief, model=model, effort=effort, timeout=timeout, kind=kind,
@@ -460,8 +462,11 @@ def _collect_build(ctx, board: Board, group: GroupConfig, rec: RunRecord, issue)
         pr_number = int(ctx.gh.create_pull(issue.title, rec.branch, ctx.cfg.default_branch, body)["number"])
     _swap_labels(ctx, number, IN_REVIEW, (IN_PROGRESS,))
     sha = head_sha(wt)
-    ctx.gh.create_comment(number, f"Meld: `{group.name}` worker finished: {len(commits)} commit(s) {commits[0][:7]}..{commits[-1][:7]}, PR #{pr_number}.\n\n"
-                                  f"verified-by: {result.verified_by}")
+    finish = (f"Meld: `{group.name}` worker finished: {len(commits)} commit(s) {commits[0][:7]}..{commits[-1][:7]}, PR #{pr_number}.\n\n"
+              f"verified-by: {result.verified_by}")
+    if result.skills_used:
+        finish += f"\nskills used: {', '.join(result.skills_used)}"
+    ctx.gh.create_comment(number, finish)
     ctx.gh.create_comment(board.coordination_issue, compose(Header(Party("pm", group.name), "REVIEW-REQUEST", f"#{pr_number}", None),
                                                             f"Issue #{number}, head {sha[:7]}. Please dispatch a reviewer."))
     ctx.store.write_run(replace(rec, collected=True, pr=pr_number))

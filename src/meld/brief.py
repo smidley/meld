@@ -45,6 +45,7 @@ class WorkerResult:
     verdict: str | None
     comments: tuple[dict, ...]
     needs_human: str | None
+    skills_used: tuple[str, ...] = ()
 
 
 def worker_contract() -> str:
@@ -135,7 +136,7 @@ def agent_instruction_files(worktree: Path) -> list[str]:
 
 def render_brief(*, role: WorkerType, kind: str, group: str, model: str, effort: str, issue: Issue | None, pr: PullRequest | None,
                  plan_text: str, repo_root: Path, worktree: Path, base_branch: str, concern: str | None = None,
-                 skills: Sequence[WorkerType] = ()) -> str:
+                 skills: Sequence[WorkerType] = (), recall: Sequence[str] = ()) -> str:
     if issue is not None:
         title = f"# Meld brief: {role.name} for #{issue.number}"
         task = f"## Your task\n\n**#{issue.number}: {issue.title}**\n\n{issue.body.strip() or '(no description)'}\n"
@@ -174,6 +175,8 @@ def render_brief(*, role: WorkerType, kind: str, group: str, model: str, effort:
     bar = review_bar(repo_root)
     if bar:
         parts += ["## Verification bar for this repository", "", bar.strip(), ""]
+    if recall:
+        parts += ["## Relevant memory", ""] + [f"- {s[:300].strip()}" for s in recall] + ["", "Decisions and lessons from earlier work that mention what this task touches; read the files under `.meld/` before departing from them.", ""]
     parts += ["## Product standards", "", product_standards(repo_root), ""]
     if skills:
         ordered = sorted(skills, key=lambda s: s.name)
@@ -210,6 +213,10 @@ def read_result(worktree: Path) -> WorkerResult | None:
     comments = data.get("comments") or []
     if not isinstance(comments, list) or not all(isinstance(c, dict) for c in comments):
         raise ResultError(f"{RESULT_FILE}: comments must be a list of objects")
+    raw_skills = data.get("skills_used", [])
+    if not isinstance(raw_skills, list) or not all(isinstance(s, str) for s in raw_skills):
+        raise ResultError(f"{RESULT_FILE}: skills_used must be a list of strings")
     needs_human = data.get("needs_human")
     return WorkerResult(outcome=outcome, summary=str(data.get("summary", "")), verified_by=str(data.get("verified_by", "")),
-                        verdict=verdict, comments=tuple(comments), needs_human=str(needs_human) if needs_human else None)
+                        verdict=verdict, comments=tuple(comments), needs_human=str(needs_human) if needs_human else None,
+                        skills_used=tuple(raw_skills))

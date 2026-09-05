@@ -250,3 +250,16 @@ def test_budget_counts_a_retry_on_the_same_issue(tmp_path):
     assert ctx.store.load_spend(3) == {"claude": {"medium": 1, "large": 1}}
     archive = tmp_path / "home" / "runs" / "claude" / "archive"
     assert len(list(archive.glob("11-*.json"))) == 1 and json.loads((tmp_path / "home" / "runs" / "claude" / "11.json").read_text())["tier"] == "large"
+
+
+def test_collect_reports_the_skills_a_worker_used(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path)
+    claim_issue_11(fake)
+    routes_for_labels(fake, 11)
+    fake.route("POST", R + "pulls", {"number": 21, "html_url": "https://github.com/acme/widgets/pull/21"})
+    script = DONE_SCRIPT.replace('"verified_by": "python -c \'import health\' -> ok"', '"verified_by": "python -c \'import health\' -> ok", "skills_used": ["brand"]')
+    out = dispatch(ctx, 11, adapter=FakeAdapter(script=script), now=NOW)
+    wait_for_exit(out["pid"])
+    collect(ctx, 11, now=NOW)
+    finish = issue_posts(fake, 11)[-1]
+    assert finish.startswith("Meld: `claude` worker finished") and finish.rstrip().endswith("skills used: brand")

@@ -169,3 +169,56 @@ def test_cli_setup_command_writes_config(tmp_path, monkeypatch):
     result = CliRunner().invoke(cli.main, ["setup", "acme/widgets", "--goal", "g", "--dir", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert (tmp_path / ".meld.toml").exists()
+
+
+def test_repo_files_write_codeowners_and_standards_once(tmp_path):
+    from meld.setup import repo_files
+    (tmp_path / ".github").mkdir()
+    (tmp_path / ".github" / "CODEOWNERS").write_text("* @someone\n")
+    written = repo_files(tmp_path, "empowerScott")
+    assert set(written) == {".github/CODEOWNERS", ".meld/STANDARDS.md"}
+    assert (tmp_path / ".github" / "CODEOWNERS").read_text() == "* @someone\n/.meld/workers/ @empowerScott\n"
+    assert "visual design" in (tmp_path / ".meld" / "STANDARDS.md").read_text().lower()
+    assert repo_files(tmp_path, "empowerScott") == []   # second run changes nothing
+
+
+def test_ci_paths_warning_fires_when_workflows_filter_out_meld(tmp_path):
+    from meld.setup import ci_paths_warnings
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    (wf / "ci.yml").write_text("on:\n  pull_request:\n    paths:\n      - 'src/**'\n      - 'tests/**'\njobs: {}\n")
+    (wf / "docs.yml").write_text("on:\n  pull_request:\n    paths:\n      - '.meld/**'\njobs: {}\n")
+    warnings = ci_paths_warnings(tmp_path)
+    assert len(warnings) == 1 and "ci.yml" in warnings[0] and ".meld" in warnings[0]
+    (wf / "ci.yml").write_text("on: [pull_request]\njobs: {}\n")
+    assert ci_paths_warnings(tmp_path) == []
+
+
+def test_protect_branch_lists_review_statuses_as_informational_and_tolerates_403():
+    from meld.setup import protect_branch
+    fake = FakeGh()
+    fake.route("PUT", R + "branches/main/protection", {"url": "x"})
+    out = protect_branch(gh_for(fake), "main")
+    call = [c for c in fake.calls if c.method == "PUT"][0]
+    assert call.body["required_status_checks"] is None and call.body["required_pull_request_reviews"]["required_approving_review_count"] == 1
+    assert out == {"protected": True, "branch": "main", "note": "meld/review/<group> statuses are informational; add them to required checks only if you want them blocking"}
+    fake2 = FakeGh()
+    fake2.route("PUT", R + "branches/main/protection", {"message": "Upgrade to GitHub Pro"}, status=403)
+    out2 = protect_branch(gh_for(fake2), "main")
+    assert out2["protected"] is False and "403" in out2["error"]
+
+
+def test_open_setup_pr_commits_pushes_and_opens(tmp_path):
+    from meld.setup import open_setup_pr, repo_files
+    from tests.gitfixtures import make_origin_and_clone, sh
+    origin, repo = make_origin_and_clone(tmp_path)
+    (repo / ".meld.toml").write_text('[repo]\nname = "acme/widgets"\n')
+    files = repo_files(repo, "empowerScott") + [".meld.toml"]
+    fake = FakeGh()
+    fake.route("POST", R + "pulls", {"number": 7, "html_url": "u7"}, status=201)
+    out = open_setup_pr(gh_for(fake), repo, "main", files)
+    assert out == {"pr": 7, "url": "u7", "branch": "meld/setup"}
+    assert sh(["git", "ls-remote", "--heads", "origin", "meld/setup"], repo)
+    assert sh(["git", "branch", "--show-current"], repo) == "meld/setup"
+    body = [c.body for c in fake.calls if c.method == "POST"][0]
+    assert body["head"] == "meld/setup" and body["base"] == "main" and ".meld.toml" in body["body"]

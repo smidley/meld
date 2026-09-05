@@ -5,13 +5,18 @@ Idempotent: every GitHub object that already exists is reused, and the config fi
 """
 from __future__ import annotations
 
+import re
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Callable
 
 from meld.adapters import ADAPTER_NAMES, get_adapter
+from meld.atomic import write_atomic
 from meld.board import CHALLENGED_LABEL, COORDINATION_LABEL, NUDGED_LABEL, PLAN_APPROVED_LABEL, STATUS_LABELS
-from meld.github import GitHub
+from meld.brief import DEFAULT_STANDARDS
+from meld.github import GitHub, GitHubError
+from meld.gitops import git
 from meld.models import ModelRegistry, ModelSpec
 
 
@@ -92,7 +97,10 @@ def _effort(spec: ModelSpec, role: str) -> str:
     return spec.efforts[-1]
 
 
-def _group_block(name: str, registry: ModelRegistry, commented: bool) -> str:
+def _group_block(name: str, registry: ModelRegistry, commented: bool) -> tuple[str, bool]:
+    """Returns the rendered block plus whether it ended up commented -- the single source of truth for "does this
+    adapter have registry models", so callers (setup's groups/warnings) derive it from here instead of re-querying
+    the registry themselves."""
     specs = registry.for_adapter(name)
     commented = commented or not specs  # a CLI with no models in the registry is as unusable as no CLI at all
     orch = _pick(specs, "large")
@@ -104,21 +112,23 @@ def _group_block(name: str, registry: ModelRegistry, commented: bool) -> str:
         model = spec.id if spec else "<model id from meld models>"
         effort = _effort(spec, role) if spec else "medium"
         lines += [f"{prefix}[groups.{name}.{role}]", f'{prefix}model = "{model}"', f'{prefix}effort = "{effort}"']
-    return "\n".join(lines) + "\n"
+    return "\n".join(lines) + "\n", commented
 
 
 def starter_toml(repo: str, default_branch: str, human: str, installed: list[str], registry: ModelRegistry) -> str:
     parts = [f'[repo]\nname = "{repo}"\ndefault_branch = "{default_branch}"\nprivate = true\n',
              f'[humans]\naccounts = ["{human}"]\n']
     for name in ADAPTER_NAMES:
-        parts.append(_group_block(name, registry, commented=name not in installed))
+        text, _ = _group_block(name, registry, commented=name not in installed)
+        parts.append(text)
     parts.append('[review]\nquorum = 2\npingpong_cap = 3\nsecurity_paths = ["auth/**", "**/secrets*", "infra/**"]\n')
     parts.append('[notify]\nslack_dm_webhook_env = "MELD_SLACK_DM_WEBHOOK"\nrepeat_after_minutes = 120\n')
     return "\n".join(parts)
 
 
 def setup(gh: GitHub, *, repo: str, goal: str, milestone_title: str, human: str, target_dir: Path, registry: ModelRegistry,
-          allow_public: bool = False, which: Callable[[str], str | None] = shutil.which, force: bool = False) -> dict:
+          allow_public: bool = False, which: Callable[[str], str | None] = shutil.which, force: bool = False,
+          protect: bool = True, pr: bool = False, run=subprocess.run) -> dict:
     info = gh.get_repo()
     if not info.get("private", False) and not allow_public:
         raise SetupError(f"{repo} is public; meld setup refuses without --allow-public "
@@ -138,15 +148,94 @@ def setup(gh: GitHub, *, repo: str, goal: str, milestone_title: str, human: str,
         warnings.append("no CLI found on PATH for any adapter (claude, codex); every [groups.*] block is commented out -- install a CLI and uncomment its block")
     groups = []
     for name in installed:
-        if registry.for_adapter(name):
-            groups.append(name)
-        else:
+        _, commented = _group_block(name, registry, commented=False)
+        if commented:
             warnings.append(f"{name} is installed but models.toml lists no models for it; its [groups.{name}] block is commented out")
+        else:
+            groups.append(name)
     target_dir.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(starter_toml(repo, info.get("default_branch", "main"), human, installed, registry))
+    write_atomic(config_path, starter_toml(repo, info.get("default_branch", "main"), human, installed, registry))
+    files = repo_files(target_dir, human) + [".meld.toml"]
+    ci = ci_paths_warnings(target_dir)
+    warnings.extend(ci)
+    protection = protect_branch(gh, info.get("default_branch", "main")) if protect else {"protected": False, "skipped": True}
+    pr_info = open_setup_pr(gh, target_dir, info.get("default_branch", "main"), files, run) if pr else None
     return {"repo": repo, "labels": labels, "milestone": milestone, "milestone_how": milestone_how,
             "coordination_issue": coordination, "coordination_how": issue_how, "config": str(config_path), "config_written": True,
-            "groups": groups, "warnings": warnings,
+            "groups": groups, "warnings": warnings, "files": files, "ci_warnings": ci, "protection": protection, "pr": pr_info,
             "next": [f"create one GitHub machine account per group named in {config_path.name} and add each as a collaborator on {repo}",
                      "mint one fine-grained token per bot (Contents, Issues, Pull requests, Commit statuses: read and write) and export MELD_TOKEN_<GROUP>",
                      "run `meld doctor` to verify tokens, CLIs, and models", "run `meld run <group>` for each group, then `meld chat`"]}
+
+
+_CODEOWNERS_LINE = "/.meld/workers/ @{human}"
+
+
+def repo_files(target_dir: Path, human: str) -> list[str]:
+    """Write the repo-side files the framework relies on; return the relative paths written or extended (idempotent)."""
+    written: list[str] = []
+    codeowners = target_dir / ".github" / "CODEOWNERS"
+    line = _CODEOWNERS_LINE.format(human=human)
+    existing = codeowners.read_text() if codeowners.exists() else ""
+    if line not in existing.splitlines():
+        codeowners.parent.mkdir(parents=True, exist_ok=True)
+        codeowners.write_text((existing if existing.endswith("\n") or not existing else existing + "\n") + line + "\n")
+        written.append(".github/CODEOWNERS")
+    standards = target_dir / ".meld" / "STANDARDS.md"
+    if not standards.exists():
+        standards.parent.mkdir(parents=True, exist_ok=True)
+        standards.write_text("# Product standards\n\n" + DEFAULT_STANDARDS.strip() + "\n")
+        written.append(".meld/STANDARDS.md")
+    return written
+
+
+_PATHS_RE = re.compile(r"^(\s*)paths:\s*$", re.MULTILINE)
+
+
+def ci_paths_warnings(target_dir: Path) -> list[str]:
+    """Workflows whose `paths:` filter never matches `.meld/**` cannot run on a memory PR (which touches only .meld/); if such a
+    check is ever made required, decision and lesson PRs become unmergeable (spec 15)."""
+    out: list[str] = []
+    for wf in sorted((target_dir / ".github" / "workflows").glob("*.y*ml")):
+        text = wf.read_text()
+        for m in _PATHS_RE.finditer(text):
+            indent = len(m.group(1))
+            items: list[str] = []
+            for line in text[m.end():].splitlines()[1:]:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                if len(line) - len(line.lstrip()) <= indent:
+                    break
+                if stripped.startswith("- "):
+                    items.append(stripped[2:].strip("'\""))
+            if items and not any(item == "**" or item.startswith(".meld") for item in items):
+                out.append(f".github/workflows/{wf.name}: its `paths:` filter excludes .meld/**, so memory PRs trigger no run from it; "
+                           "do not make its checks required, or add '.meld/**' to the filter")
+                break
+    return out
+
+
+def protect_branch(gh: GitHub, branch: str) -> dict:
+    """Require one approving review; require no status checks (the meld/review/<group> statuses stay informational, spec 21 item 4)."""
+    body = {"required_status_checks": None, "enforce_admins": False,
+            "required_pull_request_reviews": {"required_approving_review_count": 1}, "restrictions": None}
+    try:
+        gh.put(f"repos/{gh.repo}/branches/{branch}/protection", body)
+    except GitHubError as e:
+        return {"protected": False, "branch": branch, "error": f"branch protection not applied ({e.status}): {e}"}
+    return {"protected": True, "branch": branch,
+            "note": "meld/review/<group> statuses are informational; add them to required checks only if you want them blocking"}
+
+
+def open_setup_pr(gh: GitHub, target_dir: Path, default_branch: str, files: list[str], run=subprocess.run) -> dict:
+    """Commit `files` on branch meld/setup with the human's own git identity and credentials, push, open the PR."""
+    branch = "meld/setup"
+    git(["checkout", "-q", "-B", branch], target_dir, run)
+    git(["add", "--", *files], target_dir, run)
+    git(["-c", "commit.gpgsign=false", "commit", "-q", "-m", "chore: meld setup (labels, coordination issue, starter config)"], target_dir, run)
+    git(["push", "-q", "--set-upstream", "origin", f"HEAD:refs/heads/{branch}"], target_dir, run)
+    body = "Files written by `meld setup`:\n\n" + "\n".join(f"- `{f}`" for f in files) + \
+           "\n\nReview the starter `.meld.toml` (bot names, token env vars, models) before merging; `meld doctor` verifies it."
+    pr = gh.create_pull("chore: meld setup", branch, default_branch, body)
+    return {"pr": int(pr["number"]), "url": str(pr.get("html_url", "")), "branch": branch}

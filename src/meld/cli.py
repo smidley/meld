@@ -423,13 +423,19 @@ def run(ctx: click.Context, group: str, once: bool) -> None:
 @click.option("--dir", "target_dir", type=click.Path(path_type=Path), default=Path("."), show_default=True, help="Where to write .meld.toml (the product clone).")
 @click.option("--allow-public", is_flag=True, help="Proceed on a public repository despite the injection risk.")
 @click.option("--force", is_flag=True, help="Overwrite an existing .meld.toml.")
+@click.option("--no-protection", is_flag=True, help="Skip branch protection (require one approving review).")
+@click.option("--pr", is_flag=True, help="Commit the written files on meld/setup and open the setup PR (uses your own git credentials).")
 @click.pass_context
-def setup(ctx: click.Context, repo: str, goal: str, milestone_title: str, target_dir: Path, allow_public: bool, force: bool) -> None:
+def setup(ctx: click.Context, repo: str, goal: str, milestone_title: str, target_dir: Path, allow_public: bool, force: bool,
+          no_protection: bool, pr: bool) -> None:
     """Bootstrap a product repo: labels, milestone, coordination issue, and a starter .meld.toml (runs as you, via gh)."""
     gh = GitHub(repo, token=None, run=RUN)
     human = _guard(gh.viewer_login)
+    # RUN carries gh api calls (a FakeGh in tests); git for --pr always runs through the default subprocess.run so it
+    # is the human's own git identity and credentials that commit and push, never a test's or a group's fake.
     emit(_guard(lambda: do_setup(gh, repo=repo, goal=goal, milestone_title=milestone_title, human=human, target_dir=target_dir,
-                                 registry=ModelRegistry.load(), allow_public=allow_public, force=force)), ctx.obj["pretty"])
+                                 registry=ModelRegistry.load(), allow_public=allow_public, force=force,
+                                 protect=not no_protection, pr=pr)), ctx.obj["pretty"])
 
 
 if __name__ == "__main__":

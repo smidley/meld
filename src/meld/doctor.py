@@ -26,6 +26,10 @@ from meld.models import ModelRegistry
 
 MEMORY_WARN_BYTES = 2 * 1024 * 1024
 PROBE_CONTEXT = "meld/doctor"
+# dispatch creates a run's <n>-gh/<n>-gitconfig scratch (dispatch._worker_scratch) before it writes <n>.json (the
+# live run record) -- so a scratch pair younger than this may belong to a worker that is starting right now, not an
+# orphan. Only flag run-scratch once it is old enough that a race with a live dispatch is implausible.
+RUN_SCRATCH_MIN_AGE_SECONDS = 3600
 
 
 @dataclass(frozen=True)
@@ -219,6 +223,7 @@ def sweep(home: Path, cfg: Config, *, repo_root: Path, pull_states: Mapping[int,
     per-PR records). Lists every candidate with its reason; deletes only when `apply` is true, and only what it listed."""
     now = time.time() if now is None else now
     cutoff = now - older_than_days * 86400
+    run_scratch_cutoff = now - RUN_SCRATCH_MIN_AGE_SECONDS
     candidates: list[dict] = []
     skipped: list[str] = []
     if pull_states is None:
@@ -238,7 +243,8 @@ def sweep(home: Path, cfg: Config, *, repo_root: Path, pull_states: Mapping[int,
         if runs.is_dir():
             for p in sorted(runs.iterdir()):
                 stem = p.name.removesuffix("-gh").removesuffix("-gitconfig")
-                if p.name in (f"{stem}-gh", f"{stem}-gitconfig") and stem.isdigit() and not (runs / f"{stem}.json").exists():
+                if (p.name in (f"{stem}-gh", f"{stem}-gitconfig") and stem.isdigit() and not (runs / f"{stem}.json").exists()
+                        and p.stat().st_mtime < run_scratch_cutoff):
                     candidates.append({"kind": "run-scratch", "path": str(p), "reason": f"no live run record {stem}.json"})
         for p in sorted((home / "worktrees" / group.name).glob("memory-*")):
             if p.is_dir():

@@ -140,8 +140,12 @@ def test_sweep_lists_then_removes_only_what_it_listed(tmp_path):
     _touch(home / "runs" / "claude" / "11.json", text='{"issue": 11}')
     _touch(home / "runs" / "claude" / "11-gitconfig", text="")
     (home / "runs" / "claude" / "11-gh").mkdir(parents=True)
-    _touch(home / "runs" / "claude" / "12-gitconfig", text="")                                    # no 12.json: orphan
+    _touch(home / "runs" / "claude" / "12-gitconfig", text="", age_days=1)                        # no 12.json: orphan, old enough to sweep
     (home / "runs" / "claude" / "12-gh").mkdir(parents=True)
+    old = time.time() - 1 * 86400
+    os.utime(home / "runs" / "claude" / "12-gh", (old, old))                                      # _touch only backdates files; a dir needs its own utime
+    _touch(home / "runs" / "claude" / "13-gitconfig", text="")                                    # no 13.json either, but fresh: not a candidate yet
+    (home / "runs" / "claude" / "13-gh").mkdir(parents=True)
     (home / "worktrees" / "claude" / "memory-dec-9").mkdir(parents=True)                          # crash debris
     _touch(home / "state" / "claude" / "pm" / "ci-red.json", text='{"20": {"head": "h", "commented": true, "swapped": true}, "23": {"head": "h", "commented": true, "swapped": false}}')
     states = {20: "closed", 22: "merged", 23: "open"}
@@ -150,6 +154,7 @@ def test_sweep_lists_then_removes_only_what_it_listed(tmp_path):
     assert ("superseded", "review-20-1.json") in kinds and ("submitted", "review-21-abc-1.json") not in kinds
     assert ("memory-review-record", "review-22.json") in kinds and ("memory-review-record", "review-23.json") not in kinds
     assert ("run-scratch", "12-gitconfig") in kinds and ("run-scratch", "12-gh") in kinds and ("run-scratch", "11-gh") not in kinds
+    assert ("run-scratch", "13-gitconfig") not in kinds and ("run-scratch", "13-gh") not in kinds     # fresh: too young to be a worker-starting-now false positive
     assert ("memory-worktree", "memory-dec-9") in kinds
     assert ("ci-red-record", "20") in kinds and ("ci-red-record", "23") not in kinds
     assert out["dry_run"] is True and out["removed"] == []
@@ -158,6 +163,7 @@ def test_sweep_lists_then_removes_only_what_it_listed(tmp_path):
     assert sorted(applied["removed"]) == sorted(c["path"] for c in out["candidates"])
     assert not (home / "results" / "claude" / "superseded" / "review-20-1.json").exists()
     assert not (home / "runs" / "claude" / "12-gh").exists() and (home / "runs" / "claude" / "11-gh").exists()
+    assert (home / "runs" / "claude" / "13-gh").exists() and (home / "runs" / "claude" / "13-gitconfig").exists()
     assert not (home / "worktrees" / "claude" / "memory-dec-9").exists()
     remaining = json.loads((home / "state" / "claude" / "pm" / "ci-red.json").read_text())
     assert set(remaining) == {"23"}

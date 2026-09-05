@@ -71,6 +71,51 @@ def test_run_chat_reports_malformed_slash_commands_without_raising(tmp_path):
     assert not any(c.method == "POST" and c.endpoint == R + "issues/10/comments" for c in fake.calls)
 
 
+def test_run_chat_survives_github_errors_per_line(tmp_path):
+    fake, human, repo, origin = make_product(tmp_path, group=None)
+    fake.route("POST", R + "issues/10/comments", {"message": "Internal Server Error"}, status=500)
+    result = run_chat(human, ["why postgres?", "/halt", "/quit"], lambda s: None)
+    assert result["posted"] == []
+    assert len(result["errors"]) == 2
+    assert all("HTTP 500" in e for e in result["errors"])
+
+    fake2, human2, repo2, origin2 = make_product(tmp_path / "healthy", group=None)
+    result2 = run_chat(human2, ["/halt", "/quit"], lambda s: None)
+    assert result2["posted"] == ["[human] HALT"] and result2["errors"] == []
+
+
+def test_run_chat_challenge_echoes_normalised_ref(tmp_path):
+    fake, human, repo, origin = make_product(tmp_path, group=None)
+    fake.route("POST", R + "issues/13/labels", [])
+    result = run_chat(human, ["/challenge open 13 text", "/quit"], lambda s: None)
+    assert result["posted"] == ["[human] CHALLENGE #13"]
+    assert result["errors"] == []
+
+
+def test_run_chat_wait_does_not_reshow_own_post(tmp_path):
+    fake, human, repo, origin = make_product(tmp_path, group=None)
+    comments = fixture("comments_10.json")
+    next_id = [105]
+    original_run = fake.__call__
+
+    def sync_after_comment(cmd, **kwargs):
+        result = original_run(cmd, **kwargs)
+        last = fake.calls[-1]
+        if last.method == "POST" and last.endpoint == R + "issues/10/comments":
+            comments.append({"id": next_id[0], "user": {"login": "empowerScott"},
+                              "created_at": "2026-09-04T00:00:00Z", "body": last.body["body"]})
+            next_id[0] += 1
+            fake.route("GET", R + "issues/10/comments", comments)
+        return result
+
+    human.gh._run = sync_after_comment
+    out_lines: list[str] = []
+    result = run_chat(human, ["why postgres?", "/wait", "/quit"], out_lines.append)
+    assert result["errors"] == []
+    ask_index = out_lines.index("[human] ASK ask-1")
+    assert not any("ask-1" in line for line in out_lines[ask_index + 1:])
+
+
 def test_cli_inbox_and_chat_once(tmp_path, monkeypatch):
     fake, human, repo, origin = make_product(tmp_path, group=None)
     monkeypatch.setattr(cli, "RUN", fake)

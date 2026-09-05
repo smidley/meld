@@ -67,7 +67,8 @@ def test_decide_opens_a_memory_pr_and_requests_review(tmp_path):
     assert m and m.group(1) == "decision" and m.group(2) == "dec-1" and m.group(3) == out["hash"]
     assert "verified-by: [joint] DECISION dec-1" in pull["body"]
     text = sh(["git", "show", "origin/meld/memory-dec-1:.meld/decisions/0001-dec-1.md"], repo)
-    assert text.startswith("# Decision dec-1") and "Use PostgreSQL for the ledger." in text and content_hash(text + "\n") == out["hash"] or content_hash(text) == out["hash"]
+    assert text.startswith("# Decision dec-1") and "Use PostgreSQL for the ledger." in text
+    assert content_hash(text + "\n") == out["hash"]          # sh() strips the file's trailing newline; the hash covers the whole file
     assert sh(["git", "log", "-1", "--format=%an", "origin/meld/memory-dec-1"], repo) == "meld-claude-bot"
     coord = [c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/10/comments"][-1]
     assert coord.startswith("[claude:pm] REVIEW-REQUEST #40\n")

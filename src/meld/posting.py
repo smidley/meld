@@ -81,7 +81,9 @@ def post(ctx, verb: str, ref: str | None = None, qualifier: str | None = None, t
             _refuse(ctx, board, verb, ref, "PLAN may only be posted during planning")
         if verb == "PLAN-ADD" and board.phase != "executing":
             _refuse(ctx, board, verb, ref, "PLAN-ADD may only be posted during executing")
-        if agreement.joint_posted:
+        if agreement.joint_verified:
+            # Only a verified [joint] closes the door: a hand-written one (wrong author, or posted before the round
+            # closed) must not stop the proposer from posting the real one, which then supersedes it (latest decides).
             _refuse(ctx, board, verb, ref, f"{ref} already has a [joint] comment")
         body_text = _joint_body(agreement, ref, qualifier, text)
     elif verb in AGREEMENT_VERBS and party.kind in ("group", "pm"):

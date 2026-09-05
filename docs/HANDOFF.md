@@ -2,7 +2,7 @@
 
 This file is rewritten at every milestone that ends in a pull request, so that any AI coding agent (or person) can pick the project up cold. Read it first, then `AGENTS.md`, then the spec.
 
-**Milestone:** plan 4 (decision memory, the plan gate, `meld chat`, and PM housekeeping) complete on branch `plan-4-memory-human-loop` — all 11 tasks plus the whole-branch review's final fix wave landed, 436 tests passing, no warnings. The last commits are that fix wave: the agreement round freezes after any `[joint]` comment, decision files are verified byte for byte against the verified joint comment, lesson PRs are append-only by verification, `DISAGREE` rounds are never recorded, memory PRs owe no audit, the test suite can no longer reach a real Slack webhook, and the spec/handoff record all of it. The branch has not been merged to `main` yet. Plans 1–4 are done; plan 5 is next and unwritten.
+**Milestone:** plan 4 (decision memory, the plan gate, `meld chat`, and PM housekeeping) complete on branch `plan-4-memory-human-loop` — all 11 tasks plus the whole-branch review's final fix wave landed, 439 tests passing, no warnings. A micro-fix after the re-review gates memory-PR classification on the `meld/memory-*` branch prefix so a body marker alone never reclassifies a build PR. The last commits are that fix wave: the agreement round freezes after any `[joint]` comment, decision files are verified byte for byte against the verified joint comment, lesson PRs are append-only by verification, `DISAGREE` rounds are never recorded, memory PRs owe no audit, the test suite can no longer reach a real Slack webhook, and the spec/handoff record all of it. The branch has not been merged to `main` yet. Plans 1–4 are done; plan 5 is next and unwritten.
 
 ## What Meld is
 
@@ -27,7 +27,7 @@ Meld lets N independent AI coding systems ("groups", each with its own bot GitHu
 
 ```bash
 uv sync
-uv run pytest -q          # 436 passed, no warnings
+uv run pytest -q          # 439 passed, no warnings
 uv run pytest tests/smoke -q -rs   # 2 skipped unless MELD_SMOKE=1
 ```
 

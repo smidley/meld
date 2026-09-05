@@ -402,12 +402,53 @@ def test_review_auto_approves_a_verified_decision_pr(tmp_path):
 def test_review_requests_changes_on_a_tampered_memory_pr(tmp_path):
     fake, ctx, repo, origin = make_product(tmp_path, group="codex")
     with_thread(fake, DECISION_THREAD)
-    text = "# Decision dec-1\n\n## Decision\n\nUse MySQL instead.\n"
+    text = ("# Decision dec-1\n\n- Date: 2026-09-03\n- Agreed by: claude, codex\n"
+            "- Source: https://github.com/acme/widgets/issues/10#issuecomment-203\n\n## Decision\n\nUse MySQL instead.\n")
     memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", text)             # hash matches the file, text does not match the agreement
     out = review(ctx, 40, now=NOW)
     assert out["event"] == "REQUEST_CHANGES" and "does not match" in out["reason"]
     memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", text, digest="b" * 64)   # hash mismatch
     assert "hash" in review(ctx, 40, now=NOW)["reason"]
+
+
+def genuine_decision(ctx):
+    from meld.grammar import agreement_for, parse_comment
+    from meld.memory import render_decision
+    parsed = [parse_comment(c, ctx.cfg) for c in fixture("comments_10.json") + DECISION_THREAD]
+    return render_decision("dec-1", agreement_for(parsed, "dec-1", ctx.cfg), "https://github.com/acme/widgets/issues/10#issuecomment-203", "2026-09-03")
+
+
+def test_review_rejects_a_decision_file_that_is_not_the_rendering_byte_for_byte(tmp_path):
+    # F4: the hash is self-computed and the `## Decision` text matches word for word; only the unverified preamble differs.
+    fake, ctx, repo, origin = make_product(tmp_path, group="codex")
+    with_thread(fake, DECISION_THREAD)
+    genuine = genuine_decision(ctx)
+    padded = genuine.replace("\n## Decision\n", "\n- Note: PostgreSQL 16 or later, managed by the platform team\n\n## Decision\n")
+    assert padded != genuine and padded.split("## Decision\n\n", 1)[1] == genuine.split("## Decision\n\n", 1)[1]
+    memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", padded)
+    out = review(ctx, 40, now=NOW)
+    assert out["event"] == "REQUEST_CHANGES" and "byte for byte" in out["reason"]
+    # the Source link must be the verified joint comment, not some other comment
+    memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", genuine.replace("issuecomment-203", "issuecomment-999"), head="mem0002")
+    assert "byte for byte" in review(ctx, 40, now=NOW)["reason"]
+    # the Date line must be an ISO date (it is the one input the verifier takes from the file itself)
+    for bad in ("- Date: yesterday", "- Date: 2026-13-45", "- Date: 2026-9-3"):
+        memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", genuine.replace("- Date: 2026-09-03", bad), head=f"mem{hash(bad) % 10**6:06d}")
+        assert "- Date:" in review(ctx, 40, now=NOW)["reason"], bad
+    memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", genuine.replace("- Date: 2026-09-03\n", ""), head="mem0009")
+    assert "- Date:" in review(ctx, 40, now=NOW)["reason"]
+
+
+def test_review_approves_exactly_what_decide_wrote(tmp_path):
+    fake, claude, repo, origin = make_product(tmp_path, role="orchestrator")
+    with_thread(fake, DECISION_THREAD)
+    fake.route("POST", R + "pulls", {"number": 40, "html_url": "https://github.com/acme/widgets/pull/40"})
+    out = decide(claude, "dec-1", now=NOW)
+    text = sh(["git", "show", f"origin/meld/memory-dec-1:{out['path']}"], repo) + "\n"
+    assert content_hash(text) == out["hash"]
+    codex = load_context(repo / ".meld.toml", env=env_for(tmp_path, group="codex", role="pm"), run=fake, adapter_for=no_skills)
+    memory_pr_on_board(fake, repo, out["path"], text)
+    assert review(codex, 40, now=NOW)["event"] == "APPROVE"
 
 
 def test_review_requests_changes_on_a_decision_pr_from_a_disagree_round(tmp_path):

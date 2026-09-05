@@ -143,6 +143,7 @@ class Agreement:
     joint_verified: bool = False
     joint_verb: str | None = None
     joint_author: str | None = None
+    joint_comment_id: int | None = None
 
     def can_amend(self, cfg: Config) -> bool:
         return self.rounds < cfg.amend_cap
@@ -157,13 +158,14 @@ def agreement_for(comments: Sequence[ParsedComment], ref: str, cfg: Config) -> A
     joint_posted = False
     joint_verb: str | None = None
     joint_author: str | None = None
+    joint_id: int | None = None
     joint_verified = False
     for cmt in sorted(comments, key=lambda x: (x.created_at, x.id)):
         if not cmt.ok or cmt.header is None or cmt.header.ref != ref:
             continue
         h = cmt.header
         if h.party.kind == "joint":
-            joint_posted, joint_verb, joint_author = True, h.verb, cmt.author
+            joint_posted, joint_verb, joint_author, joint_id = True, h.verb, cmt.author, cmt.id
             closed = text is not None and ((agreed >= set(cfg.group_names)) or ((agreed | set(dissent)) >= set(cfg.group_names)))
             joint_verified = closed and proposer is not None and cmt.author == cfg.groups[proposer].bot
             continue
@@ -198,4 +200,14 @@ def agreement_for(comments: Sequence[ParsedComment], ref: str, cfg: Config) -> A
     else:
         status = "disagree"
     return Agreement(ref, text, proposer, frozenset(agreed), dissent, rounds, status, joint_posted,
-                      joint_verified, joint_verb, joint_author)
+                      joint_verified, joint_verb, joint_author, joint_id)
+
+
+def verified_joint(comments: Sequence[ParsedComment], ref: str, cfg: Config) -> ParsedComment | None:
+    """The [joint] comment that closed the round on `ref` -- written by the proposer's own bot after every group had
+    voted -- or None when there is none, or the latest [joint] on the ref is not verified. `meld decide` and the memory-PR
+    verifier both link and re-render from this comment, never from whichever [joint] comment happens to carry the ref first."""
+    agreement = agreement_for(comments, ref, cfg)
+    if not agreement.joint_verified:
+        return None
+    return next((c for c in comments if c.id == agreement.joint_comment_id), None)

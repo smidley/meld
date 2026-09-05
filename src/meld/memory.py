@@ -12,7 +12,7 @@ from meld.brief import _local_hits, _terms, recall_snippets
 from meld.config import Party
 from meld.dispatch import DispatchError, _iso, _now, git_identity, neutralise_closers
 from meld.gitops import GitError, create_worktree, git, push_branch, remove_worktree, slugify
-from meld.grammar import Agreement, Header, agreement_for, compose
+from meld.grammar import Agreement, Header, agreement_for, compose, verified_joint
 from meld.rules import Refusal, Verb
 from meld.status import build_status
 
@@ -55,7 +55,8 @@ def render_lesson(ref: str, text: str, group: str, date: str) -> str:
     return f"\n## {date} — {ref} ({group})\n\n{text.strip()}\n"
 
 
-def _comment_url(board, comment_id: int) -> str:
+def comment_url(board, comment_id: int) -> str:
+    """The html_url GitHub gives a coordination-issue comment; `decide` writes it into the file, the verifier re-renders from it."""
     return f"https://github.com/{board.repo}/issues/{board.coordination_issue}#issuecomment-{comment_id}"
 
 
@@ -119,7 +120,8 @@ def decide(ctx, ref: str, *, now: datetime | None = None) -> dict:
     agreement = agreement_for(board.comments, ref, ctx.cfg)
     if not agreement.joint_posted or agreement.joint_verb != "DECISION":
         refuse(ctx, board, Refusal(Verb.DECIDE, ref, f"no verified [joint] DECISION {ref} on the coordination issue"))
-    if not agreement.joint_verified:
+    joint = verified_joint(board.comments, ref, ctx.cfg)
+    if joint is None:
         refuse(ctx, board, Refusal(Verb.DECIDE, ref, f"the [joint] DECISION {ref} comment is not verified (wrong author or posted before the round closed)"))
     if agreement.status not in ("agreed", "majority"):
         refuse(ctx, board, Refusal(Verb.DECIDE, ref, f"{ref} ended in DISAGREE; the human decides"))
@@ -130,8 +132,7 @@ def decide(ctx, ref: str, *, now: datetime | None = None) -> dict:
         refuse(ctx, board, Refusal(Verb.DECIDE, ref, f"{ref} is already recorded or has an open memory PR"))
     group = ctx.cfg.groups[actor.group]  # type: ignore[index]
     when = _now(now)
-    joint = next(c for c in board.comments if c.ok and c.header and c.header.party.kind == "joint" and c.header.ref == ref)
-    url = _comment_url(board, joint.id)
+    url = comment_url(board, joint.id)
     text = render_decision(ref, agreement, url, when.strftime("%Y-%m-%d"))
     digest = content_hash(text)
     path = f"{DECISIONS_DIR}/{next_decision_number(ctx):04d}-{slug}.md"

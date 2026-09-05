@@ -34,9 +34,10 @@ def slack_text(items: list[dict], repo: str) -> str:
 
 
 def _load_state(path: Path) -> dict[str, str]:
+    """A missing, corrupt, or unreadable state file is treated as empty rather than raising."""
     try:
         return json.loads(path.read_text()) if path.is_file() else {}
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, OSError):
         return {}
 
 
@@ -45,8 +46,10 @@ def notify(ctx, board: Board, now: datetime, *, post: Callable[[str, dict], None
     env = os.environ if env is None else env
     items = sorted(({"issue": i.number, "title": i.title, "age_minutes": _age_minutes(i.updated_at, now)}
                     for i in board.issues.values() if i.status == "needs_human"), key=lambda d: d["issue"])
+    current_ids = {str(i["issue"]) for i in items}
     state_path = ctx.store.state_dir / NOTIFY_STATE
     sent = _load_state(state_path)
+    stale = set(sent) - current_ids  # tracked before, not needs_human (or gone) now
     due = []
     for item in items:
         last = sent.get(str(item["issue"]))
@@ -59,12 +62,33 @@ def notify(ctx, board: Board, now: datetime, *, post: Callable[[str, dict], None
     url = env.get(ctx.cfg.notify_webhook_env)
     if not url:
         return {"due": numbers, "notified": [], "skipped": f"{ctx.cfg.notify_webhook_env} is not set", "text": text}
-    if dry_run or not due:
+    if dry_run:
         return {"due": numbers, "notified": [], "skipped": None, "text": text}
-    (post or _post_webhook)(url, {"text": text})
-    stamp = now.strftime(_ISO)
-    for n in numbers:
-        sent[str(n)] = stamp
-    state_path.parent.mkdir(parents=True, exist_ok=True)
-    write_atomic(state_path, json.dumps(sent, indent=2))
-    return {"due": numbers, "notified": numbers, "skipped": None, "text": text}
+    notified: list[int] = []
+    errors: list[str] = []
+    if due:
+        try:
+            (post or _post_webhook)(url, {"text": text})
+        except (OSError, ValueError) as e:
+            # Never interpolate the exception itself into the message: some connection
+            # errors embed the target URL in their args, and the webhook URL must never
+            # appear in output. The class name plus a generic description is enough to
+            # act on. Recording no state here means every item in this batch is due again
+            # next call, not silently marked as sent.
+            errors.append(f"{type(e).__name__}: failed to post the Slack notification")
+        else:
+            stamp = now.strftime(_ISO)
+            for n in numbers:
+                sent[str(n)] = stamp
+            notified = numbers
+    if due or stale:
+        # Prune regardless of whether this call sent anything: an issue that left
+        # needs_human (or left the board) should not keep cooling down against an old
+        # timestamp, so a later return to needs_human is a fresh notification.
+        pruned = {k: v for k, v in sent.items() if k in current_ids}
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        write_atomic(state_path, json.dumps(pruned, indent=2))
+    result = {"due": numbers, "notified": notified, "skipped": None, "text": text}
+    if errors:
+        result["errors"] = errors
+    return result

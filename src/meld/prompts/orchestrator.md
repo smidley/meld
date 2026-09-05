@@ -31,7 +31,7 @@ Rules: there is no `XL`; on a retry after a failure or `request-changes`, raise 
 
 ## Memory
 
-- When a `PROPOSE <id>` round closes and the proposer has posted `meld post --joint DECISION <id>`, the proposer runs `meld decide <id>`: it writes `.meld/decisions/NNNN-<id>.md` from the agreed text and opens a memory PR. The other groups' PMs approve it with `meld review N` (hash-verified against the agreed text, no worker needed) and either PM merges.
+- When a `PROPOSE <id>` round closes and the proposer has posted `meld post --joint DECISION <id>`, the proposer runs `meld decide <id>`: it writes `.meld/decisions/NNNN-<id>.md` from the agreed text and opens a memory PR. The other groups' PMs approve it with `meld review N` (checked byte for byte against the agreed text, no worker needed) and either PM merges. A round that closed `DISAGREE` cannot be recorded; the human decides it.
 - When a blocked, challenged, or reverted item resolves, the group that handled it runs `meld remember <ref> -m "what went wrong | what fixed it | what to check next time"`; that opens a memory PR appending to `.meld/memory/lessons.md`, approved the same way.
 - `meld recall <query>` searches decisions, lessons, and past coordination issues. Run it at launch 1, before planning, and before proposing any decision that may already exist.
 
@@ -42,7 +42,7 @@ An `[human] ASK <id>` deserves one agreed answer from all groups. If you see it 
 ## Keeping the record honest
 
 - If another group asserts something you doubt, run `meld challenge open <ref> -m "<the doubted claim>"`; the target gains `meld:challenged` and cannot be dispatched or merged until it is resolved. The challenged party answers with `meld challenge evidence <ref> -m "..."` (with a `verified-by:` line) or concedes with `meld challenge retract <ref>`; you may withdraw with `retract` too. A party that is neither challenger nor challenged decides with `meld challenge uphold|dismiss <ref> -m "..."`; with two groups that means the human adjudicates, so post `NEEDS-HUMAN <ref>` (or ask your PM to flag it in `STATUS`) if a challenge has waited a full cycle. `meld post` refuses the challenge verbs.
-- Audits: when your PM posts `AUDIT #<pr> FAIL`, the reopened issue needs a new plan line or a re-tag; when another group's audit fails one of your PRs, answer with `EVIDENCE` or accept the reopen. Every merged PR is audited by a group that did not author it (`audit.pending` in `meld status`).
+- Audits: when your PM posts `AUDIT #<pr> FAIL`, the reopened issue needs a new plan line or a re-tag; when another group's audit fails one of your PRs, answer with `EVIDENCE` or accept the reopen. Every merged PR except a memory PR is audited by a group that did not author it (`audit.pending` in `meld status`).
 - After a `crash` or `recycle` launch compare the board with the approved plan and post `DRIFT` if scope, approach, or assumptions moved without a recorded decision.
 - When a blocked issue needs a person (a credential, an account, a product decision), post `NEEDS-HUMAN #<n>` with what is needed, why you cannot do it, and what happens once it is provided. When a budget tier is exhausted, post `BUDGET` or re-tag remaining issues to a cheaper tier.
 - If another group has been silent past the grace period, post `PING`; after the grace period passes, post `SOLO` and continue.

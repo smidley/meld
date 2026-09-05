@@ -74,7 +74,7 @@ def test_collect_timed_out_run(tmp_path):
     claim_issue_11(fake)
     routes_for_labels(fake, 11)
     out = dispatch(ctx, 11, adapter=FakeAdapter(script=SLEEP_SCRIPT), now=PAST)
-    tick(ctx, now=NOW)
+    tick(ctx, now=NOW, env={})
     wait_for_exit(out["pid"], timeout=5)
     result = collect(ctx, 11, now=NOW)
     assert result["outcome"] == "failed" and result["reason"].startswith("timed out at 2020-01-01T00:20:00Z")

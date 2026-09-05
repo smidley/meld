@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,17 @@ def _hermetic_cli_adapter(monkeypatch):
     import meld.cli as cli  # imported here, not at module load, so conftest never forces the CLI's import graph early
     from tests.fakeadapter import no_skills
     monkeypatch.setattr(cli, "ADAPTER_FOR", no_skills)
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_env(monkeypatch):
+    """No operator secret reaches the code under test through the process environment. `notify` (and so `tick`) falls
+    back to os.environ for the Slack webhook when no `env=` is injected, and the fixture board carries a needs_human
+    issue -- so a developer's real webhook would be posted to. The webhook and every MELD_TOKEN_* are removed for each
+    test; tests inject what they need through `env=` (see env_for)."""
+    monkeypatch.delenv("MELD_SLACK_DM_WEBHOOK", raising=False)
+    for key in [k for k in os.environ if k.startswith("MELD_TOKEN_")]:
+        monkeypatch.delenv(key, raising=False)
 
 
 @pytest.fixture(autouse=True)

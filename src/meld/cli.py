@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import click
@@ -14,6 +16,7 @@ from meld.adapters import UnknownAdapter, get_adapter
 from meld.assemble import BoardError
 from meld.audit import audit as do_audit, reopen as do_reopen
 from meld.challenge import challenge as do_challenge
+from meld.chat import inbox as build_inbox, run_chat
 from meld.config import ConfigError
 from meld.context import Context, load_context
 from meld.dispatch import DispatchError, collect as do_collect, dispatch as do_dispatch, reap as do_reap, tick as do_tick
@@ -353,6 +356,30 @@ def plan_ack_cmd(ctx: click.Context, ref: str) -> None:
     """Human: post ACK for a [joint] PLAN-ADD and flip its planned issues to ready."""
     c = _load(ctx)
     _run_action(ctx, lambda: do_plan_ack(c, ref))
+
+
+@main.command()
+@click.pass_context
+def inbox(ctx: click.Context) -> None:
+    """What needs a person: needs-human items, budget alerts, disagreements, plan additions, open asks."""
+    c = _load(ctx)
+
+    def run() -> dict:
+        _, board = build_status(c)
+        return build_inbox(board, c.cfg, datetime.now(timezone.utc))
+    emit(_guard(run), ctx.obj["pretty"])
+
+
+@main.command()
+@click.option("--once", "once", default=None, help="Post one line (or one slash command) and exit.")
+@click.option("--verbose", is_flag=True, help="/wait prints every new coordination comment, not only joint and human ones.")
+@click.pass_context
+def chat(ctx: click.Context, once: str | None, verbose: bool) -> None:
+    """Talk to every group as [human]: plain text posts an ASK; slash commands post the human verbs."""
+    c = _load(ctx)
+    lines = [once, "/quit"] if once is not None else iter(sys.stdin.readline, "")
+    result = _guard(lambda: run_chat(c, lines, click.echo, verbose=verbose))
+    emit(result, ctx.obj["pretty"])
 
 
 @main.command()

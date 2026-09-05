@@ -10,7 +10,7 @@ from meld.grammar import Header, compose
 from meld.rules import Refusal, Verb, issue_refusal
 from meld.status import build_status
 
-READY, IN_PROGRESS, BLOCKED = "meld:ready", "meld:in-progress", "meld:blocked"
+READY, IN_PROGRESS, BLOCKED, PLANNED = "meld:ready", "meld:in-progress", "meld:blocked", "meld:planned"
 
 
 class Refused(Exception):

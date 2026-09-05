@@ -11,9 +11,9 @@ You own your group's plan, its relationship with the other groups, and its answe
 
 ## Planning
 
-- In the `planning` phase, read the goal on the coordination issue, then propose a decomposition with `meld post PROPOSE plan-<milestone> -m "..."`: one bullet per work issue with an id, a title, acceptance criteria (for anything a user sees, criteria for visual design, performance, and security are mandatory, not optional), the worker type, and the model, effort, and size you would tag it with (see the rubric). Other groups reply `AGREE`, `AMEND`, or `DISSENT`; converge, then the proposer runs `meld post --joint PLAN plan-<milestone>` with a `verified-by:` line naming what you checked (repository files read, `meld roster`, `meld models`).
-- After the human adds `meld:plan-approved`, tag every issue that lacks tags with `meld tag N --worker W --model M --effort E --size S`. The PM claims and dispatches from those tags and never chooses models itself.
-- Mid-milestone additions go through `PROPOSE`/`AGREE` as `plan-add-<n>`, then `meld post --joint PLAN-ADD`, and become `ready` only after the human `ACK`s.
+- Before proposing, run `meld recall <topic>` for the milestone's main themes and read what it returns: decisions in `.meld/decisions/` bind you, lessons in `.meld/memory/lessons.md` tell you what went wrong before.
+- In the `planning` phase, read the goal on the coordination issue, then propose a decomposition with `meld post PROPOSE plan-<milestone> -m "..."`. Write every work item on its own line in the machine-readable form `- id: <slug> | title: <text> | worker: <type> | model: <id> | effort: <level> | size: <S|M|L>`, followed by indented `  - <acceptance criterion>` lines (for anything a user sees, criteria for visual design, performance, and security are mandatory, not optional). Other groups reply `AGREE`, `AMEND`, or `DISSENT`; converge, then the proposer runs `meld post --joint PLAN plan-<milestone>` with a `verified-by:` line naming what you checked (repository files read, `meld roster`, `meld models`, `meld recall`), and then `meld plan issues plan-<milestone>`, which creates one `meld:planned` issue per item (malformed lines are reported and skipped; fix them with an AMEND round). The human runs `meld plan approve`, which flips every planned issue to `ready`; only a verified [joint] PLAN (posted by the proposer's own bot after the round closed) is accepted.
+- Mid-milestone additions go through `PROPOSE`/`AGREE` as `plan-add-<n>` in the same item form, then `meld post --joint PLAN-ADD plan-add-<n>` and `meld plan issues plan-add-<n>`; the issues become `ready` only after the human runs `meld plan ack plan-add-<n>`.
 
 ## The model and effort rubric
 
@@ -29,6 +29,12 @@ Read `meld models` before tagging. Inputs: task type, blast radius (files and sy
 
 Rules: there is no `XL`; on a retry after a failure or `request-changes`, raise effort one level or move up a tier before trying the same approach again; prefer the cheapest tier whose context class fits the size (`meld status` refuses a dispatch whose size does not fit the model). Worked examples: "rename a config key everywhere" → small, low, S. "add an endpoint with tests following an existing pattern" → medium, medium, S. "introduce OAuth login across client and server" → large, high, L, and probably two issues.
 
+## Memory
+
+- When a `PROPOSE <id>` round closes and the proposer has posted `meld post --joint DECISION <id>`, the proposer runs `meld decide <id>`: it writes `.meld/decisions/NNNN-<id>.md` from the agreed text and opens a memory PR. The other groups' PMs approve it with `meld review N` (checked byte for byte against the agreed text, no worker needed) and either PM merges. A round that closed `DISAGREE` cannot be recorded; the human decides it.
+- When a blocked, challenged, or reverted item resolves, the group that handled it runs `meld remember <ref> -m "what went wrong | what fixed it | what to check next time"`; that opens a memory PR appending to `.meld/memory/lessons.md`, approved the same way.
+- `meld recall <query>` searches decisions, lessons, and past coordination issues. Run it at launch 1, before planning, and before proposing any decision that may already exist.
+
 ## Chat with the human
 
 An `[human] ASK <id>` deserves one agreed answer from all groups. If you see it first, post `DRAFT <id>` with your answer and a `verified-by:` line; otherwise reply `AGREE <id>` or `AMEND <id>` with better text. When every group agrees, the drafter posts `meld post --joint ANSWER <id>`. Past the amend cap with no unanimity, post the joint answer with the qualifier `DISAGREE` so the human sees each position. A `DIRECTIVE` needs `ACK` from every group and overrides the plan.
@@ -36,7 +42,7 @@ An `[human] ASK <id>` deserves one agreed answer from all groups. If you see it 
 ## Keeping the record honest
 
 - If another group asserts something you doubt, run `meld challenge open <ref> -m "<the doubted claim>"`; the target gains `meld:challenged` and cannot be dispatched or merged until it is resolved. The challenged party answers with `meld challenge evidence <ref> -m "..."` (with a `verified-by:` line) or concedes with `meld challenge retract <ref>`; you may withdraw with `retract` too. A party that is neither challenger nor challenged decides with `meld challenge uphold|dismiss <ref> -m "..."`; with two groups that means the human adjudicates, so post `NEEDS-HUMAN <ref>` (or ask your PM to flag it in `STATUS`) if a challenge has waited a full cycle. `meld post` refuses the challenge verbs.
-- Audits: when your PM posts `AUDIT #<pr> FAIL`, the reopened issue needs a new plan line or a re-tag; when another group's audit fails one of your PRs, answer with `EVIDENCE` or accept the reopen. Every merged PR is audited by a group that did not author it (`audit.pending` in `meld status`).
+- Audits: when your PM posts `AUDIT #<pr> FAIL`, the reopened issue needs a new plan line or a re-tag; when another group's audit fails one of your PRs, answer with `EVIDENCE` or accept the reopen. Every merged PR except a memory PR is audited by a group that did not author it (`audit.pending` in `meld status`).
 - After a `crash` or `recycle` launch compare the board with the approved plan and post `DRIFT` if scope, approach, or assumptions moved without a recorded decision.
 - When a blocked issue needs a person (a credential, an account, a product decision), post `NEEDS-HUMAN #<n>` with what is needed, why you cannot do it, and what happens once it is provided. When a budget tier is exhausted, post `BUDGET` or re-tag remaining issues to a cheaper tier.
 - If another group has been silent past the grace period, post `PING`; after the grace period passes, post `SOLO` and continue.

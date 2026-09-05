@@ -1,6 +1,7 @@
 """meld review and meld merge: a collected reviewer verdict becomes a GitHub review; a PR lands under the quorum rule."""
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -9,9 +10,10 @@ from meld.config import Party
 from meld.dispatch import IN_REVIEW, DispatchError, _iso, _now, _swap_labels, neutralise_closers
 from meld.github import GitHubError
 from meld.gitops import commits_ahead, head_sha, push_branch
-from meld.grammar import Header, compose
-from meld.results import cap_body, format_findings, load_result, mark_submitted, update_result
-from meld.rules import VERB_FOR, Refusal, Verb, approving_parties, author_party, pr_refusal, review_verdict_rule, status_context
+from meld.grammar import Header, agreement_for, compose, verified_joint
+from meld.memory import DECISIONS_DIR, LESSONS_FILE, LESSONS_HEADER, comment_url, content_hash, render_decision
+from meld.results import cap_body, format_findings, load_result, mark_submitted, store_result, update_result
+from meld.rules import VERB_FOR, Refusal, Verb, approving_parties, author_party, memory_review_rule, pr_refusal, review_verdict_rule, status_context
 from meld.status import build_status
 
 EVENTS = {"approve": "APPROVE", "request-changes": "REQUEST_CHANGES", "push-fix": "COMMENT"}
@@ -20,6 +22,20 @@ EVENTS = {"approve": "APPROVE", "request-changes": "REQUEST_CHANGES", "push-fix"
 # itself (`meld/review/<group>`) is defined in rules.status_context, since the quorum reads it.
 STATUS_STATE = {"approve": "success", "request-changes": "failure", "push-fix": "pending"}
 _AUTHOR_VERB = {"approve": "approving", "request-changes": "requesting changes on"}
+_DATE_LINE_RE = re.compile(r"^- Date: (\d{4}-\d{2}-\d{2})$", re.MULTILINE)
+
+
+def _decision_date(text: str) -> str | None:
+    """The decision file's `- Date:` value when it is a real YYYY-MM-DD date, else None. It is the one input the
+    verifier takes from the file itself; everything else it re-renders from the board."""
+    m = _DATE_LINE_RE.search(text)
+    if m is None:
+        return None
+    try:
+        datetime.strptime(m.group(1), "%Y-%m-%d")
+    except ValueError:
+        return None
+    return m.group(1)
 
 
 def submit_review(gh, number: int, event: str, body: str, commit_id: str, comments: list[dict]) -> dict:
@@ -39,6 +55,61 @@ def _no_action(ctx, group, number: int, verdict, reason: str, outcome: str, when
     return {"reviewed": number, "verdict": verdict, "event": None, "reason": reason}
 
 
+def verify_memory_pr(ctx, board, pr) -> tuple[bool, str]:
+    kind, ref, digest = pr.memory  # type: ignore[misc]
+    paths = list(pr.files)
+    if len(paths) != 1:
+        return False, f"a memory PR changes exactly one file, this one changes {len(paths)}"
+    if ".." in paths[0] or paths[0].startswith("/"):
+        return False, f"{paths[0]} is not a valid memory-PR path"
+    text = ctx.gh.get_contents(paths[0], pr.head_sha)
+    if text is None:
+        return False, f"{paths[0]} is missing at {pr.head_sha[:7]}"
+    if kind == "decision":
+        if not (paths[0].startswith(f"{DECISIONS_DIR}/") and paths[0].endswith(".md") and "/" not in paths[0][len(DECISIONS_DIR) + 1:]):
+            return False, f"a decision PR changes one file under {DECISIONS_DIR}, not {paths[0]}"
+        if content_hash(text) != digest:
+            return False, "file hash does not match the meld-memory marker"
+        agreement = agreement_for(board.comments, ref, ctx.cfg)
+        if not (agreement.joint_posted and agreement.joint_verified and agreement.joint_verb == "DECISION"):
+            return False, f"no verified [joint] DECISION {ref}"
+        if agreement.status not in ("agreed", "majority"):
+            return False, f"{ref} ended in DISAGREE; the human decides"
+        date = _decision_date(text)
+        if date is None:
+            return False, "the decision file's `- Date:` line is missing or is not a YYYY-MM-DD date"
+        joint = verified_joint(board.comments, ref, ctx.cfg)
+        if joint is None:   # unreachable once joint_verified held above; kept so the link can never come from an unverified comment
+            return False, f"no verified [joint] DECISION {ref}"
+        # Byte equality with `meld decide`'s own rendering: the header lines (date, agreeing groups, the verified
+        # joint comment's URL) and the text under `## Decision` are all checked at once, and nothing else -- no
+        # preamble, note, or trailing addition -- can ride into the repo (and into every brief's `## Relevant memory`).
+        if text != render_decision(ref, agreement, comment_url(board, joint.id), date):
+            return False, "the decision file does not match meld decide's rendering of the agreed [joint] DECISION byte for byte"
+        return True, "hash and agreed text verified"
+    if paths[0] != LESSONS_FILE:
+        return False, f"a lesson PR changes {LESSONS_FILE}, not {paths[0]}"
+    last = text.rfind("\n## ")
+    entry = text[last:] if last >= 0 else ""
+    if content_hash(entry) != digest:
+        return False, "the appended lesson entry's hash does not match the meld-memory marker"
+    # Append-only by verification: the head must be exactly the default branch's file plus that one entry, so a
+    # lesson PR can neither rewrite or drop an earlier lesson nor smuggle a second entry in under one marker.
+    base = ctx.gh.get_contents(LESSONS_FILE, ctx.cfg.default_branch)
+    if text != (LESSONS_HEADER if base is None else base) + entry:
+        return False, (f"{LESSONS_FILE} at the head is not the {ctx.cfg.default_branch} file plus the one appended entry "
+                       "(an earlier lesson was changed or dropped, or the branch needs a rebase)")
+    n = int(ref[1:]) if ref.startswith("#") and ref[1:].isdigit() else None
+    issue = board.issues.get(n) if n is not None else None
+    if issue is None and (n is None or n not in board.pulls):
+        return False, f"{ref} is not on the board"
+    if issue is not None and issue.status in ("blocked", "needs_human"):
+        return False, f"{ref} is still {issue.status}"
+    if board.is_challenged(ref):
+        return False, f"{ref} has an open CHALLENGE"
+    return True, "hash and resolution verified"
+
+
 def review(ctx, number: int, *, now: datetime | None = None) -> dict:
     _, board = build_status(ctx)
     actor = ctx.actor()
@@ -49,6 +120,48 @@ def review(ctx, number: int, *, now: datetime | None = None) -> dict:
     pr = board.pulls.get(number)
     if pr is None:
         refuse(ctx, board, Refusal(Verb.REVIEW, target, "PR is not on a meld/ branch of the active repo"))
+    if pr.memory:
+        # A memory PR has no dispatched worker and so no "collect". Only a completed APPROVE at the PR's CURRENT
+        # head is a settled, one-time outcome (return it immediately: no re-verify, no re-post); a REQUEST_CHANGES
+        # is provisional -- re-running `meld review N` must always re-verify, so a corrected file is reflected on
+        # the next call -- and even a cached APPROVE must be re-checked once the head moves (a human pushed a new
+        # commit), so the short-circuit below is keyed on (head_sha, event), never on review_id alone.
+        cached = load_result(ctx.store.home, group.name, "review", number)
+        if cached is not None and cached.get("head_sha") == pr.head_sha and cached.get("event") == "APPROVE":
+            return {"reviewed": number, "memory": pr.memory[0], "event": "APPROVE", "review_id": cached.get("review_id")}
+        rule = memory_review_rule(board, ctx.cfg, actor, pr)
+        if rule:
+            refuse(ctx, board, Refusal(Verb.APPROVE, target, rule))
+        ok, reason = verify_memory_pr(ctx, board, pr)
+        event = "APPROVE" if ok else "REQUEST_CHANGES"
+        # A re-verify that reproduces exactly what is already on record (same head, same verdict, same reason)
+        # has nothing new to post -- this is what keeps an unchanged tampered PR from getting a second
+        # REQUEST_CHANGES review every time someone re-runs `meld review N` against it.
+        if cached is not None and cached.get("head_sha") == pr.head_sha and cached.get("event") == event and cached.get("reason") == reason:
+            out = {"reviewed": number, "memory": pr.memory[0], "event": event, "review_id": cached.get("review_id")}
+            if not ok:
+                out["reason"] = reason
+            return out
+        body = (f"Memory PR check by {group.name}: {reason}.\n\nverified-by: meld review {number} (file at {pr.head_sha[:7]} fetched and hashed)")
+        resp = ctx.gh.create_review(number, event, body, pr.head_sha)
+        # Record the post before anything else can fail (create_status below is best-effort, like the ordinary
+        # path's own create_status), so a retry never files a second review no matter what happens next.
+        record = {"review_id": resp.get("id"), "head_sha": pr.head_sha, "event": event, "reason": reason}
+        if cached is None:
+            store_result(ctx.store.home, group.name, "review", number, record, _iso(_now(now)))
+        else:
+            update_result(ctx.store.home, group.name, "review", number, record)
+        status_error: str | None = None
+        try:
+            ctx.gh.create_status(pr.head_sha, "success" if ok else "failure", status_context(group.name), f"{group.name} memory check: {'ok' if ok else reason}"[:140], resp.get("html_url"))
+        except GitHubError as e:
+            status_error = str(e)
+        out = {"reviewed": number, "memory": pr.memory[0], "event": event, "review_id": resp.get("id")}
+        if not ok:
+            out["reason"] = reason
+        if status_error is not None:
+            out["status_error"] = status_error
+        return out
     stored = load_result(ctx.store.home, group.name, "review", number)
     if stored is None:
         raise DispatchError(f"no collected review result for {target}; run `meld collect {number}` first")

@@ -27,12 +27,12 @@ def test_tick_kills_overdue_runs_and_marks_them_timed_out(tmp_path):
     claim_issue_11(fake)
     out = dispatch(ctx, 11, adapter=FakeAdapter(script=SLEEP_SCRIPT), now=PAST)  # deadline is in 2020
     assert pid_alive(out["pid"])
-    result = tick(ctx, now=NOW)
+    result = tick(ctx, now=NOW, env={})
     assert result["killed"] == [{"issue": 11, "how": "terminated"}] and result["checked"] == 1
     wait_for_exit(out["pid"], timeout=5)
     rec = json.loads((tmp_path / "home" / "runs" / "claude" / "11.json").read_text())
     assert rec["timed_out"] is True
-    assert tick(ctx, now=NOW)["checked"] == 0  # dead runs are not re-checked
+    assert tick(ctx, now=NOW, env={})["checked"] == 0  # dead runs are not re-checked
 
 
 def test_tick_creates_a_missing_lease(tmp_path):
@@ -44,7 +44,7 @@ def test_tick_creates_a_missing_lease(tmp_path):
     rec["lease_comment"] = None
     rec_path.write_text(json.dumps(rec))
     before = len(coordination_posts(fake))
-    result = tick(ctx, now=NOW)
+    result = tick(ctx, now=NOW, env={})
     assert result["leases_created"] == [11] and result["killed"] == []
     assert coordination_posts(fake)[before].startswith("[claude:pm] LEASE #11\n") and "until: 2026-09-03T12:30:00Z" in coordination_posts(fake)[before]
     assert json.loads(rec_path.read_text())["lease_comment"] == 310
@@ -66,19 +66,22 @@ def test_tick_releases_another_groups_expired_lease(tmp_path):
     fake.route("DELETE", R + "issues/13/assignees", {})
     fake.route("POST", R + "issues/13/labels", [])
     fake.route("DELETE", R + "issues/13/labels/meld%3Ain-progress", [])
-    result = tick(ctx, now=NOW)
+    result = tick(ctx, now=NOW, env={})
     assert result["expired"] == [13]
     mutations = [(c.method, c.endpoint) for c in fake.calls if c.method != "GET" and "issues/13" in c.endpoint]
     assert ("DELETE", R + "issues/13/assignees") in mutations and ("POST", R + "issues/13/labels") in mutations
-    assert coordination_posts(fake)[-1].startswith("[claude:pm] EXPIRED #13\n") and "expired at 2026-09-03T11:00:00Z" in coordination_posts(fake)[-1]
-    fresh = tick(ctx, now=datetime(2026, 9, 3, 10, 0, tzinfo=timezone.utc))  # not yet expired at 10:00
+    # Housekeeping's own sweeps (Task 8) may post again afterward (e.g. IGNORED-COMMENT on the fixture's
+    # ever-unauthorized comment 103), so the EXPIRED post is no longer necessarily the last one -- find it directly.
+    expired_post = next(c for c in coordination_posts(fake) if c.startswith("[claude:pm] EXPIRED"))
+    assert expired_post.startswith("[claude:pm] EXPIRED #13\n") and "expired at 2026-09-03T11:00:00Z" in expired_post
+    fresh = tick(ctx, now=datetime(2026, 9, 3, 10, 0, tzinfo=timezone.utc), env={})  # not yet expired at 10:00
     assert fresh["expired"] == []
 
 
 def test_tick_is_pm_only(tmp_path):
     fake, orch, *_ = make_product(tmp_path, role="orchestrator")
     with pytest.raises(DispatchError, match="PM"):
-        tick(orch, now=NOW)
+        tick(orch, now=NOW, env={})
 
 
 def test_a_stale_lease_cannot_release_another_groups_fresh_claim(tmp_path):
@@ -96,13 +99,40 @@ def test_a_stale_lease_cannot_release_another_groups_fresh_claim(tmp_path):
     fake.route("DELETE", R + "issues/13/assignees", {})
     fake.route("POST", R + "issues/13/labels", [])
     fake.route("DELETE", R + "issues/13/labels/meld%3Ain-progress", [])
-    assert tick(codex, now=NOW)["expired"] == []                       # codex's own claim is not "expired"
+    assert tick(codex, now=NOW, env={})["expired"] == []                       # codex's own claim is not "expired"
     _, board = build_status(claude)
     assert board.leases == {} and issue_refusal(board, claude.cfg, claude.actor(), Verb.RELEASE, board.issues[13], claude.models).rule == \
         "issue is not assigned to meld-claude-bot"
     with pytest.raises(Refused, match="not assigned to meld-claude-bot"):
         release(claude, 13)                                             # claude cannot cite its own dead lease
     assert not [c for c in fake.calls if c.method == "DELETE" and c.endpoint == R + "issues/13/assignees"]
+
+
+def test_tick_notifies_needs_human_items_when_a_webhook_is_configured(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path)
+    sent = []
+    import meld.dispatch as dispatch_mod
+    out = tick(ctx, now=NOW, env={"MELD_SLACK_DM_WEBHOOK": "https://hooks.slack.test/abc"}, post=lambda u, p: sent.append(p))
+    assert out["notified"] == [14] and len(sent) == 1
+    assert tick(ctx, now=NOW, env={}, post=lambda u, p: sent.append(p))["notified"] == []
+
+
+def test_tick_with_an_explicit_env_never_reaches_the_webhook_in_the_process_environment(tmp_path, monkeypatch):
+    # F6: the fixture board has a needs_human issue (#14), so a tick that fell back to os.environ would post to a real webhook.
+    fake, ctx, repo, origin = make_product(tmp_path)
+    monkeypatch.setenv("MELD_SLACK_DM_WEBHOOK", "https://hooks.slack.test/never")
+    sent: list[str] = []
+    monkeypatch.setattr("meld.notifier._post_webhook", lambda url, payload: sent.append(url))
+    out = tick(ctx, now=NOW, env={})
+    assert out["notified"] == [] and sent == []
+
+
+def test_tick_runs_the_housekeeping_sweeps(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path)
+    for n in (11, 12, 13, 14):
+        fake.route("GET", R + f"issues/{n}/events", [])
+    out = tick(ctx, now=NOW, env={})
+    assert out["ci_red"] == [] and out["off_protocol"] == [] and out["ignored"]["flagged"] == [103] and out["notified"] == []
 
 
 def test_kill_run_skips_a_pid_that_leads_no_process_group(monkeypatch):

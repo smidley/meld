@@ -258,3 +258,61 @@ def test_github_error_carries_the_http_status(board1_gh):
     with pytest.raises(GitHubError) as ei:
         gh.create_review(20, "APPROVE", "x", "abc123")
     assert ei.value.status == 422
+
+
+import base64
+
+
+def test_issue_milestone_contents_events_labels_and_search_endpoints(board1_gh):
+    fake, gh = board1_gh
+    fake.route("POST", "repos/acme/widgets/issues", {"number": 31, "html_url": "https://github.com/acme/widgets/issues/31"})
+    fake.route("PATCH", "repos/acme/widgets/milestones/3", {"number": 3, "description": "plan text"})
+    fake.route("GET", "repos/acme/widgets/contents/.meld/decisions/0001-x.md",
+               {"content": base64.b64encode("# Decision x\n".encode()).decode(), "encoding": "base64"})
+    fake.route("GET", "repos/acme/widgets/contents/.meld/missing.md", {"message": "Not Found"}, status=404)
+    fake.route("GET", "repos/acme/widgets/issues/13/events", [{"id": 9001, "event": "labeled", "actor": {"login": "randouser"}, "label": {"name": "meld:ready"}}])
+    fake.route("GET", "repos/acme/widgets/labels", [{"name": "meld:ready", "color": "0e8a16"}])
+    fake.route("POST", "repos/acme/widgets/labels", {"name": "meld:planned", "color": "cccccc"})
+    fake.route("GET", "search/issues", {"total_count": 1, "items": [{"number": 10, "title": "Coordination: M1", "html_url": "u10"}]})
+    assert gh.create_issue("Login form", "body", ["meld:planned", "worker:frontend"], 3)["number"] == 31
+    assert gh.update_milestone(3, description="plan text")["description"] == "plan text"
+    assert gh.get_contents(".meld/decisions/0001-x.md", "abc123") == "# Decision x\n"
+    assert gh.get_contents(".meld/missing.md", "abc123") is None
+    assert gh.issue_events(13)[0]["actor"]["login"] == "randouser"
+    assert gh.list_labels()[0]["name"] == "meld:ready"
+    assert gh.create_label("meld:planned", "cccccc", "Created by the plan, not yet approved")["name"] == "meld:planned"
+    assert gh.search_issues("repo:acme/widgets label:meld:coordination oauth")[0]["number"] == 10
+    bodies = {(c.method, c.endpoint): c.body for c in fake.calls if c.method != "GET"}
+    assert bodies[("POST", "repos/acme/widgets/issues")] == {"title": "Login form", "body": "body", "labels": ["meld:planned", "worker:frontend"], "milestone": 3}
+    assert bodies[("PATCH", "repos/acme/widgets/milestones/3")] == {"description": "plan text"}
+    assert bodies[("POST", "repos/acme/widgets/labels")] == {"name": "meld:planned", "color": "cccccc", "description": "Created by the plan, not yet approved"}
+    contents_call = [c for c in fake.calls if c.endpoint == "repos/acme/widgets/contents/.meld/decisions/0001-x.md"][0]
+    assert contents_call.query.get("ref") == "abc123"
+    search_call = [c for c in fake.calls if c.endpoint == "search/issues"][0]
+    assert search_call.query.get("q") == "repo:acme/widgets label:meld:coordination oauth"
+
+
+def test_get_contents_quotes_path_segments(board1_gh):
+    fake, gh = board1_gh
+    fake.route("GET", "repos/acme/widgets/contents/.meld/decisions/0001-fix-%2342.md",
+               {"content": base64.b64encode("# Fix\n".encode()).decode(), "encoding": "base64"})
+    assert gh.get_contents(".meld/decisions/0001-fix-#42.md", "abc123") == "# Fix\n"
+    call = [c for c in fake.calls if c.endpoint == "repos/acme/widgets/contents/.meld/decisions/0001-fix-%2342.md"][0]
+    assert call.query.get("ref") == "abc123"
+
+
+def test_search_issues_guards_payload(board1_gh):
+    fake, gh = board1_gh
+    fake.route("GET", "search/issues", "not a dict")
+    assert gh.search_issues("query") == []
+    fake.route("GET", "search/issues", None)
+    assert gh.search_issues("query") == []
+
+
+def test_create_label_normalises_color(board1_gh):
+    fake, gh = board1_gh
+    fake.route("POST", "repos/acme/widgets/labels", {"name": "meld:planned", "color": "cccccc"})
+    result = gh.create_label("meld:planned", "#cccccc")
+    assert result["color"] == "cccccc"
+    body = [c for c in fake.calls if c.method == "POST" and "labels" in c.endpoint][-1].body
+    assert body == {"name": "meld:planned", "color": "cccccc", "description": ""}

@@ -26,6 +26,9 @@ class Verb(str, Enum):
     REVIEW = "review"        # dispatch a review run on a PR
     AUDIT = "audit"          # dispatch an audit run on a merged PR
     CHALLENGE = "challenge"  # open or act on a CHALLENGE (see challenge_rule)
+    DECIDE = "decide"        # record a verified [joint] DECISION as a memory PR
+    REMEMBER = "remember"    # append a lesson about a resolved issue or PR as a memory PR
+    PLAN = "plan"            # the plan gate: create planned issues, approve the plan, or ack an addition
 
 
 # POST is deliberately absent from both: it is refusable but not a per-issue or per-PR verb,
@@ -349,6 +352,8 @@ def _review(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | N
         return blocker
     if board.is_challenged(f"#{pr.number}"):
         return "PR has an open CHALLENGE"
+    if pr.memory:
+        return f"memory PR: run `meld review {pr.number}` directly, no worker needed"
     return _run_slot(board, cfg, actor, pr.number)
 
 
@@ -359,6 +364,10 @@ def _audit(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | No
         return "only the PM may dispatch an audit"
     if not pr.merged:
         return "audit targets a merged PR"
+    if pr.memory:
+        # Its content was checked against the board (the verified [joint] DECISION, or the item's resolution) when it was
+        # reviewed; there is no worker output to audit, and no auditor could judge it better than that check did.
+        return "memory PR: verified against the board at review, never audited"
     if party_of_login(cfg, pr.author) == actor.group:
         return "cannot audit a PR authored by own group"
     if actor.group in board.audits.get(pr.number, {}):
@@ -423,6 +432,14 @@ def review_verdict_rule(board: Board, cfg: Config, actor: Actor, pr: PullRequest
             return "PR has an open CHALLENGE"
         return None
     refusal = pr_refusal(board, cfg, actor, VERB_FOR[verdict], pr)
+    return None if refusal is None else refusal.rule
+
+
+def memory_review_rule(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | None:
+    """Legality of `meld review`'s auto-approval/request-changes on a memory PR: PM-only, then exactly `_approve`'s rules."""
+    if not actor.is_pm:
+        return "only the PM may approve a memory PR"
+    refusal = pr_refusal(board, cfg, actor, Verb.APPROVE, pr)
     return None if refusal is None else refusal.rule
 
 

@@ -350,3 +350,228 @@ def test_submit_review_folds_findings_into_the_body_on_422():
     assert len(stub.calls) == 2
     assert "## Findings" in stub.calls[1]["body"]
     assert stub.calls[1]["comments"] is None
+
+
+from meld.memory import LESSONS_FILE, content_hash, decide
+from tests.test_memory import DECISION_THREAD, DISAGREE_THREAD, with_thread
+
+
+def _contents(text):
+    import base64
+    return {"encoding": "base64", "content": base64.b64encode(text.encode()).decode()}
+
+
+def memory_pr_on_board(fake, repo, path, text, number=40, head="mem0001", kind="decision", ref="dec-1", digest=None, base=None):
+    """A memory PR whose changed file reads `text` at `head`; on the default branch the same path reads `base` (absent
+    when None). Contents are routed per `ref` query parameter, never by path alone, so a verifier that fetched the
+    wrong ref could not be served the right text by accident."""
+    pulls = fixture("pulls.json") + [{"number": number, "title": f"Decision {ref}", "state": "open", "merged_at": None,
+                                      "user": {"login": "meld-claude-bot"}, "head": {"ref": f"meld/memory-{ref}", "sha": head}, "labels": [],
+                                      "body": f"Records.\n\nmeld-memory: {kind} {ref} {digest or content_hash(text)}\nverified-by: x"}]
+    fake.route("GET", R + "pulls", pulls)
+    fake.route("GET", R + f"pulls/{number}/reviews", [])
+    fake.route("GET", R + f"pulls/{number}/commits", [{"sha": head, "author": {"login": "meld-claude-bot"}, "committer": {"login": "meld-claude-bot"}}])
+    fake.route("GET", R + f"pulls/{number}/files", [{"filename": path}])
+    fake.route("GET", R + f"commits/{head}/check-runs", fixture("checkruns_abc123.json"))
+    fake.route("GET", R + f"commits/{head}/status", {"state": "pending", "statuses": []})
+    fake.route("GET", R + f"contents/{path}", _contents(text), query={"ref": head})
+    if base is None:
+        fake.route("GET", R + f"contents/{path}", {"message": "Not Found"}, status=404, query={"ref": "main"})
+    else:
+        fake.route("GET", R + f"contents/{path}", _contents(base), query={"ref": "main"})
+    fake.route("POST", R + f"pulls/{number}/reviews", {"id": 601, "html_url": "r601"})
+    fake.route("POST", R + f"statuses/{head}", {"id": 79})
+
+
+def test_review_auto_approves_a_verified_decision_pr(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, group="codex")          # codex reviews claude's memory PR
+    with_thread(fake, DECISION_THREAD)
+    from meld.grammar import agreement_for
+    from meld.memory import render_decision
+    board_comments = None
+    text = render_decision("dec-1", agreement_for([__import__("meld.grammar", fromlist=["parse_comment"]).parse_comment(c, ctx.cfg) for c in fixture("comments_10.json") + DECISION_THREAD], "dec-1", ctx.cfg),
+                           "https://github.com/acme/widgets/issues/10#issuecomment-203", "2026-09-03")
+    memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", text)
+    out = review(ctx, 40, now=NOW)
+    assert out == {"reviewed": 40, "memory": "decision", "event": "APPROVE", "review_id": 601}
+    (body,) = [c.body for c in fake.calls if c.method == "POST" and c.endpoint == R + "pulls/40/reviews"]
+    assert body["event"] == "APPROVE" and "hash" in body["body"]
+    assert [c.body for c in fake.calls if c.method == "POST" and c.endpoint == R + "statuses/mem0001"][0]["state"] == "success"
+
+
+def test_review_requests_changes_on_a_tampered_memory_pr(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, group="codex")
+    with_thread(fake, DECISION_THREAD)
+    text = ("# Decision dec-1\n\n- Date: 2026-09-03\n- Agreed by: claude, codex\n"
+            "- Source: https://github.com/acme/widgets/issues/10#issuecomment-203\n\n## Decision\n\nUse MySQL instead.\n")
+    memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", text)             # hash matches the file, text does not match the agreement
+    out = review(ctx, 40, now=NOW)
+    assert out["event"] == "REQUEST_CHANGES" and "does not match" in out["reason"]
+    memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", text, digest="b" * 64)   # hash mismatch
+    assert "hash" in review(ctx, 40, now=NOW)["reason"]
+
+
+def genuine_decision(ctx):
+    from meld.grammar import agreement_for, parse_comment
+    from meld.memory import render_decision
+    parsed = [parse_comment(c, ctx.cfg) for c in fixture("comments_10.json") + DECISION_THREAD]
+    return render_decision("dec-1", agreement_for(parsed, "dec-1", ctx.cfg), "https://github.com/acme/widgets/issues/10#issuecomment-203", "2026-09-03")
+
+
+def test_review_rejects_a_decision_file_that_is_not_the_rendering_byte_for_byte(tmp_path):
+    # F4: the hash is self-computed and the `## Decision` text matches word for word; only the unverified preamble differs.
+    fake, ctx, repo, origin = make_product(tmp_path, group="codex")
+    with_thread(fake, DECISION_THREAD)
+    genuine = genuine_decision(ctx)
+    padded = genuine.replace("\n## Decision\n", "\n- Note: PostgreSQL 16 or later, managed by the platform team\n\n## Decision\n")
+    assert padded != genuine and padded.split("## Decision\n\n", 1)[1] == genuine.split("## Decision\n\n", 1)[1]
+    memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", padded)
+    out = review(ctx, 40, now=NOW)
+    assert out["event"] == "REQUEST_CHANGES" and "byte for byte" in out["reason"]
+    # the Source link must be the verified joint comment, not some other comment
+    memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", genuine.replace("issuecomment-203", "issuecomment-999"), head="mem0002")
+    assert "byte for byte" in review(ctx, 40, now=NOW)["reason"]
+    # the Date line must be an ISO date (it is the one input the verifier takes from the file itself)
+    for i, bad in enumerate(("- Date: yesterday", "- Date: 2026-13-45", "- Date: 2026-9-3")):
+        memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", genuine.replace("- Date: 2026-09-03", bad), head=f"mem000{5 + i}")
+        assert "- Date:" in review(ctx, 40, now=NOW)["reason"], bad
+    memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", genuine.replace("- Date: 2026-09-03\n", ""), head="mem0009")
+    assert "- Date:" in review(ctx, 40, now=NOW)["reason"]
+
+
+def test_review_approves_exactly_what_decide_wrote(tmp_path):
+    fake, claude, repo, origin = make_product(tmp_path, role="orchestrator")
+    with_thread(fake, DECISION_THREAD)
+    fake.route("POST", R + "pulls", {"number": 40, "html_url": "https://github.com/acme/widgets/pull/40"})
+    out = decide(claude, "dec-1", now=NOW)
+    text = sh(["git", "show", f"origin/meld/memory-dec-1:{out['path']}"], repo) + "\n"
+    assert content_hash(text) == out["hash"]
+    codex = load_context(repo / ".meld.toml", env=env_for(tmp_path, group="codex", role="pm"), run=fake, adapter_for=no_skills)
+    memory_pr_on_board(fake, repo, out["path"], text)
+    assert review(codex, 40, now=NOW)["event"] == "APPROVE"
+
+
+def test_review_requests_changes_on_a_decision_pr_from_a_disagree_round(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, group="codex")
+    with_thread(fake, DISAGREE_THREAD)
+    from meld.grammar import agreement_for, parse_comment
+    from meld.memory import render_decision
+    parsed = [parse_comment(c, ctx.cfg) for c in fixture("comments_10.json") + DISAGREE_THREAD]
+    agreement = agreement_for(parsed, "dec-2", ctx.cfg)
+    assert agreement.status == "disagree" and agreement.joint_verified
+    text = render_decision("dec-2", agreement, "https://github.com/acme/widgets/issues/10#issuecomment-203", "2026-09-03")
+    memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-2.md", text, ref="dec-2")    # hash and rendering both check out
+    out = review(ctx, 40, now=NOW)
+    assert out["event"] == "REQUEST_CHANGES" and out["reason"] == "dec-2 ended in DISAGREE; the human decides"
+
+
+def test_review_auto_approves_a_lesson_pr_for_a_resolved_item(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, group="codex")
+    entry = "\n## 2026-09-03 — #13 (claude)\n\nPin the action version.\n"
+    memory_pr_on_board(fake, repo, ".meld/memory/lessons.md", "# Lessons\n" + entry, number=41, head="mem0002", kind="lesson", ref="#13", digest=content_hash(entry))
+    out = review(ctx, 41, now=NOW)
+    assert out["event"] == "APPROVE" and out["memory"] == "lesson"
+
+
+OLD_LESSONS = "# Lessons\n\n## 2026-09-01 — #7 (codex)\n\nMigrations need a lock timeout.\n"
+NEW_ENTRY = "\n## 2026-09-03 — #13 (claude)\n\nPin the action version.\n"
+
+
+def lesson_pr(fake, repo, text, head, base):
+    memory_pr_on_board(fake, repo, LESSONS_FILE, text, number=41, head=head, kind="lesson", ref="#13", digest=content_hash(NEW_ENTRY), base=base)
+
+
+def test_review_rejects_a_lesson_pr_that_rewrites_an_earlier_lesson(tmp_path):
+    # F3: the appended entry hashes to the marker either way; what distinguishes these is whether the head is the default
+    # branch's file plus that one entry -- a lesson PR is append-only by verification, not by convention.
+    fake, ctx, repo, origin = make_product(tmp_path, group="codex")
+    rewritten = OLD_LESSONS.replace("need a lock timeout", "never need a lock timeout") + NEW_ENTRY
+    lesson_pr(fake, repo, rewritten, "mem0002", OLD_LESSONS)
+    out = review(ctx, 41, now=NOW)
+    assert out["event"] == "REQUEST_CHANGES" and "one appended entry" in out["reason"]
+    lesson_pr(fake, repo, "# Lessons\n" + NEW_ENTRY, "mem0003", OLD_LESSONS)              # dropping the earlier lesson is a rewrite too
+    assert review(ctx, 41, now=NOW)["event"] == "REQUEST_CHANGES"
+    lesson_pr(fake, repo, OLD_LESSONS + NEW_ENTRY, "mem0004", OLD_LESSONS)                  # a pure append onto that base verifies
+    assert review(ctx, 41, now=NOW)["event"] == "APPROVE"
+    # exactly one entry: appending two at once is refused (the marker names one hash; the head must be base + that entry)
+    lesson_pr(fake, repo, OLD_LESSONS + "\n## 2026-09-02 — #9 (codex)\n\nSmuggled.\n" + NEW_ENTRY, "mem0005", OLD_LESSONS)
+    assert review(ctx, 41, now=NOW)["event"] == "REQUEST_CHANGES"
+
+
+def test_review_rejects_a_decision_pr_whose_file_is_outside_the_decisions_dir(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, group="codex")
+    with_thread(fake, DECISION_THREAD)
+    # hash matches (self-computed) and the agreed text matches exactly -- only the changed file's path is wrong.
+    # Without the decisions-dir gate this would verify clean and get auto-APPROVEd despite being arbitrary code.
+    text = "print('pwned')\n\n## Decision\n\nUse PostgreSQL for the ledger.\n\nverified-by: read docs/adr/0001.md\n"
+    memory_pr_on_board(fake, repo, "src/meld/rules.py", text)
+    out = review(ctx, 40, now=NOW)
+    assert out["event"] == "REQUEST_CHANGES" and ".meld/decisions" in out["reason"]
+
+
+def test_review_on_a_memory_pr_never_posts_twice(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, group="codex")
+    with_thread(fake, DECISION_THREAD)
+    from meld.grammar import agreement_for, parse_comment
+    from meld.memory import render_decision
+    parsed = [parse_comment(c, ctx.cfg) for c in fixture("comments_10.json") + DECISION_THREAD]
+    text = render_decision("dec-1", agreement_for(parsed, "dec-1", ctx.cfg),
+                           "https://github.com/acme/widgets/issues/10#issuecomment-203", "2026-09-03")
+    memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", text)
+    first = review(ctx, 40, now=NOW)
+    second = review(ctx, 40, now=NOW)
+    assert first == second == {"reviewed": 40, "memory": "decision", "event": "APPROVE", "review_id": 601}
+    assert len(calls(fake, "POST", "pulls/40/reviews")) == 1
+    assert len(calls(fake, "POST", "statuses/mem0001")) == 1
+
+
+def test_review_on_an_unchanged_tampered_memory_pr_posts_once(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, group="codex")
+    with_thread(fake, DECISION_THREAD)
+    text = "# Decision dec-1\n\n## Decision\n\nUse MySQL instead.\n"          # hash matches, agreed text doesn't -- same reason both times
+    memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", text)
+    first = review(ctx, 40, now=NOW)
+    second = review(ctx, 40, now=NOW)
+    assert first["event"] == "REQUEST_CHANGES" and second["event"] == "REQUEST_CHANGES"
+    assert first["reason"] == second["reason"]
+    assert len(calls(fake, "POST", "pulls/40/reviews")) == 1
+    assert len(calls(fake, "POST", "statuses/mem0001")) == 1
+
+
+def test_review_on_a_memory_pr_re_verifies_when_the_head_moves(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, group="codex")
+    with_thread(fake, DECISION_THREAD)
+    from meld.grammar import agreement_for, parse_comment
+    from meld.memory import render_decision
+    parsed = [parse_comment(c, ctx.cfg) for c in fixture("comments_10.json") + DECISION_THREAD]
+    text = render_decision("dec-1", agreement_for(parsed, "dec-1", ctx.cfg),
+                           "https://github.com/acme/widgets/issues/10#issuecomment-203", "2026-09-03")
+    memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", text)                      # head H1 = mem0001
+    first = review(ctx, 40, now=NOW)
+    assert first["event"] == "APPROVE"
+    memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", text, head="mem0002")      # a human pushed a new head H2
+    second = review(ctx, 40, now=NOW)
+    assert second["event"] == "APPROVE"
+    posts = calls(fake, "POST", "pulls/40/reviews")
+    assert len(posts) == 2 and posts[1]["commit_id"] == "mem0002"          # re-verified and re-posted against the new head
+    assert len(calls(fake, "POST", "statuses/mem0002")) == 1
+
+
+def test_review_on_a_memory_pr_survives_a_failing_status_post(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, group="codex")
+    with_thread(fake, DECISION_THREAD)
+    from meld.grammar import agreement_for, parse_comment
+    from meld.memory import render_decision
+    parsed = [parse_comment(c, ctx.cfg) for c in fixture("comments_10.json") + DECISION_THREAD]
+    text = render_decision("dec-1", agreement_for(parsed, "dec-1", ctx.cfg),
+                           "https://github.com/acme/widgets/issues/10#issuecomment-203", "2026-09-03")
+    memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", text)
+    fake.route("POST", R + "statuses/mem0001", {"message": "Internal Server Error"}, status=500)
+    first = review(ctx, 40, now=NOW)
+    assert first["event"] == "APPROVE" and first.get("status_error") is not None    # does not raise; the review still landed
+    assert len(calls(fake, "POST", "pulls/40/reviews")) == 1
+    fake.route("POST", R + "statuses/mem0001", {"id": 79})     # status endpoint recovers
+    second = review(ctx, 40, now=NOW)
+    assert second["event"] == "APPROVE"
+    assert len(calls(fake, "POST", "pulls/40/reviews")) == 1   # no duplicate review on the retry
+    assert len(calls(fake, "POST", "statuses/mem0001")) == 1   # the earlier failed attempt was not retried

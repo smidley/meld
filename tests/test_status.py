@@ -13,7 +13,7 @@ from meld.context import find_config, load_context
 from meld.rules import Actor
 from meld.status import render_status
 from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
-from tests.factories import CFG2, REG, mk_board, mk_pr
+from tests.factories import CFG2, REG, mk_board, mk_comment, mk_pr
 from tests.fakeadapter import no_skills
 from tests.fakegh import FakeGh
 
@@ -232,6 +232,22 @@ def test_status_reports_the_audit_schedule_for_the_calling_group():
     assert render_status(board, CFG2, HUMAN, REG, now)["audit"]["pending"] == []
 
 
+def test_audit_schedule_excludes_merged_memory_prs():
+    body = "Records the agreed decision `dec-1`.\n\nmeld-memory: decision dec-1 " + "a" * 64 + "\nverified-by: x"
+    memory = replace(mk_pr(40, 0, committer="meld-claude-bot", state="closed", merged=True), body=body, head_ref="meld/memory-dec-1",
+                     merged_at="2026-09-03T06:00:00Z")
+    ordinary = replace(mk_pr(19, 9, committer="meld-claude-bot", state="closed", merged=True), merged_at="2026-09-03T06:00:00Z")
+    now = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
+    both = render_status(mk_board(CFG2, pulls=[memory, ordinary]), CFG2, CODEX_PM, REG, now)
+    assert both["audit"] == {"pending": [19], "merges_pending": 1, "oldest_pending_hours": 6.0, "due": True}
+    assert {p["number"]: p["legal"] for p in both["pulls"]} == {19: ["audit"], 40: []}
+    only_memory = render_status(mk_board(CFG2, pulls=[memory]), CFG2, CODEX_PM, REG, now)["audit"]
+    assert only_memory == {"pending": [], "merges_pending": 0, "oldest_pending_hours": None, "due": False}
+    # a marker smuggled into an ordinary build PR's body (head meld/9-slug) does not exempt it from audit (N1)
+    smuggled = replace(ordinary, body=body)
+    assert render_status(mk_board(CFG2, pulls=[smuggled]), CFG2, CODEX_PM, REG, now)["audit"]["pending"] == [19]
+
+
 def test_status_pull_fields_and_challenge_details():
     cfg = replace(CFG2, security_paths=("src/auth/*",))
     pr = replace(mk_pr(20, 13), files=("src/auth/login.py",))
@@ -242,3 +258,11 @@ def test_status_pull_fields_and_challenge_details():
     assert p["touches_security_paths"] is True and p["files"] == 1 and p["merged"] is False and p["merged_at"] == "" and p["audited_by"] == {"codex": "pass"}
     assert data["coordination"]["challenges"] == [{"ref": "#20", "challenger": "codex", "comment_id": 104, "opened_at": "2026-09-03T10:04:00Z"}]
     assert data["coordination"]["open_challenges"] == ["#20"]
+
+
+def test_status_agreements_report_verification():
+    thread = [mk_comment(CFG2, 1, "meld-claude-bot", "[claude] PROPOSE plan-1\n\nsplit"),
+              mk_comment(CFG2, 2, "meld-codex-bot", "[codex] AGREE plan-1\n\nyes"),
+              mk_comment(CFG2, 3, "meld-codex-bot", "[joint] PLAN plan-1\n\nsplit\n\nverified-by: x")]
+    data = render_status(mk_board(CFG2, comments=thread), CFG2, CLAUDE_PM, REG, datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc))
+    assert data["coordination"]["agreements"]["plan-1"] == {"status": "agreed", "joint_verified": False}

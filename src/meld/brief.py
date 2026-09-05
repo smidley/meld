@@ -21,6 +21,8 @@ _PATH_TOKEN_RE = re.compile(r"`([A-Za-z0-9_./-]+\.[A-Za-z0-9]+)`")
 _FILES_HEADING_RE = re.compile(r"^\s*(?:#+\s*)?files:?\s*$", re.IGNORECASE)
 STANDARDS_FILE = ".meld/STANDARDS.md"
 MAX_SKILLS = 30
+MAX_SKILLS_USED = 30
+SKILL_NAME_LIMIT = 100
 DEFAULT_STANDARDS = """Build for real users, not for a demo. Visual design, performance, and security are acceptance criteria with the same weight as correctness: anything a user sees must look intentional, consistent, and accessible and respond quickly; every input, secret, and dependency is handled as if the product were already public.
 Decide with industry standards, current documentation, and your own research rather than asking. Surface only decisions that need a human's approval (money, credentials, product direction, irreversible changes) through the framework's needs-human path.
 Where a skill is available for the task at hand (design, security review, performance, a framework's conventions), use it before improvising, and say which one you used."""
@@ -45,6 +47,7 @@ class WorkerResult:
     verdict: str | None
     comments: tuple[dict, ...]
     needs_human: str | None
+    skills_used: tuple[str, ...] = ()
 
 
 def worker_contract() -> str:
@@ -96,13 +99,46 @@ def review_bar(repo_root: Path) -> str:
     return f.read_text() if f.is_file() else ""
 
 
+def _terms(query: str) -> list[str]:
+    return [t for t in re.split(r"\W+", query.lower()) if len(t) > 2]
+
+
+def _local_hits(repo_root: Path, terms: list[str]) -> list[dict]:
+    """Decisions and lessons whose text contains any of `terms`, each scored by how many terms matched.
+    Lives here (not in memory.py, which owns the DECISIONS_DIR/LESSONS_FILE constants) so that dispatch.py
+    can import recall_snippets without memory.py's own dispatch import becoming a cycle (see memory.py)."""
+    hits: list[dict] = []
+    d = repo_root / ".meld" / "decisions"
+    for f in sorted(d.glob("*.md")) if d.is_dir() else []:
+        text = f.read_text()
+        score = sum(1 for t in terms if t in text.lower())
+        if score:
+            title = next((l[2:].strip() for l in text.splitlines() if l.startswith("# ")), f.stem)
+            hits.append({"kind": "decision", "path": str(f.relative_to(repo_root)), "title": title, "score": score, "snippet": text.strip()[:300]})
+    lessons = repo_root / ".meld" / "memory" / "lessons.md"
+    if lessons.is_file():
+        for block in re.split(r"\n(?=## )", lessons.read_text()):
+            if not block.startswith("## "):
+                continue
+            score = sum(1 for t in terms if t in block.lower())
+            if score:
+                hits.append({"kind": "lesson", "path": ".meld/memory/lessons.md", "title": block.splitlines()[0][3:].strip(), "score": score, "snippet": block.strip()[:300]})
+    return hits
+
+
+def recall_snippets(repo_root: Path, text: str, limit: int = 3) -> list[str]:
+    """The local (non-GitHub) part of `memory.recall`, without a coordination-issue search: used by briefs."""
+    hits = sorted(_local_hits(repo_root, _terms(text)), key=lambda h: (-h["score"], h["title"]))
+    return [h["snippet"] for h in hits[:limit]]
+
+
 def agent_instruction_files(worktree: Path) -> list[str]:
     return [name for name in _AGENT_FILES if (worktree / name).is_file()]
 
 
 def render_brief(*, role: WorkerType, kind: str, group: str, model: str, effort: str, issue: Issue | None, pr: PullRequest | None,
                  plan_text: str, repo_root: Path, worktree: Path, base_branch: str, concern: str | None = None,
-                 skills: Sequence[WorkerType] = ()) -> str:
+                 skills: Sequence[WorkerType] = (), recall: Sequence[str] = ()) -> str:
     if issue is not None:
         title = f"# Meld brief: {role.name} for #{issue.number}"
         task = f"## Your task\n\n**#{issue.number}: {issue.title}**\n\n{issue.body.strip() or '(no description)'}\n"
@@ -141,6 +177,8 @@ def render_brief(*, role: WorkerType, kind: str, group: str, model: str, effort:
     bar = review_bar(repo_root)
     if bar:
         parts += ["## Verification bar for this repository", "", bar.strip(), ""]
+    if recall:
+        parts += ["## Relevant memory", ""] + [f"- {s[:300].strip()}" for s in recall] + ["", "Decisions and lessons from earlier work that mention what this task touches; read the files under `.meld/` before departing from them.", ""]
     parts += ["## Product standards", "", product_standards(repo_root), ""]
     if skills:
         ordered = sorted(skills, key=lambda s: s.name)
@@ -177,6 +215,14 @@ def read_result(worktree: Path) -> WorkerResult | None:
     comments = data.get("comments") or []
     if not isinstance(comments, list) or not all(isinstance(c, dict) for c in comments):
         raise ResultError(f"{RESULT_FILE}: comments must be a list of objects")
+    raw_skills = data.get("skills_used") or []
+    if not isinstance(raw_skills, list) or not all(isinstance(s, str) for s in raw_skills):
+        raise ResultError(f"{RESULT_FILE}: skills_used must be a list of strings")
+    # Telemetry, not a task result: never let a verbose or careless worker fail a finished, verified build over this.
+    # Silently strip, truncate each name, and drop empties before capping the count -- so a few blanks ahead of the
+    # limit do not crowd out real names that follow them.
+    cleaned_skills = [c for s in raw_skills if (c := s.strip()[:SKILL_NAME_LIMIT])][:MAX_SKILLS_USED]
     needs_human = data.get("needs_human")
     return WorkerResult(outcome=outcome, summary=str(data.get("summary", "")), verified_by=str(data.get("verified_by", "")),
-                        verdict=verdict, comments=tuple(comments), needs_human=str(needs_human) if needs_human else None)
+                        verdict=verdict, comments=tuple(comments), needs_human=str(needs_human) if needs_human else None,
+                        skills_used=tuple(cleaned_skills))

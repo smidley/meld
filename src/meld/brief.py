@@ -21,6 +21,8 @@ _PATH_TOKEN_RE = re.compile(r"`([A-Za-z0-9_./-]+\.[A-Za-z0-9]+)`")
 _FILES_HEADING_RE = re.compile(r"^\s*(?:#+\s*)?files:?\s*$", re.IGNORECASE)
 STANDARDS_FILE = ".meld/STANDARDS.md"
 MAX_SKILLS = 30
+MAX_SKILLS_USED = 30
+SKILL_NAME_LIMIT = 100
 DEFAULT_STANDARDS = """Build for real users, not for a demo. Visual design, performance, and security are acceptance criteria with the same weight as correctness: anything a user sees must look intentional, consistent, and accessible and respond quickly; every input, secret, and dependency is handled as if the product were already public.
 Decide with industry standards, current documentation, and your own research rather than asking. Surface only decisions that need a human's approval (money, credentials, product direction, irreversible changes) through the framework's needs-human path.
 Where a skill is available for the task at hand (design, security review, performance, a framework's conventions), use it before improvising, and say which one you used."""
@@ -213,10 +215,14 @@ def read_result(worktree: Path) -> WorkerResult | None:
     comments = data.get("comments") or []
     if not isinstance(comments, list) or not all(isinstance(c, dict) for c in comments):
         raise ResultError(f"{RESULT_FILE}: comments must be a list of objects")
-    raw_skills = data.get("skills_used", [])
+    raw_skills = data.get("skills_used") or []
     if not isinstance(raw_skills, list) or not all(isinstance(s, str) for s in raw_skills):
         raise ResultError(f"{RESULT_FILE}: skills_used must be a list of strings")
+    # Telemetry, not a task result: never let a verbose or careless worker fail a finished, verified build over this.
+    # Silently strip, truncate each name, and drop empties before capping the count -- so a few blanks ahead of the
+    # limit do not crowd out real names that follow them.
+    cleaned_skills = [c for s in raw_skills if (c := s.strip()[:SKILL_NAME_LIMIT])][:MAX_SKILLS_USED]
     needs_human = data.get("needs_human")
     return WorkerResult(outcome=outcome, summary=str(data.get("summary", "")), verified_by=str(data.get("verified_by", "")),
                         verdict=verdict, comments=tuple(comments), needs_human=str(needs_human) if needs_human else None,
-                        skills_used=tuple(raw_skills))
+                        skills_used=tuple(cleaned_skills))

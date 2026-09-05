@@ -35,7 +35,7 @@ from meld.gitops import (
 from meld.grammar import Header, compose
 from meld.housekeeping import ci_red_sweep, flag_ignored_comments, off_protocol_sweep
 from meld.notifier import notify
-from meld.results import store_result
+from meld.results import cap_body, store_result
 from meld.roster import WorkerType, roster
 from meld.rules import Actor, Refusal, Verb, issue_refusal, pr_refusal, reap_rule, review_concern
 from meld.state import pid_alive
@@ -466,7 +466,7 @@ def _collect_build(ctx, board: Board, group: GroupConfig, rec: RunRecord, issue)
               f"verified-by: {result.verified_by}")
     if result.skills_used:
         finish += f"\nskills used: {', '.join(result.skills_used)}"
-    ctx.gh.create_comment(number, finish)
+    ctx.gh.create_comment(number, cap_body(finish))
     ctx.gh.create_comment(board.coordination_issue, compose(Header(Party("pm", group.name), "REVIEW-REQUEST", f"#{pr_number}", None),
                                                             f"Issue #{number}, head {sha[:7]}. Please dispatch a reviewer."))
     ctx.store.write_run(replace(rec, collected=True, pr=pr_number))

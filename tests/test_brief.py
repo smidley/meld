@@ -197,3 +197,19 @@ def test_brief_carries_relevant_memory_and_result_reads_skills_used(tmp_path):
     (tmp_path / ".meld-result.json").write_text(json.dumps({"outcome": "done", "summary": "s", "verified_by": "v", "skills_used": "brand"}))
     with pytest.raises(ResultError, match="skills_used"):
         read_result(tmp_path)
+
+
+def test_read_result_skills_used_tolerates_null_and_is_bounded(tmp_path):
+    (tmp_path / RESULT_FILE).write_text(json.dumps({"outcome": "done", "summary": "s", "verified_by": "v", "skills_used": None}))
+    assert read_result(tmp_path).skills_used == ()
+    long_skills = [f"skill-{i:04d}-{'x' * 150}" for i in range(2000)]
+    (tmp_path / RESULT_FILE).write_text(json.dumps({"outcome": "done", "summary": "s", "verified_by": "v", "skills_used": long_skills}))
+    result = read_result(tmp_path)
+    assert len(result.skills_used) == 30 and all(len(s) <= 100 for s in result.skills_used)
+    assert result.skills_used[0] == f"skill-0000-{'x' * 89}" and result.skills_used[-1] == f"skill-0029-{'x' * 89}"
+    mixed = ["", "  ", "brand", "   security-review   ", ""]
+    (tmp_path / RESULT_FILE).write_text(json.dumps({"outcome": "done", "summary": "s", "verified_by": "v", "skills_used": mixed}))
+    assert read_result(tmp_path).skills_used == ("brand", "security-review")
+    (tmp_path / RESULT_FILE).write_text(json.dumps({"outcome": "done", "summary": "s", "verified_by": "v", "skills_used": ["brand", 5]}))
+    with pytest.raises(ResultError, match="skills_used"):
+        read_result(tmp_path)

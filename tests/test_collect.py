@@ -7,6 +7,7 @@ import pytest
 from meld.actions import Refused
 from meld.dispatch import collect, dispatch, fenced, neutralise_closers, tick
 from meld.gitops import remote_branch_exists, worktree_exists
+from meld.results import BODY_LIMIT, TRUNCATED
 from tests.fakeadapter import FakeAdapter
 from tests.gitfixtures import sh
 from tests.productfixtures import BLOCKED_SCRIPT, DONE_SCRIPT, NO_RESULT_SCRIPT, R, REVIEW_SCRIPT, SLEEP_SCRIPT, claim_issue_11, make_product, wait_for_exit
@@ -263,3 +264,32 @@ def test_collect_reports_the_skills_a_worker_used(tmp_path):
     collect(ctx, 11, now=NOW)
     finish = issue_posts(fake, 11)[-1]
     assert finish.startswith("Meld: `claude` worker finished") and finish.rstrip().endswith("skills used: brand")
+
+
+def test_collect_bounds_the_skills_used_list_in_the_finish_comment(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path)
+    claim_issue_11(fake)
+    routes_for_labels(fake, 11)
+    fake.route("POST", R + "pulls", {"number": 21, "html_url": "https://github.com/acme/widgets/pull/21"})
+    script = DONE_SCRIPT.replace('"verified_by": "python -c \'import health\' -> ok"',
+                                 '"verified_by": "python -c \'import health\' -> ok", "skills_used": [f"skill-{i:04d}" for i in range(2000)]')
+    out = dispatch(ctx, 11, adapter=FakeAdapter(script=script), now=NOW)
+    wait_for_exit(out["pid"])
+    collect(ctx, 11, now=NOW)
+    finish = issue_posts(fake, 11)[-1]
+    assert len(finish) < BODY_LIMIT
+    names = finish.rsplit("skills used: ", 1)[1].split(", ")
+    assert len(names) == 30 and names[0] == "skill-0000" and names[-1] == "skill-0029"
+
+
+def test_collect_caps_an_oversized_finish_comment(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path)
+    claim_issue_11(fake)
+    routes_for_labels(fake, 11)
+    fake.route("POST", R + "pulls", {"number": 21, "html_url": "https://github.com/acme/widgets/pull/21"})
+    script = DONE_SCRIPT.replace('"verified_by": "python -c \'import health\' -> ok"', '"verified_by": "x" * 61000')
+    out = dispatch(ctx, 11, adapter=FakeAdapter(script=script), now=NOW)
+    wait_for_exit(out["pid"])
+    collect(ctx, 11, now=NOW)
+    finish = issue_posts(fake, 11)[-1]
+    assert finish.endswith(TRUNCATED) and len(finish) == BODY_LIMIT + len(TRUNCATED)

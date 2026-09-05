@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -199,3 +200,20 @@ def test_cli_inbox_and_chat_once(tmp_path, monkeypatch):
     repl = CliRunner().invoke(cli.main, ["--config", str(repo / ".meld.toml"), "--compact", "chat"], env=env, input="/resume\n/quit\n")
     assert repl.exit_code == 0, repl.output
     assert "[human] RESUME" in repl.output
+
+
+def test_cli_chat_once_exits_non_zero_when_the_line_failed(tmp_path, monkeypatch):
+    # F10: a scripted --once caller reads the exit status, not the inline "error:" line; 2 is the refused/usage-error code.
+    fake, human, repo, origin = make_product(tmp_path, group=None)
+    monkeypatch.setattr(cli, "RUN", fake)
+    env = env_for(tmp_path, group=None)
+    bad = CliRunner().invoke(cli.main, ["--config", str(repo / ".meld.toml"), "--compact", "chat", "--once", "/bogus"], env=env)
+    assert bad.exit_code == 2, bad.output
+    data = json.loads(bad.output.splitlines()[-1])
+    assert data["posted"] == [] and len(data["errors"]) == 1 and "unknown command /bogus" in data["errors"][0]
+    fake.route("POST", R + "issues/10/comments", {"message": "Internal Server Error"}, status=500)
+    down = CliRunner().invoke(cli.main, ["--config", str(repo / ".meld.toml"), "--compact", "chat", "--once", "/halt"], env=env)
+    assert down.exit_code == 2 and "HTTP 500" in json.loads(down.output.splitlines()[-1])["errors"][0]
+    fake.route("POST", R + "issues/10/comments", {"id": 310, "html_url": "u10"})
+    ok = CliRunner().invoke(cli.main, ["--config", str(repo / ".meld.toml"), "--compact", "chat", "--once", "/halt"], env=env)
+    assert ok.exit_code == 0, ok.output

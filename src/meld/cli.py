@@ -394,6 +394,10 @@ def chat(ctx: click.Context, once: str | None, verbose: bool) -> None:
     lines = [once, "/quit"] if once is not None else iter(sys.stdin.readline, "")
     result = _guard(lambda: run_chat(c, lines, click.echo, verbose=verbose))
     emit(result, ctx.obj["pretty"])
+    if once is not None and result["errors"]:
+        # A scripted line that failed (refused, malformed, GitHub down) fails the command too: the caller reads the exit
+        # status, not the inline "error:" line. The REPL keeps answering inline and exits 0 when the session ends.
+        ctx.exit(2)
 
 
 @main.command()

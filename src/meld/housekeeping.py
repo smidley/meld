@@ -45,34 +45,82 @@ def _safe(text: str) -> str:
     return f"`{text}`"
 
 
+def _normalize_ci_red_record(value) -> dict:
+    """Read one PR's ci-red state entry. An older `pr -> head` string entry is treated as fully complete (both
+    sub-steps done), for backward compatibility with state files written before the two-sub-step tracking."""
+    if isinstance(value, str):
+        return {"head": value, "commented": True, "swapped": True}
+    if isinstance(value, dict):
+        return {"head": value.get("head"), "commented": bool(value.get("commented", False)), "swapped": bool(value.get("swapped", False))}
+    return {"head": None, "commented": False, "swapped": False}
+
+
 def ci_red_sweep(ctx, board: Board, group: GroupConfig) -> list[dict]:
     """A red check on one of our open PRs is a request for changes: the linked issue goes back to in-progress once
-    per head. State (the handled head per PR) advances only once the label swap and the comment both succeed, and
-    is persisted right after that item -- a `GitHubError` (including `RateLimited`) on one PR is recorded and does
-    not stop the sweep, and never causes an earlier PR's success to be lost or a later retry to duplicate it."""
+    per head, and the comment naming the PR is posted once per head as the durable evidence of it.
+
+    The comment is posted BEFORE the label swap, deliberately: a comment failure never changes the issue's visible
+    status, so a fresh board on the next tick still shows it `in_review` and the retry guard still fires. Posting
+    the comment first and swapping second means the only way the swap can ever run without the comment having
+    already succeeded is if this function does it -- and it never does. Each PR's progress is tracked as
+    `{"head", "commented", "swapped"}`, persisted the moment a sub-step succeeds, so a `GitHubError` (including
+    `RateLimited`) on either sub-step is recorded on the returned item rather than raised, leaving exactly the
+    missing sub-step(s) for the next tick to complete -- without ever re-posting the comment or re-running a
+    sub-step that already succeeded. A PR is reprocessed when its issue is `in_review` and its recorded head
+    differs (or there is no complete record for the current head), OR when there is an incomplete record for the
+    current exact head regardless of the issue's current status (the swap may already have moved it out of
+    `in_review`)."""
     from meld.dispatch import IN_REVIEW, _swap_labels  # local import: dispatch imports this module
     path = ctx.store.state_dir / CI_RED_STATE
-    handled = _load(path)
+    raw = _load(path)
     out = []
     for pr in sorted(board.pulls.values(), key=lambda p: p.number):
         if pr.state != "open" or pr.checks != "red" or party_of_login(ctx.cfg, pr.author) != group.name or pr.issue_number is None:
             continue
         issue = board.issues.get(pr.issue_number)
-        if issue is None or issue.status != "in_review" or handled.get(str(pr.number)) == pr.head_sha:
+        if issue is None:
             continue
-        try:
-            _swap_labels(ctx, pr.issue_number, IN_PROGRESS, (IN_REVIEW,))
-            ctx.gh.create_comment(pr.issue_number, f"Meld: CI is red on PR #{pr.number} (head `{pr.head_sha[:7]}`); treated as request-changes. "
-                                                   f"The next build run on this issue fixes the checks; the PR moves back to review when they pass.")
-        except GitHubError as e:
-            out.append({"pr": pr.number, "issue": pr.issue_number, "head": pr.head_sha, "error": type(e).__name__})
+        key = str(pr.number)
+        record = _normalize_ci_red_record(raw.get(key))
+        same_head = record["head"] == pr.head_sha
+        complete = same_head and record["commented"] and record["swapped"]
+        should_process = (not complete) if same_head else (issue.status == "in_review")
+        if not should_process:
             continue
-        handled[str(pr.number)] = pr.head_sha
-        out.append({"pr": pr.number, "issue": pr.issue_number, "head": pr.head_sha})
-        try:
-            _save(path, handled)
-        except OSError:
-            pass
+        if not same_head:
+            record = {"head": pr.head_sha, "commented": False, "swapped": False}
+        error = None
+        if not record["commented"]:
+            try:
+                ctx.gh.create_comment(pr.issue_number, f"Meld: CI is red on PR #{pr.number} (head `{pr.head_sha[:7]}`); treated as request-changes. "
+                                                       f"The next build run on this issue fixes the checks; the PR moves back to review when they pass.")
+            except GitHubError as e:
+                error = type(e).__name__
+            else:
+                record["commented"] = True
+                raw[key] = record
+                try:
+                    _save(path, raw)
+                except OSError:
+                    pass
+        if error is None and record["commented"] and not record["swapped"]:
+            try:
+                _swap_labels(ctx, pr.issue_number, IN_PROGRESS, (IN_REVIEW,))
+            except GitHubError as e:
+                error = type(e).__name__
+            else:
+                record["swapped"] = True
+                raw[key] = record
+                try:
+                    _save(path, raw)
+                except OSError:
+                    pass
+        item = {"pr": pr.number, "issue": pr.issue_number, "head": pr.head_sha}
+        if error is not None:
+            item["error"] = error
+            item["commented"] = record["commented"]
+            item["swapped"] = record["swapped"]
+        out.append(item)
     return out
 
 

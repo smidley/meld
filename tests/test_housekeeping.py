@@ -28,7 +28,8 @@ def test_ci_red_returns_the_authors_issue_to_in_progress_once_per_head(tmp_path)
     assert [c.body for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/13/labels"] == [{"labels": ["meld:in-progress"]}]
     comment = [c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/13/comments"][-1]
     assert "CI is red on PR #20" in comment and "abc123"[:7] in comment
-    assert json.loads((codex.store.state_dir / CI_RED_STATE).read_text()) == {"20": "abc123"}
+    # Fix round 2: state tracks both sub-steps per PR (not a bare head string) so a partial failure can be retried.
+    assert json.loads((codex.store.state_dir / CI_RED_STATE).read_text()) == {"20": {"head": "abc123", "commented": True, "swapped": True}}
     assert ci_red_sweep(codex, board, group) == []                               # same head: nothing more
     fake2, claude, *_ = make_product(tmp_path / "c")                            # claude did not author #20: not its job
     fake2.route("GET", R + "commits/abc123/check-runs", RED)
@@ -107,55 +108,6 @@ def test_off_protocol_sweep_skips_an_issue_whose_events_call_errors(tmp_path):
     out = off_protocol_sweep(claude, board, claude.cfg.groups["claude"])
     assert [(o["event_id"], o["actor"], o["event"]) for o in out] == [(9001, "randouser", "labeled")]
     assert json.loads((claude.store.state_dir / OFF_PROTOCOL_STATE).read_text()) == {"13": 9001}   # #11's failure left no cursor
-
-
-def test_ci_red_sweep_persists_per_item_and_retries_only_the_failed_pr(tmp_path):
-    """C2: state (the handled head per PR) advances only once a PR's label swap and comment both succeed, and is
-    persisted right after that PR -- so a failure on the second of two red PRs still keeps the first PR's result,
-    and a retry re-processes only the one that failed (never losing the first, never duplicating it)."""
-    fake, codex, repo, origin = make_product(tmp_path, group="codex")
-    issues = fixture("issues.json")
-    for i in issues:
-        if i["number"] == 14:
-            i["labels"] = [{"name": "meld:in-review"}]   # a second codex claim, in review
-    fake.route("GET", R + "issues", issues)
-    pulls = fixture("pulls.json")
-    pulls.append({"number": 21, "title": "Second", "body": "Closes #14", "state": "open", "merged_at": None,
-                  "user": {"login": "meld-codex-bot"}, "head": {"ref": "meld/14-second", "sha": "def456"}, "labels": []})
-    fake.route("GET", R + "pulls", pulls)
-    for path, body in (("pulls/21/reviews", []), ("pulls/21/commits", []), ("pulls/21/files", []),
-                       ("commits/def456/check-runs", RED), ("commits/def456/status", {"statuses": []}),
-                       ("commits/abc123/check-runs", RED)):
-        fake.route("GET", R + path, body)
-    routes_for_labels(fake, 13)
-    fake.route("DELETE", R + "issues/13/labels/meld%3Ain-review", [])
-    routes_for_labels(fake, 14)
-    fake.route("DELETE", R + "issues/14/labels/meld%3Ain-review", [])
-    fake.route("POST", R + "issues/14/comments", {"id": 900, "html_url": "u14"})   # not in make_product's default set
-    _, board = build_status(codex)
-    group = codex.cfg.groups["codex"]
-
-    real_create_comment = codex.gh.create_comment
-    calls = {"n": 0}
-
-    def flaky(number, body):
-        calls["n"] += 1
-        if calls["n"] == 2:   # the second PR processed (by number: #20 then #21) fails to post
-            raise GitHubError("boom", status=500)
-        return real_create_comment(number, body)
-
-    codex.gh.create_comment = flaky
-    out = ci_red_sweep(codex, board, group)
-    ok = next(o for o in out if o["pr"] == 20)
-    failed = next(o for o in out if o["pr"] == 21)
-    assert ok == {"pr": 20, "issue": 13, "head": "abc123"}
-    assert failed["issue"] == 14 and failed["head"] == "def456" and failed["error"] == "GitHubError"
-    assert json.loads((codex.store.state_dir / CI_RED_STATE).read_text()) == {"20": "abc123"}   # #21 not persisted
-
-    codex.gh.create_comment = real_create_comment    # the transient failure is now "fixed"
-    retry = ci_red_sweep(codex, board, group)
-    assert retry == [{"pr": 21, "issue": 14, "head": "def456"}]     # #20 is not re-posted; #21 is retried and posts
-    assert json.loads((codex.store.state_dir / CI_RED_STATE).read_text()) == {"20": "abc123", "21": "def456"}
 
 
 def test_off_protocol_sweep_persists_per_issue_and_retries_only_the_failed_one(tmp_path):
@@ -277,3 +229,101 @@ def test_off_protocol_sweep_contains_a_write_failure(tmp_path, monkeypatch):
     out = off_protocol_sweep(claude, board, claude.cfg.groups["claude"])
     assert [(o["event_id"], o["actor"], o["event"]) for o in out] == [(9001, "randouser", "labeled")]
     assert not (claude.store.state_dir / OFF_PROTOCOL_STATE).exists()
+
+
+def test_ci_red_sweep_recovers_when_the_swap_fails_after_a_successful_comment(tmp_path):
+    """Fix round 2 (C2, scenario 1): the comment is posted before the label swap, so a swap failure after a
+    successful comment leaves the issue still `in_review` on a freshly rebuilt board -- the retry must complete
+    the swap without reposting the comment."""
+    fake, codex, repo, origin = make_product(tmp_path, group="codex")
+    fake.route("GET", R + "commits/abc123/check-runs", RED)
+    # #13's labels endpoints are deliberately left unrouted: the swap fails the first time round.
+    _, board = build_status(codex)
+    group = codex.cfg.groups["codex"]
+    out = ci_red_sweep(codex, board, group)
+    assert out == [{"pr": 20, "issue": 13, "head": "abc123", "error": "GitHubError", "commented": True, "swapped": False}]
+    comments = [c for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/13/comments"]
+    assert len(comments) == 1
+    assert json.loads((codex.store.state_dir / CI_RED_STATE).read_text()) == {"20": {"head": "abc123", "commented": True, "swapped": False}}
+
+    routes_for_labels(fake, 13)
+    fake.route("DELETE", R + "issues/13/labels/meld%3Ain-review", [])   # the transient failure is now "fixed"
+    _, board2 = build_status(codex)                        # a genuinely fresh board -- still shows in_review
+    assert board2.issues[13].status == "in_review"
+    retry = ci_red_sweep(codex, board2, group)
+    assert retry == [{"pr": 20, "issue": 13, "head": "abc123"}]
+    comments_after = [c for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/13/comments"]
+    assert len(comments_after) == 1                        # no second comment posted
+    assert json.loads((codex.store.state_dir / CI_RED_STATE).read_text()) == {"20": {"head": "abc123", "commented": True, "swapped": True}}
+
+
+def test_ci_red_sweep_recovers_when_the_comment_fails(tmp_path):
+    """Fix round 2 (C2, scenario 2): a failed comment leaves nothing recorded (the swap is never attempted before
+    the comment succeeds), so a retry against a fresh board posts the comment once and swaps once."""
+    fake, codex, repo, origin = make_product(tmp_path, group="codex")
+    fake.route("GET", R + "commits/abc123/check-runs", RED)
+    routes_for_labels(fake, 13)
+    fake.route("DELETE", R + "issues/13/labels/meld%3Ain-review", [])
+    fake.route("POST", R + "issues/13/comments", {"message": "boom"}, status=500)   # comment fails first
+    _, board = build_status(codex)
+    group = codex.cfg.groups["codex"]
+    out = ci_red_sweep(codex, board, group)
+    assert out == [{"pr": 20, "issue": 13, "head": "abc123", "error": "GitHubError", "commented": False, "swapped": False}]
+    assert not (codex.store.state_dir / CI_RED_STATE).exists()                                        # nothing recorded
+    assert not [c for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/13/labels"]  # swap never attempted
+
+    fake.route("POST", R + "issues/13/comments", {"id": 313, "html_url": "u13"})   # fixed
+    _, board2 = build_status(codex)             # a genuinely fresh board -- unchanged, still shows in_review
+    retry = ci_red_sweep(codex, board2, group)
+    assert retry == [{"pr": 20, "issue": 13, "head": "abc123"}]
+    comments = [c for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/13/comments"]
+    assert len(comments) == 2                   # one failed attempt (first call) + one that succeeded (retry)
+    labels = [c for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/13/labels"]
+    assert len(labels) == 1                     # swap attempted exactly once, in the retry
+    assert json.loads((codex.store.state_dir / CI_RED_STATE).read_text()) == {"20": {"head": "abc123", "commented": True, "swapped": True}}
+
+
+def test_ci_red_sweep_completes_an_outstanding_comment_after_the_swap_already_happened(tmp_path):
+    """Fix round 2 (C2, scenario 3): even once the swap has already moved the issue out of in_review (so the
+    in_review guard alone would miss it), an incomplete record for the current exact head is still completed --
+    this is the bug the reviewer found (state seeded to simulate a swap that really happened but was never
+    recorded as commented)."""
+    fake, codex, repo, origin = make_product(tmp_path, group="codex")
+    fake.route("GET", R + "commits/abc123/check-runs", RED)
+    issues = fixture("issues.json")
+    for i in issues:
+        if i["number"] == 13:
+            i["labels"] = [l for l in i["labels"] if l["name"] != "meld:in-review"] + [{"name": "meld:in-progress"}]
+    fake.route("GET", R + "issues", issues)
+    state_dir = codex.store.state_dir
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / CI_RED_STATE).write_text(json.dumps({"20": {"head": "abc123", "commented": False, "swapped": True}}))
+    _, board = build_status(codex)
+    assert board.issues[13].status == "in_progress"    # the swap really did happen
+    group = codex.cfg.groups["codex"]
+    out = ci_red_sweep(codex, board, group)
+    assert out == [{"pr": 20, "issue": 13, "head": "abc123"}]
+    comments = [c for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/13/comments"]
+    assert len(comments) == 1
+    assert not [c for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/13/labels"]  # already swapped: not re-attempted
+    assert json.loads((state_dir / CI_RED_STATE).read_text()) == {"20": {"head": "abc123", "commented": True, "swapped": True}}
+
+
+def test_ci_red_sweep_takes_no_action_on_a_fully_handled_head(tmp_path):
+    """Fix round 2 (C2, scenario 4): a fully-handled head is left alone even once the issue has moved on to
+    in_progress -- no comment, no label swap, nothing persisted again."""
+    fake, codex, repo, origin = make_product(tmp_path, group="codex")
+    fake.route("GET", R + "commits/abc123/check-runs", RED)
+    issues = fixture("issues.json")
+    for i in issues:
+        if i["number"] == 13:
+            i["labels"] = [l for l in i["labels"] if l["name"] != "meld:in-review"] + [{"name": "meld:in-progress"}]
+    fake.route("GET", R + "issues", issues)
+    state_dir = codex.store.state_dir
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / CI_RED_STATE).write_text(json.dumps({"20": {"head": "abc123", "commented": True, "swapped": True}}))
+    _, board = build_status(codex)
+    group = codex.cfg.groups["codex"]
+    out = ci_red_sweep(codex, board, group)
+    assert out == []
+    assert not [c for c in fake.calls if c.method == "POST" and c.endpoint in (R + "issues/13/comments", R + "issues/13/labels")]

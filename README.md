@@ -35,7 +35,7 @@ Design: `docs/superpowers/specs/2026-09-03-meld-design.md`. Plans: `docs/superpo
 | `meld recall QUERY [--limit N]` | Search decisions, lessons, and past coordination issues |
 | `meld plan issues REF [--dry-run]` \| `approve` \| `ack REF` | The plan gate: the proposer orchestrator creates `meld:planned` issues from a verified `[joint] PLAN`/`PLAN-ADD` (`--dry-run` reports what it would create); the human's `approve` adds `meld:plan-approved` and flips every planned issue to ready; the human's `ack REF` does the same for one `PLAN-ADD` |
 | `meld inbox` | What needs a person: needs-human items, budget alerts, disagreements, plan additions, open asks |
-| `meld chat [--once TEXT] [--verbose]` | A REPL that posts `[human] ASK` for plain text and the human verbs for slash commands; `--once` scripts one line and exits |
+| `meld chat [--once TEXT] [--verbose]` | A REPL that posts `[human] ASK` for plain text and the human verbs for slash commands; `--once` scripts one line and exits (non-zero when that line failed) |
 | `meld notify [--dry-run]` | Send the Slack nudge for needs-human items now (a PM's `tick` also does this on its own) |
 | `meld roster` | List the worker types available to the calling party |
 | `meld run GROUP [--once]` | Supervise a group's orchestrator and PM as headless CLI sessions |
@@ -50,11 +50,11 @@ Real-CLI smoke tests (they spend tokens): `task test:smoke`.
 
 ## Memory
 
-Agreed decisions become `.meld/decisions/NNNN-<id>.md` (`meld decide`), lessons append to `.meld/memory/lessons.md` (`meld remember`), both through memory PRs that the other groups' PMs approve with `meld review N` after verifying the file hash — no reviewer worker runs. `meld recall QUERY` searches both plus past coordination issues, and dispatch renders matching snippets into every brief as `## Relevant memory`.
+Agreed decisions become `.meld/decisions/NNNN-<id>.md` (`meld decide`), lessons append to `.meld/memory/lessons.md` (`meld remember`), both through memory PRs that the other groups' PMs approve with `meld review N` — a decision file must be byte-identical to `meld decide`'s rendering of the verified `[joint] DECISION`, a lesson PR must append exactly one entry to the existing file — no reviewer worker runs, and a merged memory PR is never audited. Once a `[joint]` comment is on a ref the round is closed; a `DISAGREE` round is never recorded. `meld recall QUERY` searches both plus past coordination issues, and dispatch renders matching snippets into every brief as `## Relevant memory`.
 
 ## The human console
 
-`meld inbox` lists what needs a person; `meld chat` is a REPL: plain text posts `[human] ASK ask-<n>`, slash commands post the human verbs (`/halt`, `/resume`, `/directive`, `/provided`, `/resolved`, `/revert`, `/ack`, `/approve`, `/challenge`), `/wait` prints new coordination comments. With `[notify] slack_dm_webhook_env` set, each PM's `tick` sends a Slack nudge per needs-human issue and repeats after `repeat_after_minutes`.
+`meld inbox` lists what needs a person; `meld chat` is a REPL: plain text posts `[human] ASK ask-<n>`, slash commands post the human verbs (`/halt`, `/resume`, `/directive`, `/provided`, `/resolved`, `/revert`, `/ack`, `/approve`, `/challenge`), `/wait` prints new coordination comments. With `[notify] slack_dm_webhook_env` set, each PM's `tick` sends one Slack message listing every due needs-human issue and repeats an issue only after `repeat_after_minutes`.
 
 ## Product standards
 

@@ -69,3 +69,9 @@ def test_role_prompts_cover_planning_memory_and_the_human_console(tmp_path):
     for cmd in ("meld decide REF", "meld remember REF -m TEXT", "meld recall QUERY", "meld plan issues REF [--dry-run]", "meld plan approve",
                 "meld plan ack REF", "meld inbox", "meld chat [--once TEXT]", "meld notify [--dry-run]"):
         assert cmd in pm, cmd
+
+def test_role_prompts_name_setup_and_doctor(tmp_path):
+    pm = role_prompt("pm", CFG2, CFG2.groups["claude"], tmp_path)
+    for needle in ("meld doctor [--probe-status]", "meld setup REPO --goal TEXT"):
+        assert needle in pm, needle
+    assert "meld doctor" in pm.split("## When something is off")[1]

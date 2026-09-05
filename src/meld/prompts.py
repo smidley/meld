@@ -23,7 +23,8 @@ COMMANDS = ("meld status", "meld wait --filter <kinds> [--timeout S]", "meld pos
             "meld tag N [--worker W] [--model M] [--effort E] [--size S]", "meld roster", "meld models",
             "meld decide REF", "meld remember REF -m TEXT", "meld recall QUERY",
             "meld plan issues REF [--dry-run]", "meld plan approve", "meld plan ack REF",
-            "meld inbox", "meld chat [--once TEXT]", "meld notify [--dry-run]")
+            "meld inbox", "meld chat [--once TEXT]", "meld notify [--dry-run]",
+            "meld setup REPO --goal TEXT [--milestone TITLE] [--pr]", "meld doctor [--probe-status] [--sweep --dry-run]")
 
 
 def _read(name: str) -> str:

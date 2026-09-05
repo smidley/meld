@@ -71,6 +71,18 @@ Put the product's quality bar in `.meld/STANDARDS.md`; it is rendered into every
 
 The calling party comes from `MELD_GROUP` and `MELD_ROLE` (`orchestrator` or `pm`); unset means human, authenticated as `gh`'s current user. Group tokens come from the `token_env` named in `.meld.toml`; they are fine-grained PATs scoped to the product repo with Contents, Issues, Pull requests, and Commit statuses (read and write). Local state lives under `MELD_HOME` (default `~/.meld`) and can be deleted at any time.
 
+## Quick start
+
+Bootstrapping a fresh product repo, start to finish:
+
+1. `uv sync`.
+2. Create one GitHub machine account per group and mint a fine-grained token for each (spec 18: Contents, Issues, Pull requests, Commit statuses — read and write); export `MELD_TOKEN_<GROUP>` (e.g. `MELD_TOKEN_CLAUDE`), injected from 1Password via `op run` rather than left in plaintext.
+3. `cd <product clone> && meld setup owner/name --goal "..." --pr` — writes labels, the milestone, the coordination issue, `.github/CODEOWNERS`, branch protection, and a starter `.meld.toml`, then pushes a PR with them.
+4. Merge the setup PR, then uncomment or adjust the `[groups.*]` blocks it wrote (bot name, models, efforts) for the CLIs you're running.
+5. `meld doctor` until it reports green.
+6. `task run GROUP=claude` and `task run GROUP=codex`, one per group.
+7. `meld chat`; approve the plan by adding the `meld:plan-approved` label to the coordination issue when it appears.
+
 ## Known issue: macOS hidden `.pth` files
 
 uv marks its `.pth` files hidden on macOS, and Homebrew Python 3.13/3.14 skip hidden `.pth` files, so `import meld` can fail under `uv run` even though `uv sync` succeeded. Tests are unaffected (pytest is pointed at `src/` directly), and `task` sets `PYTHONPATH=src`. For a direct `uv run meld ...`, run:

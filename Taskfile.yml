@@ -23,3 +23,15 @@ tasks:
     desc: Supervise a group's orchestrator and PM (GROUP=claude|codex)
     cmds:
       - uv run meld run {{.GROUP}}
+
+  doctor:
+    desc: Verify CLIs, tokens, identities, models, and permissions (CLI_ARGS for flags, e.g. --probe-status)
+    cmds:
+      - uv run meld doctor {{.CLI_ARGS}}
+
+  setup:
+    desc: Bootstrap a product repo (REPO=owner/name GOAL="..."; CLI_ARGS for flags, e.g. --pr)
+    requires:
+      vars: [REPO, GOAL]
+    cmds:
+      - uv run meld setup {{.REPO}} --goal "{{.GOAL}}" {{.CLI_ARGS}}

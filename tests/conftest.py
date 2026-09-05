@@ -74,6 +74,9 @@ effort = "high"
 [groups.codex.pm]
 model = "gpt-x"
 effort = "medium"
+[notify]
+slack_dm_webhook_env = "MELD_SLACK_DM_WEBHOOK"
+repeat_after_minutes = 120
 """
 
 

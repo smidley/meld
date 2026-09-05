@@ -33,6 +33,7 @@ from meld.gitops import (
     worktree_exists,
 )
 from meld.grammar import Header, compose
+from meld.notifier import notify
 from meld.results import store_result
 from meld.roster import WorkerType, roster
 from meld.rules import Actor, Refusal, Verb, issue_refusal, pr_refusal, reap_rule, review_concern
@@ -322,7 +323,7 @@ def _dispatch_pr(ctx, board: Board, actor: Actor, number: int, kind: str, adapte
             "lease_until": None, "worktree_mode": "fresh"}
 
 
-def tick(ctx, *, now: datetime | None = None, sleep=time.sleep) -> dict:
+def tick(ctx, *, now: datetime | None = None, sleep=time.sleep, env: Mapping[str, str] | None = None, post=None) -> dict:
     """PM housekeeping: kill overdue workers, create missing leases, release other groups' expired leases."""
     _, board = build_status(ctx)
     actor = ctx.actor()
@@ -355,6 +356,7 @@ def tick(ctx, *, now: datetime | None = None, sleep=time.sleep) -> dict:
         ctx.gh.create_comment(board.coordination_issue, compose(Header(Party("pm", group.name), "EXPIRED", f"#{n}", None),
                                                                 f"Released #{n}: lease by {lease.group} expired at {lease.until} (now {now_iso})."))
         out["expired"].append(n)
+    out["notified"] = notify(ctx, board, when, post=post, env=env)["notified"]
     return out
 
 

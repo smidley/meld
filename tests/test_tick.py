@@ -105,6 +105,15 @@ def test_a_stale_lease_cannot_release_another_groups_fresh_claim(tmp_path):
     assert not [c for c in fake.calls if c.method == "DELETE" and c.endpoint == R + "issues/13/assignees"]
 
 
+def test_tick_notifies_needs_human_items_when_a_webhook_is_configured(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path)
+    sent = []
+    import meld.dispatch as dispatch_mod
+    out = tick(ctx, now=NOW, env={"MELD_SLACK_DM_WEBHOOK": "https://hooks.slack.test/abc"}, post=lambda u, p: sent.append(p))
+    assert out["notified"] == [14] and len(sent) == 1
+    assert tick(ctx, now=NOW, env={}, post=lambda u, p: sent.append(p))["notified"] == []
+
+
 def test_kill_run_skips_a_pid_that_leads_no_process_group(monkeypatch):
     import os, signal, subprocess, sys
     from meld.board import RunRecord

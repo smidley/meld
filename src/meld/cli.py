@@ -23,6 +23,7 @@ from meld.dispatch import DispatchError, collect as do_collect, dispatch as do_d
 from meld.github import GitHubError
 from meld.gitops import GitError
 from meld.memory import decide as do_decide, recall as do_recall, remember as do_remember
+from meld.notifier import notify as do_notify
 from meld.plan import plan_ack as do_plan_ack, plan_approve as do_plan_approve, plan_issues as do_plan_issues
 from meld.posting import PostError, post as do_post
 from meld.results import ResultsError
@@ -220,6 +221,19 @@ def tick(ctx: click.Context) -> None:
     """PM housekeeping: kill overdue workers, create missing leases, release other groups' expired leases."""
     c = _load(ctx)
     _run_action(ctx, lambda: do_tick(c))
+
+
+@main.command()
+@click.option("--dry-run", is_flag=True, help="Show what would be sent without posting or recording.")
+@click.pass_context
+def notify(ctx: click.Context, dry_run: bool) -> None:
+    """Send the Slack nudge for needs-human items now (a PM's tick does this on its own)."""
+    c = _load(ctx)
+
+    def run() -> dict:
+        _, board = build_status(c)
+        return do_notify(c, board, datetime.now(timezone.utc), dry_run=dry_run)
+    emit(_guard(run), ctx.obj["pretty"])
 
 
 @main.command()

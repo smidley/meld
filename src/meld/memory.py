@@ -120,6 +120,8 @@ def decide(ctx, ref: str, *, now: datetime | None = None) -> dict:
         refuse(ctx, board, Refusal(Verb.DECIDE, ref, f"no verified [joint] DECISION {ref} on the coordination issue"))
     if not agreement.joint_verified:
         refuse(ctx, board, Refusal(Verb.DECIDE, ref, f"the [joint] DECISION {ref} comment is not verified (wrong author or posted before the round closed)"))
+    if agreement.status not in ("agreed", "majority"):
+        refuse(ctx, board, Refusal(Verb.DECIDE, ref, f"{ref} ended in DISAGREE; the human decides"))
     if agreement.proposer != actor.group:
         refuse(ctx, board, Refusal(Verb.DECIDE, ref, f"only the proposer ({agreement.proposer}) may record {ref}"))
     slug = slugify(ref)

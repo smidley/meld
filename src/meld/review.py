@@ -58,6 +58,8 @@ def verify_memory_pr(ctx, board, pr) -> tuple[bool, str]:
         agreement = agreement_for(board.comments, ref, ctx.cfg)
         if not (agreement.joint_posted and agreement.joint_verified and agreement.joint_verb == "DECISION"):
             return False, f"no verified [joint] DECISION {ref}"
+        if agreement.status not in ("agreed", "majority"):
+            return False, f"{ref} ended in DISAGREE; the human decides"
         recorded = text.split("## Decision\n\n", 1)[1].strip() if "## Decision\n\n" in text else ""
         if recorded != (agreement.text or "").strip():
             return False, "the recorded decision text does not match the agreed [joint] DECISION text"

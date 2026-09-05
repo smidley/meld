@@ -353,7 +353,7 @@ def test_submit_review_folds_findings_into_the_body_on_422():
 
 
 from meld.memory import content_hash, decide
-from tests.test_memory import DECISION_THREAD, with_thread
+from tests.test_memory import DECISION_THREAD, DISAGREE_THREAD, with_thread
 
 
 def memory_pr_on_board(fake, repo, path, text, number=40, head="mem0001", kind="decision", ref="dec-1", digest=None):
@@ -397,6 +397,20 @@ def test_review_requests_changes_on_a_tampered_memory_pr(tmp_path):
     assert out["event"] == "REQUEST_CHANGES" and "does not match" in out["reason"]
     memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", text, digest="b" * 64)   # hash mismatch
     assert "hash" in review(ctx, 40, now=NOW)["reason"]
+
+
+def test_review_requests_changes_on_a_decision_pr_from_a_disagree_round(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, group="codex")
+    with_thread(fake, DISAGREE_THREAD)
+    from meld.grammar import agreement_for, parse_comment
+    from meld.memory import render_decision
+    parsed = [parse_comment(c, ctx.cfg) for c in fixture("comments_10.json") + DISAGREE_THREAD]
+    agreement = agreement_for(parsed, "dec-2", ctx.cfg)
+    assert agreement.status == "disagree" and agreement.joint_verified
+    text = render_decision("dec-2", agreement, "https://github.com/acme/widgets/issues/10#issuecomment-203", "2026-09-03")
+    memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-2.md", text, ref="dec-2")    # hash and rendering both check out
+    out = review(ctx, 40, now=NOW)
+    assert out["event"] == "REQUEST_CHANGES" and out["reason"] == "dec-2 ended in DISAGREE; the human decides"
 
 
 def test_review_auto_approves_a_lesson_pr_for_a_resolved_item(tmp_path):

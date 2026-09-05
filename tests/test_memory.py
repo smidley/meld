@@ -19,6 +19,13 @@ DECISION_THREAD = [
      "body": "[joint] DECISION dec-1\n\nUse PostgreSQL for the ledger.\n\nverified-by: read docs/adr/0001.md"},
 ]
 
+DISAGREE_THREAD = [
+    {"id": 201, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T10:10:00Z", "body": "[claude] PROPOSE dec-2\n\nUse PostgreSQL for the ledger.\n\nverified-by: read docs/adr/0001.md"},
+    {"id": 202, "user": {"login": "meld-codex-bot"}, "created_at": "2026-09-03T10:11:00Z", "body": "[codex] DISSENT dec-2\n\nSQLite is enough."},
+    {"id": 203, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T10:12:00Z",
+     "body": "[joint] DECISION dec-2 DISAGREE\n\n## Positions\n- **claude** (proposal): Use PostgreSQL for the ledger.\n- **codex**: SQLite is enough.\n\nverified-by: read docs/adr/0001.md"},
+]
+
 
 def with_thread(fake, extra):
     fake.route("GET", R + "issues/10/comments", fixture("comments_10.json") + extra)
@@ -170,6 +177,16 @@ def test_an_amend_after_the_joint_cannot_make_the_amender_the_proposer(tmp_path)
     fake.route("POST", R + "pulls", {"number": 40, "html_url": "https://github.com/acme/widgets/pull/40"})
     with pytest.raises(Refused, match="only the proposer \\(claude\\)"):
         decide(codex, "dec-1", now=NOW)
+    assert not [c for c in fake.calls if c.method == "POST" and c.endpoint == R + "pulls"]
+
+
+def test_decide_refuses_a_round_that_ended_in_disagree(tmp_path):
+    # F2: a verified [joint] DECISION ... DISAGREE records positions for the human, never a decision the groups took.
+    fake, ctx, repo, origin = make_product(tmp_path, role="orchestrator")
+    with_thread(fake, DISAGREE_THREAD)
+    fake.route("POST", R + "pulls", {"number": 40, "html_url": "https://github.com/acme/widgets/pull/40"})
+    with pytest.raises(Refused, match="dec-2 ended in DISAGREE; the human decides"):
+        decide(ctx, "dec-2", now=NOW)
     assert not [c for c in fake.calls if c.method == "POST" and c.endpoint == R + "pulls"]
 
 

@@ -327,3 +327,24 @@ def test_ci_red_sweep_takes_no_action_on_a_fully_handled_head(tmp_path):
     out = ci_red_sweep(codex, board, group)
     assert out == []
     assert not [c for c in fake.calls if c.method == "POST" and c.endpoint in (R + "issues/13/comments", R + "issues/13/labels")]
+
+
+def test_cursors_tolerate_non_numeric_state_values(tmp_path):
+    """F7: a cursor that is not a number (hand-edited, or written by an older version) reads as 0 rather than raising out of
+    tick -- the sweep then re-processes from the start, which is idempotent for the first group's posts only up to what its
+    cursor lost, and free for everyone else."""
+    fake, claude, repo, origin = make_product(tmp_path)
+    no_events(fake)
+    fake.route("GET", R + "issues/13/events", [
+        {"id": 9001, "event": "labeled", "actor": {"login": "randouser"}, "label": {"name": "meld:ready"}}])
+    _, board = build_status(claude)
+    group = claude.cfg.groups["claude"]
+    claude.store.state_dir.mkdir(parents=True, exist_ok=True)
+    (claude.store.state_dir / IGNORED_STATE).write_text(json.dumps({"last_id": "not-a-number"}))
+    (claude.store.state_dir / OFF_PROTOCOL_STATE).write_text(json.dumps({"13": None, "12": "abc", "11": [1], "14": "12"}))
+    assert flag_ignored_comments(claude, board, group) == {"flagged": [103], "posted": True}
+    assert json.loads((claude.store.state_dir / IGNORED_STATE).read_text()) == {"last_id": 103}
+    out = off_protocol_sweep(claude, board, group)
+    assert [(o["issue"], o["event_id"]) for o in out] == [(13, 9001)]
+    cursors = json.loads((claude.store.state_dir / OFF_PROTOCOL_STATE).read_text())
+    assert cursors["13"] == 9001 and cursors["14"] == "12"        # untouched issues keep whatever was there (a digit string still reads as 12)

@@ -27,6 +27,15 @@ def _load(path: Path) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def _int(value) -> int:
+    """A persisted cursor as an int; anything that is not one (hand-edited, or written by another version) reads as 0, so
+    the sweep re-processes from the start rather than raising out of tick."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _save(path: Path, data: dict) -> None:
     """Write the state file. May raise OSError; callers contain that so a write problem never aborts a sweep."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -131,7 +140,7 @@ def flag_ignored_comments(ctx, board: Board, group: GroupConfig) -> dict:
     known = {g.bot for g in ctx.cfg.groups.values()} | set(ctx.cfg.humans)
     path = ctx.store.state_dir / IGNORED_STATE
     state = _load(path)
-    cursor = int(state.get("last_id", 0))
+    cursor = _int(state.get("last_id", 0))
     new = sorted((c for c in board.comments if c.author not in known and c.id > cursor), key=lambda c: c.id)
     if not new:
         return {"flagged": [], "posted": False}
@@ -171,7 +180,7 @@ def off_protocol_sweep(ctx, board: Board, group: GroupConfig) -> list[dict]:
     for n, issue in sorted(board.issues.items()):
         if issue.state != "open":
             continue
-        last = int(cursors.get(str(n), 0))
+        last = _int(cursors.get(str(n), 0))
         try:
             events = ctx.gh.issue_events(n)
         except GitHubError:

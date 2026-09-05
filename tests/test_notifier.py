@@ -1,3 +1,4 @@
+import http.client
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -161,3 +162,35 @@ def test_notify_prunes_a_stale_entry_even_while_the_webhook_is_unconfigured(tmp_
     assert out2["notified"] == [] and "not set" in out2["skipped"] and len(sent) == 1
     state = json.loads((ctx.store.state_dir / NOTIFY_STATE).read_text())
     assert "14" not in state
+
+
+def test_notify_contains_an_http_client_exception_and_tick_surfaces_it(tmp_path):
+    # F7: urllib can raise http.client exceptions that are not OSErrors (a bad status line, a truncated body); tick must
+    # neither raise nor swallow them silently.
+    fake, ctx, repo, origin = make_product(tmp_path)
+    _, board = build_status(ctx)
+    env = {"MELD_SLACK_DM_WEBHOOK": "https://hooks.slack.test/abc"}
+
+    def failing_post(url, payload):
+        raise http.client.BadStatusLine("HTTP/1.1 garbage")
+
+    out = notify(ctx, board, NOW, post=failing_post, env=env)
+    assert out["notified"] == [] and len(out["errors"]) == 1 and "BadStatusLine" in out["errors"][0]
+    assert env["MELD_SLACK_DM_WEBHOOK"] not in out["errors"][0]
+    ticked = tick(ctx, now=NOW, env=env, post=failing_post)
+    assert ticked["notified"] == [] and ticked["notify_errors"] == out["errors"]
+    healthy = tick(ctx, now=NOW, env=env, post=lambda u, p: None)
+    assert healthy["notified"] == [14] and healthy["notify_errors"] == []
+
+
+def test_notify_treats_a_malformed_timestamp_as_never_notified(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path)
+    _, board = build_status(ctx)
+    env = {"MELD_SLACK_DM_WEBHOOK": "https://hooks.slack.test/abc"}
+    state_path = ctx.store.state_dir / NOTIFY_STATE
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps({"14": "last tuesday-ish"}))
+    sent: list[dict] = []
+    out = notify(ctx, board, NOW, post=lambda u, p: sent.append(p), env=env)
+    assert out["due"] == [14] and out["notified"] == [14] and len(sent) == 1
+    assert json.loads(state_path.read_text())["14"] == "2026-09-03T12:00:00Z"    # the bad value is replaced, not kept

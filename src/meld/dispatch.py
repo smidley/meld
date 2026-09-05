@@ -359,7 +359,9 @@ def tick(ctx, *, now: datetime | None = None, sleep=time.sleep, env: Mapping[str
         ctx.gh.create_comment(board.coordination_issue, compose(Header(Party("pm", group.name), "EXPIRED", f"#{n}", None),
                                                                 f"Released #{n}: lease by {lease.group} expired at {lease.until} (now {now_iso})."))
         out["expired"].append(n)
-    out["notified"] = notify(ctx, board, when, post=post, env=env)["notified"]
+    notified = notify(ctx, board, when, post=post, env=env)
+    out["notified"] = notified["notified"]
+    out["notify_errors"] = notified.get("errors", [])   # a failed Slack post or state write is reported here, never raised
     out["ci_red"] = ci_red_sweep(ctx, board, group)
     out["ignored"] = flag_ignored_comments(ctx, board, group)
     out["off_protocol"] = off_protocol_sweep(ctx, board, group)

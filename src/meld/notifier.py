@@ -1,6 +1,7 @@
-"""Slack nudges for items that need a person: one message per needs-human issue, repeated after a configured delay."""
+"""Slack nudges for items that need a person: one message listing every due needs-human issue, each repeated after a configured delay."""
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import urllib.request
@@ -44,6 +45,17 @@ def _load_state(path: Path) -> dict[str, str]:
     return {k: v for k, v in value.items() if isinstance(k, str) and isinstance(v, str)}
 
 
+def _stamp(value: str | None) -> datetime | None:
+    """A recorded send time, or None when there is none or it is not in the shape this module writes -- a hand-edited or
+    foreign value reads as "never notified" (the item is due and the value is overwritten) rather than raising out of tick."""
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, _ISO).replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
 def _persist(state_path: Path, data: dict) -> None:
     """Write the pruned state. May raise OSError/ValueError; callers decide how (or whether) to report that."""
     state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -61,8 +73,8 @@ def notify(ctx, board: Board, now: datetime, *, post: Callable[[str, dict], None
     stale = set(sent) - current_ids  # tracked before, not needs_human (or gone) now
     due = []
     for item in items:
-        last = sent.get(str(item["issue"]))
-        if last is None or (now - datetime.strptime(last, _ISO).replace(tzinfo=timezone.utc)).total_seconds() >= ctx.cfg.notify_repeat_after_minutes * 60:
+        last = _stamp(sent.get(str(item["issue"])))
+        if last is None or (now - last).total_seconds() >= ctx.cfg.notify_repeat_after_minutes * 60:
             due.append(item)
     numbers = [d["issue"] for d in due]
     text = slack_text(due, ctx.cfg.repo_name) if due else None
@@ -93,7 +105,9 @@ def notify(ctx, board: Board, now: datetime, *, post: Callable[[str, dict], None
     if due:
         try:
             (post or _post_webhook)(url, {"text": text})
-        except (OSError, ValueError) as e:
+        except (OSError, ValueError, http.client.HTTPException) as e:
+            # urllib raises OSError (URLError) for most transport failures but http.client exceptions (a bad status
+            # line, a truncated body) for others; none of them may take tick down.
             # Never interpolate the exception itself into the message: some connection
             # errors embed the target URL in their args, and the webhook URL must never
             # appear in output. The class name plus a generic description is enough to

@@ -20,6 +20,7 @@ from meld.dispatch import DispatchError, collect as do_collect, dispatch as do_d
 from meld.github import GitHubError
 from meld.gitops import GitError
 from meld.memory import decide as do_decide, recall as do_recall, remember as do_remember
+from meld.plan import plan_ack as do_plan_ack, plan_approve as do_plan_approve, plan_issues as do_plan_issues
 from meld.posting import PostError, post as do_post
 from meld.results import ResultsError
 from meld.review import merge as do_merge, review as do_review
@@ -126,6 +127,9 @@ def _run_action(ctx: click.Context, fn) -> None:
         emit(_guard(fn), ctx.obj["pretty"])
     except Refused as e:
         emit(_refusal_json(e), ctx.obj["pretty"])
+        ctx.exit(2)
+    except PostError as e:
+        emit({"error": str(e)}, ctx.obj["pretty"])
         ctx.exit(2)
 
 
@@ -317,6 +321,38 @@ def recall(ctx: click.Context, query: str, limit: int) -> None:
     """Search decisions, lessons, and past coordination issues."""
     c = _load(ctx)
     emit(_guard(lambda: do_recall(c, query, limit=limit)), ctx.obj["pretty"])
+
+
+@main.group()
+def plan() -> None:
+    """The plan gate: create planned issues from a [joint] PLAN, approve the plan, or ack an addition."""
+
+
+@plan.command("issues")
+@click.argument("ref")
+@click.option("--dry-run", is_flag=True, help="Parse and report without creating issues.")
+@click.pass_context
+def plan_issues_cmd(ctx: click.Context, ref: str, dry_run: bool) -> None:
+    """Create meld:planned issues from the verified [joint] PLAN or PLAN-ADD comment for REF."""
+    c = _load(ctx)
+    _run_action(ctx, lambda: do_plan_issues(c, ref, dry_run=dry_run))
+
+
+@plan.command("approve")
+@click.pass_context
+def plan_approve_cmd(ctx: click.Context) -> None:
+    """Human: add meld:plan-approved and flip every planned issue to ready."""
+    c = _load(ctx)
+    _run_action(ctx, lambda: do_plan_approve(c))
+
+
+@plan.command("ack")
+@click.argument("ref")
+@click.pass_context
+def plan_ack_cmd(ctx: click.Context, ref: str) -> None:
+    """Human: post ACK for a [joint] PLAN-ADD and flip its planned issues to ready."""
+    c = _load(ctx)
+    _run_action(ctx, lambda: do_plan_ack(c, ref))
 
 
 @main.command()

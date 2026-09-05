@@ -28,6 +28,7 @@ class Verb(str, Enum):
     CHALLENGE = "challenge"  # open or act on a CHALLENGE (see challenge_rule)
     DECIDE = "decide"        # record a verified [joint] DECISION as a memory PR
     REMEMBER = "remember"    # append a lesson about a resolved issue or PR as a memory PR
+    PLAN = "plan"            # the plan gate: create planned issues, approve the plan, or ack an addition
 
 
 # POST is deliberately absent from both: it is refusable but not a per-issue or per-PR verb,

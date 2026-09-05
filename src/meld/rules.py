@@ -33,8 +33,8 @@ class Verb(str, Enum):
 
 # POST is deliberately absent from both: it is refusable but not a per-issue or per-PR verb,
 # so it never appears in an issue's or a PR's legal-action list.
-ISSUE_VERBS = (Verb.CLAIM, Verb.RELEASE, Verb.DISPATCH, Verb.COLLECT, Verb.REOPEN, Verb.TAG, Verb.REAP)
-PR_VERBS = (Verb.APPROVE, Verb.REQUEST_CHANGES, Verb.PUSH_FIX, Verb.MERGE, Verb.REVIEW, Verb.AUDIT, Verb.REAP)
+ISSUE_VERBS = (Verb.CLAIM, Verb.RELEASE, Verb.DISPATCH, Verb.COLLECT, Verb.REOPEN, Verb.TAG, Verb.REAP, Verb.REMEMBER)
+PR_VERBS = (Verb.APPROVE, Verb.REQUEST_CHANGES, Verb.PUSH_FIX, Verb.MERGE, Verb.REVIEW, Verb.AUDIT, Verb.REAP, Verb.REMEMBER)
 
 
 @dataclass(frozen=True)
@@ -243,6 +243,8 @@ def issue_refusal(board: Board, cfg: Config, actor: Actor, verb: Verb, issue: Is
         rule = _tag(board, cfg, actor, issue)
     elif verb == Verb.REAP:
         rule = reap_rule(board, cfg, actor, issue.number, issue, None)
+    elif verb == Verb.REMEMBER:
+        rule = remember_rule(board, cfg, actor, f"#{issue.number}")
     else:
         rule = f"{verb.value} is not an issue verb"
     return Refusal(verb, f"#{issue.number}", rule) if rule else None
@@ -395,6 +397,8 @@ def pr_refusal(board: Board, cfg: Config, actor: Actor, verb: Verb, pr: PullRequ
         rule: str | None = reap_rule(board, cfg, actor, pr.number, None, pr)
     elif verb == Verb.AUDIT:
         rule = _audit(board, cfg, actor, pr)
+    elif verb == Verb.REMEMBER:
+        rule = remember_rule(board, cfg, actor, f"#{pr.number}")
     elif pr.state != "open":
         rule = "PR is not open"
     elif verb == Verb.APPROVE:
@@ -413,7 +417,20 @@ def pr_refusal(board: Board, cfg: Config, actor: Actor, verb: Verb, pr: PullRequ
 
 
 def legal_pr_verbs(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> list[str]:
-    return [v.value for v in PR_VERBS if pr_refusal(board, cfg, actor, v, pr) is None]
+    """What `actor` may do to `pr` now. approve/request-changes are reported through the path `meld review` really
+    takes: the author group's verdict is legal as a COMMENT review (review_verdict_rule), and a memory PR's verdict
+    follows memory_review_rule -- so the array never says approve is illegal at the moment `meld review` would post one."""
+    out = []
+    for v in PR_VERBS:
+        if v in (Verb.APPROVE, Verb.REQUEST_CHANGES):
+            verdict = "approve" if v == Verb.APPROVE else "request-changes"
+            rule = memory_review_rule(board, cfg, actor, pr) if pr.memory else review_verdict_rule(board, cfg, actor, pr, verdict)
+        else:
+            refusal = pr_refusal(board, cfg, actor, v, pr)
+            rule = None if refusal is None else refusal.rule
+        if rule is None:
+            out.append(v.value)
+    return out
 
 
 def review_verdict_rule(board: Board, cfg: Config, actor: Actor, pr: PullRequest, verdict: str) -> str | None:
@@ -493,3 +510,89 @@ def challenge_rule(board: Board, cfg: Config, actor: Actor, action: str, ref: st
     if target is not None and actor.name == target:
         return "the challenged party cannot decide the challenge against it"
     return None
+
+
+# ---- Agreement-ref verbs (plan 5, spec 21 item 18): the legality plan.py and memory.py used to compute inline ----------
+
+def decide_rule(board: Board, cfg: Config, actor: Actor, ref: str) -> str | None:
+    """Why `meld decide REF` is refused for `actor`, or None. Everything here is board-derived; memory.decide adds the
+    one check that needs git (the decision file already on origin's default branch) with the same message."""
+    if actor.party.kind not in ("group", "pm"):
+        return "only the proposer group's orchestrator or PM may record a decision"
+    agreement = agreement_for(board.comments, ref, cfg)
+    if not agreement.joint_posted or agreement.joint_verb != "DECISION":
+        return f"no verified [joint] DECISION {ref} on the coordination issue"
+    if not agreement.joint_verified:
+        return f"the [joint] DECISION {ref} comment is not verified (wrong author or posted before the round closed)"
+    if agreement.status not in ("agreed", "majority"):
+        return f"{ref} ended in DISAGREE; the human decides"
+    if agreement.proposer != actor.group:
+        return f"only the proposer ({agreement.proposer}) may record {ref}"
+    if any(p.memory is not None and p.memory[:2] == ("decision", ref) for p in board.pulls.values() if p.state == "open"):
+        return f"{ref} is already recorded or has an open memory PR"
+    return None
+
+
+def _verified_plan_joint(board: Board, cfg: Config, ref: str, verbs: tuple[str, ...]) -> str | None:
+    agreement = agreement_for(board.comments, ref, cfg)
+    if not agreement.joint_posted or agreement.joint_verb not in verbs:
+        return f"no verified [joint] {'/'.join(verbs)} {ref} on the coordination issue"
+    if not agreement.joint_verified:
+        return f"the [joint] {agreement.joint_verb} {ref} comment is not verified (wrong author or posted before the round closed)"
+    return None
+
+
+def plan_rule(board: Board, cfg: Config, actor: Actor, action: str, ref: str) -> str | None:
+    """Why `meld plan <action> REF` is refused, or None. `action` is issues, approve, or ack."""
+    if action == "issues":
+        if actor.party.kind != "group":
+            return "only the proposer group's orchestrator may create plan issues"
+        rule = _verified_plan_joint(board, cfg, ref, ("PLAN", "PLAN-ADD"))
+        if rule:
+            return rule
+        agreement = agreement_for(board.comments, ref, cfg)
+        if agreement.joint_verb == "PLAN" and board.phase != "planning":
+            return f"{ref} was already approved; its issues can no longer be created"
+        if agreement.proposer != actor.group:
+            return f"only the proposer ({agreement.proposer}) may create the issues for {ref}"
+        return None
+    if action == "approve":
+        if not actor.is_human:
+            return "only a human may approve the plan"
+        if board.phase != "planning":
+            return "the plan is already approved (milestone is executing)"
+        return _verified_plan_joint(board, cfg, ref, ("PLAN",))
+    if action == "ack":
+        if not actor.is_human:
+            return "only a human may ack a plan addition"
+        return _verified_plan_joint(board, cfg, ref, ("PLAN-ADD",))
+    return f"{action} is not a plan action"
+
+
+def remember_rule(board: Board, cfg: Config, actor: Actor, ref: str) -> str | None:
+    if actor.party.kind not in ("group", "pm"):
+        return "only an orchestrator or PM may record a lesson"
+    n = int(ref[1:]) if ref.startswith("#") and ref[1:].isdigit() else None
+    issue = board.issues.get(n) if n is not None else None
+    pr = board.pulls.get(n) if n is not None else None
+    if issue is None and pr is None:
+        return f"{ref} is not an issue or PR on the board"
+    if issue is not None and issue.status in ("blocked", "needs_human"):
+        return f"{ref} is still {issue.status}; a lesson is recorded once the item resolves"
+    if board.is_challenged(ref):
+        return f"{ref} has an open CHALLENGE; resolve it first"
+    return None
+
+
+def legal_agreement_verbs(board: Board, cfg: Config, actor: Actor, ref: str) -> list[str]:
+    """The agreement-ref actions `actor` may take on `ref` right now, in the CLI's spelling."""
+    out = []
+    if decide_rule(board, cfg, actor, ref) is None:
+        out.append("decide")
+    if plan_rule(board, cfg, actor, "issues", ref) is None:
+        out.append("plan-issues")
+    if ref == f"plan-{board.milestone}" and plan_rule(board, cfg, actor, "approve", ref) is None:
+        out.append("plan-approve")
+    if plan_rule(board, cfg, actor, "ack", ref) is None:
+        out.append("plan-ack")
+    return out

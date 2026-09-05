@@ -90,32 +90,46 @@ def review(ctx, number: int, *, now: datetime | None = None) -> dict:
     if pr is None:
         refuse(ctx, board, Refusal(Verb.REVIEW, target, "PR is not on a meld/ branch of the active repo"))
     if pr.memory:
-        # A memory PR has no dispatched worker and so no "collect"; the ordinary verdict path's idempotency
-        # (load_result/update_result/mark_submitted around a worker's verdict file) doesn't apply here. Instead,
-        # a completed APPROVE is cached as its own settled record (see the `else` branch below) so a repeat call
-        # returns it without a second GitHub post. A REQUEST_CHANGES is deliberately never cached -- it is a
-        # provisional verdict, and re-running `meld review N` after the PR changes (a fixed hash, a newly landed
-        # agreement) must re-verify against the board as it now stands, not replay a stale rejection.
+        # A memory PR has no dispatched worker and so no "collect". Only a completed APPROVE at the PR's CURRENT
+        # head is a settled, one-time outcome (return it immediately: no re-verify, no re-post); a REQUEST_CHANGES
+        # is provisional -- re-running `meld review N` must always re-verify, so a corrected file is reflected on
+        # the next call -- and even a cached APPROVE must be re-checked once the head moves (a human pushed a new
+        # commit), so the short-circuit below is keyed on (head_sha, event), never on review_id alone.
         cached = load_result(ctx.store.home, group.name, "review", number)
-        if cached is not None and cached.get("review_id") is not None:
-            return cached
+        if cached is not None and cached.get("head_sha") == pr.head_sha and cached.get("event") == "APPROVE":
+            return {"reviewed": number, "memory": pr.memory[0], "event": "APPROVE", "review_id": cached.get("review_id")}
         rule = memory_review_rule(board, ctx.cfg, actor, pr)
         if rule:
             refuse(ctx, board, Refusal(Verb.APPROVE, target, rule))
         ok, reason = verify_memory_pr(ctx, board, pr)
         event = "APPROVE" if ok else "REQUEST_CHANGES"
+        # A re-verify that reproduces exactly what is already on record (same head, same verdict, same reason)
+        # has nothing new to post -- this is what keeps an unchanged tampered PR from getting a second
+        # REQUEST_CHANGES review every time someone re-runs `meld review N` against it.
+        if cached is not None and cached.get("head_sha") == pr.head_sha and cached.get("event") == event and cached.get("reason") == reason:
+            out = {"reviewed": number, "memory": pr.memory[0], "event": event, "review_id": cached.get("review_id")}
+            if not ok:
+                out["reason"] = reason
+            return out
         body = (f"Memory PR check by {group.name}: {reason}.\n\nverified-by: meld review {number} (file at {pr.head_sha[:7]} fetched and hashed)")
         resp = ctx.gh.create_review(number, event, body, pr.head_sha)
-        ctx.gh.create_status(pr.head_sha, "success" if ok else "failure", status_context(group.name), f"{group.name} memory check: {'ok' if ok else reason}"[:140], resp.get("html_url"))
+        # Record the post before anything else can fail (create_status below is best-effort, like the ordinary
+        # path's own create_status), so a retry never files a second review no matter what happens next.
+        record = {"review_id": resp.get("id"), "head_sha": pr.head_sha, "event": event, "reason": reason}
+        if cached is None:
+            store_result(ctx.store.home, group.name, "review", number, record, _iso(_now(now)))
+        else:
+            update_result(ctx.store.home, group.name, "review", number, record)
+        status_error: str | None = None
+        try:
+            ctx.gh.create_status(pr.head_sha, "success" if ok else "failure", status_context(group.name), f"{group.name} memory check: {'ok' if ok else reason}"[:140], resp.get("html_url"))
+        except GitHubError as e:
+            status_error = str(e)
         out = {"reviewed": number, "memory": pr.memory[0], "event": event, "review_id": resp.get("id")}
         if not ok:
-            # REQUEST_CHANGES is provisional, not cached: the whole point is that fixing the PR and re-running
-            # `meld review N` re-verifies against the board as it is now (e.g. a corrected hash or a newly landed
-            # agreement) rather than replaying a stale rejection. Only a completed APPROVE is a settled, one-time
-            # outcome worth remembering, so only that is written to the results store below.
             out["reason"] = reason
-        else:
-            store_result(ctx.store.home, group.name, "review", number, out, _iso(_now(now)))
+        if status_error is not None:
+            out["status_error"] = status_error
         return out
     stored = load_result(ctx.store.home, group.name, "review", number)
     if stored is None:

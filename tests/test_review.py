@@ -432,3 +432,55 @@ def test_review_on_a_memory_pr_never_posts_twice(tmp_path):
     assert first == second == {"reviewed": 40, "memory": "decision", "event": "APPROVE", "review_id": 601}
     assert len(calls(fake, "POST", "pulls/40/reviews")) == 1
     assert len(calls(fake, "POST", "statuses/mem0001")) == 1
+
+
+def test_review_on_an_unchanged_tampered_memory_pr_posts_once(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, group="codex")
+    with_thread(fake, DECISION_THREAD)
+    text = "# Decision dec-1\n\n## Decision\n\nUse MySQL instead.\n"          # hash matches, agreed text doesn't -- same reason both times
+    memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", text)
+    first = review(ctx, 40, now=NOW)
+    second = review(ctx, 40, now=NOW)
+    assert first["event"] == "REQUEST_CHANGES" and second["event"] == "REQUEST_CHANGES"
+    assert first["reason"] == second["reason"]
+    assert len(calls(fake, "POST", "pulls/40/reviews")) == 1
+    assert len(calls(fake, "POST", "statuses/mem0001")) == 1
+
+
+def test_review_on_a_memory_pr_re_verifies_when_the_head_moves(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, group="codex")
+    with_thread(fake, DECISION_THREAD)
+    from meld.grammar import agreement_for, parse_comment
+    from meld.memory import render_decision
+    parsed = [parse_comment(c, ctx.cfg) for c in fixture("comments_10.json") + DECISION_THREAD]
+    text = render_decision("dec-1", agreement_for(parsed, "dec-1", ctx.cfg),
+                           "https://github.com/acme/widgets/issues/10#issuecomment-203", "2026-09-03")
+    memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", text)                      # head H1 = mem0001
+    first = review(ctx, 40, now=NOW)
+    assert first["event"] == "APPROVE"
+    memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", text, head="mem0002")      # a human pushed a new head H2
+    second = review(ctx, 40, now=NOW)
+    assert second["event"] == "APPROVE"
+    posts = calls(fake, "POST", "pulls/40/reviews")
+    assert len(posts) == 2 and posts[1]["commit_id"] == "mem0002"          # re-verified and re-posted against the new head
+    assert len(calls(fake, "POST", "statuses/mem0002")) == 1
+
+
+def test_review_on_a_memory_pr_survives_a_failing_status_post(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, group="codex")
+    with_thread(fake, DECISION_THREAD)
+    from meld.grammar import agreement_for, parse_comment
+    from meld.memory import render_decision
+    parsed = [parse_comment(c, ctx.cfg) for c in fixture("comments_10.json") + DECISION_THREAD]
+    text = render_decision("dec-1", agreement_for(parsed, "dec-1", ctx.cfg),
+                           "https://github.com/acme/widgets/issues/10#issuecomment-203", "2026-09-03")
+    memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", text)
+    fake.route("POST", R + "statuses/mem0001", {"message": "Internal Server Error"}, status=500)
+    first = review(ctx, 40, now=NOW)
+    assert first["event"] == "APPROVE" and first.get("status_error") is not None    # does not raise; the review still landed
+    assert len(calls(fake, "POST", "pulls/40/reviews")) == 1
+    fake.route("POST", R + "statuses/mem0001", {"id": 79})     # status endpoint recovers
+    second = review(ctx, 40, now=NOW)
+    assert second["event"] == "APPROVE"
+    assert len(calls(fake, "POST", "pulls/40/reviews")) == 1   # no duplicate review on the retry
+    assert len(calls(fake, "POST", "statuses/mem0001")) == 1   # the earlier failed attempt was not retried

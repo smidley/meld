@@ -147,6 +147,8 @@ def test_sweep_lists_then_removes_only_what_it_listed(tmp_path):
     _touch(home / "runs" / "claude" / "13-gitconfig", text="")                                    # no 13.json either, but fresh: not a candidate yet
     (home / "runs" / "claude" / "13-gh").mkdir(parents=True)
     (home / "worktrees" / "claude" / "memory-dec-9").mkdir(parents=True)                          # crash debris
+    os.utime(home / "worktrees" / "claude" / "memory-dec-9", (old, old))                          # old enough to sweep
+    (home / "worktrees" / "claude" / "memory-dec-10").mkdir(parents=True)                         # a memory PR still mid-commit: too fresh to touch
     _touch(home / "state" / "claude" / "pm" / "ci-red.json", text='{"20": {"head": "h", "commented": true, "swapped": true}, "23": {"head": "h", "commented": true, "swapped": false}}')
     states = {20: "closed", 22: "merged", 23: "open"}
     out = sweep(home, cfg(), repo_root=tmp_path, pull_states=states, older_than_days=7)
@@ -155,7 +157,7 @@ def test_sweep_lists_then_removes_only_what_it_listed(tmp_path):
     assert ("memory-review-record", "review-22.json") in kinds and ("memory-review-record", "review-23.json") not in kinds
     assert ("run-scratch", "12-gitconfig") in kinds and ("run-scratch", "12-gh") in kinds and ("run-scratch", "11-gh") not in kinds
     assert ("run-scratch", "13-gitconfig") not in kinds and ("run-scratch", "13-gh") not in kinds     # fresh: too young to be a worker-starting-now false positive
-    assert ("memory-worktree", "memory-dec-9") in kinds
+    assert ("memory-worktree", "memory-dec-9") in kinds and ("memory-worktree", "memory-dec-10") not in kinds     # fresh: may still be mid-commit
     assert ("ci-red-record", "20") in kinds and ("ci-red-record", "23") not in kinds
     assert out["dry_run"] is True and out["removed"] == []
     assert (home / "results" / "claude" / "superseded" / "review-20-1.json").exists()
@@ -165,6 +167,7 @@ def test_sweep_lists_then_removes_only_what_it_listed(tmp_path):
     assert not (home / "runs" / "claude" / "12-gh").exists() and (home / "runs" / "claude" / "11-gh").exists()
     assert (home / "runs" / "claude" / "13-gh").exists() and (home / "runs" / "claude" / "13-gitconfig").exists()
     assert not (home / "worktrees" / "claude" / "memory-dec-9").exists()
+    assert (home / "worktrees" / "claude" / "memory-dec-10").exists()
     remaining = json.loads((home / "state" / "claude" / "pm" / "ci-red.json").read_text())
     assert set(remaining) == {"23"}
 
@@ -174,6 +177,52 @@ def test_sweep_without_board_state_skips_pr_dependent_kinds(tmp_path):
     _touch(home / "results" / "claude" / "review-22.json", text='{"head_sha": "x", "event": "APPROVE"}')
     out = sweep(home, cfg(), repo_root=tmp_path, pull_states=None)
     assert out["candidates"] == [] and "board" in " ".join(out["skipped"])
+
+
+def test_sweep_apply_skips_a_ci_red_record_whose_file_became_a_list(tmp_path, monkeypatch):
+    """Review fix, Minor 1: the state file can change shape between listing and apply (someone else rewrote it, or
+    unrelated corruption) -- apply must not crash, and must report the candidate as skipped rather than silently
+    claiming it as removed."""
+    home = tmp_path / "home"
+    ci_red = home / "state" / "claude" / "pm" / "ci-red.json"
+    original_text = '{"20": {"head": "h", "commented": true, "swapped": true}}'
+    _touch(ci_red, text=original_text)
+    states = {20: "closed"}
+    real_loads = json.loads
+    calls = {"n": 0}
+
+    def flaky_loads(s, *a, **kw):
+        if s == original_text:
+            calls["n"] += 1
+            if calls["n"] > 1:      # 1st call is sweep's own listing phase; every call after is apply's re-read
+                return []
+        return real_loads(s, *a, **kw)
+    monkeypatch.setattr(json, "loads", flaky_loads)
+    out = sweep(home, cfg(), repo_root=tmp_path, pull_states=states, apply=True)
+    assert len(out["candidates"]) == 1 and out["candidates"][0]["kind"] == "ci-red-record"
+    assert out["removed"] == []
+    assert any(str(ci_red) in s for s in out["skipped"])
+
+
+def test_sweep_apply_does_not_follow_a_memory_worktree_symlink(tmp_path):
+    """Review fix, Minor 2: shutil.rmtree(..., ignore_errors=True) silently does nothing to a symlink (it refuses
+    to follow one, and ignore_errors swallows that refusal) -- apply must confirm removal actually happened before
+    counting a memory-worktree candidate as removed, and must never touch what the symlink points at."""
+    home = tmp_path / "home"
+    external = tmp_path / "outside-home" / "real-target"
+    external.mkdir(parents=True)
+    (external / "marker.txt").write_text("keep me")
+    old = time.time() - 1 * 86400
+    os.utime(external, (old, old))                                     # sweep stats through the symlink to its target
+    link = home / "worktrees" / "claude" / "memory-x"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(external, target_is_directory=True)
+    out = sweep(home, cfg(), repo_root=tmp_path, pull_states=None, apply=True)
+    kinds = {(c["kind"], Path(c["path"]).name) for c in out["candidates"]}
+    assert ("memory-worktree", "memory-x") in kinds
+    assert out["removed"] == []
+    assert any(str(link) in s for s in out["skipped"])
+    assert link.exists() and external.exists() and (external / "marker.txt").exists()
 
 
 def test_doctor_cli_check_distinguishes_found_but_broken_from_missing(tmp_path):

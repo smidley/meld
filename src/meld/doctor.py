@@ -26,9 +26,13 @@ from meld.models import ModelRegistry
 
 MEMORY_WARN_BYTES = 2 * 1024 * 1024
 PROBE_CONTEXT = "meld/doctor"
-# dispatch creates a run's <n>-gh/<n>-gitconfig scratch (dispatch._worker_scratch) before it writes <n>.json (the
-# live run record) -- so a scratch pair younger than this may belong to a worker that is starting right now, not an
-# orphan. Only flag run-scratch once it is old enough that a race with a live dispatch is implausible.
+# Shared minimum age for two doctor.sweep candidate kinds that can otherwise look identical to scratch still in
+# active use: dispatch creates a run's <n>-gh/<n>-gitconfig (dispatch._worker_scratch) before it writes <n>.json
+# (the live run record), and memory._open_memory_pr's worktrees/<group>/memory-* worktree exists for the full
+# commit/push/create_pull sequence before that function's own `finally` removes it -- `git worktree remove --force`
+# will happily tear down that worktree mid-commit (reproduced in review). Either kind younger than this may belong
+# to something still running right now, not an orphan or crash; only flag one old enough that such a race is
+# implausible.
 RUN_SCRATCH_MIN_AGE_SECONDS = 3600
 
 
@@ -247,7 +251,7 @@ def sweep(home: Path, cfg: Config, *, repo_root: Path, pull_states: Mapping[int,
                         and p.stat().st_mtime < run_scratch_cutoff):
                     candidates.append({"kind": "run-scratch", "path": str(p), "reason": f"no live run record {stem}.json"})
         for p in sorted((home / "worktrees" / group.name).glob("memory-*")):
-            if p.is_dir():
+            if p.is_dir() and p.stat().st_mtime < run_scratch_cutoff:
                 candidates.append({"kind": "memory-worktree", "path": str(p), "reason": "memory-PR scratch worktree left by a crash"})
         if pull_states is not None:
             for state_file in sorted((home / "state" / group.name).glob(f"*/{CI_RED_STATE}")):
@@ -266,17 +270,33 @@ def sweep(home: Path, cfg: Config, *, repo_root: Path, pull_states: Mapping[int,
     if apply:
         for c in candidates:
             target = c["path"]
-            try:
-                if c["kind"] == "ci-red-record":
+            if c["kind"] == "ci-red-record":
+                try:
                     file, key = target.rsplit("/", 1)
                     data = json.loads(Path(file).read_text())
                     data.pop(key, None)
                     write_atomic(Path(file), json.dumps(data, indent=2, sort_keys=True))
-                elif c["kind"] == "memory-worktree":
+                except (OSError, ValueError, AttributeError, TypeError) as e:
+                    # As tolerant as the listing phase (OSError: missing/unreadable; ValueError: not valid JSON,
+                    # e.g. json.JSONDecodeError) plus AttributeError/TypeError for a file that changed shape between
+                    # listing and here -- e.g. replaced with a bare list: .pop(key, None) then either doesn't exist
+                    # (a str/int/None) or exists with an incompatible signature (a list only takes an index).
+                    skipped.append(f"{target}: {type(e).__name__}")
+                    continue
+                removed.append(target)
+                continue
+            try:
+                if c["kind"] == "memory-worktree":
                     try:
                         remove_worktree(repo_root, Path(target))
                     except Exception:  # not registered as a worktree of this clone: plain directory debris
                         shutil.rmtree(target, ignore_errors=True)
+                        if Path(target).exists():
+                            # ignore_errors=True never raises, even when it refuses to act at all (e.g. target is
+                            # a symlink, which rmtree will not follow) -- confirm it is actually gone before this
+                            # falls through to removed.
+                            skipped.append(f"{target}: still present after removal attempt")
+                            continue
                 elif Path(target).is_dir():
                     shutil.rmtree(target)
                 else:

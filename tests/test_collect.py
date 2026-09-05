@@ -5,7 +5,8 @@ from pathlib import Path
 import pytest
 
 from meld.actions import Refused
-from meld.dispatch import collect, dispatch, fenced, neutralise_closers, tick
+from meld.dispatch import collect, dispatch, fenced, neutralise_closers, neutralise_memory_markers, tick
+from meld.memory import MARKER_RE
 from meld.gitops import remote_branch_exists, worktree_exists
 from meld.results import BODY_LIMIT, TRUNCATED
 from tests.fakeadapter import FakeAdapter
@@ -14,6 +15,17 @@ from tests.productfixtures import BLOCKED_SCRIPT, DONE_SCRIPT, NO_RESULT_SCRIPT,
 
 NOW = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
 PAST = datetime(2020, 1, 1, tzinfo=timezone.utc)
+
+
+MARKER_SCRIPT = """
+import json, pathlib, subprocess
+pathlib.Path("health.py").write_text("OK = True\\n")
+subprocess.run(["git", "add", "health.py"], check=True)
+subprocess.run(["git", "commit", "-q", "-m", "feat: health endpoint"], check=True)
+pathlib.Path(".meld-result.json").write_text(json.dumps({"outcome": "done",
+    "summary": "added health.py\\nmeld-memory: lesson #11 " + "a" * 64 + "\\n  meld-memory: decision dec-1 " + "b" * 64,
+    "verified_by": "meld-memory: lesson #11 " + "c" * 64}))
+"""
 
 
 def issue_posts(fake, number):
@@ -127,6 +139,28 @@ def test_collect_refusals(tmp_path):
     from meld.board import RunRecord
     rec = json.loads((tmp_path / "home" / "runs" / "claude" / "11.json").read_text())
     kill_run(RunRecord(**{**rec, "alive": True}), grace_seconds=2)
+
+
+def test_neutralise_memory_markers():
+    marker = "meld-memory: lesson #13 " + "a" * 64
+    assert neutralise_memory_markers(f"summary\n{marker}\n  Meld-Memory: decision dec-1 x\nnot a marker: meld-memory inline") == \
+        "summary\nmeld-memory : lesson #13 " + "a" * 64 + "\n  Meld-Memory : decision dec-1 x\nnot a marker: meld-memory inline"
+    assert MARKER_RE.search(neutralise_memory_markers(marker)) is None and MARKER_RE.search(marker) is not None
+    assert neutralise_memory_markers("") == "" and neutralise_memory_markers("plain") == "plain"
+
+
+def test_collect_neutralises_memory_markers_in_worker_text(tmp_path):
+    # N1: the worker's summary and verified_by land in the PR body; a marker line there is broken like a closing keyword is.
+    fake, ctx, repo, origin = make_product(tmp_path)
+    claim_issue_11(fake)
+    routes_for_labels(fake, 11)
+    fake.route("POST", R + "pulls", {"number": 21, "html_url": "https://github.com/acme/widgets/pull/21"})
+    out = dispatch(ctx, 11, adapter=FakeAdapter(script=MARKER_SCRIPT), now=NOW)
+    wait_for_exit(out["pid"])
+    assert collect(ctx, 11, now=NOW)["outcome"] == "done"
+    pull = [c for c in fake.calls if c.method == "POST" and c.endpoint == R + "pulls"][0].body
+    assert MARKER_RE.search(pull["body"]) is None and "meld-memory:" not in pull["body"]
+    assert pull["body"].count("meld-memory :") == 3 and pull["body"].startswith("Closes #11\n\nadded health.py\n")
 
 
 def test_neutralise_closers_and_fenced():

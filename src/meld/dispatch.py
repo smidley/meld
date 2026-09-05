@@ -52,6 +52,7 @@ NEEDS_HUMAN = "meld:needs-human"
 # `#<n>` or `<owner>/<repo>#<n>`. Superset on purpose (a missing separator is neutralised too).
 _CLOSER_RE = re.compile(r"(?i)\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b(\s*:?\s*)((?:[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+)?#\d+)")
 _BACKTICKS_RE = re.compile(r"`+")
+_MEMORY_MARKER_RE = re.compile(r"(?im)^([ \t]*meld-memory):")
 
 
 class DispatchError(RuntimeError):
@@ -91,6 +92,18 @@ def neutralise_closers(text: str) -> str:
     "resolved acme/widgets#12" -> "resolved `acme/widgets#12`"), so the only line of a PR body that can close an
     issue is the framework's own `Closes #<issue>`."""
     return _CLOSER_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}`{m.group(3)}`", text or "")
+
+
+def neutralise_memory_markers(text: str) -> str:
+    """Break a `meld-memory:` line in worker-provided text ("meld-memory :"), so the only marker a PR body can carry is the
+    one `meld decide`/`meld remember` write themselves. Belt and braces: `PullRequest.memory` also requires a `meld/memory-*`
+    branch, which no build PR is ever on."""
+    return _MEMORY_MARKER_RE.sub(r"\1 :", text or "")
+
+
+def _pr_body_text(text: str) -> str:
+    """Worker text bound for a PR body: no closing keywords, no memory markers."""
+    return neutralise_memory_markers(neutralise_closers(text))
 
 
 def fenced(text: str) -> str:
@@ -455,7 +468,7 @@ def _collect_build(ctx, board: Board, group: GroupConfig, rec: RunRecord, issue)
     assert result is not None
     push_branch(wt, rec.branch, ctx.gh.token)
     # Worker text enters the PR body: strip its power to close arbitrary issues (only our Closes line may).
-    body = f"Closes #{number}\n\n{neutralise_closers(result.summary)}\n\nverified-by: {neutralise_closers(result.verified_by)}"
+    body = f"Closes #{number}\n\n{_pr_body_text(result.summary)}\n\nverified-by: {_pr_body_text(result.verified_by)}"
     existing = board.pr_for_issue(number)
     if existing is not None and existing.state == "open":
         ctx.gh.update_pull(existing.number, body)

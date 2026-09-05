@@ -432,8 +432,8 @@ def test_review_rejects_a_decision_file_that_is_not_the_rendering_byte_for_byte(
     memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", genuine.replace("issuecomment-203", "issuecomment-999"), head="mem0002")
     assert "byte for byte" in review(ctx, 40, now=NOW)["reason"]
     # the Date line must be an ISO date (it is the one input the verifier takes from the file itself)
-    for bad in ("- Date: yesterday", "- Date: 2026-13-45", "- Date: 2026-9-3"):
-        memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", genuine.replace("- Date: 2026-09-03", bad), head=f"mem{hash(bad) % 10**6:06d}")
+    for i, bad in enumerate(("- Date: yesterday", "- Date: 2026-13-45", "- Date: 2026-9-3")):
+        memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", genuine.replace("- Date: 2026-09-03", bad), head=f"mem000{5 + i}")
         assert "- Date:" in review(ctx, 40, now=NOW)["reason"], bad
     memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", genuine.replace("- Date: 2026-09-03\n", ""), head="mem0009")
     assert "- Date:" in review(ctx, 40, now=NOW)["reason"]

@@ -243,6 +243,9 @@ def test_audit_schedule_excludes_merged_memory_prs():
     assert {p["number"]: p["legal"] for p in both["pulls"]} == {19: ["audit"], 40: []}
     only_memory = render_status(mk_board(CFG2, pulls=[memory]), CFG2, CODEX_PM, REG, now)["audit"]
     assert only_memory == {"pending": [], "merges_pending": 0, "oldest_pending_hours": None, "due": False}
+    # a marker smuggled into an ordinary build PR's body (head meld/9-slug) does not exempt it from audit (N1)
+    smuggled = replace(ordinary, body=body)
+    assert render_status(mk_board(CFG2, pulls=[smuggled]), CFG2, CODEX_PM, REG, now)["audit"]["pending"] == [19]
 
 
 def test_status_pull_fields_and_challenge_details():

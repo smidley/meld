@@ -266,6 +266,20 @@ def test_memory_pr_detection_and_review_dispatch_refusal():
     assert prule(b, CODEX_PM, Verb.APPROVE, pr) is None and "made the last commit" in prule(b, CLAUDE_PM, Verb.APPROVE, pr)
 
 
+def test_only_meld_memory_branches_are_memory_prs():
+    # N1: a worker's summary reaches an ordinary PR's body; a marker there must not turn a build PR into a "memory PR"
+    # (which would refuse its reviewer, never return its issue to in_progress on REQUEST_CHANGES, and skip its audit).
+    body = "Closes #13\n\nmeld-memory: lesson #13 " + "a" * 64 + "\n\nverified-by: x"
+    smuggled = replace(mk_pr(20, 13, committer="meld-codex-bot"), body=body)            # head_ref meld/13-slug, as collect names them
+    assert smuggled.memory is None
+    b = mk_board(CFG2, pulls=[smuggled])
+    assert prule(b, CLAUDE_PM, Verb.REVIEW, smuggled) is None                        # a reviewer can still be dispatched
+    merged = replace(smuggled, state="closed", merged=True)
+    assert prule(mk_board(CFG2, pulls=[merged]), CLAUDE_PM, Verb.AUDIT, merged) is None   # and it is audited once merged
+    genuine = replace(mk_pr(40, 0, committer="meld-claude-bot"), body=body, head_ref="meld/memory-lesson-13-20260903T120000Z")
+    assert genuine.memory == ("lesson", "#13", "a" * 64)                              # the real thing: memory branch AND marker
+
+
 def test_a_merged_memory_pr_owes_no_audit():
     body = "Records the agreed decision `dec-1`.\n\nmeld-memory: decision dec-1 " + "a" * 64 + "\nverified-by: x"
     merged = replace(mk_pr(40, 0, committer="meld-claude-bot", state="closed", merged=True), body=body, head_ref="meld/memory-dec-1")

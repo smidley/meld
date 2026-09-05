@@ -21,6 +21,9 @@ _STATUS_PRECEDENCE = ("needs_human", "blocked", "in_review", "in_progress", "rea
 CHALLENGED_LABEL = "meld:challenged"
 COORDINATION_LABEL = "meld:coordination"
 PLAN_APPROVED_LABEL = "meld:plan-approved"
+# Branches `meld decide`/`meld remember` push to. collect's build branches are `meld/<issue>-<slug>` (gitops.branch_name), so
+# the two namespaces never overlap; memory.py imports this rather than redefining it (board.py is the leaf both can reach).
+MEMORY_BRANCH_PREFIX = "meld/memory-"
 
 
 @dataclass(frozen=True)
@@ -126,7 +129,12 @@ class PullRequest:
 
     @property
     def memory(self) -> tuple[str, str, str] | None:
-        """(kind, ref, hash) when this is a memory PR opened by `meld decide`/`meld remember` (body marker), else None."""
+        """(kind, ref, hash) when this is a memory PR opened by `meld decide`/`meld remember`: a `meld/memory-*` branch AND
+        the body marker, else None. The branch gate is what keeps a body marker harmless: a worker's summary reaches an
+        ordinary `meld/<issue>-<slug>` PR's body (collect breaks marker lines too), and a body alone must never turn a
+        build PR into one that is refused a reviewer, never returned to in_progress, and never audited."""
+        if not (self.head_ref or "").startswith(MEMORY_BRANCH_PREFIX):
+            return None
         m = re.search(r"^meld-memory: (decision|lesson) (\S+) ([0-9a-f]{64})$", self.body or "", re.MULTILINE)
         return (m.group(1), m.group(2), m.group(3)) if m else None
 

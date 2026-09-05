@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from meld.actions import refuse
+from meld.board import MEMORY_BRANCH_PREFIX
 from meld.brief import _local_hits, _terms, recall_snippets
 from meld.config import Party
 from meld.dispatch import DispatchError, _iso, _now, git_identity, neutralise_closers
@@ -19,7 +20,6 @@ from meld.status import build_status
 DECISIONS_DIR = ".meld/decisions"
 LESSONS_FILE = ".meld/memory/lessons.md"
 LESSONS_HEADER = "# Lessons\n"     # what a fresh lessons.md starts with; the verifier assumes the same when the default branch has none
-MEMORY_BRANCH_PREFIX = "meld/memory-"
 MARKER_RE = re.compile(r"^meld-memory: (decision|lesson) (\S+) ([0-9a-f]{64})$", re.MULTILINE)
 _NUMBER_RE = re.compile(r"^(\d{4})-")
 
@@ -61,7 +61,8 @@ def comment_url(board, comment_id: int) -> str:
 
 
 def _memory_pr_open(board, kind: str, ref: str) -> bool:
-    return any(m and m.group(1) == kind and m.group(2) == ref for m in (MARKER_RE.search(p.body) for p in board.pulls.values() if p.state == "open"))
+    """An open memory PR for (kind, ref) -- by `PullRequest.memory`, so a marker in an ordinary PR's body never counts."""
+    return any(p.memory is not None and p.memory[:2] == (kind, ref) for p in board.pulls.values() if p.state == "open")
 
 
 def _already_recorded(ctx, board, ref: str, slug: str) -> bool:

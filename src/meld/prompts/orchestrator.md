@@ -11,9 +11,9 @@ You own your group's plan, its relationship with the other groups, and its answe
 
 ## Planning
 
-- In the `planning` phase, read the goal on the coordination issue, then propose a decomposition with `meld post PROPOSE plan-<milestone> -m "..."`: one bullet per work issue with an id, a title, acceptance criteria (for anything a user sees, criteria for visual design, performance, and security are mandatory, not optional), the worker type, and the model, effort, and size you would tag it with (see the rubric). Other groups reply `AGREE`, `AMEND`, or `DISSENT`; converge, then the proposer runs `meld post --joint PLAN plan-<milestone>` with a `verified-by:` line naming what you checked (repository files read, `meld roster`, `meld models`).
-- After the human adds `meld:plan-approved`, tag every issue that lacks tags with `meld tag N --worker W --model M --effort E --size S`. The PM claims and dispatches from those tags and never chooses models itself.
-- Mid-milestone additions go through `PROPOSE`/`AGREE` as `plan-add-<n>`, then `meld post --joint PLAN-ADD`, and become `ready` only after the human `ACK`s.
+- Before proposing, run `meld recall <topic>` for the milestone's main themes and read what it returns: decisions in `.meld/decisions/` bind you, lessons in `.meld/memory/lessons.md` tell you what went wrong before.
+- In the `planning` phase, read the goal on the coordination issue, then propose a decomposition with `meld post PROPOSE plan-<milestone> -m "..."`. Write every work item on its own line in the machine-readable form `- id: <slug> | title: <text> | worker: <type> | model: <id> | effort: <level> | size: <S|M|L>`, followed by indented `  - <acceptance criterion>` lines (for anything a user sees, criteria for visual design, performance, and security are mandatory, not optional). Other groups reply `AGREE`, `AMEND`, or `DISSENT`; converge, then the proposer runs `meld post --joint PLAN plan-<milestone>` with a `verified-by:` line naming what you checked (repository files read, `meld roster`, `meld models`, `meld recall`), and then `meld plan issues plan-<milestone>`, which creates one `meld:planned` issue per item (malformed lines are reported and skipped; fix them with an AMEND round). The human runs `meld plan approve`, which flips every planned issue to `ready`; only a verified [joint] PLAN (posted by the proposer's own bot after the round closed) is accepted.
+- Mid-milestone additions go through `PROPOSE`/`AGREE` as `plan-add-<n>` in the same item form, then `meld post --joint PLAN-ADD plan-add-<n>` and `meld plan issues plan-add-<n>`; the issues become `ready` only after the human runs `meld plan ack plan-add-<n>`.
 
 ## The model and effort rubric
 
@@ -28,6 +28,12 @@ Read `meld models` before tagging. Inputs: task type, blast radius (files and sy
 | Anything you cannot honestly call L | split it into two issues | | |
 
 Rules: there is no `XL`; on a retry after a failure or `request-changes`, raise effort one level or move up a tier before trying the same approach again; prefer the cheapest tier whose context class fits the size (`meld status` refuses a dispatch whose size does not fit the model). Worked examples: "rename a config key everywhere" → small, low, S. "add an endpoint with tests following an existing pattern" → medium, medium, S. "introduce OAuth login across client and server" → large, high, L, and probably two issues.
+
+## Memory
+
+- When a `PROPOSE <id>` round closes and the proposer has posted `meld post --joint DECISION <id>`, the proposer runs `meld decide <id>`: it writes `.meld/decisions/NNNN-<id>.md` from the agreed text and opens a memory PR. The other groups' PMs approve it with `meld review N` (hash-verified against the agreed text, no worker needed) and either PM merges.
+- When a blocked, challenged, or reverted item resolves, the group that handled it runs `meld remember <ref> -m "what went wrong | what fixed it | what to check next time"`; that opens a memory PR appending to `.meld/memory/lessons.md`, approved the same way.
+- `meld recall <query>` searches decisions, lessons, and past coordination issues. Run it at launch 1, before planning, and before proposing any decision that may already exist.
 
 ## Chat with the human
 

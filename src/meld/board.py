@@ -124,6 +124,12 @@ class PullRequest:
     def challenged(self) -> bool:
         return CHALLENGED_LABEL in self.labels
 
+    @property
+    def memory(self) -> tuple[str, str, str] | None:
+        """(kind, ref, hash) when this is a memory PR opened by `meld decide`/`meld remember` (body marker), else None."""
+        m = re.search(r"^meld-memory: (decision|lesson) (\S+) ([0-9a-f]{64})$", self.body or "", re.MULTILINE)
+        return (m.group(1), m.group(2), m.group(3)) if m else None
+
 
 @dataclass(frozen=True)
 class RunRecord:

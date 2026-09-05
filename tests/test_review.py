@@ -350,3 +350,58 @@ def test_submit_review_folds_findings_into_the_body_on_422():
     assert len(stub.calls) == 2
     assert "## Findings" in stub.calls[1]["body"]
     assert stub.calls[1]["comments"] is None
+
+
+from meld.memory import content_hash, decide
+from tests.test_memory import DECISION_THREAD, with_thread
+
+
+def memory_pr_on_board(fake, repo, path, text, number=40, head="mem0001", kind="decision", ref="dec-1", digest=None):
+    import base64
+    pulls = fixture("pulls.json") + [{"number": number, "title": f"Decision {ref}", "state": "open", "merged_at": None,
+                                      "user": {"login": "meld-claude-bot"}, "head": {"ref": f"meld/memory-{ref}", "sha": head}, "labels": [],
+                                      "body": f"Records.\n\nmeld-memory: {kind} {ref} {digest or content_hash(text)}\nverified-by: x"}]
+    fake.route("GET", R + "pulls", pulls)
+    fake.route("GET", R + f"pulls/{number}/reviews", [])
+    fake.route("GET", R + f"pulls/{number}/commits", [{"sha": head, "author": {"login": "meld-claude-bot"}, "committer": {"login": "meld-claude-bot"}}])
+    fake.route("GET", R + f"pulls/{number}/files", [{"filename": path}])
+    fake.route("GET", R + f"commits/{head}/check-runs", fixture("checkruns_abc123.json"))
+    fake.route("GET", R + f"commits/{head}/status", {"state": "pending", "statuses": []})
+    fake.route("GET", R + f"contents/{path}", {"encoding": "base64", "content": base64.b64encode(text.encode()).decode()})
+    fake.route("POST", R + f"pulls/{number}/reviews", {"id": 601, "html_url": "r601"})
+    fake.route("POST", R + f"statuses/{head}", {"id": 79})
+
+
+def test_review_auto_approves_a_verified_decision_pr(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, group="codex")          # codex reviews claude's memory PR
+    with_thread(fake, DECISION_THREAD)
+    from meld.grammar import agreement_for
+    from meld.memory import render_decision
+    board_comments = None
+    text = render_decision("dec-1", agreement_for([__import__("meld.grammar", fromlist=["parse_comment"]).parse_comment(c, ctx.cfg) for c in fixture("comments_10.json") + DECISION_THREAD], "dec-1", ctx.cfg),
+                           "https://github.com/acme/widgets/issues/10#issuecomment-203", "2026-09-03")
+    memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", text)
+    out = review(ctx, 40, now=NOW)
+    assert out == {"reviewed": 40, "memory": "decision", "event": "APPROVE", "review_id": 601}
+    (body,) = [c.body for c in fake.calls if c.method == "POST" and c.endpoint == R + "pulls/40/reviews"]
+    assert body["event"] == "APPROVE" and "hash" in body["body"]
+    assert [c.body for c in fake.calls if c.method == "POST" and c.endpoint == R + "statuses/mem0001"][0]["state"] == "success"
+
+
+def test_review_requests_changes_on_a_tampered_memory_pr(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, group="codex")
+    with_thread(fake, DECISION_THREAD)
+    text = "# Decision dec-1\n\n## Decision\n\nUse MySQL instead.\n"
+    memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", text)             # hash matches the file, text does not match the agreement
+    out = review(ctx, 40, now=NOW)
+    assert out["event"] == "REQUEST_CHANGES" and "does not match" in out["reason"]
+    memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", text, digest="b" * 64)   # hash mismatch
+    assert "hash" in review(ctx, 40, now=NOW)["reason"]
+
+
+def test_review_auto_approves_a_lesson_pr_for_a_resolved_item(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, group="codex")
+    entry = "\n## 2026-09-03 — #13 (claude)\n\nPin the action version.\n"
+    memory_pr_on_board(fake, repo, ".meld/memory/lessons.md", "# Lessons\n" + entry, number=41, head="mem0002", kind="lesson", ref="#13", digest=content_hash(entry))
+    out = review(ctx, 41, now=NOW)
+    assert out["event"] == "APPROVE" and out["memory"] == "lesson"

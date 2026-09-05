@@ -351,6 +351,8 @@ def _review(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | N
         return blocker
     if board.is_challenged(f"#{pr.number}"):
         return "PR has an open CHALLENGE"
+    if pr.memory:
+        return f"memory PR: run `meld review {pr.number}` directly, no worker needed"
     return _run_slot(board, cfg, actor, pr.number)
 
 
@@ -425,6 +427,14 @@ def review_verdict_rule(board: Board, cfg: Config, actor: Actor, pr: PullRequest
             return "PR has an open CHALLENGE"
         return None
     refusal = pr_refusal(board, cfg, actor, VERB_FOR[verdict], pr)
+    return None if refusal is None else refusal.rule
+
+
+def memory_review_rule(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | None:
+    """Legality of `meld review`'s auto-approval/request-changes on a memory PR: PM-only, then exactly `_approve`'s rules."""
+    if not actor.is_pm:
+        return "only the PM may approve a memory PR"
+    refusal = pr_refusal(board, cfg, actor, Verb.APPROVE, pr)
     return None if refusal is None else refusal.rule
 
 

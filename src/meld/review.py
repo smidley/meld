@@ -9,9 +9,10 @@ from meld.config import Party
 from meld.dispatch import IN_REVIEW, DispatchError, _iso, _now, _swap_labels, neutralise_closers
 from meld.github import GitHubError
 from meld.gitops import commits_ahead, head_sha, push_branch
-from meld.grammar import Header, compose
+from meld.grammar import Header, agreement_for, compose
+from meld.memory import LESSONS_FILE, content_hash
 from meld.results import cap_body, format_findings, load_result, mark_submitted, update_result
-from meld.rules import VERB_FOR, Refusal, Verb, approving_parties, author_party, pr_refusal, review_verdict_rule, status_context
+from meld.rules import VERB_FOR, Refusal, Verb, approving_parties, author_party, memory_review_rule, pr_refusal, review_verdict_rule, status_context
 from meld.status import build_status
 
 EVENTS = {"approve": "APPROVE", "request-changes": "REQUEST_CHANGES", "push-fix": "COMMENT"}
@@ -39,6 +40,41 @@ def _no_action(ctx, group, number: int, verdict, reason: str, outcome: str, when
     return {"reviewed": number, "verdict": verdict, "event": None, "reason": reason}
 
 
+def verify_memory_pr(ctx, board, pr) -> tuple[bool, str]:
+    kind, ref, digest = pr.memory  # type: ignore[misc]
+    paths = list(pr.files)
+    if len(paths) != 1:
+        return False, f"a memory PR changes exactly one file, this one changes {len(paths)}"
+    text = ctx.gh.get_contents(paths[0], pr.head_sha)
+    if text is None:
+        return False, f"{paths[0]} is missing at {pr.head_sha[:7]}"
+    if kind == "decision":
+        if content_hash(text) != digest:
+            return False, "file hash does not match the meld-memory marker"
+        agreement = agreement_for(board.comments, ref, ctx.cfg)
+        if not (agreement.joint_posted and agreement.joint_verified and agreement.joint_verb == "DECISION"):
+            return False, f"no verified [joint] DECISION {ref}"
+        recorded = text.split("## Decision\n\n", 1)[1].strip() if "## Decision\n\n" in text else ""
+        if recorded != (agreement.text or "").strip():
+            return False, "the recorded decision text does not match the agreed [joint] DECISION text"
+        return True, "hash and agreed text verified"
+    if paths[0] != LESSONS_FILE:
+        return False, f"a lesson PR changes {LESSONS_FILE}, not {paths[0]}"
+    last = text.rfind("\n## ")
+    entry = text[last:] if last >= 0 else ""
+    if content_hash(entry) != digest:
+        return False, "the appended lesson entry's hash does not match the meld-memory marker"
+    n = int(ref[1:]) if ref.startswith("#") and ref[1:].isdigit() else None
+    issue = board.issues.get(n) if n is not None else None
+    if issue is None and (n is None or n not in board.pulls):
+        return False, f"{ref} is not on the board"
+    if issue is not None and issue.status in ("blocked", "needs_human"):
+        return False, f"{ref} is still {issue.status}"
+    if board.is_challenged(ref):
+        return False, f"{ref} has an open CHALLENGE"
+    return True, "hash and resolution verified"
+
+
 def review(ctx, number: int, *, now: datetime | None = None) -> dict:
     _, board = build_status(ctx)
     actor = ctx.actor()
@@ -49,6 +85,19 @@ def review(ctx, number: int, *, now: datetime | None = None) -> dict:
     pr = board.pulls.get(number)
     if pr is None:
         refuse(ctx, board, Refusal(Verb.REVIEW, target, "PR is not on a meld/ branch of the active repo"))
+    if pr.memory:
+        rule = memory_review_rule(board, ctx.cfg, actor, pr)
+        if rule:
+            refuse(ctx, board, Refusal(Verb.APPROVE, target, rule))
+        ok, reason = verify_memory_pr(ctx, board, pr)
+        event = "APPROVE" if ok else "REQUEST_CHANGES"
+        body = (f"Memory PR check by {group.name}: {reason}.\n\nverified-by: meld review {number} (file at {pr.head_sha[:7]} fetched and hashed)")
+        resp = ctx.gh.create_review(number, event, body, pr.head_sha)
+        ctx.gh.create_status(pr.head_sha, "success" if ok else "failure", status_context(group.name), f"{group.name} memory check: {'ok' if ok else reason}"[:140], resp.get("html_url"))
+        out = {"reviewed": number, "memory": pr.memory[0], "event": event, "review_id": resp.get("id")}
+        if not ok:
+            out["reason"] = reason
+        return out
     stored = load_result(ctx.store.home, group.name, "review", number)
     if stored is None:
         raise DispatchError(f"no collected review result for {target}; run `meld collect {number}` first")

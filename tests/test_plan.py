@@ -46,6 +46,7 @@ def planning_board(fake, extra_issues=()):
 
 def test_plan_issues_creates_planned_issues_once(tmp_path):
     fake, ctx, repo, origin = make_product(tmp_path, role="orchestrator")
+    planning_board(fake)   # a base PLAN's issues may only be created before the human approves the plan (F1)
     fake.route("GET", R + "issues/10/comments", fixture("comments_10.json") + PLAN_THREAD)
     fake.route("POST", R + "issues", {"number": 31, "html_url": "u31"})
     fake.route("PATCH", R + "milestones/3", {"number": 3})
@@ -56,10 +57,10 @@ def test_plan_issues_creates_planned_issues_once(tmp_path):
     assert bodies[0]["labels"] == ["meld:planned", "worker:frontend", "model:claude-sonnet-5", "effort:medium", "size:M"]
     assert bodies[0]["body"].startswith("plan-item: login-form\nplan-ref: plan-3\n") and "- renders email and password fields" in bodies[0]["body"]
     assert [c.body for c in fake.calls if c.method == "PATCH" and c.endpoint == R + "milestones/3"] == [{"description": PLAN_TEXT}]
-    # a second run skips items whose plan-item marker already exists on the board
-    existing = fixture("issues.json") + [{"number": 31, "title": "Login form", "body": "plan-item: login-form\nplan-ref: plan-3\n", "state": "open",
-                                          "labels": [{"name": "meld:planned"}], "assignees": [], "milestone": {"number": 3}}]
-    fake.route("GET", R + "issues", existing)
+    # a second run skips items whose plan-item marker already exists on the board (still planning: planning_board
+    # rebuilds #10 without meld:plan-approved every time, since a raw fixture() re-read would put it back)
+    planning_board(fake, [{"number": 31, "title": "Login form", "body": "plan-item: login-form\nplan-ref: plan-3\n", "state": "open",
+                          "labels": [{"name": "meld:planned"}], "assignees": [], "milestone": {"number": 3}}])
     again = plan_issues(ctx, "plan-3")
     assert again["skipped"] == ["login-form"] and again["created"] == [31]
     # only the proposer (claude) may create the issues for plan-3: read the SAME board (same fake/repo) as a codex
@@ -68,6 +69,27 @@ def test_plan_issues_creates_planned_issues_once(tmp_path):
     codex = load_context(repo / ".meld.toml", env=env_for(tmp_path, group="codex", role="orchestrator"), run=fake, adapter_for=no_skills)
     with pytest.raises(Refused, match="only the proposer"):
         plan_issues(codex, "plan-3")
+
+
+def test_plan_issues_refuses_a_base_plan_once_already_approved(tmp_path):
+    # default board: #10 keeps meld:plan-approved from fixture (phase == executing) -- no planning_board() call
+    fake, ctx, repo, origin = make_product(tmp_path, role="orchestrator")
+    fake.route("GET", R + "issues/10/comments", fixture("comments_10.json") + PLAN_THREAD)
+    with pytest.raises(Refused, match="already approved"):
+        plan_issues(ctx, "plan-3")
+
+
+def test_plan_issues_dry_run_reports_without_creating(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, role="orchestrator")
+    planning_board(fake)
+    fake.route("GET", R + "issues/10/comments", fixture("comments_10.json") + PLAN_THREAD)
+    out = plan_issues(ctx, "plan-3", dry_run=True)
+    assert out["would_create"] == ["login-form", "health"] and out["created"] == [] and out["dry_run"] is True
+    assert not any(c.method == "POST" and c.endpoint == R + "issues" for c in fake.calls)
+    fake.route("POST", R + "issues", {"number": 31, "html_url": "u31"})
+    fake.route("PATCH", R + "milestones/3", {"number": 3})
+    again = plan_issues(ctx, "plan-3")
+    assert again["created"] == [31, 31] and again["would_create"] == ["login-form", "health"]
 
 
 def test_plan_issues_refuses_without_a_verified_joint_plan(tmp_path):
@@ -115,3 +137,23 @@ def test_plan_ack_posts_ack_and_readies_the_additions(tmp_path):
     assert out == {"acked": "plan-add-1", "ready": [33]}
     posted = [c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/10/comments"]
     assert posted[-1].startswith("[human] ACK plan-add-1\n")
+
+
+def test_plan_ack_is_idempotent_when_already_acked(tmp_path):
+    fake, human, repo, origin = make_product(tmp_path, group=None)
+    add_text = "- id: audit-log | title: Audit log | worker: backend | model: claude-sonnet-5 | effort: medium | size: M\n  - every write is logged\n\nverified-by: meld roster"
+    thread = fixture("comments_10.json") + [
+        {"id": 311, "user": {"login": "meld-codex-bot"}, "created_at": "2026-09-03T11:00:00Z", "body": "[codex] PROPOSE plan-add-1\n\n" + add_text},
+        {"id": 312, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T11:01:00Z", "body": "[claude] AGREE plan-add-1\n\nok"},
+        {"id": 313, "user": {"login": "meld-codex-bot"}, "created_at": "2026-09-03T11:02:00Z", "body": "[joint] PLAN-ADD plan-add-1\n\n" + add_text},
+        {"id": 314, "user": {"login": "empowerScott"}, "created_at": "2026-09-03T11:03:00Z", "body": "[human] ACK plan-add-1\n\nplan-add-1 acknowledged; its issues are ready"}]
+    fake.route("GET", R + "issues/10/comments", thread)
+    issues = fixture("issues.json") + [{"number": 33, "title": "Audit log", "body": "plan-item: audit-log\nplan-ref: plan-add-1\n", "state": "open",
+                                        "labels": [{"name": "meld:planned"}], "assignees": [], "milestone": {"number": 3}}]
+    fake.route("GET", R + "issues", issues)
+    fake.route("POST", R + "issues/33/labels", [])
+    fake.route("DELETE", R + "issues/33/labels/meld%3Aplanned", [])
+    out = plan_ack(human, "plan-add-1")
+    assert out == {"acked": "plan-add-1", "ready": [33]}
+    assert not any(c.method == "POST" and c.endpoint == R + "issues/10/comments" for c in fake.calls)
+    assert any(c.method == "POST" and c.endpoint == R + "issues/33/labels" for c in fake.calls)   # still readied

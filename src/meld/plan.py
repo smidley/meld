@@ -89,23 +89,27 @@ def plan_issues(ctx, ref: str, *, dry_run: bool = False) -> dict:
     if actor.party.kind != "group":
         refuse(ctx, board, Refusal(Verb.PLAN, ref, "only the proposer group's orchestrator may create plan issues"))
     agreement = _verified_joint(ctx, board, ref, ("PLAN", "PLAN-ADD"), Verb.PLAN)
+    if agreement.joint_verb == "PLAN" and board.phase != "planning":
+        refuse(ctx, board, Refusal(Verb.PLAN, ref, f"{ref} was already approved; its issues can no longer be created"))
     if agreement.proposer != actor.group:
         refuse(ctx, board, Refusal(Verb.PLAN, ref, f"only the proposer ({agreement.proposer}) may create the issues for {ref}"))
     items, errors = parse_plan_items(agreement.text or "")
     existing = {m.group(1) for i in board.issues.values() for m in [MARKER_RE.search(i.body or "")] if m}
     created: list[int] = []
+    would_create: list[str] = []
     skipped: list[str] = []
     for item in items:
         if item.id in existing:
             skipped.append(item.id)
             continue
+        would_create.append(item.id)
         body = f"plan-item: {item.id}\nplan-ref: {ref}\n\n## Acceptance criteria\n" + "\n".join(f"- {c}" for c in item.criteria)
         labels = [PLANNED, f"worker:{item.worker}", f"model:{item.model}", f"effort:{item.effort}", f"size:{item.size}"]
         if not dry_run:
             created.append(int(ctx.gh.create_issue(item.title, body, labels, board.milestone)["number"]))
     if agreement.joint_verb == "PLAN" and not dry_run:
         ctx.gh.update_milestone(board.milestone, description=agreement.text or "")
-    return {"plan": ref, "created": created, "skipped": skipped, "errors": errors, "dry_run": dry_run}
+    return {"plan": ref, "created": created, "skipped": skipped, "errors": errors, "would_create": would_create, "dry_run": dry_run}
 
 
 def plan_approve(ctx) -> dict:
@@ -129,7 +133,10 @@ def plan_ack(ctx, ref: str) -> dict:
     if not actor.is_human:
         refuse(ctx, board, Refusal(Verb.PLAN, ref, "only a human may ack a plan addition"))
     _verified_joint(ctx, board, ref, ("PLAN-ADD",), Verb.PLAN)
-    post(ctx, "ACK", ref=ref, text=f"{ref} acknowledged; its issues are ready")
+    already_acked = any(c.ok and c.header is not None and c.header.party.kind == "human" and c.header.verb == "ACK" and c.header.ref == ref
+                        for c in board.comments)
+    if not already_acked:
+        post(ctx, "ACK", ref=ref, text=f"{ref} acknowledged; its issues are ready")
     ready = _planned_for(board, ref)
     _ready(ctx, ready)
     return {"acked": ref, "ready": ready}

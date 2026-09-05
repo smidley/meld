@@ -54,9 +54,15 @@ def ensure_labels(gh: GitHub) -> dict:
 
 
 def ensure_milestone(gh: GitHub, title: str) -> tuple[int, str]:
-    for m in gh.list_open_milestones():
+    """Reuses a same-titled milestone regardless of state: GitHub rejects a second milestone with a title that
+    already exists (even a closed one), so a closed match is reopened rather than shadowed by a failed create."""
+    for m in gh.list_milestones(state="all"):
         if m.get("title") == title:
-            return int(m["number"]), "existing"
+            number = int(m["number"])
+            if m.get("state") == "open":
+                return number, "existing"
+            gh.update_milestone(number, state="open")
+            return number, "reopened"
     created = gh.create_milestone(title)
     return int(created["number"]), "created"
 
@@ -88,6 +94,7 @@ def _effort(spec: ModelSpec, role: str) -> str:
 
 def _group_block(name: str, registry: ModelRegistry, commented: bool) -> str:
     specs = registry.for_adapter(name)
+    commented = commented or not specs  # a CLI with no models in the registry is as unusable as no CLI at all
     orch = _pick(specs, "large")
     pm = _pick(specs, "medium") or orch
     prefix = "# " if commented else ""
@@ -129,11 +136,17 @@ def setup(gh: GitHub, *, repo: str, goal: str, milestone_title: str, human: str,
     installed = installed_adapters(which)
     if not installed:
         warnings.append("no CLI found on PATH for any adapter (claude, codex); every [groups.*] block is commented out -- install a CLI and uncomment its block")
+    groups = []
+    for name in installed:
+        if registry.for_adapter(name):
+            groups.append(name)
+        else:
+            warnings.append(f"{name} is installed but models.toml lists no models for it; its [groups.{name}] block is commented out")
     target_dir.mkdir(parents=True, exist_ok=True)
     config_path.write_text(starter_toml(repo, info.get("default_branch", "main"), human, installed, registry))
     return {"repo": repo, "labels": labels, "milestone": milestone, "milestone_how": milestone_how,
             "coordination_issue": coordination, "coordination_how": issue_how, "config": str(config_path), "config_written": True,
-            "groups": installed, "warnings": warnings,
+            "groups": groups, "warnings": warnings,
             "next": [f"create one GitHub machine account per group named in {config_path.name} and add each as a collaborator on {repo}",
                      "mint one fine-grained token per bot (Contents, Issues, Pull requests, Commit statuses: read and write) and export MELD_TOKEN_<GROUP>",
                      "run `meld doctor` to verify tokens, CLIs, and models", "run `meld run <group>` for each group, then `meld chat`"]}

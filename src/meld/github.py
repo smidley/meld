@@ -150,6 +150,9 @@ class GitHub:
     def list_open_milestones(self) -> list[dict]:
         return self.get_paginated(self._r("milestones"), {"state": "open"})
 
+    def list_milestones(self, state: str = "all") -> list[dict]:
+        return self.get_paginated(self._r("milestones"), {"state": state})
+
     def list_issues(self, milestone: int) -> list[dict]:
         raw = self.get_paginated(self._r("issues"), {"milestone": milestone, "state": "all"})
         return [i for i in raw if "pull_request" not in i]

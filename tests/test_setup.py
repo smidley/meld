@@ -53,6 +53,17 @@ def test_ensure_milestone_and_coordination_issue_are_idempotent():
     assert body["labels"] == ["meld:coordination"] and body["milestone"] == 4 and "Build the skeleton" in body["body"]
 
 
+def test_ensure_milestone_reopens_a_closed_milestone_with_the_same_title():
+    fake = FakeGh()
+    fake.route("GET", R + "milestones", [{"number": 5, "title": "M1: Skeleton", "state": "closed"}])
+    fake.route("PATCH", R + "milestones/5", {"number": 5, "title": "M1: Skeleton", "state": "open"})
+    gh = gh_for(fake)
+    assert ensure_milestone(gh, "M1: Skeleton") == (5, "reopened")
+    patches = [c for c in fake.calls if c.method == "PATCH"]
+    assert len(patches) == 1 and patches[0].endpoint.endswith("milestones/5") and patches[0].body == {"state": "open"}
+    assert not [c for c in fake.calls if c.method == "POST"]
+
+
 def test_starter_toml_names_installed_adapters_with_registry_models():
     registry = ModelRegistry.load()
     text = starter_toml("acme/widgets", "main", "empowerScott", ["claude", "codex"], registry)
@@ -117,6 +128,32 @@ def test_setup_with_no_installed_cli_writes_commented_groups(tmp_path):
     assert out["groups"] == [] and "no CLI found" in " ".join(out["warnings"])
     text = (tmp_path / ".meld.toml").read_text()
     assert "# [groups.claude]" in text and tomllib.loads(text)["repo"]["name"] == "acme/widgets"
+
+
+def test_group_block_and_setup_comment_out_an_installed_adapter_with_no_models(tmp_path):
+    models_toml = tmp_path / "models.toml"
+    models_toml.write_text(
+        '[claude.claude-opus-5]\n'
+        'context_class = "large"\n'
+        'efforts = ["low", "medium", "high", "max"]\n'
+        'tier = "large"\n'
+    )
+    registry = ModelRegistry.load(models_toml)
+    text = starter_toml("acme/widgets", "main", "empowerScott", ["claude", "codex"], registry)
+    assert "# [groups.codex]" in text and "# [groups.claude]" not in text
+
+    fake = FakeGh()
+    route_repo(fake)
+    fake.route("GET", R + "labels", [])
+    fake.route("POST", R + "labels", {"name": "x"}, status=201)
+    fake.route("GET", R + "milestones", [])
+    fake.route("POST", R + "milestones", {"number": 1, "title": "M1"}, status=201)
+    fake.route("GET", R + "issues", [])
+    fake.route("POST", R + "issues", {"number": 2}, status=201)
+    out = setup(gh_for(fake), repo="acme/widgets", goal="g", milestone_title="M1", human="empowerScott", target_dir=tmp_path,
+                registry=registry, which=lambda b: "/bin/" + b)
+    assert out["groups"] == ["claude"]
+    assert any("codex is installed but models.toml lists no models for it" in w for w in out["warnings"])
 
 
 def test_cli_setup_command_writes_config(tmp_path, monkeypatch):

@@ -62,6 +62,8 @@ def make_product(tmp_path: Path, group: str = "claude", role: str = "pm"):
     fake.route("GET", "users/meld-codex-bot", {"id": 8, "login": "meld-codex-bot"})
     for n in (10, 11, 12, 13, 20):
         fake.route("POST", R + f"issues/{n}/comments", {"id": 300 + n, "html_url": f"u{n}"})
+    for n in (11, 12, 13, 14):  # housekeeping's off_protocol_sweep reads events for every open issue
+        fake.route("GET", R + f"issues/{n}/events", [])
     ctx = load_context(repo / ".meld.toml", env=env_for(tmp_path, group=group, role=role), run=fake, adapter_for=no_skills)
     return fake, ctx, repo, origin
 

@@ -57,3 +57,15 @@ def test_role_prompts_describe_the_review_merge_audit_and_challenge_loops(tmp_pa
     for needle in ("meld challenge open", "meld challenge uphold", "the human adjudicates", "AUDIT #<pr> FAIL", "visual design, performance, and security",
                    "security_paths"):
         assert needle in orch, needle
+
+def test_role_prompts_cover_planning_memory_and_the_human_console(tmp_path):
+    orch = role_prompt("orchestrator", CFG2, CFG2.groups["claude"], tmp_path)
+    for needle in ("- id: <slug> | title:", "meld plan issues plan-<milestone>", "meld plan approve", "meld recall", "meld decide <id>", "meld remember <ref>",
+                   "## Memory", "verified [joint]"):
+        assert needle in orch, needle
+    pm = role_prompt("pm", CFG2, CFG2.groups["claude"], tmp_path)
+    for needle in ("memory PR", "red CI", "IGNORED-COMMENT", "off-protocol", "Slack"):
+        assert needle in pm, needle
+    for cmd in ("meld decide REF", "meld remember REF -m TEXT", "meld recall QUERY", "meld plan issues REF [--dry-run]", "meld plan approve",
+                "meld plan ack REF", "meld inbox", "meld chat [--once TEXT]", "meld notify [--dry-run]"):
+        assert cmd in pm, cmd

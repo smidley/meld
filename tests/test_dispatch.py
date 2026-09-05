@@ -306,3 +306,14 @@ def test_missing_cli_binary_is_a_clean_dispatch_error(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "ADAPTER_FOR", lambda name: absent)
     result = CliRunner().invoke(cli.main, ["--config", str(repo / ".meld.toml"), "--compact", "dispatch", "11"], env=env_for(tmp_path))
     assert result.exit_code == 1 and "Traceback" not in result.output and "cannot start claude" in result.output
+
+
+def test_dispatch_renders_relevant_memory_into_the_brief(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path)
+    (repo / ".meld" / "memory").mkdir(parents=True)
+    (repo / ".meld" / "memory" / "lessons.md").write_text("# Lessons\n\n## 2026-09-01 — #7 (codex)\n\nHealth endpoints must not touch the database.\n")
+    claim_issue_11(fake)
+    out = dispatch(ctx, 11, adapter=FakeAdapter(), now=NOW)
+    text = (Path(out["worktree"]) / BRIEF_FILE).read_text()
+    assert "## Relevant memory" in text and "must not touch the database" in text
+    wait_for_exit(out["pid"])

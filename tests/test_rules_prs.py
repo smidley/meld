@@ -255,3 +255,36 @@ def test_review_concern_is_assigned_only_with_three_or_more_groups():
     pr = mk_pr(20, 13, committer="meld-codex-bot", author="meld-claude-bot")
     assert review_concern(CFG3, pr, "claude") == CONCERNS[0] and review_concern(CFG3, pr, "gemini") == CONCERNS[1]
     assert review_concern(CFG3, pr, "codex") is None                    # the head committer's group still does not review
+
+
+def test_memory_pr_detection_and_review_dispatch_refusal():
+    body = "Records the agreed decision `dec-1`.\n\nmeld-memory: decision dec-1 " + "a" * 64 + "\nverified-by: x"
+    pr = replace(mk_pr(40, 0, committer="meld-claude-bot"), body=body, head_ref="meld/memory-dec-1")
+    assert pr.memory == ("decision", "dec-1", "a" * 64) and mk_pr(20, 13).memory is None
+    b = mk_board(CFG2, pulls=[pr])
+    assert prule(b, CODEX_PM, Verb.REVIEW, pr) == "memory PR: run `meld review 40` directly, no worker needed"
+    assert prule(b, CODEX_PM, Verb.APPROVE, pr) is None and "made the last commit" in prule(b, CLAUDE_PM, Verb.APPROVE, pr)
+
+
+def test_only_meld_memory_branches_are_memory_prs():
+    # N1: a worker's summary reaches an ordinary PR's body; a marker there must not turn a build PR into a "memory PR"
+    # (which would refuse its reviewer, never return its issue to in_progress on REQUEST_CHANGES, and skip its audit).
+    body = "Closes #13\n\nmeld-memory: lesson #13 " + "a" * 64 + "\n\nverified-by: x"
+    smuggled = replace(mk_pr(20, 13, committer="meld-codex-bot"), body=body)            # head_ref meld/13-slug, as collect names them
+    assert smuggled.memory is None
+    b = mk_board(CFG2, pulls=[smuggled])
+    assert prule(b, CLAUDE_PM, Verb.REVIEW, smuggled) is None                        # a reviewer can still be dispatched
+    merged = replace(smuggled, state="closed", merged=True)
+    assert prule(mk_board(CFG2, pulls=[merged]), CLAUDE_PM, Verb.AUDIT, merged) is None   # and it is audited once merged
+    genuine = replace(mk_pr(40, 0, committer="meld-claude-bot"), body=body, head_ref="meld/memory-lesson-13-20260903T120000Z")
+    assert genuine.memory == ("lesson", "#13", "a" * 64)                              # the real thing: memory branch AND marker
+
+
+def test_a_merged_memory_pr_owes_no_audit():
+    body = "Records the agreed decision `dec-1`.\n\nmeld-memory: decision dec-1 " + "a" * 64 + "\nverified-by: x"
+    merged = replace(mk_pr(40, 0, committer="meld-claude-bot", state="closed", merged=True), body=body, head_ref="meld/memory-dec-1")
+    b = mk_board(CFG2, pulls=[merged])
+    assert prule(b, CODEX_PM, Verb.AUDIT, merged) == "memory PR: verified against the board at review, never audited"
+    assert legal_pr_verbs(b, CFG2, CODEX_PM, merged) == []
+    ordinary = mk_pr(19, 9, committer="meld-claude-bot", state="closed", merged=True)
+    assert prule(mk_board(CFG2, pulls=[ordinary]), CODEX_PM, Verb.AUDIT, ordinary) is None

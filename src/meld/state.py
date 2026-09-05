@@ -162,16 +162,19 @@ def board_digest(board: Board) -> dict:
         "issues": {str(n): {"status": i.status, "assignees": list(i.assignees), "labels": sorted(i.labels)}
                    for n, i in sorted(board.issues.items())},
         "pulls": {str(n): {"head": p.head_sha, "approvals": sorted(p.approvals_on_head()),
-                           "changes_requested": sorted(p.changes_requested_on_head()), "checks": p.checks, "state": p.state}
+                           "changes_requested": sorted(p.changes_requested_on_head()), "checks": p.checks, "state": p.state,
+                           "statuses": dict(sorted(p.statuses.items()))}
                   for n, p in sorted(board.pulls.items())},
         "runs": {f"{g}/#{n}": ("running" if r.alive else "collected" if r.collected else "finished")
                  for g, recs in sorted(board.runs.items()) for n, r in sorted(recs.items())},
         "last_comment_id": max((c.id for c in board.comments), default=0),
         "open_challenges": sorted(board.open_challenges),
+        "challenges": {ref: c.challenger for ref, c in sorted(board.challenges.items())},
+        "audits": {str(n): dict(sorted(v.items())) for n, v in sorted(board.audits.items())},
     }
 
 
-CHANGE_KINDS = ("snapshot", "phase", "halted", "issue", "pr", "run", "comments", "challenges")
+CHANGE_KINDS = ("snapshot", "phase", "halted", "issue", "pr", "run", "comments", "challenges", "audits")
 
 
 @dataclass(frozen=True)
@@ -221,6 +224,9 @@ def diff_changes(old: dict | None, new: dict) -> list[Change]:
                 out.append(Change("pr", ref, a["checks"], b["checks"], f"pr #{n}: checks {a['checks']} -> {b['checks']}"))
             if a["state"] != b["state"]:
                 out.append(Change("pr", ref, a["state"], b["state"], f"pr #{n}: {a['state']} -> {b['state']}"))
+            if a.get("statuses", {}) != b.get("statuses", {}):
+                out.append(Change("pr", ref, a.get("statuses"), b.get("statuses"),
+                                  f"pr #{n}: statuses {a.get('statuses', {})} -> {b.get('statuses', {})}"))
     for k in sorted(set(old.get("runs", {})) | set(new.get("runs", {}))):
         a, b = old.get("runs", {}).get(k), new.get("runs", {}).get(k)
         if a != b:
@@ -228,9 +234,17 @@ def diff_changes(old: dict | None, new: dict) -> list[Change]:
     if old.get("last_comment_id") != new.get("last_comment_id"):
         out.append(Change("comments", "", old.get("last_comment_id"), new.get("last_comment_id"),
                           f"comments: new up to #{new.get('last_comment_id')}"))
-    if old.get("open_challenges") != new.get("open_challenges"):
-        out.append(Change("challenges", "", old.get("open_challenges"), new.get("open_challenges"),
-                          f"open_challenges: {old.get('open_challenges')} -> {new.get('open_challenges')}"))
+    # Old snapshots on disk may predate the "challenges"/"audits" keys: .get(..., {}) treats a
+    # missing section as empty rather than raising, so a fresh digest against a stale snapshot
+    # reads as "everything present is new" instead of erroring.
+    for ref in sorted(set(old.get("challenges", {})) | set(new.get("challenges", {}))):
+        a, b = old.get("challenges", {}).get(ref), new.get("challenges", {}).get(ref)
+        if a != b:
+            out.append(Change("challenges", ref, a, b, f"challenge {ref}: challenger {a} -> {b}"))
+    for n in sorted(set(old.get("audits", {})) | set(new.get("audits", {})), key=int):
+        a, b = old.get("audits", {}).get(n), new.get("audits", {}).get(n)
+        if a != b:
+            out.append(Change("audits", f"pr #{n}", a, b, f"audit pr #{n}: {a or {}} -> {b or {}}"))
     return out
 
 

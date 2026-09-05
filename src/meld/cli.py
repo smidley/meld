@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import click
@@ -14,11 +16,15 @@ from meld.adapters import UnknownAdapter, get_adapter
 from meld.assemble import BoardError
 from meld.audit import audit as do_audit, reopen as do_reopen
 from meld.challenge import challenge as do_challenge
+from meld.chat import inbox as build_inbox, run_chat
 from meld.config import ConfigError
 from meld.context import Context, load_context
 from meld.dispatch import DispatchError, collect as do_collect, dispatch as do_dispatch, reap as do_reap, tick as do_tick
 from meld.github import GitHubError
 from meld.gitops import GitError
+from meld.memory import decide as do_decide, recall as do_recall, remember as do_remember
+from meld.notifier import notify as do_notify
+from meld.plan import plan_ack as do_plan_ack, plan_approve as do_plan_approve, plan_issues as do_plan_issues
 from meld.posting import PostError, post as do_post
 from meld.results import ResultsError
 from meld.review import merge as do_merge, review as do_review
@@ -126,6 +132,9 @@ def _run_action(ctx: click.Context, fn) -> None:
     except Refused as e:
         emit(_refusal_json(e), ctx.obj["pretty"])
         ctx.exit(2)
+    except PostError as e:
+        emit({"error": str(e)}, ctx.obj["pretty"])
+        ctx.exit(2)
 
 
 @main.command()
@@ -215,6 +224,19 @@ def tick(ctx: click.Context) -> None:
 
 
 @main.command()
+@click.option("--dry-run", is_flag=True, help="Show what would be sent without posting or recording.")
+@click.pass_context
+def notify(ctx: click.Context, dry_run: bool) -> None:
+    """Send the Slack nudge for needs-human items now (a PM's tick does this on its own)."""
+    c = _load(ctx)
+
+    def run() -> dict:
+        _, board = build_status(c)
+        return do_notify(c, board, datetime.now(timezone.utc), dry_run=dry_run)
+    emit(_guard(run), ctx.obj["pretty"])
+
+
+@main.command()
 @click.argument("number", type=int)
 @click.pass_context
 def collect(ctx: click.Context, number: int) -> None:
@@ -287,6 +309,95 @@ def tag(ctx: click.Context, number: int, worker: str | None, model: str | None, 
     """Set the worker, model, effort, and size labels on an issue (orchestrator or human)."""
     c = _load(ctx)
     _run_action(ctx, lambda: do_tag(c, number, worker=worker, model=model, effort=effort, size=size))
+
+
+@main.command()
+@click.argument("ref")
+@click.pass_context
+def decide(ctx: click.Context, ref: str) -> None:
+    """Record a verified [joint] DECISION as .meld/decisions/NNNN-<slug>.md through a memory PR."""
+    c = _load(ctx)
+    _run_action(ctx, lambda: do_decide(c, ref))
+
+
+@main.command()
+@click.argument("ref")
+@click.option("-m", "--message", "message", required=True, help="What went wrong, what fixed it, what to check next time.")
+@click.pass_context
+def remember(ctx: click.Context, ref: str, message: str) -> None:
+    """Append a lesson about a resolved issue or PR to .meld/memory/lessons.md through a memory PR."""
+    c = _load(ctx)
+    _run_action(ctx, lambda: do_remember(c, ref, message))
+
+
+@main.command()
+@click.argument("query")
+@click.option("--limit", type=int, default=10, show_default=True)
+@click.pass_context
+def recall(ctx: click.Context, query: str, limit: int) -> None:
+    """Search decisions, lessons, and past coordination issues."""
+    c = _load(ctx)
+    emit(_guard(lambda: do_recall(c, query, limit=limit)), ctx.obj["pretty"])
+
+
+@main.group()
+def plan() -> None:
+    """The plan gate: create planned issues from a [joint] PLAN, approve the plan, or ack an addition."""
+
+
+@plan.command("issues")
+@click.argument("ref")
+@click.option("--dry-run", is_flag=True, help="Parse and report without creating issues.")
+@click.pass_context
+def plan_issues_cmd(ctx: click.Context, ref: str, dry_run: bool) -> None:
+    """Create meld:planned issues from the verified [joint] PLAN or PLAN-ADD comment for REF."""
+    c = _load(ctx)
+    _run_action(ctx, lambda: do_plan_issues(c, ref, dry_run=dry_run))
+
+
+@plan.command("approve")
+@click.pass_context
+def plan_approve_cmd(ctx: click.Context) -> None:
+    """Human: add meld:plan-approved and flip every planned issue to ready."""
+    c = _load(ctx)
+    _run_action(ctx, lambda: do_plan_approve(c))
+
+
+@plan.command("ack")
+@click.argument("ref")
+@click.pass_context
+def plan_ack_cmd(ctx: click.Context, ref: str) -> None:
+    """Human: post ACK for a [joint] PLAN-ADD and flip its planned issues to ready."""
+    c = _load(ctx)
+    _run_action(ctx, lambda: do_plan_ack(c, ref))
+
+
+@main.command()
+@click.pass_context
+def inbox(ctx: click.Context) -> None:
+    """What needs a person: needs-human items, budget alerts, disagreements, plan additions, open asks."""
+    c = _load(ctx)
+
+    def run() -> dict:
+        _, board = build_status(c)
+        return build_inbox(board, c.cfg, datetime.now(timezone.utc))
+    emit(_guard(run), ctx.obj["pretty"])
+
+
+@main.command()
+@click.option("--once", "once", default=None, help="Post one line (or one slash command) and exit.")
+@click.option("--verbose", is_flag=True, help="/wait prints every new coordination comment, not only joint and human ones.")
+@click.pass_context
+def chat(ctx: click.Context, once: str | None, verbose: bool) -> None:
+    """Talk to every group as [human]: plain text posts an ASK; slash commands post the human verbs."""
+    c = _load(ctx)
+    lines = [once, "/quit"] if once is not None else iter(sys.stdin.readline, "")
+    result = _guard(lambda: run_chat(c, lines, click.echo, verbose=verbose))
+    emit(result, ctx.obj["pretty"])
+    if once is not None and result["errors"]:
+        # A scripted line that failed (refused, malformed, GitHub down) fails the command too: the caller reads the exit
+        # status, not the inline "error:" line. The REPL keeps answering inline and exits 0 when the session ends.
+        ctx.exit(2)
 
 
 @main.command()

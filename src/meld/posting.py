@@ -6,7 +6,7 @@ from typing import NoReturn
 from meld.actions import refuse
 from meld.board import Board
 from meld.config import Party
-from meld.grammar import Agreement, Header, agreement_for, allowed_verbs, compose, validate
+from meld.grammar import AGREEMENT_VERBS, Agreement, Header, agreement_for, allowed_verbs, compose, validate
 from meld.rules import Refusal, Verb
 from meld.status import build_status
 
@@ -81,18 +81,22 @@ def post(ctx, verb: str, ref: str | None = None, qualifier: str | None = None, t
             _refuse(ctx, board, verb, ref, "PLAN may only be posted during planning")
         if verb == "PLAN-ADD" and board.phase != "executing":
             _refuse(ctx, board, verb, ref, "PLAN-ADD may only be posted during executing")
-        if agreement.joint_posted:
+        if agreement.joint_verified:
+            # Only a verified [joint] closes the door: a hand-written one (wrong author, or posted before the round
+            # closed) must not stop the proposer from posting the real one, which then supersedes it (latest decides).
             _refuse(ctx, board, verb, ref, f"{ref} already has a [joint] comment")
         body_text = _joint_body(agreement, ref, qualifier, text)
-    elif verb in ("PROPOSE", "DRAFT") and party.kind in ("group", "pm"):
-        agreement = agreement_for(board.comments, ref, ctx.cfg)
-        if agreement.text is not None:
-            _refuse(ctx, board, verb, ref, f"{ref} already has a proposal; post AMEND (or AGREE/DISSENT) instead")
-    elif verb == "AMEND" and party.kind in ("group", "pm"):
+    elif verb in AGREEMENT_VERBS and party.kind in ("group", "pm"):
         if not ref:
-            raise PostError("AMEND requires a ref")
+            raise PostError(f"{verb} requires a ref")
         agreement = agreement_for(board.comments, ref, ctx.cfg)
-        if not agreement.can_amend(ctx.cfg):
+        if agreement.joint_posted:
+            # The round is frozen once a [joint] comment exists (grammar.agreement_for ignores anything later);
+            # refusing the post keeps the thread honest about it rather than letting a dead vote sit there.
+            _refuse(ctx, board, verb, ref, f"{ref} is closed by a [joint] comment; open a new ref")
+        if verb in ("PROPOSE", "DRAFT") and agreement.text is not None:
+            _refuse(ctx, board, verb, ref, f"{ref} already has a proposal; post AMEND (or AGREE/DISSENT) instead")
+        if verb == "AMEND" and not agreement.can_amend(ctx.cfg):
             _refuse(ctx, board, verb, ref, f"amend cap ({ctx.cfg.amend_cap}) reached for {ref}; post AGREE or DISSENT")
     header = Header(party, verb, ref, qualifier)
     errors = validate(header, body_text)

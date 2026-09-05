@@ -14,7 +14,7 @@ from typing import Mapping
 from meld.actions import BLOCKED, IN_PROGRESS, refuse, release
 from meld.adapters import Adapter, LaunchSpec, scrub_env
 from meld.board import Board, RunRecord
-from meld.brief import BRIEF_FILE, RESULT_FILE, ResultError, WorkerResult, read_result, render_brief
+from meld.brief import BRIEF_FILE, RESULT_FILE, ResultError, WorkerResult, read_result, recall_snippets, render_brief
 from meld.config import GroupConfig, Party
 from meld.gitops import (
     branch_name,
@@ -33,7 +33,9 @@ from meld.gitops import (
     worktree_exists,
 )
 from meld.grammar import Header, compose
-from meld.results import store_result
+from meld.housekeeping import ci_red_sweep, flag_ignored_comments, off_protocol_sweep
+from meld.notifier import notify
+from meld.results import cap_body, store_result
 from meld.roster import WorkerType, roster
 from meld.rules import Actor, Refusal, Verb, issue_refusal, pr_refusal, reap_rule, review_concern
 from meld.state import pid_alive
@@ -50,6 +52,7 @@ NEEDS_HUMAN = "meld:needs-human"
 # `#<n>` or `<owner>/<repo>#<n>`. Superset on purpose (a missing separator is neutralised too).
 _CLOSER_RE = re.compile(r"(?i)\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b(\s*:?\s*)((?:[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+)?#\d+)")
 _BACKTICKS_RE = re.compile(r"`+")
+_MEMORY_MARKER_RE = re.compile(r"(?im)^([ \t]*meld-memory):")
 
 
 class DispatchError(RuntimeError):
@@ -89,6 +92,18 @@ def neutralise_closers(text: str) -> str:
     "resolved acme/widgets#12" -> "resolved `acme/widgets#12`"), so the only line of a PR body that can close an
     issue is the framework's own `Closes #<issue>`."""
     return _CLOSER_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}`{m.group(3)}`", text or "")
+
+
+def neutralise_memory_markers(text: str) -> str:
+    """Break a `meld-memory:` line in worker-provided text ("meld-memory :"), so the only marker a PR body can carry is the
+    one `meld decide`/`meld remember` write themselves. Belt and braces: `PullRequest.memory` also requires a `meld/memory-*`
+    branch, which no build PR is ever on."""
+    return _MEMORY_MARKER_RE.sub(r"\1 :", text or "")
+
+
+def _pr_body_text(text: str) -> str:
+    """Worker text bound for a PR body: no closing keywords, no memory markers."""
+    return neutralise_memory_markers(neutralise_closers(text))
 
 
 def fenced(text: str) -> str:
@@ -253,7 +268,8 @@ def _dispatch_build(ctx, board: Board, actor: Actor, number: int, adapter: Adapt
     exclude_paths(wt)
     brief = render_brief(role=worker, kind="build", group=group.name, model=issue.model or "", effort=issue.effort or "", issue=issue,
                          pr=None, plan_text=board.plan_text, repo_root=ctx.repo_root, worktree=wt, base_branch=ctx.cfg.default_branch,
-                         skills=[w for w in ctx.roster_entries() if w.source == "skill"])
+                         skills=[w for w in ctx.roster_entries() if w.source == "skill"],
+                         recall=recall_snippets(ctx.repo_root, f"{issue.title}\n{issue.body}"))
     timeout = ctx.cfg.timeout_seconds(issue.size or "M")
     deadline = when + timedelta(seconds=timeout)
     pid, log_path = _launch(ctx, group, adp, worktree=wt, brief=brief, model=issue.model or "", effort=issue.effort or "",
@@ -304,7 +320,8 @@ def _dispatch_pr(ctx, board: Board, actor: Actor, number: int, kind: str, adapte
     concern = review_concern(ctx.cfg, pr, group.name) if kind == "review" and role_name == "reviewer" else None
     brief = render_brief(role=worker, kind=kind, group=group.name, model=model, effort=effort, issue=None, pr=pr,
                          plan_text=board.plan_text, repo_root=ctx.repo_root, worktree=wt, base_branch=ctx.cfg.default_branch, concern=concern,
-                         skills=[w for w in ctx.roster_entries() if w.source == "skill"])
+                         skills=[w for w in ctx.roster_entries() if w.source == "skill"],
+                         recall=recall_snippets(ctx.repo_root, pr.title))
     timeout = ctx.cfg.timeout_seconds("M")
     deadline = when + timedelta(seconds=timeout)
     pid, log_path = _launch(ctx, group, adp, worktree=wt, brief=brief, model=model, effort=effort, timeout=timeout, kind=kind,
@@ -322,7 +339,7 @@ def _dispatch_pr(ctx, board: Board, actor: Actor, number: int, kind: str, adapte
             "lease_until": None, "worktree_mode": "fresh"}
 
 
-def tick(ctx, *, now: datetime | None = None, sleep=time.sleep) -> dict:
+def tick(ctx, *, now: datetime | None = None, sleep=time.sleep, env: Mapping[str, str] | None = None, post=None) -> dict:
     """PM housekeeping: kill overdue workers, create missing leases, release other groups' expired leases."""
     _, board = build_status(ctx)
     actor = ctx.actor()
@@ -355,6 +372,12 @@ def tick(ctx, *, now: datetime | None = None, sleep=time.sleep) -> dict:
         ctx.gh.create_comment(board.coordination_issue, compose(Header(Party("pm", group.name), "EXPIRED", f"#{n}", None),
                                                                 f"Released #{n}: lease by {lease.group} expired at {lease.until} (now {now_iso})."))
         out["expired"].append(n)
+    notified = notify(ctx, board, when, post=post, env=env)
+    out["notified"] = notified["notified"]
+    out["notify_errors"] = notified.get("errors", [])   # a failed Slack post or state write is reported here, never raised
+    out["ci_red"] = ci_red_sweep(ctx, board, group)
+    out["ignored"] = flag_ignored_comments(ctx, board, group)
+    out["off_protocol"] = off_protocol_sweep(ctx, board, group)
     return out
 
 
@@ -445,7 +468,7 @@ def _collect_build(ctx, board: Board, group: GroupConfig, rec: RunRecord, issue)
     assert result is not None
     push_branch(wt, rec.branch, ctx.gh.token)
     # Worker text enters the PR body: strip its power to close arbitrary issues (only our Closes line may).
-    body = f"Closes #{number}\n\n{neutralise_closers(result.summary)}\n\nverified-by: {neutralise_closers(result.verified_by)}"
+    body = f"Closes #{number}\n\n{_pr_body_text(result.summary)}\n\nverified-by: {_pr_body_text(result.verified_by)}"
     existing = board.pr_for_issue(number)
     if existing is not None and existing.state == "open":
         ctx.gh.update_pull(existing.number, body)
@@ -454,8 +477,11 @@ def _collect_build(ctx, board: Board, group: GroupConfig, rec: RunRecord, issue)
         pr_number = int(ctx.gh.create_pull(issue.title, rec.branch, ctx.cfg.default_branch, body)["number"])
     _swap_labels(ctx, number, IN_REVIEW, (IN_PROGRESS,))
     sha = head_sha(wt)
-    ctx.gh.create_comment(number, f"Meld: `{group.name}` worker finished: {len(commits)} commit(s) {commits[0][:7]}..{commits[-1][:7]}, PR #{pr_number}.\n\n"
-                                  f"verified-by: {result.verified_by}")
+    finish = (f"Meld: `{group.name}` worker finished: {len(commits)} commit(s) {commits[0][:7]}..{commits[-1][:7]}, PR #{pr_number}.\n\n"
+              f"verified-by: {result.verified_by}")
+    if result.skills_used:
+        finish += f"\nskills used: {', '.join(result.skills_used)}"
+    ctx.gh.create_comment(number, cap_body(finish))
     ctx.gh.create_comment(board.coordination_issue, compose(Header(Party("pm", group.name), "REVIEW-REQUEST", f"#{pr_number}", None),
                                                             f"Issue #{number}, head {sha[:7]}. Please dispatch a reviewer."))
     ctx.store.write_run(replace(rec, collected=True, pr=pr_number))

@@ -1,6 +1,7 @@
 """Thin wrapper over `gh api`. The only module that talks to GitHub."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -234,3 +235,35 @@ class GitHub:
 
     def update_issue(self, number: int, **fields: Any) -> dict:
         return self.patch(self._r(f"issues/{number}"), fields)
+
+    def create_issue(self, title: str, body: str, labels: list[str], milestone: int) -> dict:
+        return self.post(self._r("issues"), {"title": title, "body": body, "labels": labels, "milestone": milestone})
+
+    def update_milestone(self, number: int, **fields: Any) -> dict:
+        return self.patch(self._r(f"milestones/{number}"), fields)
+
+    def get_contents(self, path: str, ref: str) -> str | None:
+        """The decoded text of a file at `ref`, or None when GitHub has no such file."""
+        quoted = "/".join(quote(seg, safe="") for seg in path.split("/"))
+        status, _, resp = self._call("GET", self._r(f"contents/{quoted}") + "?" + urlencode({"ref": ref}))
+        if status == 404:
+            return None
+        if status >= 400:
+            raise GitHubError(f"GET contents/{path}@{ref} failed with HTTP {status}: {resp}", status)
+        if isinstance(resp, dict) and resp.get("encoding") == "base64":
+            return base64.b64decode(resp.get("content", "")).decode("utf-8")
+        raise GitHubError(f"GET contents/{path}@{ref}: unexpected payload {type(resp).__name__}")
+
+    def issue_events(self, number: int) -> list[dict]:
+        return self.get_paginated(self._r(f"issues/{number}/events"))
+
+    def list_labels(self) -> list[dict]:
+        return self.get_paginated(self._r("labels"))
+
+    def create_label(self, name: str, color: str, description: str = "") -> dict:
+        return self.post(self._r("labels"), {"name": name, "color": color.lstrip("#"), "description": description})
+
+    def search_issues(self, query: str) -> list[dict]:
+        resp = self.get("search/issues", {"q": query}, use_cache=False)
+        items = resp.get("items", []) if isinstance(resp, dict) else []
+        return list(items)

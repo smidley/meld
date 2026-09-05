@@ -70,7 +70,7 @@ Everything in spec section 21 "Carried into plan 5":
 - Orphaned `ci-red.json` records for PRs closed mid-handling are never pruned.
 - `_local_hits` scans every decision and lesson file on every dispatch; wants an index or cache as `.meld/decisions/`/`lessons.md` grow.
 - `MARKER_RE` is duplicated between `memory.py` and `board.py`; move it to a leaf module.
-- From the whole-branch review (spec section 21 items 20–25): `BUDGET` inbox items clear on any later human non-`ASK` comment; memory-PR review records are never `mark_submitted` (a `doctor` sweep item); housekeeping posts are lost while the alphabetically first group is down; `get_contents` fails above 1 MB (lessons.md); `meld notify` from a non-PM party throttles separately; a `decide` whose `REVIEW-REQUEST` post failed cannot be retried while its memory PR is open. A short list of minor, behaviour-neutral review nits (item 17) rounds out the list.
+- From the whole-branch review (spec section 21 items 20–28; 27 and 28 came out of the re-review: a later unverified `[joint]` still supersedes a verified one, and a lesson text with its own `## ` line can never verify): `BUDGET` inbox items clear on any later human non-`ASK` comment; memory-PR review records are never `mark_submitted` (a `doctor` sweep item); housekeeping posts wait for the alphabetically first group to be up (latency, plus off-protocol events on issues that closed meanwhile); `get_contents` fails above 1 MB (lessons.md); `meld notify` from a non-PM party throttles separately; a `decide` whose `REVIEW-REQUEST` post failed cannot be retried while its memory PR is open. A short list of minor, behaviour-neutral review nits (item 17) rounds out the list.
 
 ## Git and identity conventions (from `AGENTS.md`)
 

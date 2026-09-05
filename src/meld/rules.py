@@ -6,6 +6,7 @@ from enum import Enum
 
 from meld.board import Board, Issue, PullRequest
 from meld.config import Config, Party
+from meld.grammar import agreement_for
 from meld.models import SIZES, ModelRegistry, size_fits
 
 
@@ -22,12 +23,15 @@ class Verb(str, Enum):
     POST = "post"
     REAP = "reap"
     TAG = "tag"
+    REVIEW = "review"        # dispatch a review run on a PR
+    AUDIT = "audit"          # dispatch an audit run on a merged PR
+    CHALLENGE = "challenge"  # open or act on a CHALLENGE (see challenge_rule)
 
 
 # POST is deliberately absent from both: it is refusable but not a per-issue or per-PR verb,
 # so it never appears in an issue's or a PR's legal-action list.
-ISSUE_VERBS = (Verb.CLAIM, Verb.RELEASE, Verb.DISPATCH, Verb.COLLECT, Verb.REOPEN)
-PR_VERBS = (Verb.APPROVE, Verb.REQUEST_CHANGES, Verb.PUSH_FIX, Verb.MERGE)
+ISSUE_VERBS = (Verb.CLAIM, Verb.RELEASE, Verb.DISPATCH, Verb.COLLECT, Verb.REOPEN, Verb.TAG, Verb.REAP)
+PR_VERBS = (Verb.APPROVE, Verb.REQUEST_CHANGES, Verb.PUSH_FIX, Verb.MERGE, Verb.REVIEW, Verb.AUDIT, Verb.REAP)
 
 
 @dataclass(frozen=True)
@@ -177,17 +181,48 @@ def _reopen(board: Board, cfg: Config, actor: Actor, issue: Issue) -> str | None
     if actor.is_human:
         return None
     ref = f"#{issue.number}"
+    pr = board.pr_for_issue(issue.number)
+    # spec 8 names the audited work by the issue it closes; spec 14 posts AUDIT per PR. A FAIL
+    # verdict may therefore land under either ref -- accept an AUDIT FAIL keyed on the issue's own
+    # number or on the number of the PR that closed it.
+    refs = {ref} | ({f"#{pr.number}"} if pr is not None else set())
     audits = [
         c for c in board.comments
-        if c.ok and c.header is not None and c.header.verb == "AUDIT" and c.header.ref == ref
+        if c.ok and c.header is not None and c.header.verb == "AUDIT" and c.header.ref in refs
         and c.header.qualifier == "FAIL" and c.header.party.group == actor.group
     ]
     if not audits:
         return f"no AUDIT {ref} FAIL posted by {actor.group}"
-    pr = board.pr_for_issue(issue.number)
     if pr is not None and party_of_login(cfg, pr.author) == actor.group:
         return f"{actor.group} authored the PR that closed {ref}"
     return None
+
+
+def _tag(board: Board, cfg: Config, actor: Actor, issue: Issue) -> str | None:
+    if not (actor.is_human or actor.party.kind == "group"):
+        return "only the orchestrator or a human may tag"
+    if issue.state != "open":
+        return "issue is closed"
+    return None
+
+
+def reap_rule(board: Board, cfg: Config, actor: Actor, number: int, issue: Issue | None, pr: PullRequest | None) -> str | None:
+    """A collected, dead run may be reaped once its work is over: a build once its issue is closed or its PR merged/closed;
+    a review or audit run as soon as it is collected."""
+    if not actor.is_pm:
+        return "only the PM may reap"
+    run = board.run_for(actor.group or "", number)
+    if run is None:
+        return f"no run record for #{number} in {actor.group}"
+    if run.alive:
+        return "worker is still running"
+    if not run.collected:
+        return "run has not been collected; collect first"
+    if run.kind != "build":
+        return None
+    linked = board.pr_for_issue(number) if issue is not None else pr
+    done = (issue is not None and issue.state == "closed") or (linked is not None and (linked.merged or linked.state == "closed"))
+    return None if done else "issue is still open and its PR is not merged"
 
 
 def issue_refusal(board: Board, cfg: Config, actor: Actor, verb: Verb, issue: Issue, models: ModelRegistry) -> Refusal | None:
@@ -201,6 +236,10 @@ def issue_refusal(board: Board, cfg: Config, actor: Actor, verb: Verb, issue: Is
         rule = _release(board, cfg, actor, issue)
     elif verb == Verb.REOPEN:
         rule = _reopen(board, cfg, actor, issue)
+    elif verb == Verb.TAG:
+        rule = _tag(board, cfg, actor, issue)
+    elif verb == Verb.REAP:
+        rule = reap_rule(board, cfg, actor, issue.number, issue, None)
     else:
         rule = f"{verb.value} is not an issue verb"
     return Refusal(verb, f"#{issue.number}", rule) if rule else None
@@ -213,16 +252,40 @@ def legal_issue_verbs(board: Board, cfg: Config, actor: Actor, issue: Issue, mod
 # ---- PR verbs ----------------------------------------------------------------
 
 UNKNOWN_COMMITTER = "head committer unknown; cannot verify who made the last commit"
+# GitHub returns 422 when the account that opened a PR submits an APPROVE or REQUEST_CHANGES review on it. Meld's PR
+# author is the author group's bot (collect opens the PR with the group's token), so after another group push-fixes
+# the head (spec 13 step 3) the author group's verdict can only reach GitHub as a COMMENT review; `meld review` does
+# that and records the verdict in the group's commit status, which is what the quorum then counts.
+AUTHOR_RULE = ("GitHub does not let a PR author's account approve or request changes on its own PR; "
+               "post the verdict as a comment review (meld review does this for you)")
+VERB_FOR = {"approve": Verb.APPROVE, "request-changes": Verb.REQUEST_CHANGES, "push-fix": Verb.PUSH_FIX}
+
+
+def status_context(group: str) -> str:
+    """The commit-status context `meld review` writes for a group's verdict on a head."""
+    return f"meld/review/{group}"
 
 
 def committer_party(cfg: Config, pr: PullRequest) -> str | None:
     return None if pr.head_committer is None else party_of_login(cfg, pr.head_committer)
 
 
+def author_party(cfg: Config, pr: PullRequest) -> str | None:
+    return party_of_login(cfg, pr.author)
+
+
 def approving_parties(cfg: Config, pr: PullRequest) -> frozenset[str]:
     committer = committer_party(cfg, pr)
-    parties = (party_of_login(cfg, login) for login in pr.approvals_on_head())
-    return frozenset(p for p in parties if p is not None and p != committer)
+    parties = {party_of_login(cfg, login) for login in pr.approvals_on_head()}
+    have = {p for p in parties if p is not None and p != committer}
+    # The author group's approval never appears in GitHub's review list (see AUTHOR_RULE): it reaches GitHub as a
+    # COMMENT review, and its `meld/review/<group>` status on this exact head is the record of it. Only `meld review`,
+    # running with that group's token, writes the context, and a status is per-sha, so a later push leaves it behind.
+    # Humans are not counted this way: a human's own PR is reviewed by every group, and a human approves in the UI.
+    author = author_party(cfg, pr)
+    if author is not None and author in cfg.groups and author != committer and pr.statuses.get(status_context(author)) == "success":
+        have.add(author)
+    return frozenset(have)
 
 
 def pingpong_exceeded(cfg: Config, pr: PullRequest) -> bool:
@@ -232,6 +295,8 @@ def pingpong_exceeded(cfg: Config, pr: PullRequest) -> bool:
 def _approve(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | None:
     if actor.name == committer_party(cfg, pr):
         return f"{actor.name} made the last commit on this PR and cannot approve its own head"
+    if actor.name == author_party(cfg, pr):
+        return AUTHOR_RULE
     if board.is_challenged(f"#{pr.number}"):
         return "PR has an open CHALLENGE"
     if pr.head_committer is None:
@@ -263,15 +328,76 @@ def _merge(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | No
     return None
 
 
+def _run_slot(board: Board, cfg: Config, actor: Actor, number: int) -> str | None:
+    group = cfg.groups[actor.group]  # type: ignore[index]
+    live = [r for r in board.runs.get(group.name, {}).values() if r.alive and r.kind in ("review", "audit")]
+    if len(live) >= group.review_concurrency:
+        return f"{group.name} is at its review concurrency cap ({len(live)}/{group.review_concurrency})"
+    existing = board.run_for(group.name, number)
+    if existing is not None and (existing.alive or not existing.collected):
+        return "a run already exists for this PR (running or uncollected)"
+    return None
+
+
+def _review(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | None:
+    if board.halted:
+        return "HALT is in effect"
+    if not actor.is_pm:
+        return "only the PM may dispatch a review"
+    blocker = _other_party_only(cfg, actor, pr, Verb.REVIEW)   # the head committer's group never reviews its own head
+    if blocker:
+        return blocker
+    if board.is_challenged(f"#{pr.number}"):
+        return "PR has an open CHALLENGE"
+    return _run_slot(board, cfg, actor, pr.number)
+
+
+def _audit(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | None:
+    if board.halted:
+        return "HALT is in effect"
+    if not actor.is_pm:
+        return "only the PM may dispatch an audit"
+    if not pr.merged:
+        return "audit targets a merged PR"
+    if party_of_login(cfg, pr.author) == actor.group:
+        return "cannot audit a PR authored by own group"
+    if actor.group in board.audits.get(pr.number, {}):
+        return f"{actor.group} already audited #{pr.number}"
+    return _run_slot(board, cfg, actor, pr.number)
+
+
+CONCERNS = ("correctness and security", "tests and product conventions", "architecture, performance, and visual design")
+
+
+def review_concern(cfg: Config, pr: PullRequest, group: str) -> str | None:
+    """Role-matched review (spec 21.3): with three or more groups, each reviewing group takes a different primary concern.
+    Only the head committer's own party is excluded from reviewing (matching `_review`'s eligibility rule) — the PR's
+    author remains eligible, since spec 13 step 3 has group A's PM dispatch its own reviewer on a head that group B
+    push-fixed onto A's PR."""
+    excluded = {committer_party(cfg, pr)} - {None}
+    reviewers = sorted(g.name for g in cfg.groups.values() if g.name not in excluded)
+    if len(reviewers) < 2 or group not in reviewers:
+        return None
+    return CONCERNS[reviewers.index(group) % len(CONCERNS)]
+
+
 def pr_refusal(board: Board, cfg: Config, actor: Actor, verb: Verb, pr: PullRequest) -> Refusal | None:
-    if pr.state != "open":
-        rule: str | None = "PR is not open"
+    if verb == Verb.REAP:
+        rule: str | None = reap_rule(board, cfg, actor, pr.number, None, pr)
+    elif verb == Verb.AUDIT:
+        rule = _audit(board, cfg, actor, pr)
+    elif pr.state != "open":
+        rule = "PR is not open"
     elif verb == Verb.APPROVE:
         rule = _approve(board, cfg, actor, pr)
-    elif verb in (Verb.REQUEST_CHANGES, Verb.PUSH_FIX):
-        rule = _other_party_only(cfg, actor, pr, verb)
+    elif verb == Verb.REQUEST_CHANGES:
+        rule = _other_party_only(cfg, actor, pr, verb) or (AUTHOR_RULE if actor.name == author_party(cfg, pr) else None)
+    elif verb == Verb.PUSH_FIX:
+        rule = _other_party_only(cfg, actor, pr, verb)   # committer-only: a push approves nothing, and GitHub allows an author's COMMENT review
     elif verb == Verb.MERGE:
         rule = _merge(board, cfg, actor, pr)
+    elif verb == Verb.REVIEW:
+        rule = _review(board, cfg, actor, pr)
     else:
         rule = f"{verb.value} is not a PR verb"
     return Refusal(verb, f"#{pr.number}", rule) if rule else None
@@ -279,3 +405,74 @@ def pr_refusal(board: Board, cfg: Config, actor: Actor, verb: Verb, pr: PullRequ
 
 def legal_pr_verbs(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> list[str]:
     return [v.value for v in PR_VERBS if pr_refusal(board, cfg, actor, v, pr) is None]
+
+
+def review_verdict_rule(board: Board, cfg: Config, actor: Actor, pr: PullRequest, verdict: str) -> str | None:
+    """Why `meld review` may not submit `verdict` on `pr`, or None. The author party's approve and request-changes are
+    refused as GitHub verbs (AUTHOR_RULE) but legal here as a COMMENT review plus status, under the same conditions
+    every other approver meets: the PR is open, the author is not the head committer, the head committer is known,
+    and (for approve) the PR carries no open CHALLENGE. Every other case defers to `pr_refusal`."""
+    if actor.name == author_party(cfg, pr) and verdict in ("approve", "request-changes"):
+        if pr.state != "open":
+            return "PR is not open"
+        if actor.name == committer_party(cfg, pr):
+            return f"{actor.name} made the last commit on this PR and cannot review its own head"
+        if pr.head_committer is None:
+            return UNKNOWN_COMMITTER
+        if verdict == "approve" and board.is_challenged(f"#{pr.number}"):
+            return "PR has an open CHALLENGE"
+        return None
+    refusal = pr_refusal(board, cfg, actor, VERB_FOR[verdict], pr)
+    return None if refusal is None else refusal.rule
+
+
+# ---- challenges ------------------------------------------------------------------
+
+CHALLENGE_ACTIONS = ("open", "evidence", "retract", "uphold", "dismiss")
+
+
+def challenged_party(board: Board, cfg: Config, ref: str) -> str | None:
+    """Who must answer a challenge on `ref`: a PR's head committer's party (else its author's), an issue's first
+    configured assignee's party, or an agreement ref's proposer. None when nobody owns the claim."""
+    if ref.startswith("#") and ref[1:].isdigit():
+        n = int(ref[1:])
+        if n in board.pulls:
+            pr = board.pulls[n]
+            return committer_party(cfg, pr) or party_of_login(cfg, pr.author)
+        if n in board.issues:
+            for login in board.issues[n].assignees:
+                party = party_of_login(cfg, login)
+                if party:
+                    return party
+            return None
+    return agreement_for(board.comments, ref, cfg).proposer
+
+
+def challenge_rule(board: Board, cfg: Config, actor: Actor, action: str, ref: str) -> str | None:
+    if action not in CHALLENGE_ACTIONS:
+        return f"unknown challenge action '{action}'"
+    if not (actor.is_human or actor.party.kind == "group"):
+        return "only an orchestrator or a human may act on challenges"
+    current = board.challenges.get(ref)
+    target = challenged_party(board, cfg, ref)
+    if action == "open":
+        if current is not None:
+            return f"{ref} already has an open CHALLENGE by {current.challenger}"
+        if target is not None and target == actor.name:
+            return "a party cannot challenge its own claim"
+        return None
+    if current is None:
+        return f"{ref} has no open CHALLENGE"
+    if action == "evidence":
+        if actor.is_human or target is None or actor.name == target:
+            return None
+        return f"only the challenged party ({target}) or a human may post EVIDENCE"
+    if action == "retract":
+        if actor.is_human or actor.name == current.challenger or (target is not None and actor.name == target):
+            return None
+        return f"only the challenger ({current.challenger}) or the challenged party ({target}) or a human may RETRACT"
+    if actor.name == current.challenger:
+        return "the challenger cannot decide its own challenge"
+    if target is not None and actor.name == target:
+        return "the challenged party cannot decide the challenge against it"
+    return None

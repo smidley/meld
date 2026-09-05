@@ -161,3 +161,12 @@ def test_parse_duration_and_timeout_seconds(tmp_path):
         cfg.timeout_seconds("XL")
     with pytest.raises(ConfigError, match="timeouts.M"):
         load_config(write(tmp_path, MINIMAL + '\n[timeouts]\nM = "fast"\n'))
+
+
+def test_audit_batch_defaults_and_overrides():
+    base = {"repo": {"name": "acme/widgets"}, "groups": {"claude": {"cli": "claude", "bot": "b", "token_env": "T",
+            "orchestrator": {"model": "m", "effort": "high"}, "pm": {"model": "m", "effort": "medium"}}}}
+    cfg = Config.from_dict(base)
+    assert (cfg.audit_batch_merges, cfg.audit_batch_hours) == (5, 4)
+    cfg2 = Config.from_dict({**base, "audit": {"batch_merges": 3, "batch_hours": 1}})
+    assert (cfg2.audit_batch_merges, cfg2.audit_batch_hours) == (3, 1)

@@ -4,10 +4,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from meld.adapters.base import LaunchSpec, open_log, popen_detached, scan_skills
+from meld.adapters.base import SCRUBBED_EXACT, LaunchSpec, open_log, popen_detached, scan_skills
 from meld.roster import WorkerType
 
-_SETTINGS = {"disableAllHooks": True, "autoMemoryEnabled": False}
+# `--setting-sources user,project` loads the user's and the product's settings.json, whose `env` maps are applied to
+# the session; `--settings` is merged last, so blanking every scrubbed variable name here means neither file can hand
+# a worker a token or a party identity that worker_env just removed. `MELD_TOKEN_*` names are unknown to the adapter
+# (the token_env is per group, in .meld.toml), so a settings file naming one is a `meld doctor` warning (plan 4).
+_SETTINGS = {"disableAllHooks": True, "autoMemoryEnabled": False, "env": {name: "" for name in SCRUBBED_EXACT}}
 _MCP_CONFIG = {"mcpServers": {}}
 _DROP_ENV = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
 BASH_TOOL_CEILING_SECONDS = 600  # Claude Code's Bash tool caps one command at 10 minutes
@@ -28,7 +32,8 @@ class ClaudeAdapter:
             "--permission-mode", "bypassPermissions",
             "--strict-mcp-config", "--mcp-config", json.dumps(_MCP_CONFIG),
             "--settings", json.dumps(_SETTINGS),
-            "--setting-sources", "project",
+            # user: installed skills (~/.claude/skills, plugin caches) load; hooks stay disabled and MCP stays empty via _SETTINGS/_MCP_CONFIG
+            "--setting-sources", "user,project",
             "--max-turns", str(spec.max_turns),
         ]
 

@@ -4,7 +4,7 @@ Reviews another group's pull request for correctness, security, tests, and conve
 
 ## Focus
 
-Another group built this. Your job is to find what they missed, in this order of priority: correctness, security, tests, then repository conventions. You are not here to restyle their code.
+Another group built this. Your job is to find what they missed, in this order of priority: correctness, security, performance, visual design and accessibility (for anything a user sees), tests, then repository conventions. If your brief names a **primary concern**, spend your effort there first; other groups cover the rest, and you still report anything serious you notice. You are not here to restyle their code, but a user-facing change that looks unfinished or performs badly is a real finding, not a style nit. Use the skills listed in your brief (design, security, performance) when they match.
 
 ## Method
 

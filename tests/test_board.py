@@ -104,3 +104,34 @@ def test_assigned_leases_keeps_only_leases_whose_bot_still_holds_the_issue():
               16: mk_lease(16, "gemini")}
     assert assigned_leases(leases, issues, bots) == {12: leases[12]}
     assert assigned_leases({13: mk_lease(13, "codex")}, issues, bots) == {13: mk_lease(13, "codex")}
+
+
+from dataclasses import replace
+
+from meld.board import Challenge, derive_audits, derive_challenges
+from tests.factories import CFG2, mk_comment, mk_pr
+
+
+def test_derive_challenges_records_challenger_and_closers():
+    comments = [mk_comment(CFG2, 1, "meld-codex-bot", "[codex] CHALLENGE #12\n\nthe test claim is false"),
+                mk_comment(CFG2, 2, "meld-claude-bot", "[claude] CHALLENGE plan-1\n\nscope moved"),
+                mk_comment(CFG2, 3, "empowerScott", "[human] DISMISSED #12\n\nverified myself")]
+    ch = derive_challenges(comments)
+    assert set(ch) == {"plan-1"} and ch["plan-1"] == Challenge("plan-1", "claude", 2, comments[1].created_at)
+    human = derive_challenges([mk_comment(CFG2, 4, "empowerScott", "[human] CHALLENGE #13\n\nno evidence")])
+    assert human["#13"].challenger == "human:empowerScott"
+    reopened = derive_challenges(comments + [mk_comment(CFG2, 5, "meld-claude-bot", "[claude] CHALLENGE #12\n\nagain")])
+    assert reopened["#12"].challenger == "claude" and reopened["#12"].comment_id == 5
+
+
+def test_derive_audits_keeps_the_latest_verdict_per_group():
+    comments = [mk_comment(CFG2, 1, "meld-codex-bot", "[codex:pm] AUDIT #19 FAIL\n\ncriterion 2 unmet"),
+                mk_comment(CFG2, 2, "meld-codex-bot", "[codex:pm] AUDIT #19 PASS\n\nre-checked after the fix"),
+                mk_comment(CFG2, 3, "meld-claude-bot", "[claude] AUDIT #19 PASS\n\nok"),
+                mk_comment(CFG2, 4, "meld-claude-bot", "[claude] AUDIT plan-1 PASS\n\nnot a PR ref; ignored")]
+    assert derive_audits(comments) == {19: {"codex": "pass", "claude": "pass"}}
+
+
+def test_pull_request_touches_security_paths():
+    pr = replace(mk_pr(20, 13), files=("src/auth/login.py", "README.md"))
+    assert pr.touches(("src/auth/*",)) and pr.touches(("*.md",)) and not pr.touches(("db/*",)) and not pr.touches(())

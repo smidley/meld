@@ -1,0 +1,129 @@
+import pytest
+from click.testing import CliRunner
+
+import meld.cli as cli
+from meld.actions import Refused
+from meld.challenge import challenge
+from meld.github import GitHubError
+from meld.posting import PostError
+from tests.conftest import env_for
+from tests.productfixtures import R, fixture, make_product
+
+OPENED = fixture("comments_10.json") + [{"id": 150, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T11:00:00Z",
+                                          "body": "[claude] CHALLENGE #13\n\nthe CI claim names no command"}]
+
+
+def coord_posts(fake):
+    return [c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/10/comments"]
+
+
+def test_open_challenge_posts_and_labels(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, role="orchestrator")   # claude doubts codex's in-review #13
+    fake.route("POST", R + "issues/13/labels", [])
+    out = challenge(ctx, "open", "#13", "the CI claim names no command; show the run")
+    assert out == {"challenge": "open", "ref": "#13", "verb": "CHALLENGE", "comment_id": 310, "label": "added", "challenged_party": "codex"}
+    assert coord_posts(fake)[-1].startswith("[claude] CHALLENGE #13\n") and "show the run" in coord_posts(fake)[-1]
+    assert [c.body for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/13/labels"] == [{"labels": ["meld:challenged"]}]
+    # the label lands before the comment: a failed comment leaves a retryable state, a failed label after a comment would not
+    posts = [c.endpoint for c in fake.calls if c.method == "POST"]
+    assert posts.index(R + "issues/13/labels") < posts.index(R + "issues/10/comments")
+    with pytest.raises(PostError, match="say what is doubted"):
+        challenge(ctx, "open", "#11", "   ")
+    fake_pm, pm, *_ = make_product(tmp_path / "pm")
+    with pytest.raises(Refused, match="only an orchestrator or a human"):
+        challenge(pm, "open", "#11", "doubt")
+
+
+def test_challenge_closers_follow_the_rules(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, role="orchestrator")
+    fake.route("GET", R + "issues/10/comments", OPENED)
+    with pytest.raises(Refused, match="challenger cannot decide"):
+        challenge(ctx, "uphold", "#13", "I say so")
+    fake_c, codex, *_ = make_product(tmp_path / "c", group="codex", role="orchestrator")
+    fake_c.route("GET", R + "issues/10/comments", OPENED)
+    with pytest.raises(PostError, match="verified-by"):
+        challenge(codex, "evidence", "#13", "trust me")
+    out = challenge(codex, "evidence", "#13", "act -j ci passed locally\n\nverified-by: act -j ci -> passed")
+    assert out["verb"] == "EVIDENCE" and out["label"] is None and coord_posts(fake_c)[-1].startswith("[codex] EVIDENCE #13\n")
+    with pytest.raises(Refused, match="challenged party cannot decide"):
+        challenge(codex, "dismiss", "#13", "wrong")
+    fake_h, human, *_ = make_product(tmp_path / "h", group=None)
+    fake_h.route("GET", R + "issues/10/comments", OPENED)
+    fake_h.route("DELETE", R + "issues/13/labels/meld%3Achallenged", [])
+    out = challenge(human, "dismiss", "#13", "the evidence holds")
+    assert out["verb"] == "DISMISSED" and out["label"] == "removed" and coord_posts(fake_h)[-1].startswith("[human] DISMISSED #13\n")
+    writes = [(c.method, c.endpoint) for c in fake_h.calls if c.method != "GET"]
+    assert writes.index(("DELETE", R + "issues/13/labels/meld%3Achallenged")) < writes.index(("POST", R + "issues/10/comments"))
+    fake_r, claude2, *_ = make_product(tmp_path / "r", role="orchestrator")
+    fake_r.route("GET", R + "issues/10/comments", OPENED)
+    fake_r.route("DELETE", R + "issues/13/labels/meld%3Achallenged", [])
+    assert challenge(claude2, "retract", "#13", "my mistake")["label"] == "removed"
+
+
+def test_open_challenge_whose_comment_fails_leaves_a_clean_retry(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, role="orchestrator")
+    fake.route("POST", R + "issues/13/labels", [])
+    fake.route("POST", R + "issues/10/comments", {"message": "boom"}, status=500)
+    with pytest.raises(GitHubError):
+        challenge(ctx, "open", "#13", "the CI claim names no command")
+    assert [c.body for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/13/labels"] == [{"labels": ["meld:challenged"]}]
+    fake.route("POST", R + "issues/10/comments", {"id": 311})
+    assert challenge(ctx, "open", "#13", "the CI claim names no command")["comment_id"] == 311   # no CHALLENGE was derived from the failed attempt
+
+
+def test_a_bare_number_is_the_same_ref_as_its_hash_form(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, role="orchestrator")
+    fake.route("POST", R + "issues/13/labels", [])
+    out = challenge(ctx, "open", "13", "the CI claim names no command")
+    assert out["ref"] == "#13" and out["label"] == "added" and out["challenged_party"] == "codex"
+    assert coord_posts(fake)[-1].startswith("[claude] CHALLENGE #13\n")
+    assert [c.body for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/13/labels"] == [{"labels": ["meld:challenged"]}]
+    fake.route("GET", R + "issues/10/comments", OPENED)   # the open challenge is on "#13"
+    with pytest.raises(Refused, match="#13 already has an open CHALLENGE"):
+        challenge(ctx, "open", "13", "again")
+
+
+def test_challenge_on_an_agreement_ref_labels_nothing(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, role="orchestrator")
+    fake.route("GET", R + "issues/10/comments", fixture("comments_10.json") + [
+        {"id": 151, "user": {"login": "meld-codex-bot"}, "created_at": "2026-09-03T11:00:00Z", "body": "[codex] PROPOSE plan-3\n\nsplit the login work"}])
+    out = challenge(ctx, "open", "plan-3", "the split ignores the shared session store")
+    assert out["label"] is None and out["challenged_party"] == "codex"
+    assert not [c for c in fake.calls if c.method == "POST" and "labels" in c.endpoint]
+
+
+def test_dismiss_clears_the_label_on_a_pr_that_closed_off_the_board(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, group=None)   # a PR closed unmerged drops off the board (assemble filters it)
+    pulls = fixture("pulls.json")
+    for p in pulls:
+        if p["number"] == 20:
+            p["state"], p["merged_at"] = "closed", None
+    fake.route("GET", R + "pulls", pulls)
+    fake.route("GET", R + "issues/10/comments", fixture("comments_10.json") + [
+        {"id": 152, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T11:05:00Z",
+         "body": "[claude] CHALLENGE #20\n\nclosing without merging does not answer the doubt"}])
+    fake.route("DELETE", R + "issues/20/labels/meld%3Achallenged", [])
+    out = challenge(ctx, "dismiss", "#20", "resolved")
+    assert out["label"] == "removed"
+    assert any(c.method == "DELETE" and c.endpoint == R + "issues/20/labels/meld%3Achallenged" for c in fake.calls)
+
+
+def test_open_labels_a_pr_ref_still_on_the_board(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, role="orchestrator")
+    fake.route("POST", R + "issues/20/labels", [])
+    out = challenge(ctx, "open", "#20", "the merge quorum math looks off")
+    assert out["label"] == "added" and out["challenged_party"] == "codex"
+    assert [c.body for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/20/labels"] == [{"labels": ["meld:challenged"]}]
+
+
+def test_cli_challenge(tmp_path, monkeypatch):
+    fake, ctx, repo, origin = make_product(tmp_path, role="orchestrator")
+    fake.route("POST", R + "issues/13/labels", [])
+    monkeypatch.setattr(cli, "RUN", fake)
+    result = CliRunner().invoke(cli.main, ["--config", str(repo / ".meld.toml"), "--compact", "challenge", "open", "#13", "-m", "show the run"],
+                                env=env_for(tmp_path, role="orchestrator"))
+    assert result.exit_code == 0, result.output
+    assert '"verb": "CHALLENGE"' in result.output
+    bad = CliRunner().invoke(cli.main, ["--config", str(repo / ".meld.toml"), "--compact", "challenge", "uphold", "#13", "-m", "x"],
+                             env=env_for(tmp_path, role="orchestrator"))
+    assert bad.exit_code == 2 and '"refused"' in bad.output

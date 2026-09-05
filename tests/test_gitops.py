@@ -8,6 +8,7 @@ from meld.gitops import (
     GitError,
     branch_name,
     checkout_pr_head,
+    checkout_sha,
     commits_ahead,
     create_worktree,
     delete_local_branch,
@@ -134,6 +135,20 @@ def test_worktree_exists_needs_the_directory_and_create_prunes_a_stale_registrat
     assert not worktree_exists(repo, review)
     checkout_pr_head(repo, review, "main")
     assert worktree_exists(repo, review) and head_sha(review) == head_sha(repo)
+
+
+def test_checkout_sha_detaches_at_an_exact_commit(tmp_path):
+    origin, repo = make_origin_and_clone(tmp_path)
+    (repo / "b.txt").write_text("b\n")
+    sh(["git", "add", "b.txt"], repo)
+    sh(["git", "commit", "-q", "-m", "second"], repo)
+    sh(["git", "push", "-q", "origin", "main"], repo)
+    target = sh(["git", "rev-parse", "HEAD~1"], repo)
+    wt = tmp_path / "wt"
+    checkout_sha(repo, wt, target)
+    assert head_sha(wt) == target and not (wt / "b.txt").exists()
+    with pytest.raises(GitError):
+        checkout_sha(repo, tmp_path / "wt2", "0000000000000000000000000000000000000000")
 
 
 def test_push_branch_pushes_head_from_attached_and_detached_checkouts(tmp_path):

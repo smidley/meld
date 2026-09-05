@@ -1,15 +1,28 @@
 import json
+from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
 import meld.cli as cli
-from meld.config import ConfigError
+from meld.board import Challenge
+from meld.config import ConfigError, Party
 from meld.context import find_config, load_context
+from meld.rules import Actor
+from meld.status import render_status
 from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
+from tests.factories import CFG2, REG, mk_board, mk_pr
 from tests.fakeadapter import no_skills
 from tests.fakegh import FakeGh
+
+# Task 8's audit-schedule test needs actor fixtures; mirrors the local CLAUDE_PM/CODEX_PM/HUMAN
+# constants already duplicated in tests/test_rules_issues.py and tests/test_rules_prs.py (this
+# repo defines them per test file rather than sharing them from tests/factories.py).
+CLAUDE_PM = Actor(Party("pm", "claude"), "meld-claude-bot")
+CODEX_PM = Actor(Party("pm", "codex"), "meld-codex-bot")
+HUMAN = Actor(Party("human"), "empowerScott")
 
 
 @pytest.fixture
@@ -66,7 +79,7 @@ def test_status_command_reports_board_and_legal_actions(project: Path, monkeypat
     assert data["needs_human"][0]["issue"] == 14 and data["needs_human"][0]["age_minutes"] > 0
     pulls = {p["number"]: p for p in data["pulls"]}
     assert pulls[20]["committer_party"] == "codex" and pulls[20]["approvals"] == ["claude"]
-    assert pulls[20]["legal"] == ["approve", "request-changes", "push-fix", "merge"]
+    assert pulls[20]["legal"] == ["approve", "request-changes", "push-fix", "merge", "review"]
     assert pulls[19]["state"] == "closed" and pulls[19]["legal"] == []
     assert data["coordination"]["open_challenges"] == ["#12"] and data["coordination"]["ignored_comments"] == 1
     assert data["budget"]["cap"] == {"small": 200, "medium": 80, "large": 20}
@@ -106,7 +119,7 @@ def test_status_as_orchestrator_cannot_claim(project: Path, monkeypatch):
     result = CliRunner().invoke(cli.main, ["--config", str(project / ".meld.toml"), "--compact", "status"],
                                 env=env_for(project, role="orchestrator"))
     data = json.loads(result.output)
-    assert {i["number"]: i["legal"] for i in data["issues"]}[11] == []
+    assert {i["number"]: i["legal"] for i in data["issues"]}[11] == ["tag"]
 
 
 def test_status_as_human_uses_gh_identity(project: Path, monkeypatch):
@@ -118,7 +131,7 @@ def test_status_as_human_uses_gh_identity(project: Path, monkeypatch):
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
     assert data["party"] == "[human]" and data["actor"] == "empowerScott"
-    assert {i["number"]: i["legal"] for i in data["issues"]}[11] == ["claim"]
+    assert {i["number"]: i["legal"] for i in data["issues"]}[11] == ["claim", "tag"]
 
 
 def test_gh_failure_is_a_clean_cli_error(project: Path, monkeypatch):
@@ -162,7 +175,21 @@ def test_status_tolerates_an_unknown_head_committer(project: Path, monkeypatch):
     assert result.exit_code == 0, result.output
     pulls = {p["number"]: p for p in json.loads(result.output)["pulls"]}
     assert pulls[20]["committer_party"] is None
-    assert pulls[20]["legal"] == ["request-changes", "push-fix"]
+    assert pulls[20]["legal"] == ["request-changes", "push-fix", "review"]
+
+
+def test_status_reports_an_unreadable_commit_status_in_state_errors(project: Path, monkeypatch):
+    fake = FakeGh()
+    load_board1_routes(fake)
+    fake.route("GET", "repos/acme/widgets/commits/abc123/status", {"message": "Resource not accessible by personal access token"}, status=403)
+    monkeypatch.setattr(cli, "RUN", fake)
+    result = CliRunner().invoke(cli.main, ["--config", str(project / ".meld.toml"), "--compact", "status"], env=env_for(project))
+    assert result.exit_code == 0, result.output                    # every command keeps working without the permission
+    data = json.loads(result.output)
+    pulls = {p["number"]: p for p in data["pulls"]}
+    assert pulls[20]["approvals"] == ["claude"] and "merge" in pulls[20]["legal"]   # GitHub approvals still count
+    (note,) = data["state_errors"]
+    assert note.startswith("PR #20: commit statuses unavailable (") and note.endswith("check the token's Commit statuses permission")
 
 
 def test_models_command_lists_every_adapter_for_a_human(project: Path, monkeypatch):
@@ -188,3 +215,30 @@ def test_models_command_still_honours_an_explicit_adapter_for_a_human(project: P
                                 env=env_for(project, group=None))
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["adapter"] == "codex"
+
+
+def test_status_reports_the_audit_schedule_for_the_calling_group():
+    merged = replace(mk_pr(19, 9, committer="meld-claude-bot", state="closed", merged=True), merged_at="2026-09-03T06:00:00Z")
+    board = mk_board(CFG2, pulls=[merged])
+    now = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
+    codex = render_status(board, CFG2, CODEX_PM, REG, now)["audit"]
+    assert codex == {"pending": [19], "merges_pending": 1, "oldest_pending_hours": 6.0, "due": True}
+    claude = render_status(board, CFG2, CLAUDE_PM, REG, now)["audit"]
+    assert claude == {"pending": [], "merges_pending": 0, "oldest_pending_hours": None, "due": False}
+    fresh = replace(merged, merged_at="2026-09-03T11:30:00Z")
+    assert render_status(mk_board(CFG2, pulls=[fresh]), CFG2, CODEX_PM, REG, now)["audit"]["due"] is False
+    done = replace(board, audits={19: {"codex": "pass"}})
+    assert render_status(done, CFG2, CODEX_PM, REG, now)["audit"]["pending"] == []
+    assert render_status(board, CFG2, HUMAN, REG, now)["audit"]["pending"] == []
+
+
+def test_status_pull_fields_and_challenge_details():
+    cfg = replace(CFG2, security_paths=("src/auth/*",))
+    pr = replace(mk_pr(20, 13), files=("src/auth/login.py",))
+    ch = Challenge("#20", "codex", 104, "2026-09-03T10:04:00Z")
+    board = replace(mk_board(cfg, pulls=[pr]), challenges={"#20": ch}, open_challenges=frozenset({"#20"}), audits={20: {"codex": "pass"}})
+    data = render_status(board, cfg, CLAUDE_PM, REG, datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc))
+    (p,) = data["pulls"]
+    assert p["touches_security_paths"] is True and p["files"] == 1 and p["merged"] is False and p["merged_at"] == "" and p["audited_by"] == {"codex": "pass"}
+    assert data["coordination"]["challenges"] == [{"ref": "#20", "challenger": "codex", "comment_id": 104, "opened_at": "2026-09-03T10:04:00Z"}]
+    assert data["coordination"]["open_challenges"] == ["#20"]

@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from fnmatch import fnmatch
 from typing import Iterable, Mapping, Sequence
 
 from meld.grammar import ParsedComment
@@ -94,6 +95,14 @@ class PullRequest:
     labels: frozenset[str]
     state: str
     merged: bool
+    files: tuple[str, ...] = ()
+    merge_commit_sha: str | None = None
+    merged_at: str = ""
+    statuses: dict[str, str] = field(default_factory=dict)   # commit-status context -> state, on the head
+
+    def touches(self, patterns: Iterable[str]) -> bool:
+        """True when any changed file matches any glob (fnmatch: `*` also crosses `/`)."""
+        return any(fnmatch(f, p) for f in self.files for p in patterns)
 
     def latest_reviews(self) -> dict[str, Review]:
         latest: dict[str, Review] = {}
@@ -136,6 +145,8 @@ class RunRecord:
     branch: str = ""
     lease_comment: int | None = None
     timed_out: bool = False
+    head_sha: str = ""
+    worker: str = ""            # the worker type the run was dispatched with (reviewer, security, auditor, ...)
 
     @property
     def finished(self) -> bool:
@@ -157,6 +168,14 @@ class Lease:
     group: str
     until: str
     comment_id: int
+
+
+@dataclass(frozen=True)
+class Challenge:
+    ref: str
+    challenger: str        # a group name, or "human:<login>"
+    comment_id: int
+    opened_at: str
 
 
 def utc_now_iso() -> str:
@@ -220,6 +239,8 @@ class Board:
     leases: dict[int, Lease] = field(default_factory=dict)
     plan_text: str = ""
     now: str = ""
+    challenges: dict[str, Challenge] = field(default_factory=dict)
+    audits: dict[int, dict[str, str]] = field(default_factory=dict)   # PR number -> group -> "pass" | "fail"
 
     def lease_expired(self, issue: int) -> bool:
         lease = self.leases.get(issue)
@@ -268,13 +289,34 @@ def derive_halted(comments: Sequence[ParsedComment]) -> bool:
     return halted
 
 
-def derive_open_challenges(comments: Sequence[ParsedComment]) -> frozenset[str]:
-    open_refs: set[str] = set()
+def _challenger(c: ParsedComment) -> str:
+    return c.header.party.group if c.header is not None and c.header.party.group else f"human:{c.author}"
+
+
+def derive_challenges(comments: Sequence[ParsedComment]) -> dict[str, Challenge]:
+    """Open challenges by ref: CHALLENGE opens (a later CHALLENGE on the same ref replaces it), UPHELD/DISMISSED/RETRACT close."""
+    open_: dict[str, Challenge] = {}
     for c in _ordered(comments):
         if not c.ok or c.header is None or not c.header.ref:
             continue
         if c.header.verb == "CHALLENGE":
-            open_refs.add(c.header.ref)
+            open_[c.header.ref] = Challenge(c.header.ref, _challenger(c), c.id, c.created_at)
         elif c.header.verb in ("UPHELD", "DISMISSED", "RETRACT"):
-            open_refs.discard(c.header.ref)
-    return frozenset(open_refs)
+            open_.pop(c.header.ref, None)
+    return open_
+
+
+def derive_open_challenges(comments: Sequence[ParsedComment]) -> frozenset[str]:
+    return frozenset(derive_challenges(comments))
+
+
+def derive_audits(comments: Sequence[ParsedComment]) -> dict[int, dict[str, str]]:
+    """AUDIT #<pr> PASS|FAIL by a group (orchestrator or PM): the latest verdict per group per PR."""
+    audits: dict[int, dict[str, str]] = {}
+    for c in _ordered(comments):
+        h = c.header
+        if not c.ok or h is None or h.verb != "AUDIT" or not h.party.group or not h.ref or not h.ref.startswith("#") or not h.ref[1:].isdigit():
+            continue
+        if h.qualifier in ("PASS", "FAIL"):
+            audits.setdefault(int(h.ref[1:]), {})[h.party.group] = h.qualifier.lower()
+    return audits

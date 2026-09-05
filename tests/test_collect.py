@@ -107,6 +107,10 @@ def test_collect_review_run_stores_the_verdict(tmp_path):
     assert stored == tmp_path / "home" / "results" / "claude" / "review-20.json" and result["verdict"] == "approve"
     data = json.loads(stored.read_text())
     assert data["kind"] == "review" and data["pr"] == 20 and data["result"]["verdict"] == "approve" and data["result"]["comments"][0]["path"] == "README.md"
+    assert data["head_sha"] == "abc123" and len(data["worktree_sha"]) == 40      # GitHub's head at dispatch; the checkout's HEAD
+    assert data["worker"] == "reviewer"                                          # which worker type produced the verdict
+    rec = json.loads((tmp_path / "home" / "runs" / "claude" / "20.json").read_text())
+    assert rec["head_sha"] == "abc123" and rec["worker"] == "reviewer"
     assert not [c for c in fake.calls if c.method == "POST" and c.endpoint == R + "pulls"]  # nothing posted for verdicts yet
 
 

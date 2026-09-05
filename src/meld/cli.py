@@ -12,12 +12,16 @@ from meld import __version__
 from meld.actions import Refused, claim as do_claim, release as do_release
 from meld.adapters import UnknownAdapter, get_adapter
 from meld.assemble import BoardError
+from meld.audit import audit as do_audit, reopen as do_reopen
+from meld.challenge import challenge as do_challenge
 from meld.config import ConfigError
 from meld.context import Context, load_context
 from meld.dispatch import DispatchError, collect as do_collect, dispatch as do_dispatch, reap as do_reap, tick as do_tick
 from meld.github import GitHubError
 from meld.gitops import GitError
 from meld.posting import PostError, post as do_post
+from meld.results import ResultsError
+from meld.review import merge as do_merge, review as do_review
 from meld.runners import run_group
 from meld.state import CHANGE_KINDS
 from meld.status import build_status
@@ -50,7 +54,7 @@ def _load(ctx: click.Context) -> Context:
 def _guard(fn):
     try:
         return fn()
-    except (BoardError, GitHubError, ConfigError, DispatchError, GitError, UnknownAdapter) as e:
+    except (BoardError, GitHubError, ConfigError, DispatchError, GitError, UnknownAdapter, ResultsError) as e:
         raise click.ClickException(str(e)) from e
 
 
@@ -169,14 +173,37 @@ def post(ctx: click.Context, verb: str, ref: str | None, qualifier: str | None, 
 
 
 @main.command()
+@click.argument("action", type=click.Choice(["open", "evidence", "retract", "uphold", "dismiss"]))
+@click.argument("ref")
+@click.option("-m", "--message", "message", default=None, help="The doubted claim, the evidence (with a verified-by: line), or the decision.")
+@click.option("--body-file", type=click.Path(path_type=Path, exists=True), default=None, help="Read the text from a file.")
+@click.pass_context
+def challenge(ctx: click.Context, action: str, ref: str, message: str | None, body_file: Path | None) -> None:
+    """Open a CHALLENGE on a claim, answer it with EVIDENCE, or close it; the meld:challenged label follows."""
+    if message is not None and body_file is not None:
+        raise click.UsageError("-m/--message and --body-file are mutually exclusive")
+    c = _load(ctx)
+    text = body_file.read_text() if body_file else (message or "")
+    try:
+        emit(_guard(lambda: do_challenge(c, action, ref, text)), ctx.obj["pretty"])
+    except Refused as e:
+        emit(_refusal_json(e), ctx.obj["pretty"])
+        ctx.exit(2)
+    except PostError as e:
+        emit({"error": str(e)}, ctx.obj["pretty"])
+        ctx.exit(2)
+
+
+@main.command()
 @click.argument("number", type=int)
 @click.option("--kind", type=click.Choice(["build", "review", "audit"]), default="build", show_default=True,
               help="build: a claimed issue; review/audit: a pull request.")
+@click.option("--worker", default=None, help="Review worker type: reviewer (default) or security.")
 @click.pass_context
-def dispatch(ctx: click.Context, number: int, kind: str) -> None:
+def dispatch(ctx: click.Context, number: int, kind: str, worker: str | None) -> None:
     """Spawn a headless worker in its own worktree for an issue (build) or a PR (review, audit)."""
     c = _load(ctx)
-    _run_action(ctx, lambda: do_dispatch(c, number, kind=kind))
+    _run_action(ctx, lambda: do_dispatch(c, number, kind=kind, worker=worker))
 
 
 @main.command()
@@ -203,6 +230,42 @@ def reap(ctx: click.Context, number: int) -> None:
     """Remove a finished run's worktree and archive its record."""
     c = _load(ctx)
     _run_action(ctx, lambda: do_reap(c, number))
+
+
+@main.command()
+@click.argument("number", type=int)
+@click.pass_context
+def review(ctx: click.Context, number: int) -> None:
+    """Submit the collected reviewer verdict on a PR as a GitHub review: approve, request changes, or push the fix."""
+    c = _load(ctx)
+    _run_action(ctx, lambda: do_review(c, number))
+
+
+@main.command()
+@click.argument("number", type=int)
+@click.pass_context
+def merge(ctx: click.Context, number: int) -> None:
+    """Squash-merge a PR once the quorum rule, required checks, and open challenges allow it."""
+    c = _load(ctx)
+    _run_action(ctx, lambda: do_merge(c, number))
+
+
+@main.command()
+@click.argument("number", type=int)
+@click.pass_context
+def audit(ctx: click.Context, number: int) -> None:
+    """Post the collected auditor verdict on a merged PR as an AUDIT comment (PASS or FAIL)."""
+    c = _load(ctx)
+    _run_action(ctx, lambda: do_audit(c, number))
+
+
+@main.command()
+@click.argument("number", type=int)
+@click.pass_context
+def reopen(ctx: click.Context, number: int) -> None:
+    """Reopen a closed issue after a failed audit and return it to ready."""
+    c = _load(ctx)
+    _run_action(ctx, lambda: do_reopen(c, number))
 
 
 @main.command()

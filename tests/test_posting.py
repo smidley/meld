@@ -86,9 +86,12 @@ def test_cli_post_lease_is_a_usage_error(tmp_path, monkeypatch):
 
 def test_validation_errors_surface(tmp_path):
     _, ctx = make(tmp_path)
-    with pytest.raises(PostError, match="CHALLENGE requires a ref"):
-        post(ctx, "CHALLENGE", text="doubt")
-    with pytest.raises(PostError, match="EVIDENCE requires a verified-by"):
+    # CHALLENGE and EVIDENCE are COMMAND_VERBS as of Task 4 and are refused by post() before grammar
+    # validation ever runs (see test_framework_and_command_verbs_are_refused_by_post), so NEEDS-HUMAN
+    # exercises the same "requires a ref" validate() path that CHALLENGE used to.
+    with pytest.raises(PostError, match="NEEDS-HUMAN requires a ref"):
+        post(ctx, "NEEDS-HUMAN", text="doubt")
+    with pytest.raises(PostError, match="meld challenge"):
         post(ctx, "EVIDENCE", ref="#12", text="trust me")
 
 
@@ -174,7 +177,9 @@ def test_cli_post_with_message_and_error_exit(tmp_path, monkeypatch):
                             env=env_for(tmp_path, role="orchestrator"))
     assert ok.exit_code == 0, ok.output
     assert json.loads(ok.output)["header"] == "[claude] PING"
-    bad = CliRunner().invoke(cli.main, ["--config", str(tmp_path / ".meld.toml"), "--compact", "post", "CHALLENGE", "-m", "x"],
+    # CHALLENGE is a COMMAND_VERB as of Task 4 (refused by post() before validation); NEEDS-HUMAN
+    # exercises the same "requires a ref" usage-error path CHALLENGE used to.
+    bad = CliRunner().invoke(cli.main, ["--config", str(tmp_path / ".meld.toml"), "--compact", "post", "NEEDS-HUMAN", "-m", "x"],
                              env=env_for(tmp_path, role="orchestrator"))
     assert bad.exit_code == 2 and "requires a ref" in json.loads(bad.output)["error"]
 
@@ -297,3 +302,14 @@ def test_joint_majority_puts_dissent_before_the_addendum(tmp_path):
     assert body == ("[joint] DECISION dec-1\n\nUse Postgres.\n\nverified-by: meld status\n\n"
                     "## DISSENT\n- **gemini**: SQLite is enough.\n\n## Addendum\nRevisit in Q2.\n")
     assert body.index("## DISSENT") < body.index("## Addendum")
+
+
+def test_framework_and_command_verbs_are_refused_by_post(tmp_path):
+    fake, ctx = make(tmp_path, role="pm")
+    with pytest.raises(PostError, match="written by meld itself"):
+        post(ctx, "IGNORED-COMMENT", text="x")
+    fake, orch = make(tmp_path, role="orchestrator")
+    with pytest.raises(PostError, match="meld challenge"):
+        post(orch, "CHALLENGE", ref="#12", text="doubt")
+    with pytest.raises(PostError, match="meld challenge"):
+        post(orch, "UPHELD", ref="#12", text="yes")

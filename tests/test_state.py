@@ -162,9 +162,11 @@ def test_run_record_extensions_round_trip(tmp_path):
     store = StateStore(tmp_path, "claude")
     rec = mk_run("claude", 12)
     from dataclasses import replace
-    store.write_run(replace(rec, deadline="2026-09-03T13:00:00Z", branch="meld/12-login", lease_comment=110, timed_out=True))
+    store.write_run(replace(rec, deadline="2026-09-03T13:00:00Z", branch="meld/12-login", lease_comment=110, timed_out=True, worker="backend"))
     loaded = store.load_runs(alive=lambda p: False)["claude"][12]
     assert (loaded.deadline, loaded.branch, loaded.lease_comment, loaded.timed_out) == ("2026-09-03T13:00:00Z", "meld/12-login", 110, True)
+    assert loaded.worker == "backend"
+    assert mk_run("claude", 13).worker == ""   # records written before the field existed read back as an empty worker
 
 
 def test_diff_changes_are_structured_and_filterable():

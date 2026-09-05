@@ -69,6 +69,15 @@ def checkout_pr_head(repo_root: Path, path: Path, branch: str, run: RunFn = subp
     git(["worktree", "add", "--detach", str(path), f"origin/{branch}"], repo_root, run)
 
 
+def checkout_sha(repo_root: Path, path: Path, sha: str, run: RunFn = subprocess.run) -> None:
+    """Detached worktree at an exact commit (an audit's merge commit). Fetches first so a commit that landed on the
+    default branch since our last fetch is present; a sha the remote no longer reaches raises GitError."""
+    git(["fetch", "--quiet", "origin"], repo_root, run)
+    git(["worktree", "prune"], repo_root, run)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    git(["worktree", "add", "--detach", str(path), sha], repo_root, run)
+
+
 def detach_head(path: Path, run: RunFn = subprocess.run) -> None:
     """Detach the worktree's HEAD at its current commit, releasing the branch name for another worktree
     (git refuses to check out a branch that is checked out elsewhere in the same clone)."""

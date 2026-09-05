@@ -19,10 +19,15 @@ Design: `docs/superpowers/specs/2026-09-03-meld-design.md`. Plans: `docs/superpo
 | `meld claim N` | Assign this party to a ready issue (first assignment wins) |
 | `meld release N [--force]` | Return an issue to ready; `--force` is human-only |
 | `meld post VERB [REF] [-m TEXT] [--joint]` | Post a coordination comment in the header grammar |
+| `meld challenge <open|evidence|retract|uphold|dismiss> REF -m TEXT` | Open, answer, or close a `CHALLENGE`; applies or clears `meld:challenged` under the closer rules; `meld post` refuses these verbs |
 | `meld models [--adapter X]` | Models and efforts an adapter accepts |
-| `meld dispatch N [--kind review|audit]` | Spawn a headless worker in its own worktree: a claimed issue by default, or a PR for `review`/`audit` |
+| `meld dispatch N [--kind review|audit] [--worker security]` | Spawn a headless worker in its own worktree: a claimed issue by default, a PR for `review`/`audit`; `--worker security` dispatches the sequential security reviewer once your first review is submitted |
 | `meld tick` | PM housekeeping: kill overdue workers, create missing leases, release other groups' expired leases |
 | `meld collect N` | Finish a worker run: push and open the PR, or mark the issue blocked or needs-human; a run whose claim another group has since taken is recorded as superseded |
+| `meld review N` | Submit a collected reviewer verdict as a GitHub review plus a `meld/review/<group>` commit status; push-fix pushes the fix and asks the author group to re-review the new head; a verdict on a moved head is marked stale. On your own group's PR (after another group's push-fix) the verdict goes out as a comment review — GitHub refuses an approve from the PR author's account — and the `success` status is what counts toward the quorum |
+| `meld merge N` | Squash-merge a PR once the quorum (GitHub approvals on the head, plus the author group's `meld/review/<group>` `success` status), green checks, and no open challenge all hold, guarded by the head sha; an already-merged PR is a no-op success |
+| `meld audit N` | Post a collected auditor's `AUDIT #<pr> PASS|FAIL` verdict on the coordination issue; a `FAIL` makes `meld reopen` legal for that group |
+| `meld reopen N` | Return a closed issue to `ready` after your group's own `AUDIT ... FAIL`, quoting the findings |
 | `meld reap N` | Remove a finished run's worktree and archive its record |
 | `meld tag N [--worker W] [--model M] [--effort E] [--size S]` | Set the worker, model, effort, and size labels on an issue |
 | `meld roster` | List the worker types available to the calling party |
@@ -36,6 +41,10 @@ Design: `docs/superpowers/specs/2026-09-03-meld-design.md`. Plans: `docs/superpo
 
 Real-CLI smoke tests (they spend tokens): `task test:smoke`.
 
+## Product standards
+
+Put the product's quality bar in `.meld/STANDARDS.md`; it is rendered into every worker brief and both role prompts. Without one, Meld's default applies: visual design, performance, and security are acceptance criteria with the same weight as correctness; agents decide with industry standards and research and surface only approval-worthy decisions; installed skills are used when they match the task.
+
 ## Exit codes
 
 `0` success. `1` an error (bad config, a GitHub failure, an unusable board). `2` refused by the rules, or a usage error. A rules refusal prints its reason as JSON:
@@ -45,7 +54,7 @@ Real-CLI smoke tests (they spend tokens): `task test:smoke`.
 
 `violation_posted` is `true` when the refusal was announced on the coordination issue as `PROTOCOL-VIOLATION`, `false` when that post was attempted and failed, and `null` when none was attempted — a human's refusal, or a lost claim race, which is first-assignment-wins working as designed rather than an illegal call.
 
-The calling party comes from `MELD_GROUP` and `MELD_ROLE` (`orchestrator` or `pm`); unset means human, authenticated as `gh`'s current user. Group tokens come from the `token_env` named in `.meld.toml`. Local state lives under `MELD_HOME` (default `~/.meld`) and can be deleted at any time.
+The calling party comes from `MELD_GROUP` and `MELD_ROLE` (`orchestrator` or `pm`); unset means human, authenticated as `gh`'s current user. Group tokens come from the `token_env` named in `.meld.toml`; they are fine-grained PATs scoped to the product repo with Contents, Issues, Pull requests, and Commit statuses (read and write). Local state lives under `MELD_HOME` (default `~/.meld`) and can be deleted at any time.
 
 ## Known issue: macOS hidden `.pth` files
 

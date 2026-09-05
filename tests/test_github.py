@@ -203,3 +203,58 @@ def test_cache_truncated_mid_character_is_ignored(tmp_path):
         cache_file.read_text()
     assert gh.get_issue(7) == {"number": 7, "title": "café"}
     assert "if-none-match" not in fake.calls[-1].headers
+
+
+def test_review_merge_status_and_issue_endpoints(board1_gh):
+    fake, gh = board1_gh
+    fake.route("GET", "repos/acme/widgets/pulls/20/files", [{"filename": "ci.yml"}, {"filename": ".github/workflows/ci.yml"}])
+    fake.route("POST", "repos/acme/widgets/pulls/20/reviews", {"id": 501, "state": "APPROVED"})
+    fake.route("PUT", "repos/acme/widgets/pulls/20/merge", {"sha": "m123", "merged": True})
+    fake.route("POST", "repos/acme/widgets/statuses/abc123", {"id": 77})
+    fake.route("PATCH", "repos/acme/widgets/issues/13", {"number": 13, "state": "open"})
+    fake.route("GET", "repos/acme/widgets/pulls/20", {"number": 20, "merge_commit_sha": "mmm"})
+    assert gh.pull_files(20) == ["ci.yml", ".github/workflows/ci.yml"]
+    assert gh.create_review(20, "APPROVE", "looks right\n\nverified-by: pytest", "abc123",
+                            [{"path": "README.md", "line": 1, "body": "nit"}])["id"] == 501
+    assert gh.merge_pull(20, "abc123", "CI pipeline")["sha"] == "m123"
+    assert gh.create_status("abc123", "success", "meld/review/claude", "claude review: approve")["id"] == 77
+    assert gh.update_issue(13, state="open")["state"] == "open"
+    assert gh.get_pull(20)["merge_commit_sha"] == "mmm"
+    bodies = {(c.method, c.endpoint): c.body for c in fake.calls if c.method != "GET"}
+    assert bodies[("POST", "repos/acme/widgets/pulls/20/reviews")] == {
+        "event": "APPROVE", "body": "looks right\n\nverified-by: pytest", "commit_id": "abc123",
+        "comments": [{"path": "README.md", "line": 1, "side": "RIGHT", "body": "nit"}]}
+    assert bodies[("PUT", "repos/acme/widgets/pulls/20/merge")] == {"sha": "abc123", "merge_method": "squash", "commit_title": "CI pipeline"}
+    assert bodies[("POST", "repos/acme/widgets/statuses/abc123")] == {"state": "success", "context": "meld/review/claude",
+                                                                      "description": "claude review: approve"}
+    assert bodies[("PATCH", "repos/acme/widgets/issues/13")] == {"state": "open"}
+
+
+def test_combined_status_maps_context_to_state(board1_gh):
+    fake, gh = board1_gh
+    fake.route("GET", "repos/acme/widgets/commits/abc123/status",
+               {"state": "failure", "sha": "abc123",
+                "statuses": [{"context": "meld/review/claude", "state": "success", "description": "claude review: approve"},
+                             {"context": "ci/lint", "state": "failure"}]})
+    assert gh.combined_status("abc123") == {"meld/review/claude": "success", "ci/lint": "failure"}
+    fake.route("GET", "repos/acme/widgets/commits/def456/status", {"state": "pending", "statuses": []})
+    assert gh.combined_status("def456") == {}
+    assert [c.endpoint for c in fake.calls if c.method == "GET"][-2:] == ["repos/acme/widgets/commits/abc123/status",
+                                                                         "repos/acme/widgets/commits/def456/status"]
+    assert fake.calls[-1].query == {"per_page": "100"}   # many CI contexts must not push a meld/review/* context off the page
+
+
+def test_create_review_without_comments_omits_the_key(board1_gh):
+    fake, gh = board1_gh
+    fake.route("POST", "repos/acme/widgets/pulls/20/reviews", {"id": 502})
+    gh.create_review(20, "REQUEST_CHANGES", "please fix", "abc123")
+    body = [c for c in fake.calls if c.method == "POST"][-1].body
+    assert "comments" not in body and body["event"] == "REQUEST_CHANGES"
+
+
+def test_github_error_carries_the_http_status(board1_gh):
+    fake, gh = board1_gh
+    fake.route("POST", "repos/acme/widgets/pulls/20/reviews", {"message": "Validation Failed"}, status=422)
+    with pytest.raises(GitHubError) as ei:
+        gh.create_review(20, "APPROVE", "x", "abc123")
+    assert ei.value.status == 422

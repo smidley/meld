@@ -4,6 +4,7 @@ from __future__ import annotations
 from importlib import resources
 from pathlib import Path
 
+from meld.brief import product_standards
 from meld.config import Config, GroupConfig
 from meld.roster import WorkerType, roster
 
@@ -16,7 +17,9 @@ _REASON_TEXT = {
     "recycle": "the previous session was recycled on the restart schedule (runners.restart_hours)",
 }
 COMMANDS = ("meld status", "meld wait --filter <kinds> [--timeout S]", "meld post VERB [REF] -m TEXT [--joint]", "meld claim N",
-            "meld release N", "meld dispatch N [--kind review|audit]", "meld tick", "meld collect N", "meld reap N",
+            "meld release N", "meld dispatch N [--kind review|audit] [--worker security]", "meld tick", "meld collect N",
+            "meld review N", "meld merge N", "meld audit N", "meld reopen N", "meld reap N",
+            "meld challenge <open|evidence|retract|uphold|dismiss> REF -m TEXT",
             "meld tag N [--worker W] [--model M] [--effort E] [--size S]", "meld roster", "meld models")
 
 
@@ -53,6 +56,7 @@ def role_prompt(role: str, cfg: Config, group: GroupConfig, repo_root: Path, *, 
         f"roster refresh every {cfg.roster_refresh_minutes}m, silence grace {cfg.silence_grace_minutes}m, status summary every {cfg.summary_cadence_minutes}m",
         f"- Worker timeouts: S {cfg.timeouts['S']}, M {cfg.timeouts['M']}, L {cfg.timeouts['L']}; amend cap {cfg.amend_cap}; ping-pong cap {cfg.pingpong_cap}",
         "- Budget (worker runs per tier this milestone): " + ", ".join(f"{k} {v}" for k, v in cfg.budget.items()),
+        "", "## Product standards", "", product_standards(repo_root),
         "", "## Your roster", "",
     ]
     entries = roster_entries if roster_entries is not None else roster(repo_root)

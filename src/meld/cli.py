@@ -19,6 +19,7 @@ from meld.context import Context, load_context
 from meld.dispatch import DispatchError, collect as do_collect, dispatch as do_dispatch, reap as do_reap, tick as do_tick
 from meld.github import GitHubError
 from meld.gitops import GitError
+from meld.memory import decide as do_decide, recall as do_recall, remember as do_remember
 from meld.posting import PostError, post as do_post
 from meld.results import ResultsError
 from meld.review import merge as do_merge, review as do_review
@@ -287,6 +288,35 @@ def tag(ctx: click.Context, number: int, worker: str | None, model: str | None, 
     """Set the worker, model, effort, and size labels on an issue (orchestrator or human)."""
     c = _load(ctx)
     _run_action(ctx, lambda: do_tag(c, number, worker=worker, model=model, effort=effort, size=size))
+
+
+@main.command()
+@click.argument("ref")
+@click.pass_context
+def decide(ctx: click.Context, ref: str) -> None:
+    """Record a verified [joint] DECISION as .meld/decisions/NNNN-<slug>.md through a memory PR."""
+    c = _load(ctx)
+    _run_action(ctx, lambda: do_decide(c, ref))
+
+
+@main.command()
+@click.argument("ref")
+@click.option("-m", "--message", "message", required=True, help="What went wrong, what fixed it, what to check next time.")
+@click.pass_context
+def remember(ctx: click.Context, ref: str, message: str) -> None:
+    """Append a lesson about a resolved issue or PR to .meld/memory/lessons.md through a memory PR."""
+    c = _load(ctx)
+    _run_action(ctx, lambda: do_remember(c, ref, message))
+
+
+@main.command()
+@click.argument("query")
+@click.option("--limit", type=int, default=10, show_default=True)
+@click.pass_context
+def recall(ctx: click.Context, query: str, limit: int) -> None:
+    """Search decisions, lessons, and past coordination issues."""
+    c = _load(ctx)
+    emit(_guard(lambda: do_recall(c, query, limit=limit)), ctx.obj["pretty"])
 
 
 @main.command()

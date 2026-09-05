@@ -96,6 +96,39 @@ def review_bar(repo_root: Path) -> str:
     return f.read_text() if f.is_file() else ""
 
 
+def _terms(query: str) -> list[str]:
+    return [t for t in re.split(r"\W+", query.lower()) if len(t) > 2]
+
+
+def _local_hits(repo_root: Path, terms: list[str]) -> list[dict]:
+    """Decisions and lessons whose text contains any of `terms`, each scored by how many terms matched.
+    Lives here (not in memory.py, which owns the DECISIONS_DIR/LESSONS_FILE constants) so that dispatch.py
+    can import recall_snippets without memory.py's own dispatch import becoming a cycle (see memory.py)."""
+    hits: list[dict] = []
+    d = repo_root / ".meld" / "decisions"
+    for f in sorted(d.glob("*.md")) if d.is_dir() else []:
+        text = f.read_text()
+        score = sum(1 for t in terms if t in text.lower())
+        if score:
+            title = next((l[2:].strip() for l in text.splitlines() if l.startswith("# ")), f.stem)
+            hits.append({"kind": "decision", "path": str(f.relative_to(repo_root)), "title": title, "score": score, "snippet": text.strip()[:300]})
+    lessons = repo_root / ".meld" / "memory" / "lessons.md"
+    if lessons.is_file():
+        for block in re.split(r"\n(?=## )", lessons.read_text()):
+            if not block.startswith("## "):
+                continue
+            score = sum(1 for t in terms if t in block.lower())
+            if score:
+                hits.append({"kind": "lesson", "path": ".meld/memory/lessons.md", "title": block.splitlines()[0][3:].strip(), "score": score, "snippet": block.strip()[:300]})
+    return hits
+
+
+def recall_snippets(repo_root: Path, text: str, limit: int = 3) -> list[str]:
+    """The local (non-GitHub) part of `memory.recall`, without a coordination-issue search: used by briefs."""
+    hits = sorted(_local_hits(repo_root, _terms(text)), key=lambda h: (-h["score"], h["title"]))
+    return [h["snippet"] for h in hits[:limit]]
+
+
 def agent_instruction_files(worktree: Path) -> list[str]:
     return [name for name in _AGENT_FILES if (worktree / name).is_file()]
 

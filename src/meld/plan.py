@@ -121,9 +121,11 @@ def plan_approve(ctx) -> dict:
     if board.phase != "planning":
         refuse(ctx, board, Refusal(Verb.PLAN, ref, "the plan is already approved (milestone is executing)"))
     _verified_joint(ctx, board, ref, ("PLAN",), Verb.PLAN)
-    ctx.gh.add_labels(board.coordination_issue, [PLAN_APPROVED_LABEL])
     ready = sorted(n for n, i in board.issues.items() if PLANNED in i.labels)
+    # Flip first, label last: the label is what makes the milestone `executing` (and this very call refuse as "already
+    # approved"), so a failure while flipping leaves a still-planning board that a retry completes -- flipping is idempotent.
     _ready(ctx, ready)
+    ctx.gh.add_labels(board.coordination_issue, [PLAN_APPROVED_LABEL])
     return {"approved": ref, "ready": ready}
 
 

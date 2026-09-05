@@ -2,6 +2,7 @@ import pytest
 
 from meld.actions import Refused
 from meld.context import load_context
+from meld.github import GitHubError
 from meld.plan import PlanItem, parse_plan_items, plan_ack, plan_approve, plan_issues
 from tests.conftest import env_for
 from tests.fakeadapter import no_skills
@@ -118,6 +119,30 @@ def test_plan_approve_flips_planned_issues_to_ready(tmp_path):
     assert any(c.method == "DELETE" and c.endpoint.endswith("issues/32/labels/meld%3Aplanned") for c in fake.calls)
     with pytest.raises(Refused, match="only a human"):
         plan_approve(make_product(tmp_path / "o", role="orchestrator")[1])
+
+
+def test_plan_approve_adds_the_label_last_so_a_mid_flip_failure_can_be_retried(tmp_path):
+    # F5: the meld:plan-approved label is what makes the milestone "executing" (and plan approve refuse as already approved),
+    # so it must be the LAST call -- a failure while flipping planned issues then leaves a retryable, still-planning board.
+    fake, human, repo, origin = make_product(tmp_path, group=None)
+    planned = [{"number": n, "title": f"P{n}", "body": f"plan-item: p{n}\nplan-ref: plan-3\n", "state": "open",
+                "labels": [{"name": "meld:planned"}, {"name": "worker:backend"}], "assignees": [], "milestone": {"number": 3}} for n in (31, 32)]
+    planning_board(fake, planned)
+    fake.route("GET", R + "issues/10/comments", fixture("comments_10.json") + PLAN_THREAD)
+    for n in (10, 31):
+        fake.route("POST", R + f"issues/{n}/labels", [])
+    for n in (31, 32):
+        fake.route("DELETE", R + f"issues/{n}/labels/meld%3Aplanned", [])
+    fake.route("POST", R + "issues/32/labels", {"message": "boom"}, status=500)     # #32's flip fails the first time round
+    with pytest.raises(GitHubError):
+        plan_approve(human)
+    coordination_labels = lambda: [c.body for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/10/labels"]  # noqa: E731
+    assert coordination_labels() == []                                                # not approved: nothing was labelled on #10
+    assert [c.body for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/31/labels"] == [{"labels": ["meld:ready"]}]
+    fake.route("POST", R + "issues/32/labels", [])                                    # the transient failure is over
+    assert plan_approve(human) == {"approved": "plan-3", "ready": [31, 32]}
+    assert coordination_labels() == [{"labels": ["meld:plan-approved"]}]
+    assert [c.body for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/31/labels"] == [{"labels": ["meld:ready"]}] * 2   # idempotent re-flip
 
 
 def test_plan_ack_posts_ack_and_readies_the_additions(tmp_path):

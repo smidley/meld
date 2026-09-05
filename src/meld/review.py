@@ -10,7 +10,7 @@ from meld.dispatch import IN_REVIEW, DispatchError, _iso, _now, _swap_labels, ne
 from meld.github import GitHubError
 from meld.gitops import commits_ahead, head_sha, push_branch
 from meld.grammar import Header, agreement_for, compose
-from meld.memory import DECISIONS_DIR, LESSONS_FILE, content_hash
+from meld.memory import DECISIONS_DIR, LESSONS_FILE, LESSONS_HEADER, content_hash
 from meld.results import cap_body, format_findings, load_result, mark_submitted, store_result, update_result
 from meld.rules import VERB_FOR, Refusal, Verb, approving_parties, author_party, memory_review_rule, pr_refusal, review_verdict_rule, status_context
 from meld.status import build_status
@@ -70,6 +70,12 @@ def verify_memory_pr(ctx, board, pr) -> tuple[bool, str]:
     entry = text[last:] if last >= 0 else ""
     if content_hash(entry) != digest:
         return False, "the appended lesson entry's hash does not match the meld-memory marker"
+    # Append-only by verification: the head must be exactly the default branch's file plus that one entry, so a
+    # lesson PR can neither rewrite or drop an earlier lesson nor smuggle a second entry in under one marker.
+    base = ctx.gh.get_contents(LESSONS_FILE, ctx.cfg.default_branch)
+    if text != (LESSONS_HEADER if base is None else base) + entry:
+        return False, (f"{LESSONS_FILE} at the head is not the {ctx.cfg.default_branch} file plus the one appended entry "
+                       "(an earlier lesson was changed or dropped, or the branch needs a rebase)")
     n = int(ref[1:]) if ref.startswith("#") and ref[1:].isdigit() else None
     issue = board.issues.get(n) if n is not None else None
     if issue is None and (n is None or n not in board.pulls):

@@ -18,6 +18,7 @@ from meld.status import build_status
 
 DECISIONS_DIR = ".meld/decisions"
 LESSONS_FILE = ".meld/memory/lessons.md"
+LESSONS_HEADER = "# Lessons\n"     # what a fresh lessons.md starts with; the verifier assumes the same when the default branch has none
 MEMORY_BRANCH_PREFIX = "meld/memory-"
 MARKER_RE = re.compile(r"^meld-memory: (decision|lesson) (\S+) ([0-9a-f]{64})$", re.MULTILINE)
 _NUMBER_RE = re.compile(r"^(\d{4})-")
@@ -85,7 +86,7 @@ def _open_memory_pr(ctx, board, group, *, branch: str, path: str, text: str, mod
         if mode == "a" and target.exists():
             target.write_text(target.read_text() + text)
         elif mode == "a":
-            target.write_text("# Lessons\n" + text)
+            target.write_text(LESSONS_HEADER + text)
         else:
             target.write_text(text)
         name, email = git_identity(ctx, group)

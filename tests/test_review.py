@@ -352,12 +352,19 @@ def test_submit_review_folds_findings_into_the_body_on_422():
     assert stub.calls[1]["comments"] is None
 
 
-from meld.memory import content_hash, decide
+from meld.memory import LESSONS_FILE, content_hash, decide
 from tests.test_memory import DECISION_THREAD, DISAGREE_THREAD, with_thread
 
 
-def memory_pr_on_board(fake, repo, path, text, number=40, head="mem0001", kind="decision", ref="dec-1", digest=None):
+def _contents(text):
     import base64
+    return {"encoding": "base64", "content": base64.b64encode(text.encode()).decode()}
+
+
+def memory_pr_on_board(fake, repo, path, text, number=40, head="mem0001", kind="decision", ref="dec-1", digest=None, base=None):
+    """A memory PR whose changed file reads `text` at `head`; on the default branch the same path reads `base` (absent
+    when None). Contents are routed per `ref` query parameter, never by path alone, so a verifier that fetched the
+    wrong ref could not be served the right text by accident."""
     pulls = fixture("pulls.json") + [{"number": number, "title": f"Decision {ref}", "state": "open", "merged_at": None,
                                       "user": {"login": "meld-claude-bot"}, "head": {"ref": f"meld/memory-{ref}", "sha": head}, "labels": [],
                                       "body": f"Records.\n\nmeld-memory: {kind} {ref} {digest or content_hash(text)}\nverified-by: x"}]
@@ -367,7 +374,11 @@ def memory_pr_on_board(fake, repo, path, text, number=40, head="mem0001", kind="
     fake.route("GET", R + f"pulls/{number}/files", [{"filename": path}])
     fake.route("GET", R + f"commits/{head}/check-runs", fixture("checkruns_abc123.json"))
     fake.route("GET", R + f"commits/{head}/status", {"state": "pending", "statuses": []})
-    fake.route("GET", R + f"contents/{path}", {"encoding": "base64", "content": base64.b64encode(text.encode()).decode()})
+    fake.route("GET", R + f"contents/{path}", _contents(text), query={"ref": head})
+    if base is None:
+        fake.route("GET", R + f"contents/{path}", {"message": "Not Found"}, status=404, query={"ref": "main"})
+    else:
+        fake.route("GET", R + f"contents/{path}", _contents(base), query={"ref": "main"})
     fake.route("POST", R + f"pulls/{number}/reviews", {"id": 601, "html_url": "r601"})
     fake.route("POST", R + f"statuses/{head}", {"id": 79})
 
@@ -419,6 +430,31 @@ def test_review_auto_approves_a_lesson_pr_for_a_resolved_item(tmp_path):
     memory_pr_on_board(fake, repo, ".meld/memory/lessons.md", "# Lessons\n" + entry, number=41, head="mem0002", kind="lesson", ref="#13", digest=content_hash(entry))
     out = review(ctx, 41, now=NOW)
     assert out["event"] == "APPROVE" and out["memory"] == "lesson"
+
+
+OLD_LESSONS = "# Lessons\n\n## 2026-09-01 — #7 (codex)\n\nMigrations need a lock timeout.\n"
+NEW_ENTRY = "\n## 2026-09-03 — #13 (claude)\n\nPin the action version.\n"
+
+
+def lesson_pr(fake, repo, text, head, base):
+    memory_pr_on_board(fake, repo, LESSONS_FILE, text, number=41, head=head, kind="lesson", ref="#13", digest=content_hash(NEW_ENTRY), base=base)
+
+
+def test_review_rejects_a_lesson_pr_that_rewrites_an_earlier_lesson(tmp_path):
+    # F3: the appended entry hashes to the marker either way; what distinguishes these is whether the head is the default
+    # branch's file plus that one entry -- a lesson PR is append-only by verification, not by convention.
+    fake, ctx, repo, origin = make_product(tmp_path, group="codex")
+    rewritten = OLD_LESSONS.replace("need a lock timeout", "never need a lock timeout") + NEW_ENTRY
+    lesson_pr(fake, repo, rewritten, "mem0002", OLD_LESSONS)
+    out = review(ctx, 41, now=NOW)
+    assert out["event"] == "REQUEST_CHANGES" and "one appended entry" in out["reason"]
+    lesson_pr(fake, repo, "# Lessons\n" + NEW_ENTRY, "mem0003", OLD_LESSONS)              # dropping the earlier lesson is a rewrite too
+    assert review(ctx, 41, now=NOW)["event"] == "REQUEST_CHANGES"
+    lesson_pr(fake, repo, OLD_LESSONS + NEW_ENTRY, "mem0004", OLD_LESSONS)                  # a pure append onto that base verifies
+    assert review(ctx, 41, now=NOW)["event"] == "APPROVE"
+    # exactly one entry: appending two at once is refused (the marker names one hash; the head must be base + that entry)
+    lesson_pr(fake, repo, OLD_LESSONS + "\n## 2026-09-02 — #9 (codex)\n\nSmuggled.\n" + NEW_ENTRY, "mem0005", OLD_LESSONS)
+    assert review(ctx, 41, now=NOW)["event"] == "REQUEST_CHANGES"
 
 
 def test_review_rejects_a_decision_pr_whose_file_is_outside_the_decisions_dir(tmp_path):

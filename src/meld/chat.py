@@ -98,7 +98,7 @@ def run_chat(ctx, lines: Iterable[str], out: Callable[[str], None], *, verbose: 
         posted.append(resp["header"])
         out(resp["header"])
         _, board = build_status(ctx)
-        last_seen = max((c.id for c in board.comments), default=last_seen)
+        last_seen = max(last_seen, resp["comment_id"])
 
     for raw in lines:
         line = raw.strip()
@@ -138,18 +138,16 @@ def run_chat(ctx, lines: Iterable[str], out: Callable[[str], None], *, verbose: 
                 posted.append(header)
                 out(header)
                 _, board = build_status(ctx)
-                last_seen = max((c.id for c in board.comments), default=last_seen)
+                last_seen = max(last_seen, resp["comment_id"])
             elif line.split(" ", 1)[0] == "/ack":
                 ref = line[len("/ack"):].strip()
                 if not ref:
                     raise PostError("/ack needs a ref like plan-add-1")
                 out(json.dumps(plan_ack(ctx, ref)))
                 _, board = build_status(ctx)
-                last_seen = max((c.id for c in board.comments), default=last_seen)
             elif line == "/approve":
                 out(json.dumps(plan_approve(ctx)))
                 _, board = build_status(ctx)
-                last_seen = max((c.id for c in board.comments), default=last_seen)
             elif line.startswith("/"):
                 raise PostError(f"unknown command {line.split()[0]}; try /inbox /wait /halt /resume /directive /provided /resolved /revert /ack /approve /challenge /quit")
             else:

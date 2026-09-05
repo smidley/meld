@@ -209,9 +209,10 @@ def test_protect_branch_lists_review_statuses_as_informational_and_tolerates_403
 
 
 def test_open_setup_pr_commits_pushes_and_opens(tmp_path):
-    from meld.setup import open_setup_pr, repo_files
+    from meld.setup import _checkout_setup_branch, open_setup_pr, repo_files
     from tests.gitfixtures import make_origin_and_clone, sh
     origin, repo = make_origin_and_clone(tmp_path)
+    _checkout_setup_branch(repo, "main")
     (repo / ".meld.toml").write_text('[repo]\nname = "acme/widgets"\n')
     files = repo_files(repo, "empowerScott") + [".meld.toml"]
     fake = FakeGh()
@@ -236,9 +237,10 @@ def test_ci_paths_warning_fires_when_workflow_uses_paths_ignore(tmp_path):
 
 
 def test_open_setup_pr_is_rerunnable_and_reuses_an_existing_open_pr(tmp_path):
-    from meld.setup import open_setup_pr, repo_files
+    from meld.setup import _checkout_setup_branch, open_setup_pr, repo_files
     from tests.gitfixtures import make_origin_and_clone
     origin, repo = make_origin_and_clone(tmp_path)
+    _checkout_setup_branch(repo, "main")
     (repo / ".meld.toml").write_text('[repo]\nname = "acme/widgets"\n')
     files = repo_files(repo, "empowerScott") + [".meld.toml"]
     fake = FakeGh()
@@ -249,3 +251,88 @@ def test_open_setup_pr_is_rerunnable_and_reuses_an_existing_open_pr(tmp_path):
     assert first == {"pr": 7, "url": "u7", "branch": "meld/setup", "existing": True}
     second = open_setup_pr(gh, repo, "main", files)  # unchanged files: nothing new to commit, but the push must not fail
     assert second == {"pr": 7, "url": "u7", "branch": "meld/setup", "existing": True}
+
+
+def test_open_setup_pr_branches_from_origin_default_not_the_current_checkout(tmp_path):
+    from tests.gitfixtures import make_origin_and_clone, sh
+    origin, repo = make_origin_and_clone(tmp_path)
+    sh(["git", "checkout", "-q", "-b", "feature"], repo)
+    (repo / "wip.txt").write_text("wip\n")
+    sh(["git", "add", "wip.txt"], repo)
+    sh(["git", "commit", "-q", "-m", "wip: local only, never pushed"], repo)
+    fake = FakeGh()
+    route_repo(fake)
+    fake.route("GET", R + "labels", [])
+    fake.route("POST", R + "labels", {"name": "x"}, status=201)
+    fake.route("GET", R + "milestones", [])
+    fake.route("POST", R + "milestones", {"number": 1, "title": "M1"}, status=201)
+    fake.route("GET", R + "issues", [])
+    fake.route("POST", R + "issues", {"number": 2}, status=201)
+    fake.route("POST", R + "pulls", {"number": 7, "html_url": "u7"}, status=201)
+    setup(gh_for(fake), repo="acme/widgets", goal="g", milestone_title="M1", human="empowerScott", target_dir=repo,
+          registry=ModelRegistry.load(), which=lambda b: None, pr=True)
+    log = sh(["git", "log", "--oneline", "origin/main..meld/setup"], repo)
+    assert len(log.splitlines()) == 1
+    assert "wip" not in log
+
+
+def test_open_setup_pr_commits_only_its_own_files(tmp_path):
+    from meld.setup import _checkout_setup_branch, open_setup_pr, repo_files
+    from tests.gitfixtures import make_origin_and_clone, sh
+    origin, repo = make_origin_and_clone(tmp_path)
+    _checkout_setup_branch(repo, "main")
+    (repo / ".meld.toml").write_text('[repo]\nname = "acme/widgets"\n')
+    files = repo_files(repo, "empowerScott") + [".meld.toml"]
+    (repo / "unrelated.txt").write_text("unrelated\n")
+    sh(["git", "add", "unrelated.txt"], repo)
+    fake = FakeGh()
+    fake.route("POST", R + "pulls", {"number": 7, "html_url": "u7"}, status=201)
+    open_setup_pr(gh_for(fake), repo, "main", files)
+    committed = sh(["git", "show", "--name-only", "--format=", "HEAD"], repo).splitlines()
+    assert "unrelated.txt" not in committed
+    assert set(committed) == set(files)
+    status = sh(["git", "status", "--porcelain", "--", "unrelated.txt"], repo)
+    assert "unrelated.txt" in status  # still staged, untouched by the setup commit
+
+
+def test_open_setup_pr_reraises_422_when_no_existing_pr_is_found(tmp_path):
+    from meld.github import GitHubError
+    from meld.setup import _checkout_setup_branch, open_setup_pr, repo_files
+    from tests.gitfixtures import make_origin_and_clone
+    origin, repo = make_origin_and_clone(tmp_path)
+    _checkout_setup_branch(repo, "main")
+    (repo / ".meld.toml").write_text('[repo]\nname = "acme/widgets"\n')
+    files = repo_files(repo, "empowerScott") + [".meld.toml"]
+    fake = FakeGh()
+    fake.route("POST", R + "pulls", {"message": "..."}, status=422)
+    fake.route("GET", R + "pulls", [])
+    with pytest.raises(GitHubError):
+        open_setup_pr(gh_for(fake), repo, "main", files)
+
+
+def test_ci_paths_warning_supports_flow_style_paths_ignore(tmp_path):
+    from meld.setup import ci_paths_warnings
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    (wf / "ci.yml").write_text("on:\n  pull_request:\n    paths-ignore: ['.meld/**', 'docs/**']\njobs: {}\n")
+    warnings = ci_paths_warnings(tmp_path)
+    assert len(warnings) == 1 and "ci.yml" in warnings[0] and "paths-ignore" in warnings[0]
+
+
+def test_ci_paths_warning_ignores_a_push_only_filter(tmp_path):
+    from meld.setup import ci_paths_warnings
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    (wf / "ci.yml").write_text("on:\n  push:\n    paths:\n      - '.meld/**'\njobs: {}\n")
+    assert ci_paths_warnings(tmp_path) == []
+
+
+def test_ci_paths_warning_never_looks_inside_jobs(tmp_path):
+    from meld.setup import ci_paths_warnings
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    (wf / "ci.yml").write_text(
+        "on:\n  pull_request:\n    branches: ['main']\n"
+        "jobs:\n  build:\n    steps:\n      - uses: some/action\n        with:\n          paths: '.meld/**'\n"
+    )
+    assert ci_paths_warnings(tmp_path) == []

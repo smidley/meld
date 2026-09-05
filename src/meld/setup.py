@@ -16,7 +16,7 @@ from meld.atomic import write_atomic
 from meld.board import CHALLENGED_LABEL, COORDINATION_LABEL, NUDGED_LABEL, PLAN_APPROVED_LABEL, STATUS_LABELS
 from meld.brief import DEFAULT_STANDARDS
 from meld.github import GitHub, GitHubError
-from meld.gitops import git, is_dirty
+from meld.gitops import git
 from meld.models import ModelRegistry, ModelSpec
 
 
@@ -153,13 +153,20 @@ def setup(gh: GitHub, *, repo: str, goal: str, milestone_title: str, human: str,
             warnings.append(f"{name} is installed but models.toml lists no models for it; its [groups.{name}] block is commented out")
         else:
             groups.append(name)
+    default_branch = info.get("default_branch", "main")
     target_dir.mkdir(parents=True, exist_ok=True)
-    write_atomic(config_path, starter_toml(repo, info.get("default_branch", "main"), human, installed, registry))
+    if pr:
+        # meld/setup must branch from the remote default branch, not from whatever the human happens to have
+        # checked out -- a WIP feature branch's local-only history must never ride into the setup PR. This has to
+        # run before any setup file is written below: switching branches after writing would risk the checkout
+        # overwriting or conflicting with those just-written files.
+        _checkout_setup_branch(target_dir, default_branch, run)
+    write_atomic(config_path, starter_toml(repo, default_branch, human, installed, registry))
     files = repo_files(target_dir, human) + [".meld.toml"]
     ci = ci_paths_warnings(target_dir)
     warnings.extend(ci)
-    protection = protect_branch(gh, info.get("default_branch", "main")) if protect else {"protected": False, "skipped": True}
-    pr_info = open_setup_pr(gh, target_dir, info.get("default_branch", "main"), files, run) if pr else None
+    protection = protect_branch(gh, default_branch) if protect else {"protected": False, "skipped": True}
+    pr_info = open_setup_pr(gh, target_dir, default_branch, files, run) if pr else None
     return {"repo": repo, "labels": labels, "milestone": milestone, "milestone_how": milestone_how,
             "coordination_issue": coordination, "coordination_how": issue_how, "config": str(config_path), "config_written": True,
             "groups": groups, "warnings": warnings, "files": files, "ci_warnings": ci, "protection": protection, "pr": pr_info,
@@ -189,37 +196,77 @@ def repo_files(target_dir: Path, human: str) -> list[str]:
     return written
 
 
-_PATHS_RE = re.compile(r"^(\s*)(paths|paths-ignore):\s*$", re.MULTILINE)
+_ON_RE = re.compile(r"^on:\s*$", re.MULTILINE)
+_TRIGGER_RE = re.compile(r"^(\s+)(push|pull_request):\s*$", re.MULTILINE)
+_PATHS_RE = re.compile(r"^(\s*)(paths|paths-ignore):\s*(?:\[(.*?)\])?\s*$", re.MULTILINE)
+
+
+def _indented_block(text: str, start: int, indent: int) -> str:
+    """The lines after `start` (the position right after a `key:` line, before its own newline) that belong to that
+    key's nested block: every line more indented than `indent`, skipping blank lines, until the first non-blank
+    line at indent <= `indent` (or end of text). Used to bound a YAML mapping/sequence without a real YAML parser."""
+    out = []
+    for line in text[start:].splitlines(keepends=True)[1:]:
+        if not line.strip():
+            out.append(line)
+            continue
+        if len(line) - len(line.lstrip()) <= indent:
+            break
+        out.append(line)
+    return "".join(out)
+
+
+def _list_items(block: str) -> list[str]:
+    """`- item` lines in a block-style YAML sequence, quotes stripped."""
+    items = []
+    for line in block.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            items.append(stripped[2:].strip("'\""))
+    return items
+
+
+def _flow_items(raw: str) -> list[str]:
+    """Comma-separated items from inside a flow-style `[a, b]` list, quotes stripped."""
+    return [p.strip().strip("'\"") for p in raw.split(",") if p.strip()]
 
 
 def ci_paths_warnings(target_dir: Path) -> list[str]:
-    """Workflows that can never run on a memory PR (which touches only .meld/): a `paths:` allow-list that never
-    mentions .meld/**, or a `paths-ignore:` deny-list that does. If such a check is ever made required, decision and
-    lesson PRs become unmergeable (spec 15)."""
+    """Workflows that can never run on a memory PR (which touches only .meld/), scoped to the `on:` mapping's
+    `pull_request` trigger only -- never `jobs:` (so a job step's own `with: paths: ...` input is never mistaken for
+    a trigger filter) and never `push:` (a push-only filter doesn't gate PR runs, so it doesn't affect memory PRs
+    even when it excludes .meld/**; `push` and `pull_request` are inspected independently). A `paths:` allow-list
+    that never mentions .meld/**, or a `paths-ignore:` deny-list that does (block- or flow-style), both mean the
+    workflow never triggers on a memory PR; if such a check is ever made required, decision and lesson PRs become
+    unmergeable (spec 15)."""
     out: list[str] = []
     for wf in sorted((target_dir / ".github" / "workflows").glob("*.y*ml")):
         text = wf.read_text()
-        for m in _PATHS_RE.finditer(text):
-            indent = len(m.group(1))
+        on_match = _ON_RE.search(text)
+        if not on_match:
+            continue
+        on_block = _indented_block(text, on_match.end(), indent=0)
+        for trig in _TRIGGER_RE.finditer(on_block):
+            if trig.group(2) != "pull_request":
+                continue  # a push-only filter doesn't gate PR runs
+            trig_block = _indented_block(on_block, trig.end(), len(trig.group(1)))
+            m = _PATHS_RE.search(trig_block)
+            if not m:
+                continue
             key = m.group(2)
-            items: list[str] = []
-            for line in text[m.end():].splitlines()[1:]:
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                if len(line) - len(line.lstrip()) <= indent:
-                    break
-                if stripped.startswith("- "):
-                    items.append(stripped[2:].strip("'\""))
+            if m.group(3) is not None:
+                items = _flow_items(m.group(3))
+            else:
+                items = _list_items(_indented_block(trig_block, m.end(), len(m.group(1))))
             if not items:
                 continue
             mentions_meld = any(item == "**" or item.startswith(".meld") for item in items)
             if key == "paths" and not mentions_meld:
-                out.append(f".github/workflows/{wf.name}: its `paths:` filter excludes .meld/**, so memory PRs trigger no run from it; "
+                out.append(f".github/workflows/{wf.name}: its `pull_request` `paths:` filter excludes .meld/**, so memory PRs trigger no run from it; "
                            "do not make its checks required, or add '.meld/**' to the filter")
                 break
             if key == "paths-ignore" and mentions_meld:
-                out.append(f".github/workflows/{wf.name}: its `paths-ignore:` filter excludes .meld/**, so memory PRs trigger no run from it; "
+                out.append(f".github/workflows/{wf.name}: its `pull_request` `paths-ignore:` filter excludes .meld/**, so memory PRs trigger no run from it; "
                            "do not make its checks required, or remove '.meld/**' from the filter")
                 break
     return out
@@ -237,28 +284,49 @@ def protect_branch(gh: GitHub, branch: str) -> dict:
             "note": "meld/review/<group> statuses are informational; add them to required checks only if you want them blocking"}
 
 
+_SETUP_BRANCH = "meld/setup"
+
+
+def _checkout_setup_branch(target_dir: Path, default_branch: str, run=subprocess.run) -> None:
+    """Branch meld/setup from the remote default branch, not from whatever the human happens to have checked out --
+    so a WIP feature branch's local-only history never rides into the setup PR. Must be called before any setup
+    file is written to target_dir (repo_files, the .meld.toml write)."""
+    git(["fetch", "-q", "origin", default_branch], target_dir, run)
+    git(["checkout", "-q", "-B", _SETUP_BRANCH, f"origin/{default_branch}"], target_dir, run)
+
+
 def open_setup_pr(gh: GitHub, target_dir: Path, default_branch: str, files: list[str], run=subprocess.run) -> dict:
     """Commit `files` on branch meld/setup with the human's own git identity and credentials, push, open the PR.
+
+    Expects meld/setup already checked out (via _checkout_setup_branch, branched from the remote default branch) --
+    this function never itself changes branch, so it never risks branching from whatever the human had checked out.
+
+    Commits and checks dirtiness scoped to `files` only: an unrelated change already staged in the index (the
+    human's own WIP) is never swept into the setup commit, and is left staged exactly as it was.
 
     Re-runnable: meld/setup is meld's own branch, regenerated from the same files each run. A rerun with nothing
     new to commit (files unchanged since the last run) skips the commit -- `git commit` would otherwise fail with
     "nothing to commit" -- and the push force-updates the branch, since a regenerated commit does not share history
     with whatever it replaces. If GitHub already has an open PR for the branch, create_pull's 422 is caught and
-    that PR is looked up and reused instead of erroring."""
-    branch = "meld/setup"
-    git(["checkout", "-q", "-B", branch], target_dir, run)
+    that PR is looked up and reused instead of erroring; a 422 whose lookup finds no open PR is re-raised, since
+    422 can mean other things (e.g. no diff between branches)."""
+    current = git(["branch", "--show-current"], target_dir, run)
+    assert current == _SETUP_BRANCH, f"open_setup_pr expects {_SETUP_BRANCH} checked out (got {current!r}); call _checkout_setup_branch first"
     git(["add", "--", *files], target_dir, run)
-    if is_dirty(target_dir, run):
-        git(["-c", "commit.gpgsign=false", "commit", "-q", "-m", "chore: meld setup (labels, coordination issue, starter config)"], target_dir, run)
-    git(["push", "-q", "--force", "--set-upstream", "origin", f"HEAD:refs/heads/{branch}"], target_dir, run)
+    if git(["status", "--porcelain", "--", *files], target_dir, run):
+        git(["-c", "commit.gpgsign=false", "commit", "-q", "-m", "chore: meld setup (labels, coordination issue, starter config)", "--", *files],
+            target_dir, run)
+    git(["push", "-q", "--force", "--set-upstream", "origin", f"HEAD:refs/heads/{_SETUP_BRANCH}"], target_dir, run)
     body = "Files written by `meld setup`:\n\n" + "\n".join(f"- `{f}`" for f in files) + \
            "\n\nReview the starter `.meld.toml` (bot names, token env vars, models) before merging; `meld doctor` verifies it."
     try:
-        pr = gh.create_pull("chore: meld setup", branch, default_branch, body)
+        pr = gh.create_pull("chore: meld setup", _SETUP_BRANCH, default_branch, body)
     except GitHubError as e:
         if e.status != 422:
             raise
-        existing = gh.get(f"repos/{gh.repo}/pulls", {"head": f"{gh.repo.split('/')[0]}:{branch}", "state": "open"}, use_cache=False)
+        existing = gh.get(f"repos/{gh.repo}/pulls", {"head": f"{gh.repo.split('/')[0]}:{_SETUP_BRANCH}", "state": "open"}, use_cache=False)
+        if not existing:
+            raise
         found = existing[0]
-        return {"pr": int(found["number"]), "url": str(found.get("html_url", "")), "branch": branch, "existing": True}
-    return {"pr": int(pr["number"]), "url": str(pr.get("html_url", "")), "branch": branch}
+        return {"pr": int(found["number"]), "url": str(found.get("html_url", "")), "branch": _SETUP_BRANCH, "existing": True}
+    return {"pr": int(pr["number"]), "url": str(pr.get("html_url", "")), "branch": _SETUP_BRANCH}

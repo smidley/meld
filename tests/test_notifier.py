@@ -1,6 +1,7 @@
 import json
 from datetime import datetime, timedelta, timezone
 
+from meld.dispatch import tick
 from meld.notifier import NOTIFY_STATE, notify, slack_text
 from meld.status import build_status
 from tests.productfixtures import R, fixture, make_product
@@ -103,3 +104,60 @@ def test_notify_prunes_a_resolved_item_and_renotifies_immediately_on_its_return(
     _, returned_board = build_status(ctx)
     out3 = notify(ctx, returned_board, NOW + timedelta(minutes=2), post=lambda u, p: sent.append(p), env=env)
     assert out3["notified"] == [14] and len(sent) == 2
+
+
+def test_notify_contains_a_state_write_failure_after_a_successful_send(tmp_path, monkeypatch):
+    fake, ctx, repo, origin = make_product(tmp_path)
+    _, board = build_status(ctx)
+    env = {"MELD_SLACK_DM_WEBHOOK": "https://hooks.slack.test/abc"}
+
+    def failing_write(path, text):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("meld.notifier.write_atomic", failing_write)
+    sent: list[dict] = []
+    out = notify(ctx, board, NOW, post=lambda u, p: sent.append(p), env=env)
+    assert out["notified"] == [14] and len(sent) == 1  # the Slack send itself succeeded
+    assert len(out["errors"]) == 1 and "OSError" in out["errors"][0]
+    assert env["MELD_SLACK_DM_WEBHOOK"] not in out["errors"][0]
+
+    # tick() must not raise just because the state file couldn't be written.
+    tick_out = tick(ctx, now=NOW, env=env, post=lambda u, p: sent.append(p))
+    assert isinstance(tick_out, dict) and tick_out["notified"] == [14] and len(sent) == 2
+
+
+def test_notify_treats_a_non_dict_state_file_as_empty(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path)
+    _, board = build_status(ctx)
+    env = {"MELD_SLACK_DM_WEBHOOK": "https://hooks.slack.test/abc"}
+    state_path = ctx.store.state_dir / NOTIFY_STATE
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text("[]")  # valid JSON, wrong shape
+    sent: list[dict] = []
+    out = notify(ctx, board, NOW, post=lambda u, p: sent.append(p), env=env)
+    assert out["due"] == [14] and out["notified"] == [14] and len(sent) == 1
+    state = json.loads(state_path.read_text())
+    assert state["14"] == "2026-09-03T12:00:00Z"
+
+
+def test_notify_prunes_a_stale_entry_even_while_the_webhook_is_unconfigured(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path)
+    env = {"MELD_SLACK_DM_WEBHOOK": "https://hooks.slack.test/abc"}
+    sent: list[dict] = []
+
+    _, board = build_status(ctx)
+    out = notify(ctx, board, NOW, post=lambda u, p: sent.append(p), env=env)
+    assert out["notified"] == [14] and len(sent) == 1
+
+    # Issue 14 resolves, and the webhook env var is unset: notify() must never send here,
+    # but the stale entry still gets pruned rather than lingering through the outage.
+    issues = fixture("issues.json")
+    for i in issues:
+        if i["number"] == 14:
+            i["labels"] = [l for l in i["labels"] if l["name"] != "meld:needs-human"] + [{"name": "meld:ready"}]
+    fake.route("GET", R + "issues", issues)
+    _, resolved_board = build_status(ctx)
+    out2 = notify(ctx, resolved_board, NOW + timedelta(minutes=1), post=lambda u, p: sent.append(p), env={})
+    assert out2["notified"] == [] and "not set" in out2["skipped"] and len(sent) == 1
+    state = json.loads((ctx.store.state_dir / NOTIFY_STATE).read_text())
+    assert "14" not in state

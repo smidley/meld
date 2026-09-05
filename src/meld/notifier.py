@@ -34,11 +34,20 @@ def slack_text(items: list[dict], repo: str) -> str:
 
 
 def _load_state(path: Path) -> dict[str, str]:
-    """A missing, corrupt, or unreadable state file is treated as empty rather than raising."""
+    """A missing, corrupt, unreadable, or non-dict state file is treated as empty rather than raising."""
     try:
-        return json.loads(path.read_text()) if path.is_file() else {}
+        value = json.loads(path.read_text()) if path.is_file() else {}
     except (json.JSONDecodeError, OSError):
         return {}
+    if not isinstance(value, dict):
+        return {}
+    return {k: v for k, v in value.items() if isinstance(k, str) and isinstance(v, str)}
+
+
+def _persist(state_path: Path, data: dict) -> None:
+    """Write the pruned state. May raise OSError/ValueError; callers decide how (or whether) to report that."""
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    write_atomic(state_path, json.dumps(data, indent=2))
 
 
 def notify(ctx, board: Board, now: datetime, *, post: Callable[[str, dict], None] | None = None, env: Mapping[str, str] | None = None,
@@ -57,13 +66,28 @@ def notify(ctx, board: Board, now: datetime, *, post: Callable[[str, dict], None
             due.append(item)
     numbers = [d["issue"] for d in due]
     text = slack_text(due, ctx.cfg.repo_name) if due else None
-    if not ctx.cfg.notify_webhook_env:
-        return {"due": numbers, "notified": [], "skipped": "no [notify] slack_dm_webhook_env configured", "text": text}
-    url = env.get(ctx.cfg.notify_webhook_env)
-    if not url:
-        return {"due": numbers, "notified": [], "skipped": f"{ctx.cfg.notify_webhook_env} is not set", "text": text}
+
+    webhook_env = ctx.cfg.notify_webhook_env
+    url = env.get(webhook_env) if webhook_env else None
+    skipped = None
+    if not webhook_env:
+        skipped = "no [notify] slack_dm_webhook_env configured"
+    elif not url:
+        skipped = f"{webhook_env} is not set"
+    if skipped is not None:
+        # Never send while misconfigured, but don't let a resolved issue keep "cooling
+        # down" against a stale timestamp for the whole misconfiguration window: prune on
+        # a best-effort basis (a failed write here just means the next call tries again).
+        if stale:
+            try:
+                _persist(state_path, {k: v for k, v in sent.items() if k in current_ids})
+            except (OSError, ValueError):
+                pass
+        return {"due": numbers, "notified": [], "skipped": skipped, "text": text}
+
     if dry_run:
         return {"due": numbers, "notified": [], "skipped": None, "text": text}
+
     notified: list[int] = []
     errors: list[str] = []
     if due:
@@ -85,9 +109,14 @@ def notify(ctx, board: Board, now: datetime, *, post: Callable[[str, dict], None
         # Prune regardless of whether this call sent anything: an issue that left
         # needs_human (or left the board) should not keep cooling down against an old
         # timestamp, so a later return to needs_human is a fresh notification.
-        pruned = {k: v for k, v in sent.items() if k in current_ids}
-        state_path.parent.mkdir(parents=True, exist_ok=True)
-        write_atomic(state_path, json.dumps(pruned, indent=2))
+        try:
+            _persist(state_path, {k: v for k, v in sent.items() if k in current_ids})
+        except (OSError, ValueError) as e:
+            # The Slack send itself (if any) already happened and is reflected in
+            # `notified` above; only the on-disk record failed here (full disk,
+            # permissions, two same-party writers racing on write_atomic's .tmp name).
+            # Report it rather than raise, so this doesn't take tick() down with it.
+            errors.append(f"state not recorded ({type(e).__name__}); items may be re-notified")
     result = {"due": numbers, "notified": notified, "skipped": None, "text": text}
     if errors:
         result["errors"] = errors

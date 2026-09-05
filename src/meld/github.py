@@ -175,8 +175,9 @@ class GitHub:
         return self.get(self._r(f"commits/{sha}/check-runs"))
 
     def combined_status(self, sha: str) -> dict[str, str]:
-        """Commit statuses on `sha` as {context: state}; GitHub already reports only the latest status per context."""
-        resp = self.get(self._r(f"commits/{sha}/status"))
+        """Commit statuses on `sha` as {context: state}; GitHub already reports only the latest status per context.
+        The page is widened to 100 so a repo with many CI contexts cannot push a `meld/review/*` context off it."""
+        resp = self.get(self._r(f"commits/{sha}/status"), {"per_page": 100})
         return {s["context"]: s["state"] for s in (resp or {}).get("statuses", [])}
 
     def add_assignees(self, number: int, logins: list[str]) -> dict:

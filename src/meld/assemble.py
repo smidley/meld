@@ -19,7 +19,7 @@ from meld.board import (
     utc_now_iso,
 )
 from meld.config import Config
-from meld.github import GitHub
+from meld.github import GitHub, GitHubError, RateLimited
 from meld.grammar import parse_comment
 
 BRANCH_PREFIX = "meld/"
@@ -78,7 +78,7 @@ def _issue(raw: dict) -> Issue:
     )
 
 
-def _pull(gh: GitHub, raw: dict) -> PullRequest:
+def _pull(gh: GitHub, raw: dict, errors: list[str] | None = None) -> PullRequest:
     number = raw["number"]
     head_sha = raw["head"]["sha"]
     author = (raw.get("user") or {}).get("login", "")
@@ -104,7 +104,20 @@ def _pull(gh: GitHub, raw: dict) -> PullRequest:
             head_committer = (last.get("author") or {}).get("login") or (last.get("committer") or {}).get("login") or None
         checks = checks_state(gh.check_runs(head_sha))
         files = tuple(gh.pull_files(number))
-        statuses = gh.combined_status(head_sha)   # the `meld/review/<group>` contexts feed rules.approving_parties
+        # The `meld/review/<group>` contexts feed rules.approving_parties. Statuses only ever ADD approvals, so a
+        # token minted without "Commit statuses: read" degrades to an empty map (and a recorded error) instead of
+        # failing every command the moment one meld/ PR is open. A rate limit is not a permissions problem: it
+        # propagates, as it does from every other call here.
+        try:
+            statuses = gh.combined_status(head_sha)
+        except RateLimited:
+            raise
+        except GitHubError as e:
+            statuses = {}
+            if errors is not None:
+                note = f"PR #{number}: commit statuses unavailable ({e}); check the token's Commit statuses permission"
+                if note not in errors:   # build_status runs in loops (meld wait); one line per PR per process is enough
+                    errors.append(note)
     # `merge_commit_sha` is only the real merge commit once the PR is merged: on an open PR GitHub fills it with the
     # sha of a speculative test merge (or null while it recomputes one), so consumers must gate on `pr.merged`
     # before treating it as a commit that exists on the default branch (dispatch does, for audit checkouts).
@@ -117,7 +130,9 @@ def _pull(gh: GitHub, raw: dict) -> PullRequest:
 
 
 def build_board(gh: GitHub, cfg: Config, runs: dict[str, dict[int, RunRecord]], spend: dict[str, dict[str, int]],
-                milestone: int | None = None, now: str | None = None) -> Board:
+                milestone: int | None = None, now: str | None = None, errors: list[str] | None = None) -> Board:
+    """Assemble the board. `errors` (optional) collects non-fatal read problems -- the caller's `StateStore.errors`
+    in `status.build_status`, which the status JSON prints as `state_errors`."""
     if milestone is None:
         milestone, coordination, raw_issues, description = _locate_active(gh)
     else:
@@ -141,7 +156,7 @@ def build_board(gh: GitHub, cfg: Config, runs: dict[str, dict[int, RunRecord]], 
             continue
         if raw.get("state") == "closed" and raw.get("merged_at") is None:
             continue
-        pulls[raw["number"]] = _pull(gh, raw)
+        pulls[raw["number"]] = _pull(gh, raw, errors)
     challenges = derive_challenges(comments)
     return Board(
         repo=gh.repo, milestone=milestone, coordination_issue=coordination, phase=derive_phase(_labels(coord_raw)),

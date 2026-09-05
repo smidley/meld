@@ -241,6 +241,7 @@ def test_combined_status_maps_context_to_state(board1_gh):
     assert gh.combined_status("def456") == {}
     assert [c.endpoint for c in fake.calls if c.method == "GET"][-2:] == ["repos/acme/widgets/commits/abc123/status",
                                                                          "repos/acme/widgets/commits/def456/status"]
+    assert fake.calls[-1].query == {"per_page": "100"}   # many CI contexts must not push a meld/review/* context off the page
 
 
 def test_create_review_without_comments_omits_the_key(board1_gh):

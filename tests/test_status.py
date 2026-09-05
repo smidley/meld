@@ -178,6 +178,20 @@ def test_status_tolerates_an_unknown_head_committer(project: Path, monkeypatch):
     assert pulls[20]["legal"] == ["request-changes", "push-fix", "review"]
 
 
+def test_status_reports_an_unreadable_commit_status_in_state_errors(project: Path, monkeypatch):
+    fake = FakeGh()
+    load_board1_routes(fake)
+    fake.route("GET", "repos/acme/widgets/commits/abc123/status", {"message": "Resource not accessible by personal access token"}, status=403)
+    monkeypatch.setattr(cli, "RUN", fake)
+    result = CliRunner().invoke(cli.main, ["--config", str(project / ".meld.toml"), "--compact", "status"], env=env_for(project))
+    assert result.exit_code == 0, result.output                    # every command keeps working without the permission
+    data = json.loads(result.output)
+    pulls = {p["number"]: p for p in data["pulls"]}
+    assert pulls[20]["approvals"] == ["claude"] and "merge" in pulls[20]["legal"]   # GitHub approvals still count
+    (note,) = data["state_errors"]
+    assert note.startswith("PR #20: commit statuses unavailable (") and note.endswith("check the token's Commit statuses permission")
+
+
 def test_models_command_lists_every_adapter_for_a_human(project: Path, monkeypatch):
     fake = FakeGh()
     fake.route("GET", "user", {"login": "empowerScott"})

@@ -40,8 +40,9 @@ def challenge(ctx, action: str, ref: str, text: str) -> dict:
     # from, so if the label call fails first, nothing has changed and the same call is a clean retry. The other order
     # is not recoverable: a CHALLENGE comment followed by a failed label left `meld:challenged` off an open challenge
     # (open), or a closer comment followed by a failed removal left the label stuck with no open challenge for any
-    # closer verb to clear it. A label that lands and a comment that then fails leaves a label without a challenge,
-    # which the same retried call (or any closer) repairs.
+    # closer verb to clear it. A label that lands and a comment that then fails leaves a label without an open
+    # challenge; a closer is refused while no CHALLENGE is open, so only retrying the same `open` (or a human
+    # removing the label) clears it.
     # `open` only labels a number still on the board (spec 14): a challenge on a stale/unknown
     # number labels nothing. A closer must clear the label unconditionally, even when the
     # challenged PR closed unmerged and dropped off the board (assemble filters out closed-unmerged

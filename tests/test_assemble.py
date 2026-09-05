@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from meld.assemble import BoardError, build_board, checks_state, find_active_milestone, issue_number_from_pr
+from meld.github import RateLimited
 from tests.factories import CFG2, mk_run
 
 
@@ -114,3 +115,29 @@ def test_board_carries_files_challenges_audits_and_merge_metadata(board1_gh):
     assert board.pulls[19].merged and board.pulls[19].merged_at and board.pulls[19].files == ()   # merged PRs skip the files fetch
     assert board.challenges["#12"].challenger == "codex" and board.open_challenges == frozenset({"#12"})
     assert board.audits == {}
+
+
+def test_board_carries_the_head_statuses(board1_gh):
+    fake, gh = board1_gh
+    fake.route("GET", "repos/acme/widgets/commits/abc123/status",
+               {"state": "success", "statuses": [{"context": "meld/review/codex", "state": "success"}, {"context": "ci", "state": "pending"}]})
+    board = build_board(gh, CFG2, {}, {})
+    assert board.pulls[20].statuses == {"meld/review/codex": "success", "ci": "pending"}
+    assert board.pulls[19].statuses == {}                # merged PRs are never read
+
+
+def test_missing_commit_statuses_permission_degrades_to_an_empty_status_map(board1_gh):
+    fake, gh = board1_gh
+    fake.route("GET", "repos/acme/widgets/commits/abc123/status", {"message": "Resource not accessible by personal access token"}, status=403)
+    errors: list[str] = []
+    board = build_board(gh, CFG2, {}, {}, errors=errors)    # the board still builds: statuses only ever add approvals
+    assert board.pulls[20].statuses == {} and board.pulls[20].head_committer == "meld-codex-bot"
+    (note,) = errors
+    assert note.startswith("PR #20: commit statuses unavailable (GET repos/acme/widgets/commits/abc123/status") and "HTTP 403" in note
+    assert note.endswith("check the token's Commit statuses permission")
+    build_board(gh, CFG2, {}, {}, errors=errors)
+    assert len(errors) == 1                                # one line per PR, however many boards a process builds
+    assert build_board(gh, CFG2, {}, {}).pulls[20].statuses == {}   # with no collector the problem is simply swallowed
+    fake.rate_limit_next = True                            # a rate limit is not a permissions problem and still propagates
+    with pytest.raises(RateLimited):
+        build_board(gh, CFG2, {}, {}, errors=errors)

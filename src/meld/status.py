@@ -100,7 +100,7 @@ def audit_summary(board: Board, cfg: Config, actor: Actor, now: datetime) -> dic
 
 def build_status(ctx, now: datetime | None = None) -> tuple[dict, Board]:
     runs = ctx.store.load_runs()
-    board = build_board(ctx.gh, ctx.cfg, runs, {})
+    board = build_board(ctx.gh, ctx.cfg, runs, {}, errors=ctx.store.errors)   # non-fatal read problems join state_errors below
     board = replace(board, spend=ctx.store.load_spend(board.milestone))
     data = render_status(board, ctx.cfg, ctx.actor(), ctx.models, now)
     data["state_errors"] = list(ctx.store.errors)

@@ -13,7 +13,7 @@ from meld.context import find_config, load_context
 from meld.rules import Actor
 from meld.status import render_status
 from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
-from tests.factories import CFG2, REG, mk_board, mk_pr
+from tests.factories import CFG2, REG, mk_board, mk_comment, mk_pr
 from tests.fakeadapter import no_skills
 from tests.fakegh import FakeGh
 
@@ -242,3 +242,11 @@ def test_status_pull_fields_and_challenge_details():
     assert p["touches_security_paths"] is True and p["files"] == 1 and p["merged"] is False and p["merged_at"] == "" and p["audited_by"] == {"codex": "pass"}
     assert data["coordination"]["challenges"] == [{"ref": "#20", "challenger": "codex", "comment_id": 104, "opened_at": "2026-09-03T10:04:00Z"}]
     assert data["coordination"]["open_challenges"] == ["#20"]
+
+
+def test_status_agreements_report_verification():
+    thread = [mk_comment(CFG2, 1, "meld-claude-bot", "[claude] PROPOSE plan-1\n\nsplit"),
+              mk_comment(CFG2, 2, "meld-codex-bot", "[codex] AGREE plan-1\n\nyes"),
+              mk_comment(CFG2, 3, "meld-codex-bot", "[joint] PLAN plan-1\n\nsplit\n\nverified-by: x")]
+    data = render_status(mk_board(CFG2, comments=thread), CFG2, CLAUDE_PM, REG, datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc))
+    assert data["coordination"]["agreements"]["plan-1"] == {"status": "agreed", "joint_verified": False}

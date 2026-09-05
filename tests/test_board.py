@@ -135,3 +135,11 @@ def test_derive_audits_keeps_the_latest_verdict_per_group():
 def test_pull_request_touches_security_paths():
     pr = replace(mk_pr(20, 13), files=("src/auth/login.py", "README.md"))
     assert pr.touches(("src/auth/*",)) and pr.touches(("*.md",)) and not pr.touches(("db/*",)) and not pr.touches(())
+
+
+def test_pr_for_issue_prefers_the_merged_pr_once_the_issue_is_closed():
+    open_pr = mk_pr(22, 11, state="open")
+    merged = mk_pr(21, 11, state="closed", merged=True)
+    assert mk_board(CFG2, issues=[mk_issue(11)], pulls=[open_pr, merged]).pr_for_issue(11).number == 22
+    closed = mk_issue(11, state="closed")
+    assert mk_board(CFG2, issues=[closed], pulls=[open_pr, merged]).pr_for_issue(11).number == 21

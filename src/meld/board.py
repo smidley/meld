@@ -251,7 +251,9 @@ class Board:
 
     def pr_for_issue(self, issue: int) -> PullRequest | None:
         candidates = [p for p in self.pulls.values() if p.issue_number == issue]
-        candidates.sort(key=lambda p: (p.state != "open", -p.number))
+        issue_closed = issue in self.issues and self.issues[issue].state == "closed"
+        # For an open issue the open PR is the live one; once the issue is closed, the PR that merged is the record.
+        candidates.sort(key=(lambda p: (not p.merged, p.state != "open", -p.number)) if issue_closed else (lambda p: (p.state != "open", -p.number)))
         return candidates[0] if candidates else None
 
     def run_for(self, group: str, issue: int) -> RunRecord | None:

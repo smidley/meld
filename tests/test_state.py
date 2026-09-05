@@ -1,10 +1,12 @@
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from meld.state import StateStore, board_digest, diff_digest, meld_home, diff_changes, filter_changes
+from meld.board import Challenge
+from meld.state import CHANGE_KINDS, StateStore, board_digest, diff_digest, meld_home, diff_changes, filter_changes
 from tests.factories import CFG2, mk_board, mk_issue, mk_pr, mk_run
 
 
@@ -208,3 +210,17 @@ def test_archive_run_never_overwrites_an_earlier_archive(tmp_path):
         store.archive_run("claude", 7)
     assert len(list((tmp_path / "runs" / "claude" / "archive").glob("7-*.json"))) == 3
     assert store.load_spend(3) == {"claude": {"medium": 3}}
+
+
+def test_digest_and_diff_carry_challenges_audits_and_statuses():
+    pr = replace(mk_pr(20, 13), statuses={"meld/review/codex": "pending"})
+    b1 = replace(mk_board(CFG2, pulls=[pr]), challenges={"#20": Challenge("#20", "claude", 500, "t")}, open_challenges=frozenset({"#20"}))
+    d1 = board_digest(b1)
+    assert d1["challenges"] == {"#20": "claude"} and d1["audits"] == {} and d1["pulls"]["20"]["statuses"] == {"meld/review/codex": "pending"}
+    b2 = replace(b1, challenges={"#20": Challenge("#20", "codex", 501, "t")},
+                 pulls={20: replace(pr, statuses={"meld/review/codex": "success"})}, audits={19: {"codex": "pass"}})
+    kinds = sorted({c.kind for c in diff_changes(d1, board_digest(b2))})
+    assert kinds == ["audits", "challenges", "pr"]
+    texts = [c.text for c in diff_changes(d1, board_digest(b2))]
+    assert any("challenger" in t for t in texts) and any("statuses" in t for t in texts) and any("audit" in t for t in texts)
+    assert "audits" in CHANGE_KINDS

@@ -1,5 +1,6 @@
 from meld.config import Config
 from meld.grammar import agreement_for, parse_comment
+from tests.factories import mk_comment
 
 CFG2 = Config.from_dict({
     "repo": {"name": "acme/widgets"},
@@ -99,3 +100,17 @@ def test_votes_before_a_proposal_are_ignored():
     a = agreement_for(cs, "plan-1", CFG2)
     assert a.status == "none" and a.text is None and a.proposer is None
     assert a.agreed == frozenset() and a.dissent == {} and a.rounds == 0
+
+
+def test_joint_comment_is_verified_only_from_the_proposers_bot_after_the_round_closed():
+    thread = [mk_comment(CFG2, 1, "meld-claude-bot", "[claude] PROPOSE plan-1\n\nsplit the work"),
+              mk_comment(CFG2, 2, "meld-codex-bot", "[codex] AGREE plan-1\n\nyes")]
+    good = thread + [mk_comment(CFG2, 3, "meld-claude-bot", "[joint] PLAN plan-1\n\nsplit the work\n\nverified-by: meld roster")]
+    a = agreement_for(good, "plan-1", CFG2)
+    assert a.joint_posted and a.joint_verified and a.joint_verb == "PLAN" and a.joint_author == "meld-claude-bot"
+    forged = thread + [mk_comment(CFG2, 3, "meld-codex-bot", "[joint] PLAN plan-1\n\nsplit the work\n\nverified-by: x")]
+    b = agreement_for(forged, "plan-1", CFG2)
+    assert b.joint_posted and not b.joint_verified and b.joint_author == "meld-codex-bot"
+    early = [thread[0], mk_comment(CFG2, 2, "meld-claude-bot", "[joint] PLAN plan-1\n\nsplit the work\n\nverified-by: x")]
+    c = agreement_for(early, "plan-1", CFG2)
+    assert c.joint_posted and not c.joint_verified       # posted while the round was still open

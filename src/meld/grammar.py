@@ -140,6 +140,9 @@ class Agreement:
     rounds: int
     status: str
     joint_posted: bool
+    joint_verified: bool = False
+    joint_verb: str | None = None
+    joint_author: str | None = None
 
     def can_amend(self, cfg: Config) -> bool:
         return self.rounds < cfg.amend_cap
@@ -152,12 +155,17 @@ def agreement_for(comments: Sequence[ParsedComment], ref: str, cfg: Config) -> A
     dissent: dict[str, str] = {}
     rounds = 0
     joint_posted = False
+    joint_verb: str | None = None
+    joint_author: str | None = None
+    joint_verified = False
     for cmt in sorted(comments, key=lambda x: (x.created_at, x.id)):
         if not cmt.ok or cmt.header is None or cmt.header.ref != ref:
             continue
         h = cmt.header
         if h.party.kind == "joint":
-            joint_posted = True
+            joint_posted, joint_verb, joint_author = True, h.verb, cmt.author
+            closed = text is not None and ((agreed >= set(cfg.group_names)) or ((agreed | set(dissent)) >= set(cfg.group_names)))
+            joint_verified = closed and proposer is not None and cmt.author == cfg.groups[proposer].bot
             continue
         if h.party.kind not in ("group", "pm") or h.party.group is None:
             continue
@@ -184,4 +192,5 @@ def agreement_for(comments: Sequence[ParsedComment], ref: str, cfg: Config) -> A
         status = "majority"
     else:
         status = "disagree"
-    return Agreement(ref, text, proposer, frozenset(agreed), dissent, rounds, status, joint_posted)
+    return Agreement(ref, text, proposer, frozenset(agreed), dissent, rounds, status, joint_posted,
+                      joint_verified, joint_verb, joint_author)

@@ -78,6 +78,29 @@ def test_tick_releases_another_groups_expired_lease(tmp_path):
     assert fresh["expired"] == []
 
 
+def test_tick_posts_exactly_one_framework_comment_when_it_reclaims_an_expired_lease(tmp_path):
+    # Fix round 1: release(ctx, n) inside tick's expired-lease reclaim used to also post its own framework RELEASED
+    # note (actions.release's Decision-2 post, Task 2 round 1), so one event -- a lease expiring and tick reclaiming
+    # the issue -- wrote two framework comments for #13. release(..., announce=False) suppresses that half; the
+    # reclaim now writes exactly one framework comment, the more specific EXPIRED note (it already names the lease
+    # that expired, and derive_leases treats both verbs as closers, so nothing about the lease itself is lost).
+    fake, ctx, repo, origin = make_product(tmp_path)
+    issues = fixture("issues.json")
+    for i in issues:
+        if i["number"] == 13:  # in_review in the fixture; make it codex's in-progress claim
+            i["labels"] = [l for l in i["labels"] if l["name"] != "meld:in-review"] + [{"name": "meld:in-progress"}]
+    fake.route("GET", R + "issues", issues)
+    comments = fixture("comments_10.json") + [{"id": 120, "user": {"login": "meld-codex-bot"}, "created_at": "2026-09-03T09:30:00Z",
+                                               "body": "[codex:pm] LEASE #13\n\nuntil: 2026-09-03T11:00:00Z\nrun: codex/#13"}]
+    fake.route("GET", R + "issues/10/comments", comments)
+    fake.route("DELETE", R + "issues/13/assignees", {})
+    fake.route("POST", R + "issues/13/labels", [])
+    fake.route("DELETE", R + "issues/13/labels/meld%3Ain-progress", [])
+    assert tick(ctx, now=NOW, env={})["expired"] == [13]
+    for_13 = [c for c in coordination_posts(fake) if c.startswith("[claude:pm] EXPIRED #13") or c.startswith("[claude:pm] RELEASED #13")]
+    assert len(for_13) == 1 and for_13[0].startswith("[claude:pm] EXPIRED #13\n")
+
+
 def test_tick_is_pm_only(tmp_path):
     fake, orch, *_ = make_product(tmp_path, role="orchestrator")
     with pytest.raises(DispatchError, match="PM"):

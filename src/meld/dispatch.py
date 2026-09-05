@@ -33,6 +33,7 @@ from meld.gitops import (
     worktree_exists,
 )
 from meld.grammar import Header, compose
+from meld.housekeeping import ci_red_sweep, flag_ignored_comments, off_protocol_sweep
 from meld.notifier import notify
 from meld.results import store_result
 from meld.roster import WorkerType, roster
@@ -357,6 +358,9 @@ def tick(ctx, *, now: datetime | None = None, sleep=time.sleep, env: Mapping[str
                                                                 f"Released #{n}: lease by {lease.group} expired at {lease.until} (now {now_iso})."))
         out["expired"].append(n)
     out["notified"] = notify(ctx, board, when, post=post, env=env)["notified"]
+    out["ci_red"] = ci_red_sweep(ctx, board, group)
+    out["ignored"] = flag_ignored_comments(ctx, board, group)
+    out["off_protocol"] = off_protocol_sweep(ctx, board, group)
     return out
 
 

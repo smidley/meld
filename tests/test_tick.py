@@ -70,7 +70,10 @@ def test_tick_releases_another_groups_expired_lease(tmp_path):
     assert result["expired"] == [13]
     mutations = [(c.method, c.endpoint) for c in fake.calls if c.method != "GET" and "issues/13" in c.endpoint]
     assert ("DELETE", R + "issues/13/assignees") in mutations and ("POST", R + "issues/13/labels") in mutations
-    assert coordination_posts(fake)[-1].startswith("[claude:pm] EXPIRED #13\n") and "expired at 2026-09-03T11:00:00Z" in coordination_posts(fake)[-1]
+    # Housekeeping's own sweeps (Task 8) may post again afterward (e.g. IGNORED-COMMENT on the fixture's
+    # ever-unauthorized comment 103), so the EXPIRED post is no longer necessarily the last one -- find it directly.
+    expired_post = next(c for c in coordination_posts(fake) if c.startswith("[claude:pm] EXPIRED"))
+    assert expired_post.startswith("[claude:pm] EXPIRED #13\n") and "expired at 2026-09-03T11:00:00Z" in expired_post
     fresh = tick(ctx, now=datetime(2026, 9, 3, 10, 0, tzinfo=timezone.utc))  # not yet expired at 10:00
     assert fresh["expired"] == []
 
@@ -112,6 +115,14 @@ def test_tick_notifies_needs_human_items_when_a_webhook_is_configured(tmp_path):
     out = tick(ctx, now=NOW, env={"MELD_SLACK_DM_WEBHOOK": "https://hooks.slack.test/abc"}, post=lambda u, p: sent.append(p))
     assert out["notified"] == [14] and len(sent) == 1
     assert tick(ctx, now=NOW, env={}, post=lambda u, p: sent.append(p))["notified"] == []
+
+
+def test_tick_runs_the_housekeeping_sweeps(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path)
+    for n in (11, 12, 13, 14):
+        fake.route("GET", R + f"issues/{n}/events", [])
+    out = tick(ctx, now=NOW, env={})
+    assert out["ci_red"] == [] and out["off_protocol"] == [] and out["ignored"]["flagged"] == [103] and out["notified"] == []
 
 
 def test_kill_run_skips_a_pid_that_leads_no_process_group(monkeypatch):

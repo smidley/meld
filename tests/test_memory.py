@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from meld.actions import Refused
+from meld.github import GitHubError
 from meld.memory import (DECISIONS_DIR, LESSONS_FILE, MARKER_RE, content_hash, decide, next_decision_number, recall, recall_snippets,
                          remember, render_decision, render_lesson)
 from tests.gitfixtures import sh
@@ -33,10 +34,18 @@ def test_render_and_hash_are_deterministic():
 
 
 def test_next_decision_number(tmp_path):
-    assert next_decision_number(tmp_path) == 1
-    (tmp_path / ".meld" / "decisions").mkdir(parents=True)
-    (tmp_path / ".meld" / "decisions" / "0007-old.md").write_text("# Decision old\n")
-    assert next_decision_number(tmp_path) == 8
+    # next_decision_number now reads origin's default branch (F3), not a bare directory, so it needs a real
+    # product fixture; committing straight onto `repo`'s own checked-out main and pushing is enough here since
+    # the point of *this* test is just the counting logic (the "reads origin, not the working copy" property
+    # gets its own dedicated proof in test_next_decision_number_and_already_recorded_read_origin_not_the_working_copy).
+    fake, ctx, repo, origin = make_product(tmp_path)
+    assert next_decision_number(ctx) == 1
+    (repo / ".meld" / "decisions").mkdir(parents=True)
+    (repo / ".meld" / "decisions" / "0007-old.md").write_text("# Decision old\n")
+    sh(["git", "add", ".meld/decisions/0007-old.md"], repo)
+    sh(["git", "commit", "-q", "-m", "seed decision"], repo)
+    sh(["git", "push", "-q", "origin", "main"], repo)
+    assert next_decision_number(ctx) == 8
 
 
 def test_decide_opens_a_memory_pr_and_requests_review(tmp_path):
@@ -72,6 +81,66 @@ def test_decide_commit_is_never_signed_even_when_the_host_gitconfig_demands_it(t
     assert out["decided"] == "dec-1"
     assert sh(["git", "log", "-1", "--format=%an", "origin/meld/memory-dec-1"], repo) == "meld-claude-bot"
     assert sh(["git", "log", "-1", "--format=%G?", "origin/meld/memory-dec-1"], repo) == "N"
+
+
+EXISTING_THREAD = [
+    {"id": 301, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T10:10:00Z", "body": "[claude] PROPOSE existing\n\nAlready decided.\n\nverified-by: read docs/adr/0002.md"},
+    {"id": 302, "user": {"login": "meld-codex-bot"}, "created_at": "2026-09-03T10:11:00Z", "body": "[codex] AGREE existing\n\nfine"},
+    {"id": 303, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T10:12:00Z", "body": "[joint] DECISION existing\n\nAlready decided.\n\nverified-by: read docs/adr/0002.md"},
+]
+
+
+def test_open_memory_pr_removes_the_worktree_even_when_create_pull_fails(tmp_path):
+    # F1: a failure between the push and the PR being opened must not leak the scratch worktree.
+    fake, ctx, repo, origin = make_product(tmp_path, role="orchestrator")
+    with_thread(fake, DECISION_THREAD)
+    fake.route("POST", R + "pulls", {"message": "boom"}, status=500)
+    with pytest.raises(GitHubError):
+        decide(ctx, "dec-1", now=NOW)
+    listing = sh(["git", "worktree", "list", "--porcelain"], repo)
+    assert "memory-dec-1" not in listing
+    assert not (tmp_path / "home" / "worktrees" / "claude" / "memory-dec-1").exists()
+
+
+def test_second_decide_is_refused_while_memory_pr_open(tmp_path):
+    # F2: once the first memory PR is open, GitHub reflecting it back on the next read must refuse a repeat.
+    fake, ctx, repo, origin = make_product(tmp_path, role="orchestrator")
+    with_thread(fake, DECISION_THREAD)
+    fake.route("POST", R + "pulls", {"number": 40, "html_url": "https://github.com/acme/widgets/pull/40"})
+    out = decide(ctx, "dec-1", now=NOW)
+    body = (f"Records the agreed decision `dec-1`.\n\nmeld-memory: decision dec-1 {out['hash']}\n"
+            f"verified-by: [joint] DECISION dec-1 (https://github.com/acme/widgets/issues/10#issuecomment-203)")
+    pulls = fixture("pulls.json") + [{
+        "number": 40, "title": "Decision dec-1", "body": body, "state": "open", "merged_at": None,
+        "user": {"login": "meld-claude-bot"}, "head": {"ref": "meld/memory-dec-1", "sha": "abc123"}, "labels": [],
+    }]
+    fake.route("GET", R + "pulls", pulls)
+    fake.route("GET", R + "pulls/40/reviews", [])
+    fake.route("GET", R + "pulls/40/commits", [])
+    fake.route("GET", R + "pulls/40/files", [])
+    with pytest.raises(Refused, match="already recorded"):
+        decide(ctx, "dec-1", now=NOW)
+
+
+def test_next_decision_number_and_already_recorded_read_origin_not_the_working_copy(tmp_path):
+    # F3: both checks must read origin's default branch, not ctx.repo_root's own (never-pulled) working copy.
+    fake, ctx, repo, origin = make_product(tmp_path, role="orchestrator")
+    with_thread(fake, EXISTING_THREAD)
+    # Commit the pre-existing decision file from a SEPARATE clone and push it, so `repo`'s own working copy
+    # never has the file locally at all -- proving the checks read origin, not the checkout.
+    second = tmp_path / "second-clone"
+    sh(["git", "clone", "-q", str(origin), str(second)], tmp_path)
+    sh(["git", "config", "user.name", "Fixture"], second)
+    sh(["git", "config", "user.email", "fixture@example.com"], second)
+    (second / ".meld" / "decisions").mkdir(parents=True)
+    (second / ".meld" / "decisions" / "0007-existing.md").write_text("# Decision existing\n")
+    sh(["git", "add", ".meld/decisions/0007-existing.md"], second)
+    sh(["git", "commit", "-q", "-m", "seed decision"], second)
+    sh(["git", "push", "-q", "origin", "main"], second)
+    assert not (repo / ".meld").exists()   # repo's own working copy never saw this file
+    assert next_decision_number(ctx) == 8
+    with pytest.raises(Refused, match="already recorded"):
+        decide(ctx, "existing", now=NOW)
 
 
 def test_decide_refusals(tmp_path):

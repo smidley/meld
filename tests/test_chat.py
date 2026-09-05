@@ -147,6 +147,45 @@ def test_run_chat_wait_shows_concurrent_comment_but_not_own_post(tmp_path):
     assert not any("[human] HALT" in line for line in after_halt)
 
 
+def test_run_chat_tolerates_comment_response_without_id(tmp_path):
+    fake, human, repo, origin = make_product(tmp_path, group=None)
+    fake.route("POST", R + "issues/10/comments", {"html_url": "u10"})
+    fake.route("POST", R + "issues/13/labels", [])
+    result = run_chat(human, ["why postgres?", "/challenge open #13 text", "/quit"], lambda s: None)
+    assert result["errors"] == []
+    assert result["posted"] == ["[human] ASK ask-1", "[human] CHALLENGE #13"]
+
+
+def test_run_chat_wait_shows_concurrent_comment_after_challenge(tmp_path):
+    fake, human, repo, origin = make_product(tmp_path, group=None)
+    fake.route("POST", R + "issues/13/labels", [])
+    comments = fixture("comments_10.json")
+    own_id = fake.routes[("POST", R + "issues/10/comments")][1]["id"]
+    concurrent_id = own_id + 1
+    original_run = fake.__call__
+
+    def sync_after_comment(cmd, **kwargs):
+        result = original_run(cmd, **kwargs)
+        last = fake.calls[-1]
+        if last.method == "POST" and last.endpoint == R + "issues/10/comments":
+            comments.append({"id": own_id, "user": {"login": "empowerScott"},
+                              "created_at": "2026-09-04T00:00:00Z", "body": last.body["body"]})
+            comments.append({"id": concurrent_id, "user": {"login": "meld-codex-bot"},
+                              "created_at": "2026-09-04T00:00:01Z",
+                              "body": "[codex] NEEDS-HUMAN #12\n\nneed a decision on the retry policy"})
+            fake.route("GET", R + "issues/10/comments", comments)
+        return result
+
+    human.gh._run = sync_after_comment
+    out_lines: list[str] = []
+    result = run_chat(human, ["/challenge open #13 text", "/wait", "/quit"], out_lines.append)
+    assert result["errors"] == []
+    challenge_index = out_lines.index("[human] CHALLENGE #13")
+    after_challenge = out_lines[challenge_index + 1:]
+    assert any("[codex] NEEDS-HUMAN #12" in line for line in after_challenge)
+    assert not any("[human] CHALLENGE #13" in line for line in after_challenge)
+
+
 def test_cli_inbox_and_chat_once(tmp_path, monkeypatch):
     fake, human, repo, origin = make_product(tmp_path, group=None)
     monkeypatch.setattr(cli, "RUN", fake)

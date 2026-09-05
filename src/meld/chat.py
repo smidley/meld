@@ -98,7 +98,7 @@ def run_chat(ctx, lines: Iterable[str], out: Callable[[str], None], *, verbose: 
         posted.append(resp["header"])
         out(resp["header"])
         _, board = build_status(ctx)
-        last_seen = max(last_seen, resp["comment_id"])
+        last_seen = max(last_seen, resp["comment_id"] or last_seen)
 
     for raw in lines:
         line = raw.strip()
@@ -138,7 +138,7 @@ def run_chat(ctx, lines: Iterable[str], out: Callable[[str], None], *, verbose: 
                 posted.append(header)
                 out(header)
                 _, board = build_status(ctx)
-                last_seen = max(last_seen, resp["comment_id"])
+                last_seen = max(last_seen, resp["comment_id"] or last_seen)
             elif line.split(" ", 1)[0] == "/ack":
                 ref = line[len("/ack"):].strip()
                 if not ref:

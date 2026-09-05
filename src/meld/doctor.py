@@ -10,14 +10,18 @@ import os
 import shutil
 import stat
 import subprocess
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Mapping
 
+from meld.adapters import UnknownAdapter
 from meld.adapters.base import SCRUBBED_EXACT, SCRUBBED_PREFIXES
+from meld.atomic import write_atomic
 from meld.config import Config
 from meld.github import GitHub, GitHubError
-from meld.gitops import GitError, git, noreply_email
+from meld.gitops import GitError, git, noreply_email, remove_worktree
+from meld.housekeeping import CI_RED_STATE
 from meld.models import ModelRegistry
 
 MEMORY_WARN_BYTES = 2 * 1024 * 1024
@@ -97,13 +101,24 @@ def run_checks(cfg: Config, repo_root: Path, *, env: Mapping[str, str], gh_facto
     except (GitHubError, KeyError, TypeError):
         pass
     for group in cfg.groups.values():
-        adapter = adapter_for(group.cli)
-        # 2. CLI installed
-        binary = adapter.version_argv()[0]
-        found = which(binary)
-        version = _version(adapter.version_argv(), run) if found else None
-        checks.append(Check(f"cli:{group.name}", bool(found and version), f"{binary}: {version or 'not found on PATH'}",
-                            "" if found and version else f"install the {group.cli} CLI and log in"))
+        try:
+            adapter = adapter_for(group.cli)
+        except UnknownAdapter:
+            adapter = None
+            checks.append(Check(f"cli:{group.name}", False, f"unknown cli {group.cli!r} in .meld.toml", "set [groups.<g>].cli to claude or codex"))
+        else:
+            # 2. CLI installed
+            binary = adapter.version_argv()[0]
+            found = which(binary)
+            version = _version(adapter.version_argv(), run) if found else None
+            if found and version:
+                detail = f"{binary}: {version}"
+            elif found:
+                detail = f"{binary}: found but --version failed"
+            else:
+                detail = f"{binary}: not found on PATH"
+            checks.append(Check(f"cli:{group.name}", bool(found and version), detail,
+                                "" if found and version else f"install the {group.cli} CLI and log in"))
         # 3. token present and owned by the configured bot
         token = env.get(group.token_env)
         if not token:
@@ -134,10 +149,13 @@ def run_checks(cfg: Config, repo_root: Path, *, env: Mapping[str, str], gh_facto
         checks.append(Check(f"models:{group.name}", not problems, "; ".join(problems) or f"{group.orchestrator.model}/{group.orchestrator.effort}, {group.pm.model}/{group.pm.effort}",
                             "" if not problems else "pick models from `meld models`"))
         # 6. command ceiling vs wait timeout
-        ceiling = adapter.command_timeout_ceiling_seconds()
-        ok = ceiling > cfg.wait_timeout_seconds
-        checks.append(Check(f"timeout-ceiling:{group.name}", ok, f"command ceiling {ceiling}s vs polling.wait_timeout_seconds {cfg.wait_timeout_seconds}s",
-                            "" if ok else "lower polling.wait_timeout_seconds below the CLI's command ceiling"))
+        if adapter is None:
+            checks.append(Check(f"timeout-ceiling:{group.name}", None, "skipped (unknown cli)"))
+        else:
+            ceiling = adapter.command_timeout_ceiling_seconds()
+            ok = ceiling > cfg.wait_timeout_seconds
+            checks.append(Check(f"timeout-ceiling:{group.name}", ok, f"command ceiling {ceiling}s vs polling.wait_timeout_seconds {cfg.wait_timeout_seconds}s",
+                                "" if ok else "lower polling.wait_timeout_seconds below the CLI's command ceiling"))
         # 7. token permissions (read probes; write only with --probe-status)
         if token and login == group.bot and head_sha:
             gh = gh_factory(token)
@@ -193,3 +211,72 @@ def run_checks(cfg: Config, repo_root: Path, *, env: Mapping[str, str], gh_facto
 def summary(checks: list[Check]) -> dict:
     return {"checks": [asdict(c) for c in checks], "failed": [c.name for c in checks if c.ok is False],
             "warnings": [c.name for c in checks if c.ok is None], "ok": all(c.ok is not False for c in checks)}
+
+
+def sweep(home: Path, cfg: Config, *, repo_root: Path, pull_states: Mapping[int, str] | None = None, older_than_days: int = 7,
+          apply: bool = False, now: float | None = None) -> dict:
+    """Scratch that meld leaves behind on purpose (verdict archives, per-run gh/git config, crashed memory worktrees, stale
+    per-PR records). Lists every candidate with its reason; deletes only when `apply` is true, and only what it listed."""
+    now = time.time() if now is None else now
+    cutoff = now - older_than_days * 86400
+    candidates: list[dict] = []
+    skipped: list[str] = []
+    if pull_states is None:
+        skipped.append("memory-review-record and ci-red-record need the board (pull states); run from a product clone with gh logged in")
+    for group in cfg.groups.values():
+        results = home / "results" / group.name
+        for kind in ("superseded", "submitted"):
+            for p in sorted((results / kind).glob("*.json")):
+                if p.stat().st_mtime < cutoff:
+                    candidates.append({"kind": kind, "path": str(p), "reason": f"consumed verdict older than {older_than_days} days"})
+        if pull_states is not None:
+            for p in sorted(results.glob("review-*.json")):
+                number = p.stem.removeprefix("review-")
+                if number.isdigit() and pull_states.get(int(number)) in ("merged", "closed"):
+                    candidates.append({"kind": "memory-review-record", "path": str(p), "reason": f"PR #{number} is {pull_states[int(number)]}; the idempotency record is no longer needed"})
+        runs = home / "runs" / group.name
+        if runs.is_dir():
+            for p in sorted(runs.iterdir()):
+                stem = p.name.removesuffix("-gh").removesuffix("-gitconfig")
+                if p.name in (f"{stem}-gh", f"{stem}-gitconfig") and stem.isdigit() and not (runs / f"{stem}.json").exists():
+                    candidates.append({"kind": "run-scratch", "path": str(p), "reason": f"no live run record {stem}.json"})
+        for p in sorted((home / "worktrees" / group.name).glob("memory-*")):
+            if p.is_dir():
+                candidates.append({"kind": "memory-worktree", "path": str(p), "reason": "memory-PR scratch worktree left by a crash"})
+        if pull_states is not None:
+            for state_file in sorted((home / "state" / group.name).glob(f"*/{CI_RED_STATE}")):
+                try:
+                    data = json.loads(state_file.read_text())
+                except (OSError, ValueError):
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                for key in sorted(data):
+                    if key.isdigit() and pull_states.get(int(key)) in ("merged", "closed"):
+                        # "/"-joined (not "#") so Path(path).name is the bare key: a fragment-style "#" join collapses
+                        # into the preceding path segment (ci-red.json#20).name == "ci-red.json#20", not "20".
+                        candidates.append({"kind": "ci-red-record", "path": f"{state_file}/{key}", "reason": f"PR #{key} is {pull_states[int(key)]}"})
+    removed: list[str] = []
+    if apply:
+        for c in candidates:
+            target = c["path"]
+            try:
+                if c["kind"] == "ci-red-record":
+                    file, key = target.rsplit("/", 1)
+                    data = json.loads(Path(file).read_text())
+                    data.pop(key, None)
+                    write_atomic(Path(file), json.dumps(data, indent=2, sort_keys=True))
+                elif c["kind"] == "memory-worktree":
+                    try:
+                        remove_worktree(repo_root, Path(target))
+                    except Exception:  # not registered as a worktree of this clone: plain directory debris
+                        shutil.rmtree(target, ignore_errors=True)
+                elif Path(target).is_dir():
+                    shutil.rmtree(target)
+                else:
+                    Path(target).unlink()
+            except OSError as e:
+                skipped.append(f"{target}: {type(e).__name__}")
+                continue
+            removed.append(target)
+    return {"candidates": candidates, "removed": removed, "dry_run": not apply, "skipped": skipped}

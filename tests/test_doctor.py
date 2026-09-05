@@ -1,10 +1,15 @@
 import json
+import os
+import sys
+import time
+from pathlib import Path
 
 from click.testing import CliRunner
 
 import meld.cli as cli
+from meld.adapters import UnknownAdapter
 from meld.config import Config
-from meld.doctor import run_checks, summary
+from meld.doctor import run_checks, summary, sweep
 from meld.github import GitHub
 from meld.models import ModelRegistry
 from tests.conftest import PROJECT_TOML
@@ -116,3 +121,85 @@ def test_cli_doctor_reports_token_mismatch_and_exits_1(tmp_path, monkeypatch):
     assert result.exit_code == 1, result.output
     data = json.loads(result.output)
     assert "token:claude" in data["failed"] and "token:codex" in data["failed"]
+
+
+def _touch(path: Path, age_days: float = 0.0, text: str = "{}"):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    if age_days:
+        old = time.time() - age_days * 86400
+        os.utime(path, (old, old))
+
+
+def test_sweep_lists_then_removes_only_what_it_listed(tmp_path):
+    home = tmp_path / "home"
+    _touch(home / "results" / "claude" / "superseded" / "review-20-1.json", age_days=10)
+    _touch(home / "results" / "claude" / "submitted" / "review-21-abc-1.json", age_days=1)      # too young
+    _touch(home / "results" / "claude" / "review-22.json", text='{"head_sha": "x", "event": "APPROVE"}')  # memory-PR record, PR merged
+    _touch(home / "results" / "claude" / "review-23.json", text='{"head_sha": "x", "event": "APPROVE"}')  # PR still open
+    _touch(home / "runs" / "claude" / "11.json", text='{"issue": 11}')
+    _touch(home / "runs" / "claude" / "11-gitconfig", text="")
+    (home / "runs" / "claude" / "11-gh").mkdir(parents=True)
+    _touch(home / "runs" / "claude" / "12-gitconfig", text="")                                    # no 12.json: orphan
+    (home / "runs" / "claude" / "12-gh").mkdir(parents=True)
+    (home / "worktrees" / "claude" / "memory-dec-9").mkdir(parents=True)                          # crash debris
+    _touch(home / "state" / "claude" / "pm" / "ci-red.json", text='{"20": {"head": "h", "commented": true, "swapped": true}, "23": {"head": "h", "commented": true, "swapped": false}}')
+    states = {20: "closed", 22: "merged", 23: "open"}
+    out = sweep(home, cfg(), repo_root=tmp_path, pull_states=states, older_than_days=7)
+    kinds = {(c["kind"], Path(c["path"]).name) for c in out["candidates"]}
+    assert ("superseded", "review-20-1.json") in kinds and ("submitted", "review-21-abc-1.json") not in kinds
+    assert ("memory-review-record", "review-22.json") in kinds and ("memory-review-record", "review-23.json") not in kinds
+    assert ("run-scratch", "12-gitconfig") in kinds and ("run-scratch", "12-gh") in kinds and ("run-scratch", "11-gh") not in kinds
+    assert ("memory-worktree", "memory-dec-9") in kinds
+    assert ("ci-red-record", "20") in kinds and ("ci-red-record", "23") not in kinds
+    assert out["dry_run"] is True and out["removed"] == []
+    assert (home / "results" / "claude" / "superseded" / "review-20-1.json").exists()
+    applied = sweep(home, cfg(), repo_root=tmp_path, pull_states=states, older_than_days=7, apply=True)
+    assert sorted(applied["removed"]) == sorted(c["path"] for c in out["candidates"])
+    assert not (home / "results" / "claude" / "superseded" / "review-20-1.json").exists()
+    assert not (home / "runs" / "claude" / "12-gh").exists() and (home / "runs" / "claude" / "11-gh").exists()
+    assert not (home / "worktrees" / "claude" / "memory-dec-9").exists()
+    remaining = json.loads((home / "state" / "claude" / "pm" / "ci-red.json").read_text())
+    assert set(remaining) == {"23"}
+
+
+def test_sweep_without_board_state_skips_pr_dependent_kinds(tmp_path):
+    home = tmp_path / "home"
+    _touch(home / "results" / "claude" / "review-22.json", text='{"head_sha": "x", "event": "APPROVE"}')
+    out = sweep(home, cfg(), repo_root=tmp_path, pull_states=None)
+    assert out["candidates"] == [] and "board" in " ".join(out["skipped"])
+
+
+def test_doctor_cli_check_distinguishes_found_but_broken_from_missing(tmp_path):
+    """Task 5 review tidy-up: `which` finding the binary but `--version` failing is a different problem than the
+    binary being absent, and the detail text must say so rather than reusing "not found on PATH"."""
+    class BrokenVersionAdapter(FakeAdapter):
+        def version_argv(self):
+            return [sys.executable, "-c", "import sys; sys.exit(1)"]
+    adapters = {"claude": BrokenVersionAdapter(ceiling=600, name="claude"), "codex": FakeAdapter(ceiling=600, name="codex")}
+    checks = by_name(run(tmp_path, fakes(), adapters=adapters))
+    assert checks["cli:claude"].ok is False
+    assert checks["cli:claude"].detail == f"{sys.executable}: found but --version failed"
+
+
+def test_doctor_reports_unknown_cli_and_skips_dependent_checks_for_that_group(tmp_path):
+    """Task 5 review tidy-up: an unrecognized [groups.<g>].cli must not raise out of `run_checks` -- it fails
+    cli:<g> with a clear reason, skips the adapter-dependent timeout-ceiling:<g> check (as a warning, not a
+    failure), and leaves every other check for that group (and every check for other groups) unaffected."""
+    bad_cfg = Config.from_dict(tomllib.loads(PROJECT_TOML.replace('cli = "codex"', 'cli = "bogus"')))
+
+    def adapter_for(name):
+        if name == "bogus":
+            raise UnknownAdapter(name)
+        return FakeAdapter(ceiling=600, name=name)
+    by_token = fakes()
+    checks = by_name(run_checks(bad_cfg, tmp_path, env={"MELD_TOKEN_CLAUDE": "tok-c", "MELD_TOKEN_CODEX": "tok-x"},
+                                gh_factory=lambda token: GitHub("acme/widgets", token=token, run=by_token[token]),
+                                registry=ModelRegistry.load(), adapter_for=adapter_for, which=lambda b: "/bin/" + b,
+                                home=tmp_path / "home", user_home=tmp_path / "userhome"))
+    assert checks["cli:codex"].ok is False and checks["cli:codex"].detail == "unknown cli 'bogus' in .meld.toml"
+    assert checks["timeout-ceiling:codex"].ok is None and "skipped" in checks["timeout-ceiling:codex"].detail
+    # Independent checks for the same group still ran -- an unknown cli does not abort the rest of the group.
+    assert checks["token:codex"].ok is True
+    # The other group is entirely unaffected.
+    assert checks["cli:claude"].ok is True and checks["timeout-ceiling:claude"].ok is True

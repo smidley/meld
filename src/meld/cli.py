@@ -20,7 +20,7 @@ from meld.chat import inbox as build_inbox, run_chat
 from meld.config import ConfigError, load_config
 from meld.context import Context, find_config, load_context
 from meld.dispatch import DispatchError, collect as do_collect, dispatch as do_dispatch, reap as do_reap, tick as do_tick
-from meld.doctor import run_checks, summary
+from meld.doctor import run_checks, summary, sweep
 from meld.github import GitHub, GitHubError
 from meld.gitops import GitError
 from meld.memory import decide as do_decide, recall as do_recall, remember as do_remember
@@ -441,11 +441,26 @@ def setup(ctx: click.Context, repo: str, goal: str, milestone_title: str, target
 
 @main.command()
 @click.option("--probe-status", is_flag=True, help="Also verify Commit statuses WRITE by posting a `meld/doctor` status on the default branch head (one per group).")
+@click.option("--sweep", "do_sweep", is_flag=True, help="List meld's scratch under $MELD_HOME instead of running checks (deletes it too, unless --dry-run).")
+@click.option("--dry-run", is_flag=True, help="With --sweep, list candidates without deleting anything.")
+@click.option("--older-than-days", type=int, default=7, show_default=True,
+              help="With --sweep, age threshold for verdict archives and other aged scratch. Records for closed-unmerged "
+                   "PRs are not detected (assemble.build_board filters them off the board); they age out with the archives.")
 @click.pass_context
-def doctor(ctx: click.Context, probe_status: bool) -> None:
+def doctor(ctx: click.Context, probe_status: bool, do_sweep: bool, dry_run: bool, older_than_days: int) -> None:
     """Verify CLIs, tokens, identities, models, permissions, and the product repo. Exit 1 when a check fails."""
     path = ctx.obj["config_path"] or _guard(lambda: find_config(Path.cwd()))
     cfg = _guard(lambda: load_config(path))
+    if do_sweep:
+        states: dict[int, str] | None = None
+        try:
+            c = load_context(path, run=RUN, adapter_for=ADAPTER_FOR)
+            _, board = build_status(c)
+            states = {n: ("merged" if p.merged else p.state) for n, p in board.pulls.items()}
+        except (BoardError, GitHubError, ConfigError):
+            states = None
+        emit(sweep(meld_home(os.environ), cfg, repo_root=path.parent, pull_states=states, older_than_days=older_than_days, apply=not dry_run), ctx.obj["pretty"])
+        return
     checks = _guard(lambda: run_checks(cfg, path.parent, env=os.environ, gh_factory=lambda token: GitHub(cfg.repo_name, token=token, run=RUN),
                                        registry=ModelRegistry.load(), adapter_for=ADAPTER_FOR, home=meld_home(os.environ), probe_status=probe_status))
     result = summary(checks)

@@ -59,5 +59,8 @@ class ClaudeAdapter:
     def supports_effort(self) -> bool:
         return True
 
+    def version_argv(self) -> list[str]:
+        return [self.binary, "--version"]
+
 
 ADAPTER = ClaudeAdapter()

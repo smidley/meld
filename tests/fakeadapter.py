@@ -32,6 +32,9 @@ class FakeAdapter:
     def supports_effort(self) -> bool:
         return True
 
+    def version_argv(self) -> list[str]:
+        return [sys.executable, "--version"]
+
 
 def no_skills(cli_name: str) -> FakeAdapter:
     return FakeAdapter()

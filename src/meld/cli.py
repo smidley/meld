@@ -17,9 +17,10 @@ from meld.assemble import BoardError
 from meld.audit import audit as do_audit, reopen as do_reopen
 from meld.challenge import challenge as do_challenge
 from meld.chat import inbox as build_inbox, run_chat
-from meld.config import ConfigError
-from meld.context import Context, load_context
+from meld.config import ConfigError, load_config
+from meld.context import Context, find_config, load_context
 from meld.dispatch import DispatchError, collect as do_collect, dispatch as do_dispatch, reap as do_reap, tick as do_tick
+from meld.doctor import run_checks, summary
 from meld.github import GitHub, GitHubError
 from meld.gitops import GitError
 from meld.memory import decide as do_decide, recall as do_recall, remember as do_remember
@@ -31,7 +32,7 @@ from meld.results import ResultsError
 from meld.review import merge as do_merge, review as do_review
 from meld.runners import run_group
 from meld.setup import SetupError, setup as do_setup
-from meld.state import CHANGE_KINDS
+from meld.state import CHANGE_KINDS, meld_home
 from meld.status import build_status
 from meld.tagging import tag as do_tag
 from meld.waiting import wait_for_change
@@ -436,6 +437,21 @@ def setup(ctx: click.Context, repo: str, goal: str, milestone_title: str, target
     emit(_guard(lambda: do_setup(gh, repo=repo, goal=goal, milestone_title=milestone_title, human=human, target_dir=target_dir,
                                  registry=ModelRegistry.load(), allow_public=allow_public, force=force,
                                  protect=not no_protection, pr=pr)), ctx.obj["pretty"])
+
+
+@main.command()
+@click.option("--probe-status", is_flag=True, help="Also verify Commit statuses WRITE by posting a `meld/doctor` status on the default branch head (one per group).")
+@click.pass_context
+def doctor(ctx: click.Context, probe_status: bool) -> None:
+    """Verify CLIs, tokens, identities, models, permissions, and the product repo. Exit 1 when a check fails."""
+    path = ctx.obj["config_path"] or _guard(lambda: find_config(Path.cwd()))
+    cfg = _guard(lambda: load_config(path))
+    checks = _guard(lambda: run_checks(cfg, path.parent, env=os.environ, gh_factory=lambda token: GitHub(cfg.repo_name, token=token, run=RUN),
+                                       registry=ModelRegistry.load(), adapter_for=ADAPTER_FOR, home=meld_home(os.environ), probe_status=probe_status))
+    result = summary(checks)
+    emit(result, ctx.obj["pretty"])
+    if not result["ok"]:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

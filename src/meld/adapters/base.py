@@ -36,6 +36,8 @@ class Adapter(Protocol):
 
     def supports_effort(self) -> bool: ...
 
+    def version_argv(self) -> list[str]: ...
+
 
 def scrub_env(env: Mapping[str, str]) -> dict[str, str]:
     """Environment for a worker: no GitHub credentials, no party identity, a marker that it is a worker."""

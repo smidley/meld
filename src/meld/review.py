@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from meld.actions import BLOCKED, IN_PROGRESS, refuse
+from meld.board import AUTHOR_VERDICT_MARKER
 from meld.config import Party
 from meld.dispatch import IN_REVIEW, DispatchError, _iso, _now, _swap_labels, neutralise_closers
 from meld.github import GitHubError
@@ -201,7 +202,7 @@ def review(ctx, number: int, *, now: datetime | None = None) -> dict:
     comments = [{**c, "body": neutralise_closers(str(c["body"]))} for c in comments]
     body = f"{neutralise_closers(result.get('summary', ''))}\n\nverified-by: {neutralise_closers(result.get('verified_by', ''))}"
     if as_author:
-        body = (f"Verdict: {verdict} — posted as a comment review because GitHub forbids a PR author's account from "
+        body = (f"{AUTHOR_VERDICT_MARKER} {verdict}\n\nVerdict: {verdict} — posted as a comment review because GitHub forbids a PR author's account from "
                 f"{_AUTHOR_VERB[verdict]} its own PR; the `{status_context(group.name)}` commit status carries this verdict.\n\n{body}")
     sha = pr.head_sha
     # Idempotency is keyed on our own record, not on what GitHub shows: `review_id` is written into the verdict file
@@ -259,8 +260,10 @@ def review(ctx, number: int, *, now: datetime | None = None) -> dict:
     if verdict == "request-changes" and pr.issue_number is not None and pr.issue_number in board.issues:
         # A review that already went out as REQUEST_CHANGES is in pr.changes_requested_total(); adding 1 again would
         # double-count it on a retry and could push the issue to blocked one round too early. The author group's
-        # COMMENT review is never in that total, so it is added on the first attempt and on a retry alike.
-        extra = 0 if already_submitted and not as_author else 1
+        # COMMENT review (its body opens with AUTHOR_VERDICT_MARKER) is promoted to a CHANGES_REQUESTED Review by
+        # assemble._pull, so it is already counted in that total too -- no as_author special case is needed here
+        # any more; every path gets the same "count it unless this call is a retry of an already-posted review" rule.
+        extra = 0 if already_submitted else 1
         if pr.changes_requested_total() + extra >= ctx.cfg.pingpong_cap:
             _swap_labels(ctx, pr.issue_number, BLOCKED, (IN_REVIEW, IN_PROGRESS))
             ctx.gh.create_comment(pr.issue_number, f"Meld: review ping-pong cap ({ctx.cfg.pingpong_cap}) reached on PR #{number}; "

@@ -75,12 +75,21 @@ class Issue:
         return CHALLENGED_LABEL in self.labels
 
 
+# The first line of the author group's COMMENT-review body (review.py), so assemble._pull can tell that review apart
+# from an ordinary comment: GitHub refuses an APPROVE/REQUEST_CHANGES from the PR's own author, so that group's verdict
+# goes out as a COMMENT review instead, and this marker is what lets it still count as a real verdict (Review.as_author)
+# rather than reading as unreviewed. Defined here, a leaf both assemble.py and review.py import, rather than in either
+# of them, so neither has to import the other.
+AUTHOR_VERDICT_MARKER = "meld-verdict:"
+
+
 @dataclass(frozen=True)
 class Review:
     author: str
     state: str
     commit_id: str
     submitted_at: str = ""
+    as_author: bool = False   # True when this is the PR author group's verdict, posted as a COMMENT review (see AUTHOR_VERDICT_MARKER)
 
 
 @dataclass(frozen=True)
@@ -212,7 +221,8 @@ def derive_leases(comments: Sequence[ParsedComment]) -> dict[int, Lease]:
             until = parse_lease_until(c.text)
             if until:
                 leases[n] = Lease(n, c.header.party.group, until, c.id)
-        elif (c.header.verb == "EXPIRED" and c.header.party.kind == "pm") or (c.header.verb == "RELEASE" and c.header.party.kind == "human"):
+        elif (c.header.verb in ("EXPIRED", "RELEASED") and c.header.party.kind in ("pm", "group")) or \
+                (c.header.verb == "RELEASE" and c.header.party.kind == "human"):
             leases.pop(n, None)
     return leases
 
@@ -265,9 +275,15 @@ class Board:
 
     def pr_for_issue(self, issue: int) -> PullRequest | None:
         candidates = [p for p in self.pulls.values() if p.issue_number == issue]
-        issue_closed = issue in self.issues and self.issues[issue].state == "closed"
-        # For an open issue the open PR is the live one; once the issue is closed, the PR that merged is the record.
-        candidates.sort(key=(lambda p: (not p.merged, p.state != "open", -p.number)) if issue_closed else (lambda p: (p.state != "open", -p.number)))
+        iss = self.issues.get(issue)
+        issue_closed = iss is not None and iss.state == "closed"
+        assignees = set(iss.assignees) if iss is not None else set()
+        # Open issue: the open PR is live, preferring one authored by a current assignee (a stale PR from an earlier
+        # claimant loses); closed issue: the PR that merged is the record.
+        if issue_closed:
+            candidates.sort(key=lambda p: (not p.merged, p.state != "open", -p.number))
+        else:
+            candidates.sort(key=lambda p: (p.state != "open", p.author not in assignees, -p.number))
         return candidates[0] if candidates else None
 
     def run_for(self, group: str, issue: int) -> RunRecord | None:

@@ -340,3 +340,12 @@ def test_framework_and_command_verbs_are_refused_by_post(tmp_path):
         post(orch, "CHALLENGE", ref="#12", text="doubt")
     with pytest.raises(PostError, match="meld challenge"):
         post(orch, "UPHELD", ref="#12", text="yes")
+
+
+def test_released_is_framework_only(tmp_path):
+    from tests.productfixtures import make_product
+    # make_product's role defaults to "pm"; an orchestrator context needs MELD_ROLE=orchestrator (tests.conftest.env_for),
+    # not role="group" -- "group" is the Party.kind RELEASED is authorized for, not the env value that produces it.
+    fake, ctx, repo, origin = make_product(tmp_path, group="claude", role="orchestrator")
+    with pytest.raises(PostError, match="RELEASED"):
+        post(ctx, "RELEASED", ref="#11", text="x")

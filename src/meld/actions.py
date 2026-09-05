@@ -102,6 +102,12 @@ def release(ctx, number: int, force: bool = False) -> dict:
     for label in (IN_PROGRESS, BLOCKED):
         if label in issue.labels:
             ctx.gh.remove_label(number, label)
+    if not actor.is_human:
+        # Decision 2 (plan 5): a framework-only RELEASED comment so a stale LEASE on this issue reads as void
+        # immediately, rather than waiting for a PM's tick to notice and post EXPIRED (board.derive_leases closes
+        # the lease on either verb from a group or PM party).
+        note = compose(Header(actor.party, "RELEASED", f"#{number}", None), f"Released #{number}; any earlier LEASE on it is void.")
+        ctx.gh.create_comment(board.coordination_issue, note)
     if force:
         note = compose(Header(Party("human"), "RELEASE", f"#{number}", None),
                        f"Force-released #{number} from {', '.join(issue.assignees) or 'nobody'}.")

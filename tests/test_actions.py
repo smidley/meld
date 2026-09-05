@@ -112,11 +112,16 @@ def test_release_by_owner_and_forced_by_human(tmp_path):
     fake.route("POST", R + "issues/12/labels", [{"name": "meld:ready"}])
     fake.route("DELETE", label_ep(12, "meld:in-progress"), [])
     fake.route("DELETE", label_ep(12, "meld:blocked"), [])
+    fake.route("POST", R + "issues/10/comments", {"id": 900})
     assert release(ctx, 12) == {"released": 12, "previous_assignees": ["meld-claude-bot"]}
     mutations = [(c.method, c.endpoint) for c in fake.calls if c.method != "GET"]
+    # plan 5 task 2 (Decision 2): a non-human release now also posts a framework RELEASED comment, so any earlier
+    # LEASE on the issue reads as void immediately rather than waiting for a PM's tick to notice and post EXPIRED.
     assert mutations == [("DELETE", R + "issues/12/assignees"), ("POST", R + "issues/12/labels"),
-                         ("DELETE", label_ep(12, "meld:in-progress"))]
-    assert posted_headers(fake) == []
+                         ("DELETE", label_ep(12, "meld:in-progress")), ("POST", R + "issues/10/comments")]
+    assert posted_headers(fake) == ["[claude:pm] RELEASED #12"]
+    released_body = [c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/10/comments"][-1]
+    assert released_body == "[claude:pm] RELEASED #12\n\nReleased #12; any earlier LEASE on it is void.\n"
 
     fake2, human = make(tmp_path, group=None)
     fake2.route("DELETE", R + "issues/12/assignees", {})

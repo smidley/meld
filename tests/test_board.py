@@ -143,3 +143,20 @@ def test_pr_for_issue_prefers_the_merged_pr_once_the_issue_is_closed():
     assert mk_board(CFG2, issues=[mk_issue(11)], pulls=[open_pr, merged]).pr_for_issue(11).number == 22
     closed = mk_issue(11, state="closed")
     assert mk_board(CFG2, issues=[closed], pulls=[open_pr, merged]).pr_for_issue(11).number == 21
+
+
+def test_released_ends_a_lease_and_a_reclaim_does_not_revive_it():
+    from tests.factories import mk_comment
+    from meld.board import derive_leases
+    comments = [
+        mk_comment(1, "meld-claude-bot", "[claude:pm] LEASE #11\n\nuntil: 2026-09-03T12:00:00Z\nrun: claude/#11\nkind: build", "2026-09-03T10:00:00Z"),
+        mk_comment(2, "meld-claude-bot", "[claude] RELEASED #11\n\nReleased #11.", "2026-09-03T10:30:00Z"),
+    ]
+    assert derive_leases(comments) == {}
+
+
+def test_pr_for_issue_prefers_the_current_assignees_pr_among_open_ones():
+    from tests.factories import mk_board, mk_issue, mk_pr
+    board = mk_board(issues={11: mk_issue(11, "in_progress", assignees=("meld-codex-bot",))},
+                     pulls={30: mk_pr(30, 11, author="meld-claude-bot"), 31: mk_pr(31, 11, author="meld-codex-bot"), 32: mk_pr(32, 11, author="meld-claude-bot")})
+    assert board.pr_for_issue(11).number == 31

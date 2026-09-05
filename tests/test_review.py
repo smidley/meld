@@ -318,7 +318,11 @@ def test_author_group_re_review_after_a_push_fix_is_a_comment_review_whose_statu
     assert out["event"] == "COMMENT" and out["as_author"] is True and out["review_id"] == 601 and out["head"] == new_head and out["verdict"] == "approve"
     posted = calls(fake, "POST", "pulls/20/reviews")[-1]
     assert posted["event"] == "COMMENT" and posted["commit_id"] == new_head            # never an APPROVE: GitHub would 422 the author's account
-    assert posted["body"].startswith("Verdict: approve — posted as a comment review because GitHub forbids a PR author's account from approving its own PR; "
+    # plan 5 task 2: the body now opens with the AUTHOR_VERDICT_MARKER line (assemble._pull keys off it for the
+    # request-changes case; an approve marker is inert there, but the line is written for every as_author verdict).
+    from meld.review import AUTHOR_VERDICT_MARKER
+    assert posted["body"].startswith(f"{AUTHOR_VERDICT_MARKER} approve\n\n"
+                                     "Verdict: approve — posted as a comment review because GitHub forbids a PR author's account from approving its own PR; "
                                      "the `meld/review/codex` commit status carries this verdict.\n\nlooks right")
     status = calls(fake, "POST", f"statuses/{new_head}")[-1]
     assert status["context"] == "meld/review/codex" and status["state"] == "success" and status["description"] == "codex review: approve"
@@ -575,3 +579,23 @@ def test_review_on_a_memory_pr_survives_a_failing_status_post(tmp_path):
     assert second["event"] == "APPROVE"
     assert len(calls(fake, "POST", "pulls/40/reviews")) == 1   # no duplicate review on the retry
     assert len(calls(fake, "POST", "statuses/mem0001")) == 1   # the earlier failed attempt was not retried
+
+
+def test_author_groups_request_changes_counts_toward_the_pingpong_cap():
+    from meld.assemble import _pull
+    from meld.review import AUTHOR_VERDICT_MARKER
+    from tests.fakegh import FakeGh
+    from meld.github import GitHub
+    fake = FakeGh()
+    raw = {"number": 20, "title": "t", "body": "Closes #13", "head": {"ref": "meld/13-x", "sha": "abc123"}, "user": {"login": "meld-claude-bot"}, "state": "open", "labels": []}
+    fake.route("GET", "repos/acme/widgets/pulls/20/reviews", [
+        {"user": {"login": "meld-claude-bot"}, "state": "COMMENTED", "commit_id": "abc123", "submitted_at": "2026-09-03T10:00:00Z",
+         "body": f"{AUTHOR_VERDICT_MARKER} request-changes\n\nVerdict: request-changes — posted as a comment review ..."}])
+    fake.route("GET", "repos/acme/widgets/pulls/20/commits", [{"author": {"login": "meld-codex-bot"}, "committer": {"login": "meld-codex-bot"}}])
+    fake.route("GET", "repos/acme/widgets/commits/abc123/check-runs", {"check_runs": []})
+    fake.route("GET", "repos/acme/widgets/pulls/20/files", [])
+    fake.route("GET", "repos/acme/widgets/commits/abc123/status", {"state": "pending", "statuses": []})
+    gh = GitHub("acme/widgets", token="t", run=fake)
+    pr = _pull(gh, raw)
+    assert pr.reviews[0].state == "CHANGES_REQUESTED" and pr.reviews[0].as_author
+    assert pr.changes_requested_total() == 1

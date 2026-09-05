@@ -264,3 +264,13 @@ def test_memory_pr_detection_and_review_dispatch_refusal():
     b = mk_board(CFG2, pulls=[pr])
     assert prule(b, CODEX_PM, Verb.REVIEW, pr) == "memory PR: run `meld review 40` directly, no worker needed"
     assert prule(b, CODEX_PM, Verb.APPROVE, pr) is None and "made the last commit" in prule(b, CLAUDE_PM, Verb.APPROVE, pr)
+
+
+def test_a_merged_memory_pr_owes_no_audit():
+    body = "Records the agreed decision `dec-1`.\n\nmeld-memory: decision dec-1 " + "a" * 64 + "\nverified-by: x"
+    merged = replace(mk_pr(40, 0, committer="meld-claude-bot", state="closed", merged=True), body=body, head_ref="meld/memory-dec-1")
+    b = mk_board(CFG2, pulls=[merged])
+    assert prule(b, CODEX_PM, Verb.AUDIT, merged) == "memory PR: verified against the board at review, never audited"
+    assert legal_pr_verbs(b, CFG2, CODEX_PM, merged) == []
+    ordinary = mk_pr(19, 9, committer="meld-claude-bot", state="closed", merged=True)
+    assert prule(mk_board(CFG2, pulls=[ordinary]), CODEX_PM, Verb.AUDIT, ordinary) is None

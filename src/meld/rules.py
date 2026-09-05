@@ -364,6 +364,10 @@ def _audit(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | No
         return "only the PM may dispatch an audit"
     if not pr.merged:
         return "audit targets a merged PR"
+    if pr.memory:
+        # Its content was checked against the board (the verified [joint] DECISION, or the item's resolution) when it was
+        # reviewed; there is no worker output to audit, and no auditor could judge it better than that check did.
+        return "memory PR: verified against the board at review, never audited"
     if party_of_login(cfg, pr.author) == actor.group:
         return "cannot audit a PR authored by own group"
     if actor.group in board.audits.get(pr.number, {}):

@@ -232,6 +232,19 @@ def test_status_reports_the_audit_schedule_for_the_calling_group():
     assert render_status(board, CFG2, HUMAN, REG, now)["audit"]["pending"] == []
 
 
+def test_audit_schedule_excludes_merged_memory_prs():
+    body = "Records the agreed decision `dec-1`.\n\nmeld-memory: decision dec-1 " + "a" * 64 + "\nverified-by: x"
+    memory = replace(mk_pr(40, 0, committer="meld-claude-bot", state="closed", merged=True), body=body, head_ref="meld/memory-dec-1",
+                     merged_at="2026-09-03T06:00:00Z")
+    ordinary = replace(mk_pr(19, 9, committer="meld-claude-bot", state="closed", merged=True), merged_at="2026-09-03T06:00:00Z")
+    now = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
+    both = render_status(mk_board(CFG2, pulls=[memory, ordinary]), CFG2, CODEX_PM, REG, now)
+    assert both["audit"] == {"pending": [19], "merges_pending": 1, "oldest_pending_hours": 6.0, "due": True}
+    assert {p["number"]: p["legal"] for p in both["pulls"]} == {19: ["audit"], 40: []}
+    only_memory = render_status(mk_board(CFG2, pulls=[memory]), CFG2, CODEX_PM, REG, now)["audit"]
+    assert only_memory == {"pending": [], "merges_pending": 0, "oldest_pending_hours": None, "due": False}
+
+
 def test_status_pull_fields_and_challenge_details():
     cfg = replace(CFG2, security_paths=("src/auth/*",))
     pr = replace(mk_pr(20, 13), files=("src/auth/login.py",))

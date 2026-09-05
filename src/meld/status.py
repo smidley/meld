@@ -85,12 +85,14 @@ def render_status(board: Board, cfg: Config, actor: Actor, models: ModelRegistry
 
 
 def audit_summary(board: Board, cfg: Config, actor: Actor, now: datetime) -> dict:
-    """What the calling group owes the audit rule (spec 14): merged PRs it did not author and has not yet audited,
-    and whether the batch is due (audit.batch_merges pending, or the oldest pending merge older than audit.batch_hours)."""
+    """What the calling group owes the audit rule (spec 14): merged PRs it did not author and has not yet audited -- never a
+    memory PR, whose content was verified against the board at review (rules._audit refuses those too) -- and whether the
+    batch is due (audit.batch_merges pending, or the oldest pending merge older than audit.batch_hours)."""
     if actor.group is None:
         return {"pending": [], "merges_pending": 0, "oldest_pending_hours": None, "due": False}
     pending = sorted((p for p in board.pulls.values()
-                      if p.merged and party_of_login(cfg, p.author) != actor.group and actor.group not in board.audits.get(p.number, {})),
+                      if p.merged and not p.memory and party_of_login(cfg, p.author) != actor.group
+                      and actor.group not in board.audits.get(p.number, {})),
                      key=lambda p: p.number)
     ages = [_age_minutes(p.merged_at, now) for p in pending if p.merged_at]
     hours = round(max(ages) / 60, 1) if ages else None

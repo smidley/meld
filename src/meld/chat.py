@@ -120,20 +120,26 @@ def run_chat(ctx, lines: Iterable[str], out: Callable[[str], None], *, verbose: 
                 do_post("RESUME", None, "resume requested from meld chat")
             elif line.startswith("/directive "):
                 do_post("DIRECTIVE", _next_id(board, _DIR_RE, "dir"), line[len("/directive "):])
-            elif line.startswith(("/provided ", "/resolved ", "/revert ")):
+            elif line.split(" ", 1)[0] in ("/provided", "/resolved", "/revert"):
                 verb, _, rest = line[1:].partition(" ")
                 ref, _, text = rest.partition(" ")
                 if not ref.startswith("#"):
                     raise PostError(f"/{verb} needs an issue or PR ref like #13")
                 do_post(verb.upper(), ref, text or f"{verb} from meld chat")
-            elif line.startswith("/challenge "):
-                _, action, ref, *rest = line.split(" ", 3)
-                resp = challenge(ctx, action, ref, rest[0] if rest else "")
+            elif line.split(" ", 1)[0] == "/challenge":
+                parts = line.split(" ", 3)
+                if len(parts) < 3:
+                    raise PostError("/challenge needs ACTION REF TEXT")
+                action, ref = parts[1], parts[2]
+                resp = challenge(ctx, action, ref, parts[3] if len(parts) > 3 else "")
                 posted.append(f"[human] {resp['verb']} {ref}")
                 out(f"[human] {resp['verb']} {ref}")
                 _, board = build_status(ctx)
-            elif line.startswith("/ack "):
-                out(json.dumps(plan_ack(ctx, line[len("/ack "):].strip())))
+            elif line.split(" ", 1)[0] == "/ack":
+                ref = line[len("/ack"):].strip()
+                if not ref:
+                    raise PostError("/ack needs a ref like plan-add-1")
+                out(json.dumps(plan_ack(ctx, ref)))
                 _, board = build_status(ctx)
             elif line == "/approve":
                 out(json.dumps(plan_approve(ctx)))
@@ -142,7 +148,7 @@ def run_chat(ctx, lines: Iterable[str], out: Callable[[str], None], *, verbose: 
                 raise PostError(f"unknown command {line.split()[0]}; try /inbox /wait /halt /resume /directive /provided /resolved /revert /ack /approve /challenge /quit")
             else:
                 do_post("ASK", next_ask_id(board), line)
-        except (PostError, Refused, DispatchError) as e:
+        except (PostError, Refused, DispatchError, ValueError) as e:
             errors.append(str(e))
             out(f"error: {e}")
     return {"posted": posted, "errors": errors}

@@ -60,6 +60,17 @@ def test_run_chat_reports_errors_and_refuses_non_humans(tmp_path):
         run_chat(pm, ["hello"], lambda s: None)
 
 
+def test_run_chat_reports_malformed_slash_commands_without_raising(tmp_path):
+    fake, human, repo, origin = make_product(tmp_path, group=None)
+    lines = ["/challenge open", "/provided", "/revert abc", "/foo", "/quit"]
+    result = run_chat(human, lines, lambda s: None)
+    assert len(result["errors"]) == 4
+    for cmd, err in zip(("/challenge", "/provided", "/revert", "/foo"), result["errors"]):
+        assert cmd in err
+    assert result["posted"] == []
+    assert not any(c.method == "POST" and c.endpoint == R + "issues/10/comments" for c in fake.calls)
+
+
 def test_cli_inbox_and_chat_once(tmp_path, monkeypatch):
     fake, human, repo, origin = make_product(tmp_path, group=None)
     monkeypatch.setattr(cli, "RUN", fake)

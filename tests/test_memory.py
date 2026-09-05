@@ -58,6 +58,22 @@ def test_decide_opens_a_memory_pr_and_requests_review(tmp_path):
     assert not (tmp_path / "home" / "worktrees" / "claude" / "memory-dec-1").exists()   # scratch worktree removed
 
 
+def test_decide_commit_is_never_signed_even_when_the_host_gitconfig_demands_it(tmp_path, monkeypatch):
+    # The autouse _hermetic_git fixture already points GIT_CONFIG_GLOBAL at /dev/null; this monkeypatch
+    # overrides it for this test only, pointing at a config that would make an unguarded `git commit`
+    # fail or hang trying to sign with a key that doesn't exist.
+    poisoned = tmp_path / "host.gitconfig"
+    poisoned.write_text("[commit]\n\tgpgsign = true\n[user]\n\tsigningkey = DEADBEEF\n")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(poisoned))
+    fake, ctx, repo, origin = make_product(tmp_path, role="orchestrator")
+    with_thread(fake, DECISION_THREAD)
+    fake.route("POST", R + "pulls", {"number": 40, "html_url": "https://github.com/acme/widgets/pull/40"})
+    out = decide(ctx, "dec-1", now=NOW)
+    assert out["decided"] == "dec-1"
+    assert sh(["git", "log", "-1", "--format=%an", "origin/meld/memory-dec-1"], repo) == "meld-claude-bot"
+    assert sh(["git", "log", "-1", "--format=%G?", "origin/meld/memory-dec-1"], repo) == "N"
+
+
 def test_decide_refusals(tmp_path):
     fake, ctx, repo, origin = make_product(tmp_path, role="orchestrator")
     with pytest.raises(Refused, match="no verified \\[joint\\] DECISION"):

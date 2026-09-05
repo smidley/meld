@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -72,9 +73,15 @@ def _open_memory_pr(ctx, board, group, *, branch: str, path: str, text: str, mod
     else:
         target.write_text(text)
     name, email = git_identity(ctx, group)
-    env = {"GIT_AUTHOR_NAME": name, "GIT_AUTHOR_EMAIL": email, "GIT_COMMITTER_NAME": name, "GIT_COMMITTER_EMAIL": email}
+    # Overlay the bot identity onto the inherited environment (never replace it outright): this worktree's
+    # commit must keep PATH/HOME and the process's git hermeticity guards (GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM)
+    # so it behaves the same whether the caller is a test fixture or a real PM process. `-c commit.gpgsign=false`
+    # additionally overrides this one commit regardless of what a human's own global gitconfig says, so a PM's
+    # memory commit can never hang or fail on a machine where `commit.gpgsign = true` is set but no key is loaded.
+    env = {**os.environ, "GIT_AUTHOR_NAME": name, "GIT_AUTHOR_EMAIL": email, "GIT_COMMITTER_NAME": name, "GIT_COMMITTER_EMAIL": email}
     git(["add", path], wt)
-    git(["commit", "-q", "-m", title.lower().replace("decision ", "docs: record decision ").replace("lesson from ", "docs: record lesson from ")], wt, env=env)
+    git(["-c", "commit.gpgsign=false", "commit", "-q", "-m",
+        title.lower().replace("decision ", "docs: record decision ").replace("lesson from ", "docs: record lesson from ")], wt, env=env)
     push_branch(wt, branch, ctx.gh.token)
     pr = ctx.gh.create_pull(title, branch, ctx.cfg.default_branch, body)
     remove_worktree(ctx.repo_root, wt)

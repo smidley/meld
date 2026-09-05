@@ -10,8 +10,8 @@ from meld.dispatch import IN_REVIEW, DispatchError, _iso, _now, _swap_labels, ne
 from meld.github import GitHubError
 from meld.gitops import commits_ahead, head_sha, push_branch
 from meld.grammar import Header, agreement_for, compose
-from meld.memory import LESSONS_FILE, content_hash
-from meld.results import cap_body, format_findings, load_result, mark_submitted, update_result
+from meld.memory import DECISIONS_DIR, LESSONS_FILE, content_hash
+from meld.results import cap_body, format_findings, load_result, mark_submitted, store_result, update_result
 from meld.rules import VERB_FOR, Refusal, Verb, approving_parties, author_party, memory_review_rule, pr_refusal, review_verdict_rule, status_context
 from meld.status import build_status
 
@@ -45,10 +45,14 @@ def verify_memory_pr(ctx, board, pr) -> tuple[bool, str]:
     paths = list(pr.files)
     if len(paths) != 1:
         return False, f"a memory PR changes exactly one file, this one changes {len(paths)}"
+    if ".." in paths[0] or paths[0].startswith("/"):
+        return False, f"{paths[0]} is not a valid memory-PR path"
     text = ctx.gh.get_contents(paths[0], pr.head_sha)
     if text is None:
         return False, f"{paths[0]} is missing at {pr.head_sha[:7]}"
     if kind == "decision":
+        if not (paths[0].startswith(f"{DECISIONS_DIR}/") and paths[0].endswith(".md") and "/" not in paths[0][len(DECISIONS_DIR) + 1:]):
+            return False, f"a decision PR changes one file under {DECISIONS_DIR}, not {paths[0]}"
         if content_hash(text) != digest:
             return False, "file hash does not match the meld-memory marker"
         agreement = agreement_for(board.comments, ref, ctx.cfg)
@@ -86,6 +90,15 @@ def review(ctx, number: int, *, now: datetime | None = None) -> dict:
     if pr is None:
         refuse(ctx, board, Refusal(Verb.REVIEW, target, "PR is not on a meld/ branch of the active repo"))
     if pr.memory:
+        # A memory PR has no dispatched worker and so no "collect"; the ordinary verdict path's idempotency
+        # (load_result/update_result/mark_submitted around a worker's verdict file) doesn't apply here. Instead,
+        # a completed APPROVE is cached as its own settled record (see the `else` branch below) so a repeat call
+        # returns it without a second GitHub post. A REQUEST_CHANGES is deliberately never cached -- it is a
+        # provisional verdict, and re-running `meld review N` after the PR changes (a fixed hash, a newly landed
+        # agreement) must re-verify against the board as it now stands, not replay a stale rejection.
+        cached = load_result(ctx.store.home, group.name, "review", number)
+        if cached is not None and cached.get("review_id") is not None:
+            return cached
         rule = memory_review_rule(board, ctx.cfg, actor, pr)
         if rule:
             refuse(ctx, board, Refusal(Verb.APPROVE, target, rule))
@@ -96,7 +109,13 @@ def review(ctx, number: int, *, now: datetime | None = None) -> dict:
         ctx.gh.create_status(pr.head_sha, "success" if ok else "failure", status_context(group.name), f"{group.name} memory check: {'ok' if ok else reason}"[:140], resp.get("html_url"))
         out = {"reviewed": number, "memory": pr.memory[0], "event": event, "review_id": resp.get("id")}
         if not ok:
+            # REQUEST_CHANGES is provisional, not cached: the whole point is that fixing the PR and re-running
+            # `meld review N` re-verifies against the board as it is now (e.g. a corrected hash or a newly landed
+            # agreement) rather than replaying a stale rejection. Only a completed APPROVE is a settled, one-time
+            # outcome worth remembering, so only that is written to the results store below.
             out["reason"] = reason
+        else:
+            store_result(ctx.store.home, group.name, "review", number, out, _iso(_now(now)))
         return out
     stored = load_result(ctx.store.home, group.name, "review", number)
     if stored is None:

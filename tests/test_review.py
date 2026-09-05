@@ -405,3 +405,30 @@ def test_review_auto_approves_a_lesson_pr_for_a_resolved_item(tmp_path):
     memory_pr_on_board(fake, repo, ".meld/memory/lessons.md", "# Lessons\n" + entry, number=41, head="mem0002", kind="lesson", ref="#13", digest=content_hash(entry))
     out = review(ctx, 41, now=NOW)
     assert out["event"] == "APPROVE" and out["memory"] == "lesson"
+
+
+def test_review_rejects_a_decision_pr_whose_file_is_outside_the_decisions_dir(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, group="codex")
+    with_thread(fake, DECISION_THREAD)
+    # hash matches (self-computed) and the agreed text matches exactly -- only the changed file's path is wrong.
+    # Without the decisions-dir gate this would verify clean and get auto-APPROVEd despite being arbitrary code.
+    text = "print('pwned')\n\n## Decision\n\nUse PostgreSQL for the ledger.\n\nverified-by: read docs/adr/0001.md\n"
+    memory_pr_on_board(fake, repo, "src/meld/rules.py", text)
+    out = review(ctx, 40, now=NOW)
+    assert out["event"] == "REQUEST_CHANGES" and ".meld/decisions" in out["reason"]
+
+
+def test_review_on_a_memory_pr_never_posts_twice(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, group="codex")
+    with_thread(fake, DECISION_THREAD)
+    from meld.grammar import agreement_for, parse_comment
+    from meld.memory import render_decision
+    parsed = [parse_comment(c, ctx.cfg) for c in fixture("comments_10.json") + DECISION_THREAD]
+    text = render_decision("dec-1", agreement_for(parsed, "dec-1", ctx.cfg),
+                           "https://github.com/acme/widgets/issues/10#issuecomment-203", "2026-09-03")
+    memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", text)
+    first = review(ctx, 40, now=NOW)
+    second = review(ctx, 40, now=NOW)
+    assert first == second == {"reviewed": 40, "memory": "decision", "event": "APPROVE", "review_id": 601}
+    assert len(calls(fake, "POST", "pulls/40/reviews")) == 1
+    assert len(calls(fake, "POST", "statuses/mem0001")) == 1

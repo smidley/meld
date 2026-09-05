@@ -244,7 +244,8 @@ class GitHub:
 
     def get_contents(self, path: str, ref: str) -> str | None:
         """The decoded text of a file at `ref`, or None when GitHub has no such file."""
-        status, _, resp = self._call("GET", self._r(f"contents/{path}") + "?" + urlencode({"ref": ref}))
+        quoted = "/".join(quote(seg, safe="") for seg in path.split("/"))
+        status, _, resp = self._call("GET", self._r(f"contents/{quoted}") + "?" + urlencode({"ref": ref}))
         if status == 404:
             return None
         if status >= 400:
@@ -260,8 +261,9 @@ class GitHub:
         return self.get_paginated(self._r("labels"))
 
     def create_label(self, name: str, color: str, description: str = "") -> dict:
-        return self.post(self._r("labels"), {"name": name, "color": color, "description": description})
+        return self.post(self._r("labels"), {"name": name, "color": color.lstrip("#"), "description": description})
 
     def search_issues(self, query: str) -> list[dict]:
         resp = self.get("search/issues", {"q": query}, use_cache=False)
-        return list((resp or {}).get("items", []))
+        items = resp.get("items", []) if isinstance(resp, dict) else []
+        return list(items)

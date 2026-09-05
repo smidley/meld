@@ -290,3 +290,29 @@ def test_issue_milestone_contents_events_labels_and_search_endpoints(board1_gh):
     assert contents_call.query.get("ref") == "abc123"
     search_call = [c for c in fake.calls if c.endpoint == "search/issues"][0]
     assert search_call.query.get("q") == "repo:acme/widgets label:meld:coordination oauth"
+
+
+def test_get_contents_quotes_path_segments(board1_gh):
+    fake, gh = board1_gh
+    fake.route("GET", "repos/acme/widgets/contents/.meld/decisions/0001-fix-%2342.md",
+               {"content": base64.b64encode("# Fix\n".encode()).decode(), "encoding": "base64"})
+    assert gh.get_contents(".meld/decisions/0001-fix-#42.md", "abc123") == "# Fix\n"
+    call = [c for c in fake.calls if c.endpoint == "repos/acme/widgets/contents/.meld/decisions/0001-fix-%2342.md"][0]
+    assert call.query.get("ref") == "abc123"
+
+
+def test_search_issues_guards_payload(board1_gh):
+    fake, gh = board1_gh
+    fake.route("GET", "search/issues", "not a dict")
+    assert gh.search_issues("query") == []
+    fake.route("GET", "search/issues", None)
+    assert gh.search_issues("query") == []
+
+
+def test_create_label_normalises_color(board1_gh):
+    fake, gh = board1_gh
+    fake.route("POST", "repos/acme/widgets/labels", {"name": "meld:planned", "color": "cccccc"})
+    result = gh.create_label("meld:planned", "#cccccc")
+    assert result["color"] == "cccccc"
+    body = [c for c in fake.calls if c.method == "POST" and "labels" in c.endpoint][-1].body
+    assert body == {"name": "meld:planned", "color": "cccccc", "description": ""}

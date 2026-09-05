@@ -16,7 +16,7 @@ from meld.atomic import write_atomic
 from meld.board import CHALLENGED_LABEL, COORDINATION_LABEL, NUDGED_LABEL, PLAN_APPROVED_LABEL, STATUS_LABELS
 from meld.brief import DEFAULT_STANDARDS
 from meld.github import GitHub, GitHubError
-from meld.gitops import git
+from meld.gitops import git, is_dirty
 from meld.models import ModelRegistry, ModelSpec
 
 
@@ -189,17 +189,19 @@ def repo_files(target_dir: Path, human: str) -> list[str]:
     return written
 
 
-_PATHS_RE = re.compile(r"^(\s*)paths:\s*$", re.MULTILINE)
+_PATHS_RE = re.compile(r"^(\s*)(paths|paths-ignore):\s*$", re.MULTILINE)
 
 
 def ci_paths_warnings(target_dir: Path) -> list[str]:
-    """Workflows whose `paths:` filter never matches `.meld/**` cannot run on a memory PR (which touches only .meld/); if such a
-    check is ever made required, decision and lesson PRs become unmergeable (spec 15)."""
+    """Workflows that can never run on a memory PR (which touches only .meld/): a `paths:` allow-list that never
+    mentions .meld/**, or a `paths-ignore:` deny-list that does. If such a check is ever made required, decision and
+    lesson PRs become unmergeable (spec 15)."""
     out: list[str] = []
     for wf in sorted((target_dir / ".github" / "workflows").glob("*.y*ml")):
         text = wf.read_text()
         for m in _PATHS_RE.finditer(text):
             indent = len(m.group(1))
+            key = m.group(2)
             items: list[str] = []
             for line in text[m.end():].splitlines()[1:]:
                 stripped = line.strip()
@@ -209,9 +211,16 @@ def ci_paths_warnings(target_dir: Path) -> list[str]:
                     break
                 if stripped.startswith("- "):
                     items.append(stripped[2:].strip("'\""))
-            if items and not any(item == "**" or item.startswith(".meld") for item in items):
+            if not items:
+                continue
+            mentions_meld = any(item == "**" or item.startswith(".meld") for item in items)
+            if key == "paths" and not mentions_meld:
                 out.append(f".github/workflows/{wf.name}: its `paths:` filter excludes .meld/**, so memory PRs trigger no run from it; "
                            "do not make its checks required, or add '.meld/**' to the filter")
+                break
+            if key == "paths-ignore" and mentions_meld:
+                out.append(f".github/workflows/{wf.name}: its `paths-ignore:` filter excludes .meld/**, so memory PRs trigger no run from it; "
+                           "do not make its checks required, or remove '.meld/**' from the filter")
                 break
     return out
 
@@ -229,13 +238,27 @@ def protect_branch(gh: GitHub, branch: str) -> dict:
 
 
 def open_setup_pr(gh: GitHub, target_dir: Path, default_branch: str, files: list[str], run=subprocess.run) -> dict:
-    """Commit `files` on branch meld/setup with the human's own git identity and credentials, push, open the PR."""
+    """Commit `files` on branch meld/setup with the human's own git identity and credentials, push, open the PR.
+
+    Re-runnable: meld/setup is meld's own branch, regenerated from the same files each run. A rerun with nothing
+    new to commit (files unchanged since the last run) skips the commit -- `git commit` would otherwise fail with
+    "nothing to commit" -- and the push force-updates the branch, since a regenerated commit does not share history
+    with whatever it replaces. If GitHub already has an open PR for the branch, create_pull's 422 is caught and
+    that PR is looked up and reused instead of erroring."""
     branch = "meld/setup"
     git(["checkout", "-q", "-B", branch], target_dir, run)
     git(["add", "--", *files], target_dir, run)
-    git(["-c", "commit.gpgsign=false", "commit", "-q", "-m", "chore: meld setup (labels, coordination issue, starter config)"], target_dir, run)
-    git(["push", "-q", "--set-upstream", "origin", f"HEAD:refs/heads/{branch}"], target_dir, run)
+    if is_dirty(target_dir, run):
+        git(["-c", "commit.gpgsign=false", "commit", "-q", "-m", "chore: meld setup (labels, coordination issue, starter config)"], target_dir, run)
+    git(["push", "-q", "--force", "--set-upstream", "origin", f"HEAD:refs/heads/{branch}"], target_dir, run)
     body = "Files written by `meld setup`:\n\n" + "\n".join(f"- `{f}`" for f in files) + \
            "\n\nReview the starter `.meld.toml` (bot names, token env vars, models) before merging; `meld doctor` verifies it."
-    pr = gh.create_pull("chore: meld setup", branch, default_branch, body)
+    try:
+        pr = gh.create_pull("chore: meld setup", branch, default_branch, body)
+    except GitHubError as e:
+        if e.status != 422:
+            raise
+        existing = gh.get(f"repos/{gh.repo}/pulls", {"head": f"{gh.repo.split('/')[0]}:{branch}", "state": "open"}, use_cache=False)
+        found = existing[0]
+        return {"pr": int(found["number"]), "url": str(found.get("html_url", "")), "branch": branch, "existing": True}
     return {"pr": int(pr["number"]), "url": str(pr.get("html_url", "")), "branch": branch}

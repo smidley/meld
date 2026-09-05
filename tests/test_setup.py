@@ -222,3 +222,30 @@ def test_open_setup_pr_commits_pushes_and_opens(tmp_path):
     assert sh(["git", "branch", "--show-current"], repo) == "meld/setup"
     body = [c.body for c in fake.calls if c.method == "POST"][0]
     assert body["head"] == "meld/setup" and body["base"] == "main" and ".meld.toml" in body["body"]
+
+
+def test_ci_paths_warning_fires_when_workflow_uses_paths_ignore(tmp_path):
+    from meld.setup import ci_paths_warnings
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    (wf / "ci.yml").write_text("on:\n  pull_request:\n    paths-ignore:\n      - '.meld/**'\njobs: {}\n")
+    warnings = ci_paths_warnings(tmp_path)
+    assert len(warnings) == 1 and "ci.yml" in warnings[0] and "paths-ignore" in warnings[0]
+    (wf / "ci.yml").write_text("on:\n  pull_request:\n    paths-ignore:\n      - 'docs/**'\njobs: {}\n")
+    assert ci_paths_warnings(tmp_path) == []
+
+
+def test_open_setup_pr_is_rerunnable_and_reuses_an_existing_open_pr(tmp_path):
+    from meld.setup import open_setup_pr, repo_files
+    from tests.gitfixtures import make_origin_and_clone
+    origin, repo = make_origin_and_clone(tmp_path)
+    (repo / ".meld.toml").write_text('[repo]\nname = "acme/widgets"\n')
+    files = repo_files(repo, "empowerScott") + [".meld.toml"]
+    fake = FakeGh()
+    fake.route("POST", R + "pulls", {"message": "A pull request already exists for acme:meld/setup."}, status=422)
+    fake.route("GET", R + "pulls", [{"number": 7, "html_url": "u7"}])
+    gh = gh_for(fake)
+    first = open_setup_pr(gh, repo, "main", files)
+    assert first == {"pr": 7, "url": "u7", "branch": "meld/setup", "existing": True}
+    second = open_setup_pr(gh, repo, "main", files)  # unchanged files: nothing new to commit, but the push must not fail
+    assert second == {"pr": 7, "url": "u7", "branch": "meld/setup", "existing": True}

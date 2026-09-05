@@ -198,6 +198,12 @@ class GitHub:
     def create_comment(self, number: int, body: str) -> dict:
         return self.post(self._r(f"issues/{number}/comments"), {"body": body})
 
+    def get_repo(self) -> dict:
+        return self.get(f"repos/{self.repo}", use_cache=False)
+
+    def create_milestone(self, title: str, description: str = "") -> dict:
+        return self.post(self._r("milestones"), {"title": title, "description": description})
+
     def get_milestone(self, number: int) -> dict:
         return self.get(self._r(f"milestones/{number}"))
 

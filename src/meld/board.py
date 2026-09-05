@@ -21,6 +21,7 @@ _STATUS_PRECEDENCE = ("needs_human", "blocked", "in_review", "in_progress", "rea
 CHALLENGED_LABEL = "meld:challenged"
 COORDINATION_LABEL = "meld:coordination"
 PLAN_APPROVED_LABEL = "meld:plan-approved"
+NUDGED_LABEL = "meld:nudged"
 # Branches `meld decide`/`meld remember` push to. collect's build branches are `meld/<issue>-<slug>` (gitops.branch_name), so
 # the two namespaces never overlap; memory.py imports this rather than redefining it (board.py is the leaf both can reach).
 MEMORY_BRANCH_PREFIX = "meld/memory-"

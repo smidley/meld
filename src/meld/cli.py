@@ -20,15 +20,17 @@ from meld.chat import inbox as build_inbox, run_chat
 from meld.config import ConfigError
 from meld.context import Context, load_context
 from meld.dispatch import DispatchError, collect as do_collect, dispatch as do_dispatch, reap as do_reap, tick as do_tick
-from meld.github import GitHubError
+from meld.github import GitHub, GitHubError
 from meld.gitops import GitError
 from meld.memory import decide as do_decide, recall as do_recall, remember as do_remember
+from meld.models import ModelRegistry
 from meld.notifier import notify as do_notify
 from meld.plan import plan_ack as do_plan_ack, plan_approve as do_plan_approve, plan_issues as do_plan_issues
 from meld.posting import PostError, post as do_post
 from meld.results import ResultsError
 from meld.review import merge as do_merge, review as do_review
 from meld.runners import run_group
+from meld.setup import SetupError, setup as do_setup
 from meld.state import CHANGE_KINDS
 from meld.status import build_status
 from meld.tagging import tag as do_tag
@@ -60,7 +62,7 @@ def _load(ctx: click.Context) -> Context:
 def _guard(fn):
     try:
         return fn()
-    except (BoardError, GitHubError, ConfigError, DispatchError, GitError, UnknownAdapter, ResultsError) as e:
+    except (BoardError, GitHubError, ConfigError, DispatchError, GitError, UnknownAdapter, ResultsError, SetupError) as e:
         raise click.ClickException(str(e)) from e
 
 
@@ -412,6 +414,22 @@ def run(ctx: click.Context, group: str, once: bool) -> None:
     except ConfigError as e:
         raise click.ClickException(str(e)) from e
     emit(_guard(lambda: run_group(c, once=once, base_env=env)), ctx.obj["pretty"])
+
+
+@main.command()
+@click.argument("repo")
+@click.option("--goal", required=True, help="One paragraph: what the product is for. Goes into the coordination issue.")
+@click.option("--milestone", "milestone_title", default="M1", show_default=True)
+@click.option("--dir", "target_dir", type=click.Path(path_type=Path), default=Path("."), show_default=True, help="Where to write .meld.toml (the product clone).")
+@click.option("--allow-public", is_flag=True, help="Proceed on a public repository despite the injection risk.")
+@click.option("--force", is_flag=True, help="Overwrite an existing .meld.toml.")
+@click.pass_context
+def setup(ctx: click.Context, repo: str, goal: str, milestone_title: str, target_dir: Path, allow_public: bool, force: bool) -> None:
+    """Bootstrap a product repo: labels, milestone, coordination issue, and a starter .meld.toml (runs as you, via gh)."""
+    gh = GitHub(repo, token=None, run=RUN)
+    human = _guard(gh.viewer_login)
+    emit(_guard(lambda: do_setup(gh, repo=repo, goal=goal, milestone_title=milestone_title, human=human, target_dir=target_dir,
+                                 registry=ModelRegistry.load(), allow_public=allow_public, force=force)), ctx.obj["pretty"])
 
 
 if __name__ == "__main__":

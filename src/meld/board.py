@@ -72,6 +72,10 @@ class Issue:
         return self.label_value("size:")
 
     @property
+    def skills(self) -> tuple[str, ...]:
+        return tuple(sorted(label[len("skill:"):] for label in self.labels if label.startswith("skill:")))
+
+    @property
     def challenged(self) -> bool:
         return CHALLENGED_LABEL in self.labels
 

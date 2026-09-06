@@ -14,7 +14,7 @@ from typing import Mapping
 from meld.actions import BLOCKED, IN_PROGRESS, refuse, release
 from meld.adapters import Adapter, LaunchSpec, scrub_env
 from meld.board import Board, RunRecord
-from meld.brief import BRIEF_FILE, RESULT_FILE, ResultError, WorkerResult, read_result, recall_snippets, render_brief
+from meld.brief import BRIEF_FILE, RESULT_FILE, ResultError, WorkerResult, read_result, recall_snippets, render_brief, select_skills
 from meld.config import GroupConfig, Party
 from meld.gitops import (
     branch_name,
@@ -268,7 +268,8 @@ def _dispatch_build(ctx, board: Board, actor: Actor, number: int, adapter: Adapt
     exclude_paths(wt)
     brief = render_brief(role=worker, kind="build", group=group.name, model=issue.model or "", effort=issue.effort or "", issue=issue,
                          pr=None, plan_text=board.plan_text, repo_root=ctx.repo_root, worktree=wt, base_branch=ctx.cfg.default_branch,
-                         skills=[w for w in ctx.roster_entries() if w.source == "skill"],
+                         skills=select_skills(f"{issue.title}\n{issue.body}",
+                                              [w for w in ctx.roster_entries() if w.source in ("skill", "product-skill")], pinned=issue.skills),
                          recall=recall_snippets(ctx.repo_root, f"{issue.title}\n{issue.body}"))
     timeout = ctx.cfg.timeout_seconds(issue.size or "M")
     deadline = when + timedelta(seconds=timeout)
@@ -320,7 +321,8 @@ def _dispatch_pr(ctx, board: Board, actor: Actor, number: int, kind: str, adapte
     concern = review_concern(ctx.cfg, pr, group.name) if kind == "review" and role_name == "reviewer" else None
     brief = render_brief(role=worker, kind=kind, group=group.name, model=model, effort=effort, issue=None, pr=pr,
                          plan_text=board.plan_text, repo_root=ctx.repo_root, worktree=wt, base_branch=ctx.cfg.default_branch, concern=concern,
-                         skills=[w for w in ctx.roster_entries() if w.source == "skill"],
+                         skills=select_skills(f"{pr.title}\n{pr.body}",
+                                              [w for w in ctx.roster_entries() if w.source in ("skill", "product-skill")]),
                          recall=recall_snippets(ctx.repo_root, pr.title))
     timeout = ctx.cfg.timeout_seconds("M")
     deadline = when + timedelta(seconds=timeout)

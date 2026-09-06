@@ -103,6 +103,24 @@ def _terms(query: str) -> list[str]:
     return [t for t in re.split(r"\W+", query.lower()) if len(t) > 2]
 
 
+def select_skills(text: str, skills: Sequence[WorkerType], pinned: Sequence[str] = (), limit: int = MAX_SKILLS) -> list[WorkerType]:
+    """Skills worth naming in a brief: the orchestrator's pins first (skill:<name> labels), then every skill whose name or
+    description shares a term with the task text, by score. Unmatched skills stay out: a 30-item list nobody reads is noise."""
+    by_name = {s.name: s for s in skills}
+    chosen = [by_name[n] for n in pinned if n in by_name]
+    terms = set(_terms(text))
+    scored = []
+    for s in skills:
+        if s.name in pinned:
+            continue
+        hay = set(_terms(f"{s.name.replace('-', ' ')} {s.description}"))
+        score = len(terms & hay)
+        if score:
+            scored.append((-score, s.name, s))
+    chosen += [s for _, _, s in sorted(scored)]
+    return chosen[:limit]
+
+
 def _local_hits(repo_root: Path, terms: list[str]) -> list[dict]:
     """Decisions and lessons whose text contains any of `terms`, each scored by how many terms matched.
     Lives here (not in memory.py, which owns the DECISIONS_DIR/LESSONS_FILE constants) so that dispatch.py

@@ -46,7 +46,7 @@ def make_untagged(tmp_path, group="claude", role="orchestrator"):
 def test_tag_replaces_labels_and_validates(tmp_path):
     fake, ctx = make(tmp_path)
     out = tag(ctx, 11, model="claude-opus-5", effort="high", size="M")
-    assert out == {"tagged": 11, "labels": {"worker": "backend", "model": "claude-opus-5", "effort": "high", "size": "M"}}
+    assert out == {"tagged": 11, "labels": {"worker": "backend", "model": "claude-opus-5", "effort": "high", "size": "M", "skills": []}}
     calls = label_calls(fake)
     assert ("POST", "", {"labels": ["model:claude-opus-5", "effort:high", "size:M"]}) in calls
     assert ("DELETE", "/model%3Aclaude-sonnet-5", None) in calls and ("DELETE", "/effort%3Amedium", None) in calls and ("DELETE", "/size%3AS", None) in calls
@@ -92,8 +92,27 @@ def test_tag_refuses_an_effort_it_cannot_validate_without_a_model(tmp_path):
     with pytest.raises(Refused, match="without a model"):
         tag(ctx, 11, effort="high")
     out = tag(ctx, 11, worker="backend", model="claude-opus-5", effort="high", size="S")
-    assert out == {"tagged": 11, "labels": {"worker": "backend", "model": "claude-opus-5", "effort": "high", "size": "S"}}
+    assert out == {"tagged": 11, "labels": {"worker": "backend", "model": "claude-opus-5", "effort": "high", "size": "S", "skills": []}}
     assert label_calls(fake) == [("POST", "", {"labels": ["worker:backend", "model:claude-opus-5", "effort:high", "size:S"]})]
     with pytest.raises(Refused, match="not valid"):
         tag(ctx, 11, model="claude-opus-5", effort="turbo")
+
+
+def test_tag_skill_adds_labels_from_the_roster(tmp_path):
+    from meld.tagging import tag
+    from tests.productfixtures import make_product
+    from tests.fakeadapter import FakeAdapter
+    from meld.roster import WorkerType
+    fake, ctx, repo, origin = make_product(tmp_path, group="claude", role="orchestrator")
+    ctx.adapter_for = lambda name: FakeAdapter(skills=[WorkerType("pdf", "PDF files", "skill", None)])
+    ctx.refresh_roster()
+    fake.route("POST", "repos/acme/widgets/issues/11/labels", [], status=200)
+    out = tag(ctx, 11, skills=["pdf"])
+    assert out["labels"]["skills"] == ["pdf"]
+    posted = [c.body for c in fake.calls if c.method == "POST" and c.endpoint.endswith("issues/11/labels")][0]
+    assert "skill:pdf" in posted["labels"]
+    import pytest
+    from meld.actions import Refused
+    with pytest.raises(Refused, match="skill 'nope'"):
+        tag(ctx, 11, skills=["nope"])
 

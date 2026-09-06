@@ -55,3 +55,14 @@ def test_parse_worker_file_requires_heading_and_skips_directories(tmp_path: Path
     (wd / "dir.md").mkdir()
     (wd / "ok.md").write_text("# ok\n\nFine.\n")
     assert [w.name for w in product_workers(tmp_path)] == ["ok"]
+
+
+def test_product_skills_join_the_roster_as_product_skill(tmp_path):
+    from meld.roster import roster, WorkerType
+    d = tmp_path / ".meld" / "skills" / "deploy-checklist"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text("---\nname: deploy-checklist\ndescription: Pre-deploy steps for this product\n---\n# Deploy\n")
+    entries = {w.name: w for w in roster(tmp_path, [WorkerType("deploy-checklist", "host version", "skill", None)])}
+    # scan_skills (adapters/base.py) sets WorkerType.path to the skill's SKILL.md file, not its directory -- confirmed
+    # by reading scan_skills itself, so this asserts against the file path rather than the brief's original `d`.
+    assert entries["deploy-checklist"].source == "product-skill" and entries["deploy-checklist"].path == d / "SKILL.md"

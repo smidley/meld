@@ -70,15 +70,17 @@ def test_dispatch_build_happy_path(tmp_path):
     # render_brief through ctx.roster_entries() (bound to the context's own adapter_for), not the adapter= override
     # dispatch() takes purely to stand in for the real launch -- so the skill is injected via a fresh context's
     # adapter_for, the same mechanism launch_role/role_prompt use to pick up installed skills.
+    # Description shares "health" with issue 11's title ("Add health endpoint") so it survives select_skills'
+    # relevance filter -- an unmatched, unpinned skill is now left out of the brief entirely (task 8).
     rec_path = tmp_path / "home" / "runs" / "claude" / "11.json"
     rec = json.loads(rec_path.read_text())
     rec["collected"] = True
     rec_path.write_text(json.dumps(rec))
     skilled = load_context(repo / ".meld.toml", env=env_for(tmp_path, group="claude", role="pm"), run=fake,
-                           adapter_for=lambda name: FakeAdapter(skills=[WorkerType("brand", "Brand voice.", "skill", None, "")]))
+                           adapter_for=lambda name: FakeAdapter(skills=[WorkerType("brand", "Brand voice for the health team.", "skill", None, "")]))
     second = dispatch(skilled, 11, adapter=FakeAdapter(), now=NOW)
     text2 = (Path(second["worktree"]) / BRIEF_FILE).read_text()
-    assert "## Skills available" in text2 and "- `brand`: Brand voice." in text2
+    assert "## Skills available" in text2 and "- `brand`: Brand voice for the health team." in text2
     wait_for_exit(second["pid"])
 
 
@@ -316,4 +318,25 @@ def test_dispatch_renders_relevant_memory_into_the_brief(tmp_path):
     out = dispatch(ctx, 11, adapter=FakeAdapter(), now=NOW)
     text = (Path(out["worktree"]) / BRIEF_FILE).read_text()
     assert "## Relevant memory" in text and "must not touch the database" in text
+
+
+def test_dispatch_build_brief_lists_pinned_and_matched_skills_only(tmp_path):
+    """Issue 11's title/body ("Add health endpoint" / "GET /healthz returns 200") is unrelated to PDFs, but a
+    skill:pdf label pins `pdf` into the brief regardless; an installed-but-unrelated skill (stripe-billing) is
+    left out because select_skills only keeps pins plus task-text matches. Skills reach the brief through
+    ctx.roster_entries() (ctx.adapter_for), not the `adapter=` dispatch() takes for the launch -- see the
+    happy-path test above -- so the skill roster is injected the same way, via ctx.adapter_for + refresh_roster()."""
+    fake, ctx, repo, origin = make_product(tmp_path)
+    issues = claim_issue_11(fake)
+    for i in issues:
+        if i["number"] == 11:
+            i["labels"].append({"name": "skill:pdf"})
+    fake.route("GET", R + "issues", issues)
+    ctx.adapter_for = lambda name: FakeAdapter(skills=[WorkerType("pdf", "Read and write PDF files", "skill", None),
+                                                       WorkerType("stripe-billing", "Stripe payments and invoices", "skill", None)])
+    ctx.refresh_roster()
+    out = dispatch(ctx, 11, adapter=FakeAdapter(), now=NOW)
+    text = (Path(out["worktree"]) / BRIEF_FILE).read_text()
+    assert "## Skills available" in text and "- `pdf`: Read and write PDF files" in text
+    assert "stripe-billing" not in text
     wait_for_exit(out["pid"])

@@ -213,3 +213,27 @@ def test_read_result_skills_used_tolerates_null_and_is_bounded(tmp_path):
     (tmp_path / RESULT_FILE).write_text(json.dumps({"outcome": "done", "summary": "s", "verified_by": "v", "skills_used": ["brand", 5]}))
     with pytest.raises(ResultError, match="skills_used"):
         read_result(tmp_path)
+
+
+def test_select_skills_matches_the_task_and_keeps_pinned_first():
+    from meld.brief import select_skills
+    from meld.roster import WorkerType
+    skills = [WorkerType("pdf", "Read and write PDF files", "skill", None), WorkerType("stripe-billing", "Stripe payments and invoices", "skill", None),
+              WorkerType("frontend-design", "Distinctive UI design", "skill", None)]
+    # "invoices" (not "invoice"): _terms does no stemming, so the query must share stripe-billing's exact plural
+    # token for it to score a match here -- this is what makes the third entry show up in `chosen` below.
+    chosen = select_skills("Add invoices download as PDF", skills, pinned=("frontend-design",))
+    assert [s.name for s in chosen] == ["frontend-design", "pdf", "stripe-billing"]
+    assert select_skills("Fix the CI cache key", skills) == []
+    assert [s.name for s in select_skills("anything", skills, pinned=("nope", "pdf"))] == ["pdf"]
+
+
+def test_brief_lists_only_selected_skills(tmp_path):
+    from meld.brief import render_brief
+    from meld.roster import WorkerType
+    from tests.factories import mk_issue
+    issue = mk_issue(11, title="Add invoice download as PDF")
+    text = render_brief(role=BACKEND, kind="build", group="claude", model="m", effort="e", issue=issue, pr=None, plan_text="",
+                        repo_root=tmp_path, worktree=tmp_path, base_branch="main",
+                        skills=[WorkerType("pdf", "Read and write PDF files", "skill", None)])
+    assert "`pdf`" in text and "## Skills available" in text

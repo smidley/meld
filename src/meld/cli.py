@@ -307,11 +307,12 @@ def roster(ctx: click.Context) -> None:
 @click.option("--model", default=None)
 @click.option("--effort", default=None)
 @click.option("--size", default=None, type=click.Choice(["S", "M", "L"]))
+@click.option("--skill", "skills", multiple=True, help="Pin a skill onto this issue's brief; repeatable.")
 @click.pass_context
-def tag(ctx: click.Context, number: int, worker: str | None, model: str | None, effort: str | None, size: str | None) -> None:
-    """Set the worker, model, effort, and size labels on an issue (orchestrator or human)."""
+def tag(ctx: click.Context, number: int, worker: str | None, model: str | None, effort: str | None, size: str | None, skills: tuple[str, ...]) -> None:
+    """Set the worker, model, effort, size, and skill labels on an issue (orchestrator or human)."""
     c = _load(ctx)
-    _run_action(ctx, lambda: do_tag(c, number, worker=worker, model=model, effort=effort, size=size))
+    _run_action(ctx, lambda: do_tag(c, number, worker=worker, model=model, effort=effort, size=size, skills=skills))
 
 
 @main.command()

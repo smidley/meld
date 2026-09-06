@@ -47,10 +47,19 @@ def product_workers(repo_root: Path) -> list[WorkerType]:
     return [parse_worker_file(p, "product") for p in sorted(d.glob("*.md")) if p.is_file()]
 
 
+def product_skills(repo_root: Path) -> list[WorkerType]:
+    """Skills the product ships under .meld/skills/<name>/SKILL.md (frontmatter name/description), shared by every group."""
+    from meld.adapters.base import scan_skills   # local import: adapters.base imports roster
+    d = repo_root / ".meld" / "skills"
+    return scan_skills([d], source="product-skill") if d.is_dir() else []
+
+
 def roster(repo_root: Path | None, extra: Iterable[WorkerType] = ()) -> list[WorkerType]:
     by_name: dict[str, WorkerType] = {w.name: w for w in builtin_workers()}
     if repo_root is not None:
         for w in product_workers(repo_root):
+            by_name[w.name] = w
+        for w in product_skills(repo_root):
             by_name[w.name] = w
     for w in extra:
         by_name.setdefault(w.name, w)

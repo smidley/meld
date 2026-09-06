@@ -69,7 +69,10 @@ def _http(method: str, url: str, headers: dict[str, str], body: bytes | None) ->
     req = urllib.request.Request(url, data=body, method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
-            return resp.status, json.loads(resp.read().decode() or "{}")
+            try:
+                return resp.status, json.loads(resp.read().decode() or "{}")
+            except ValueError:
+                return resp.status, {}
     except urllib.error.HTTPError as e:
         try:
             return e.code, json.loads(e.read().decode() or "{}")
@@ -108,8 +111,11 @@ def mint_installation_token(app_id: int, installation_id: int, pem: str, *, now:
     if status not in (200, 201) or not isinstance(data, dict) or not data.get("token"):
         message = data.get("message", "") if isinstance(data, dict) else ""
         raise AppAuthError(f"installation token request failed with HTTP {status}: {message or 'no token in response'}")
-    repos = tuple(str(r.get("full_name", "")) for r in data.get("repositories", []) if isinstance(r, dict))
-    return InstallationToken(str(data["token"]), str(data.get("expires_at", "")), dict(data.get("permissions") or {}), repos)
+    repositories = data.get("repositories") or []
+    repos = tuple(str(r.get("full_name", "")) for r in repositories if isinstance(r, dict)) if isinstance(repositories, list) else ()
+    permissions = data.get("permissions") or {}
+    permissions = permissions if isinstance(permissions, dict) else {}
+    return InstallationToken(str(data["token"]), str(data.get("expires_at", "")), permissions, repos)
 
 
 def app_slug(app_id: int, pem: str, *, now: int | None = None, get: Callable[[str, dict[str, str]], tuple[int, dict]] | None = None,
@@ -143,11 +149,17 @@ class TokenCache:
     def load(self) -> InstallationToken | None:
         try:
             data = json.loads(self.path.read_text())
-        except (OSError, ValueError):
+            if not isinstance(data, dict) or not isinstance(data.get("token"), str) or not isinstance(data.get("expires_at"), str):
+                return None
+            permissions = data.get("permissions", {})
+            if not isinstance(permissions, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in permissions.items()):
+                raise ValueError("cached permissions is not a dict of str to str")
+            repositories = data.get("repositories", [])
+            if not isinstance(repositories, list) or not all(isinstance(r, str) for r in repositories):
+                raise ValueError("cached repositories is not a list of str")
+            return InstallationToken(data["token"], data["expires_at"], permissions, tuple(repositories))
+        except (OSError, ValueError, TypeError):
             return None
-        if not isinstance(data, dict) or not isinstance(data.get("token"), str) or not isinstance(data.get("expires_at"), str):
-            return None
-        return InstallationToken(data["token"], data["expires_at"], dict(data.get("permissions") or {}), tuple(data.get("repositories") or ()))
 
     def save(self, tok: InstallationToken) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

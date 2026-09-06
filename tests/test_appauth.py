@@ -70,6 +70,16 @@ def test_mint_installation_token_posts_a_bearer_jwt_and_parses_the_response(keyp
     assert headers["X-GitHub-Api-Version"] == "2022-11-28" and body is None
 
 
+def test_mint_installation_token_treats_null_repositories_as_empty(keypair):
+    pem, _ = keypair
+
+    def post(url, headers, body):
+        return 201, {"token": "ghs_abc", "expires_at": "2027-01-01T00:00:00Z", "permissions": {}, "repositories": None}
+
+    tok = mint_installation_token(1234, 55, pem, now=NOW, post=post)
+    assert tok == InstallationToken("ghs_abc", "2027-01-01T00:00:00Z", {}, ())
+
+
 def test_mint_reports_github_errors_without_leaking_the_jwt(keypair):
     pem, _ = keypair
 
@@ -112,6 +122,12 @@ def test_token_cache_is_private_and_tolerates_garbage(tmp_path):
     assert oct(os.stat(cache.path).st_mode & 0o777) == "0o600"
     assert cache.load().token == "ghs_1"
     cache.path.write_text("{not json")
+    assert cache.load() is None
+
+
+def test_token_cache_load_returns_none_when_permissions_is_the_wrong_shape(tmp_path):
+    cache = TokenCache(tmp_path / "app-token.json")
+    cache.path.write_text(json.dumps({"token": "t", "expires_at": "2027-01-01T00:00:00Z", "permissions": "oops"}))
     assert cache.load() is None
 
 

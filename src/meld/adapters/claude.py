@@ -53,6 +53,9 @@ class ClaudeAdapter:
         dirs = [self.home / "skills", *sorted((self.home / "plugins" / "cache").glob("*/*/*/skills"))]
         return scan_skills(dirs)
 
+    def project_skills_dir(self) -> str | None:
+        return ".claude/skills"
+
     def command_timeout_ceiling_seconds(self) -> int:
         return BASH_TOOL_CEILING_SECONDS
 

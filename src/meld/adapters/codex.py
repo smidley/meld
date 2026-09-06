@@ -43,6 +43,9 @@ class CodexAdapter:
     def installed_skills(self) -> list[WorkerType]:
         return scan_skills([self.home / ".agents" / "skills", self.home / ".codex" / "skills"])
 
+    def project_skills_dir(self) -> str | None:
+        return ".agents/skills"
+
     def command_timeout_ceiling_seconds(self) -> int:
         return COMMAND_CEILING_SECONDS
 

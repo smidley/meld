@@ -26,6 +26,9 @@ class FakeAdapter:
     def installed_skills(self) -> list[WorkerType]:
         return list(self.skills)
 
+    def project_skills_dir(self) -> str | None:
+        return ".fake/skills"
+
     def command_timeout_ceiling_seconds(self) -> int:
         return self.ceiling
 

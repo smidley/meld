@@ -340,3 +340,31 @@ def test_dispatch_build_brief_lists_pinned_and_matched_skills_only(tmp_path):
     assert "## Skills available" in text and "- `pdf`: Read and write PDF files" in text
     assert "stripe-billing" not in text
     wait_for_exit(out["pid"])
+
+
+def test_dispatch_materialises_product_skills_into_the_adapters_project_dir(tmp_path):
+    """A product skill under .meld/skills/<name>/ is copied into the worktree under the launch adapter's own
+    project skill directory (FakeAdapter's is `.fake/skills`) and excluded from git via info/exclude, so a
+    CLI that discovers project skills natively finds it without the worker ever being able to commit the copy."""
+    fake, ctx, repo, origin = make_product(tmp_path)
+    d = repo / ".meld" / "skills" / "deploy-checklist"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text("---\nname: deploy-checklist\ndescription: Pre-deploy steps\n---\n# Deploy\n")
+    sh(["git", "add", "."], repo)
+    sh(["git", "commit", "-q", "-m", "skills"], repo)
+    sh(["git", "push", "-q", "origin", "main"], repo)
+    issues = claim_issue_11(fake)
+    for i in issues:
+        # Issue 11's own title/body ("Add health endpoint" / "GET /healthz returns 200") shares no term with this
+        # skill's description, so pin it explicitly -- the same `skill:<name>` label mechanism as task 8's dispatch test.
+        if i["number"] == 11:
+            i["labels"].append({"name": "skill:deploy-checklist"})
+    fake.route("GET", R + "issues", issues)
+    out = dispatch(ctx, 11, adapter=FakeAdapter())
+    wt = Path(out["worktree"])
+    assert (wt / ".fake" / "skills" / "deploy-checklist" / "SKILL.md").read_text().startswith("---")
+    exclude = sh(["git", "rev-parse", "--git-path", "info/exclude"], wt)
+    assert ".fake/skills/" in Path(exclude if exclude.startswith("/") else str(wt / exclude)).read_text()
+    assert "deploy-checklist" in (wt / ".meld-brief.md").read_text()
+    assert out["skills_materialised"] == [".fake/skills/deploy-checklist"]
+    wait_for_exit(out["pid"])

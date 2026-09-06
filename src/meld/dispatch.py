@@ -9,7 +9,7 @@ import time
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Sequence
 
 from meld.actions import BLOCKED, IN_PROGRESS, refuse, release
 from meld.adapters import Adapter, LaunchSpec, scrub_env
@@ -236,6 +236,34 @@ def _launch(ctx, group: GroupConfig, adapter: Adapter, *, worktree: Path, brief:
     return proc.pid, log_path
 
 
+def materialise_skills(worktree: Path, adapter: Adapter, skills: Sequence[WorkerType]) -> list[str]:
+    """Copy the product's roster-listed product skills into the worktree under the adapter's project skill
+    directory, so the CLI discovers them natively (decision 14). Worktree-local and excluded from git via
+    info/exclude: nothing is written under the host's home, and a worker cannot accidentally commit the copies.
+
+    `skills` is the caller's already-filtered roster entries (`ctx.roster_entries()` filtered to
+    `source == "product-skill"`), not a fresh `product_skills(repo_root)` scan: `roster()` is what drops a
+    product skill whose name collides with a worker (see roster.py), so materialising straight off disk would
+    copy a skill the roster itself excludes.
+    """
+    target_dir = adapter.project_skills_dir()
+    if target_dir is None:
+        return []
+    made: list[str] = []
+    for skill in skills:
+        if skill.path is None:
+            continue
+        # `skill.path` from `scan_skills` is the skill's SKILL.md file, not its directory -- copy the parent.
+        dest = worktree / target_dir / skill.name
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.copytree(skill.path.parent, dest)
+        made.append(f"{target_dir}/{skill.name}")
+    if made:
+        exclude_paths(worktree, (f"{target_dir}/",))
+    return made
+
+
 def dispatch(ctx, number: int, *, kind: str = "build", worker: str | None = None, adapter: Adapter | None = None,
              now: datetime | None = None, env: dict | None = None) -> dict:
     if kind not in KINDS:
@@ -266,6 +294,7 @@ def _dispatch_build(ctx, board: Board, actor: Actor, number: int, adapter: Adapt
     wt = _worktree(ctx, group, f"{number}-{slugify(issue.title)}")
     mode = "reused" if worktree_exists(ctx.repo_root, wt) else create_worktree(ctx.repo_root, wt, branch, ctx.cfg.default_branch)
     exclude_paths(wt)
+    made = materialise_skills(wt, adp, [w for w in ctx.roster_entries() if w.source == "product-skill"])
     brief = render_brief(role=worker, kind="build", group=group.name, model=issue.model or "", effort=issue.effort or "", issue=issue,
                          pr=None, plan_text=board.plan_text, repo_root=ctx.repo_root, worktree=wt, base_branch=ctx.cfg.default_branch,
                          skills=select_skills(f"{issue.title}\n{issue.body}",
@@ -287,7 +316,7 @@ def _dispatch_build(ctx, board: Board, actor: Actor, number: int, adapter: Adapt
     ctx.gh.create_comment(number, f"Meld: `{group.name}` dispatched a `{worker.name}` worker on `{issue.model}` at effort {issue.effort} "
                                   f"(size {issue.size}, {mode} worktree). Branch `{branch}`, deadline {_iso(deadline)}, lease until {until}.")
     return {"dispatched": number, "kind": "build", "pid": pid, "worktree": str(wt), "branch": branch, "deadline": _iso(deadline),
-            "lease_until": until, "worktree_mode": mode}
+            "lease_until": until, "worktree_mode": mode, "skills_materialised": made}
 
 
 def _dispatch_pr(ctx, board: Board, actor: Actor, number: int, kind: str, adapter: Adapter | None, when: datetime, env: dict | None,
@@ -317,6 +346,7 @@ def _dispatch_pr(ctx, board: Board, actor: Actor, number: int, kind: str, adapte
     else:
         checkout_pr_head(ctx.repo_root, wt, pr.head_ref)
     exclude_paths(wt)
+    made = materialise_skills(wt, adp, [w for w in ctx.roster_entries() if w.source == "product-skill"])
     model, effort = group.orchestrator.model, group.orchestrator.effort
     concern = review_concern(ctx.cfg, pr, group.name) if kind == "review" and role_name == "reviewer" else None
     brief = render_brief(role=worker, kind=kind, group=group.name, model=model, effort=effort, issue=None, pr=pr,
@@ -338,7 +368,7 @@ def _dispatch_pr(ctx, board: Board, actor: Actor, number: int, kind: str, adapte
     ctx.gh.create_comment(number, f"Meld: `{group.name}` dispatched {article} `{worker.name}` worker on `{model}` at effort {effort} "
                                   f"against {where}. Deadline {_iso(deadline)}.")
     return {"dispatched": number, "kind": kind, "pid": pid, "worktree": str(wt), "branch": pr.head_ref, "deadline": _iso(deadline),
-            "lease_until": None, "worktree_mode": "fresh"}
+            "lease_until": None, "worktree_mode": "fresh", "skills_materialised": made}
 
 
 def tick(ctx, *, now: datetime | None = None, sleep=time.sleep, env: Mapping[str, str] | None = None, post=None) -> dict:

@@ -75,3 +75,9 @@ def test_scan_skills_skips_unreadable_and_undecodable_files(tmp_path: Path):
 
 def test_parse_frontmatter_requires_a_closing_fence():
     assert parse_frontmatter("---\nname: brand\ndescription: never closed\nbody text") == {}
+
+
+def test_project_skills_dirs():
+    from meld.adapters.claude import ADAPTER as claude
+    from meld.adapters.codex import ADAPTER as codex
+    assert claude.project_skills_dir() == ".claude/skills" and codex.project_skills_dir() == ".agents/skills"

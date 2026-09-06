@@ -28,13 +28,22 @@ class GroupConfig:
     name: str
     cli: str
     bot: str
-    token_env: str
+    token_env: str | None
     concurrency: int
     review_concurrency: int
     orchestrator: RoleConfig
     pm: RoleConfig
     git_name: str | None = None
     git_email: str | None = None
+    auth: str = "pat"                       # "pat" (token_env) or "app" (GitHub App installation)
+    app_id: int | None = None
+    installation_id: int | None = None
+    private_key_env: str | None = None
+    private_key_file: str | None = None
+
+    @property
+    def is_app(self) -> bool:
+        return self.auth == "app"
 
 
 def _require(data: Mapping[str, Any], key: str, path: str) -> Any:
@@ -106,17 +115,40 @@ class Config:
                 raise ConfigError(f"{path}: {name!r} is a reserved party name and cannot name a group")
             if not GROUP_NAME_RE.match(name):
                 raise ConfigError(f"{path}: group names must match {GROUP_NAME_RE.pattern}")
+            auth = str(g.get("auth", "pat"))
+            if auth not in ("pat", "app"):
+                raise ConfigError(f"{path}.auth must be 'pat' or 'app', got {auth!r}")
+            token_env = str(g["token_env"]) if g.get("token_env") else None
+            if auth == "pat" and not token_env:
+                raise ConfigError(f"missing required setting {path}.token_env (or set auth = \"app\")")
+            app_id = installation_id = None
+            key_env = key_file = None
+            bot = str(_require(g, "bot", path))
+            if auth == "app":
+                app_id = int(_require(g, "app_id", path))
+                installation_id = int(_require(g, "installation_id", path))
+                key_env = str(g["private_key_env"]) if g.get("private_key_env") else None
+                key_file = str(g["private_key_file"]) if g.get("private_key_file") else None
+                if bool(key_env) == bool(key_file):
+                    raise ConfigError(f"{path}: an App group needs exactly one of private_key_env or private_key_file")
+                if not bot.endswith("[bot]"):
+                    raise ConfigError(f"{path}.bot must be the App's bot login, '<slug>[bot]', got {bot!r}")
             groups[name] = GroupConfig(
                 name=name,
                 cli=str(_require(g, "cli", path)),
-                bot=str(_require(g, "bot", path)),
-                token_env=str(_require(g, "token_env", path)),
+                bot=bot,
+                token_env=token_env,
                 concurrency=int(g.get("concurrency", 8)),
                 review_concurrency=int(g.get("review_concurrency", 4)),
                 orchestrator=_role(_require(g, "orchestrator", path), f"{path}.orchestrator"),
                 pm=_role(_require(g, "pm", path), f"{path}.pm"),
                 git_name=(str(g["git_name"]) if g.get("git_name") else None),
                 git_email=(str(g["git_email"]) if g.get("git_email") else None),
+                auth=auth,
+                app_id=app_id,
+                installation_id=installation_id,
+                private_key_env=key_env,
+                private_key_file=key_file,
             )
         review = data.get("review", {})
         agreement = data.get("agreement", {})

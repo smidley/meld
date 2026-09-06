@@ -170,3 +170,27 @@ def test_audit_batch_defaults_and_overrides():
     assert (cfg.audit_batch_merges, cfg.audit_batch_hours) == (5, 4)
     cfg2 = Config.from_dict({**base, "audit": {"batch_merges": 3, "batch_hours": 1}})
     assert (cfg2.audit_batch_merges, cfg2.audit_batch_hours) == (3, 1)
+
+
+def test_app_group_config_parses_and_validates():
+    import pytest
+    from meld.config import Config, ConfigError
+    base = {"repo": {"name": "acme/widgets"}, "humans": {"accounts": ["empowerScott"]}}
+    role = {"model": "claude-opus-5", "effort": "high"}
+    app = {"cli": "claude", "bot": "meld-claude[bot]", "auth": "app", "app_id": 1234, "installation_id": 55,
+           "private_key_env": "MELD_APP_KEY_CLAUDE", "orchestrator": role, "pm": role}
+    cfg = Config.from_dict({**base, "groups": {"claude": app}})
+    g = cfg.groups["claude"]
+    assert g.is_app and g.app_id == 1234 and g.installation_id == 55 and g.private_key_env == "MELD_APP_KEY_CLAUDE" and g.token_env is None
+    pat = {"cli": "codex", "bot": "meld-codex-bot", "token_env": "MELD_TOKEN_CODEX", "orchestrator": role, "pm": role}
+    assert Config.from_dict({**base, "groups": {"codex": pat}}).groups["codex"].auth == "pat"
+    with pytest.raises(ConfigError, match="token_env"):
+        Config.from_dict({**base, "groups": {"codex": {k: v for k, v in pat.items() if k != "token_env"}}})
+    with pytest.raises(ConfigError, match=r"\[bot\]"):
+        Config.from_dict({**base, "groups": {"claude": {**app, "bot": "meld-claude-bot"}}})
+    with pytest.raises(ConfigError, match="app_id"):
+        Config.from_dict({**base, "groups": {"claude": {k: v for k, v in app.items() if k != "app_id"}}})
+    with pytest.raises(ConfigError, match="exactly one"):
+        Config.from_dict({**base, "groups": {"claude": {**app, "private_key_file": "/tmp/k.pem"}}})
+    with pytest.raises(ConfigError, match="auth"):
+        Config.from_dict({**base, "groups": {"claude": {**app, "auth": "oauth"}}})

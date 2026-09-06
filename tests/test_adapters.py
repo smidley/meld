@@ -75,3 +75,10 @@ def test_scan_skills_skips_unreadable_and_undecodable_files(tmp_path: Path):
 
 def test_parse_frontmatter_requires_a_closing_fence():
     assert parse_frontmatter("---\nname: brand\ndescription: never closed\nbody text") == {}
+
+
+def test_app_key_env_is_scrubbed_from_workers():
+    from meld.adapters.base import SCRUBBED_PREFIXES, scrub_env
+    assert "MELD_APP_KEY_" in SCRUBBED_PREFIXES
+    out = scrub_env({"MELD_APP_KEY_CLAUDE": "pem", "MELD_TOKEN_CODEX": "t", "PATH": "/bin"})
+    assert "MELD_APP_KEY_CLAUDE" not in out and "MELD_TOKEN_CODEX" not in out and out["PATH"] == "/bin"

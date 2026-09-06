@@ -9,7 +9,7 @@ from typing import IO, Iterable, Mapping, Protocol
 from meld.roster import WorkerType
 
 SCRUBBED_EXACT = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "MELD_GROUP", "MELD_ROLE", "MELD_PUSH_TOKEN")
-SCRUBBED_PREFIXES = ("MELD_TOKEN_",)
+SCRUBBED_PREFIXES = ("MELD_TOKEN_", "MELD_APP_KEY_")
 
 
 @dataclass(frozen=True)
@@ -40,7 +40,7 @@ class Adapter(Protocol):
 
 
 def scrub_env(env: Mapping[str, str]) -> dict[str, str]:
-    """Environment for a worker: no GitHub credentials, no party identity, a marker that it is a worker."""
+    """Environment for a worker: no GitHub tokens or App private keys, no party identity, a marker that it is a worker."""
     out = {k: v for k, v in env.items() if k not in SCRUBBED_EXACT and not k.startswith(SCRUBBED_PREFIXES)}
     out["MELD_WORKER"] = "1"
     return out

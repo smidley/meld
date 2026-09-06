@@ -110,9 +110,10 @@ def test_pingpong_and_legal_pr_verbs():
     assert pingpong_exceeded(CFG2, pr)
     assert not pingpong_exceeded(CFG2, mk_pr(21, 14, extra_changes_requested_history=2))
     b = mk_board(CFG2, pulls=[pr])
-    # claude is not the head committer here, so review (new in Task 4) is also legal for it
-    assert legal_pr_verbs(b, CFG2, CLAUDE_PM, pr) == ["approve", "request-changes", "push-fix", "merge", "review"]
-    assert legal_pr_verbs(b, CFG2, CODEX_PM, pr) == ["merge"]
+    # claude is not the head committer here, so review (new in Task 4) is also legal for it; remember (plan 5 task 1)
+    # is legal on any resolved, unchallenged board item regardless of committer/author, so it closes out both lists
+    assert legal_pr_verbs(b, CFG2, CLAUDE_PM, pr) == ["approve", "request-changes", "push-fix", "merge", "review", "remember"]
+    assert legal_pr_verbs(b, CFG2, CODEX_PM, pr) == ["merge", "remember"]
 
 
 def test_unknown_head_committer_blocks_approve_and_merge():
@@ -130,8 +131,9 @@ def test_unknown_head_committer_blocks_approve_and_merge():
     assert rule(b, CFG2, CODEX_PM, Verb.PUSH_FIX, pr) is None
     assert rule(b, CFG2, CODEX_PM, Verb.REQUEST_CHANGES, pr) == AUTHOR_RULE
     # an unknown committer cannot be reviewed away from (party_of_login is None, so claude != it),
-    # so review (new in Task 4) is also legal here even though approve/merge are blocked
-    assert legal_pr_verbs(b, CFG2, CLAUDE_PM, pr) == ["request-changes", "push-fix", "review"]
+    # so review (new in Task 4) is also legal here even though approve/merge are blocked; remember (plan 5 task 1)
+    # is legal regardless (it never looks at committer/author), so it still closes out the list
+    assert legal_pr_verbs(b, CFG2, CLAUDE_PM, pr) == ["request-changes", "push-fix", "review", "remember"]
 
 
 def test_author_party_is_refused_the_github_verbs_but_keeps_push_fix_and_review():
@@ -141,7 +143,9 @@ def test_author_party_is_refused_the_github_verbs_but_keeps_push_fix_and_review(
     assert rule(b, CFG2, CODEX_PM, Verb.APPROVE, fixed) == AUTHOR_RULE
     assert rule(b, CFG2, CODEX_PM, Verb.REQUEST_CHANGES, fixed) == AUTHOR_RULE
     assert rule(b, CFG2, CODEX_PM, Verb.PUSH_FIX, fixed) is None
-    assert legal_pr_verbs(b, CFG2, CODEX_PM, fixed) == ["push-fix", "review"]      # review: codex is not the head committer
+    # plan 5 task 1: approve/request-changes now show up too -- codex (the author) reaches them through the
+    # comment-review path (review_verdict_rule), the same path `meld review` actually takes for its own PR's head
+    assert legal_pr_verbs(b, CFG2, CODEX_PM, fixed) == ["approve", "request-changes", "push-fix", "review", "remember"]
     # a human's own PR: GitHub refuses the human's approval too, so status stops advertising it
     human_pr = mk_pr(22, 15, committer="meld-claude-bot", author="empowerScott")
     assert rule(mk_board(CFG2, pulls=[human_pr]), CFG2, HUMAN, Verb.APPROVE, human_pr) == AUTHOR_RULE
@@ -234,7 +238,8 @@ def test_audit_dispatch_legality():
     assert prule(mk_board(CFG2, pulls=[open_pr]), CODEX_PM, Verb.AUDIT, open_pr) == "audit targets a merged PR"
     assert prule(replace(b, audits={19: {"codex": "pass"}}), CODEX_PM, Verb.AUDIT, merged) == "codex already audited #19"
     assert prule(mk_board(CFG2, pulls=[merged], halted=True), CODEX_PM, Verb.AUDIT, merged) == "HALT is in effect"
-    assert legal_pr_verbs(b, CFG2, CODEX_PM, merged) == ["audit"]     # a merged PR accepts nothing else
+    # plan 5 task 1: remember is legal too -- a lesson may be recorded about a merged, resolved PR
+    assert legal_pr_verbs(b, CFG2, CODEX_PM, merged) == ["audit", "remember"]
 
 
 def test_reap_legality_for_pr_runs():
@@ -285,6 +290,7 @@ def test_a_merged_memory_pr_owes_no_audit():
     merged = replace(mk_pr(40, 0, committer="meld-claude-bot", state="closed", merged=True), body=body, head_ref="meld/memory-dec-1")
     b = mk_board(CFG2, pulls=[merged])
     assert prule(b, CODEX_PM, Verb.AUDIT, merged) == "memory PR: verified against the board at review, never audited"
-    assert legal_pr_verbs(b, CFG2, CODEX_PM, merged) == []
+    # plan 5 task 1: remember_rule doesn't exempt a memory PR from being a valid ref itself, so it's the one legal verb left
+    assert legal_pr_verbs(b, CFG2, CODEX_PM, merged) == ["remember"]
     ordinary = mk_pr(19, 9, committer="meld-claude-bot", state="closed", merged=True)
     assert prule(mk_board(CFG2, pulls=[ordinary]), CODEX_PM, Verb.AUDIT, ordinary) is None

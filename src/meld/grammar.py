@@ -10,11 +10,11 @@ from meld.config import Config, Party
 ORCHESTRATOR_VERBS = frozenset({
     "ROSTER", "ROSTER-CHANGE", "CONFIG", "PROPOSE", "AMEND", "AGREE", "DISSENT", "DRAFT", "ACK",
     "NEEDS-HUMAN", "BUDGET", "CHALLENGE", "EVIDENCE", "RETRACT", "UPHELD", "DISMISSED", "AUDIT",
-    "DRIFT", "PROPOSE-WORKER", "PING", "SOLO", "RESUMED", "PROTOCOL-VIOLATION",
+    "DRIFT", "PROPOSE-WORKER", "PING", "SOLO", "RESUMED", "PROTOCOL-VIOLATION", "RELEASED",
 })
 PM_VERBS = frozenset({
     "REVIEW-REQUEST", "STATUS", "NEEDS-HUMAN", "BUDGET", "PROPOSE-WORKER", "AUDIT",
-    "PROTOCOL-VIOLATION", "IGNORED-COMMENT", "PING", "RESUMED", "LEASE", "EXPIRED",
+    "PROTOCOL-VIOLATION", "IGNORED-COMMENT", "PING", "RESUMED", "LEASE", "EXPIRED", "RELEASED",
 })
 HUMAN_VERBS = frozenset({
     "ASK", "DIRECTIVE", "AMEND", "APPROVE", "ACK", "PROVIDED", "RESOLVED", "HALT", "RESUME", "REVERT",
@@ -27,7 +27,7 @@ REQUIRES_REF = frozenset({
     "PROPOSE", "AMEND", "AGREE", "DISSENT", "DRAFT", "ANSWER", "ASK", "DIRECTIVE", "REVIEW-REQUEST",
     "NEEDS-HUMAN", "CHALLENGE", "EVIDENCE", "RETRACT", "UPHELD", "DISMISSED", "AUDIT", "DECISION",
     "PROPOSE-WORKER", "PROVIDED", "RESOLVED", "REVERT", "RELEASE", "PLAN-ADD", "ACK", "WORKER",
-    "LEASE", "EXPIRED",
+    "LEASE", "EXPIRED", "RELEASED",
 })
 REQUIRES_VERIFIED_BY = frozenset({"PLAN", "DECISION", "ANSWER", "EVIDENCE"})
 
@@ -165,6 +165,10 @@ def agreement_for(comments: Sequence[ParsedComment], ref: str, cfg: Config) -> A
             continue
         h = cmt.header
         if h.party.kind == "joint":
+            if joint_verified:
+                # Decision 1 (plan 5): once the proposer's own bot has closed the round, a later [joint] -- forged or
+                # merely redundant -- must not flip the ref back to unverified (spec 21 item 27).
+                continue
             joint_posted, joint_verb, joint_author, joint_id = True, h.verb, cmt.author, cmt.id
             closed = text is not None and ((agreed >= set(cfg.group_names)) or ((agreed | set(dissent)) >= set(cfg.group_names)))
             joint_verified = closed and proposer is not None and cmt.author == cfg.groups[proposer].bot

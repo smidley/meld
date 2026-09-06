@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 
 from meld.board import (
+    AUTHOR_VERDICT_MARKER,
     COORDINATION_LABEL,
     Board,
     Issue,
@@ -78,6 +79,23 @@ def _issue(raw: dict) -> Issue:
     )
 
 
+def _review(r: dict) -> Review:
+    """GitHub's review dict -> board.Review. The author group's approve/request-changes verdict cannot reach GitHub as
+    an APPROVE/REQUEST_CHANGES (its own account authored the PR), so `meld review` posts it as a COMMENT review whose
+    first line is the AUTHOR_VERDICT_MARKER (review.py). A request-changes marker is promoted here to a synthetic
+    CHANGES_REQUESTED with as_author=True, so it counts toward the ping-pong cap like any other; an approve marker
+    stays COMMENTED -- that verdict is carried by the group's `meld/review/<group>` commit status instead (rules.approving_parties)."""
+    body = r.get("body") or ""
+    first_line = body.split("\n", 1)[0]
+    author = (r.get("user") or {}).get("login", "")
+    state = r.get("state", "")
+    commit_id = r.get("commit_id", "")
+    submitted_at = r.get("submitted_at", "")
+    if state == "COMMENTED" and first_line == f"{AUTHOR_VERDICT_MARKER} request-changes":
+        return Review(author=author, state="CHANGES_REQUESTED", commit_id=commit_id, submitted_at=submitted_at, as_author=True)
+    return Review(author=author, state=state, commit_id=commit_id, submitted_at=submitted_at)
+
+
 def _pull(gh: GitHub, raw: dict, errors: list[str] | None = None) -> PullRequest:
     number = raw["number"]
     head_sha = raw["head"]["sha"]
@@ -93,11 +111,7 @@ def _pull(gh: GitHub, raw: dict, errors: list[str] | None = None) -> PullRequest
     files: tuple[str, ...] = ()
     statuses: dict[str, str] = {}
     if state == "open":
-        reviews = tuple(
-            Review(author=(r.get("user") or {}).get("login", ""), state=r.get("state", ""), commit_id=r.get("commit_id", ""),
-                   submitted_at=r.get("submitted_at", ""))
-            for r in gh.pull_reviews(number)
-        )
+        reviews = tuple(_review(r) for r in gh.pull_reviews(number))
         commits = gh.pull_commits(number)
         if commits:
             last = commits[-1]

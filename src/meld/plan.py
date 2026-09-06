@@ -9,7 +9,7 @@ from meld.board import PLAN_APPROVED_LABEL
 from meld.grammar import agreement_for
 from meld.models import SIZES
 from meld.posting import post
-from meld.rules import Refusal, Verb
+from meld.rules import Refusal, Verb, plan_rule
 from meld.status import build_status
 
 ITEM_RE = re.compile(r"^\s*-\s*id:\s*(?P<id>[a-z0-9][a-z0-9-]*)\s*\|\s*title:\s*(?P<title>[^|]+?)\s*\|\s*worker:\s*(?P<worker>\S+)\s*\|"
@@ -64,15 +64,6 @@ def parse_plan_items(text: str) -> tuple[list[PlanItem], list[str]]:
     return items, errors
 
 
-def _verified_joint(ctx, board, ref: str, verbs: tuple[str, ...], verb: Verb):
-    agreement = agreement_for(board.comments, ref, ctx.cfg)
-    if not agreement.joint_posted or agreement.joint_verb not in verbs:
-        refuse(ctx, board, Refusal(verb, ref, f"no verified [joint] {'/'.join(verbs)} {ref} on the coordination issue"))
-    if not agreement.joint_verified:
-        refuse(ctx, board, Refusal(verb, ref, f"the [joint] {agreement.joint_verb} {ref} comment is not verified (wrong author or posted before the round closed)"))
-    return agreement
-
-
 def _planned_for(board, ref: str) -> list[int]:
     return sorted(n for n, i in board.issues.items() if PLANNED in i.labels and f"plan-ref: {ref}" in (i.body or ""))
 
@@ -86,13 +77,10 @@ def _ready(ctx, numbers: list[int]) -> None:
 def plan_issues(ctx, ref: str, *, dry_run: bool = False) -> dict:
     _, board = build_status(ctx)
     actor = ctx.actor()
-    if actor.party.kind != "group":
-        refuse(ctx, board, Refusal(Verb.PLAN, ref, "only the proposer group's orchestrator may create plan issues"))
-    agreement = _verified_joint(ctx, board, ref, ("PLAN", "PLAN-ADD"), Verb.PLAN)
-    if agreement.joint_verb == "PLAN" and board.phase != "planning":
-        refuse(ctx, board, Refusal(Verb.PLAN, ref, f"{ref} was already approved; its issues can no longer be created"))
-    if agreement.proposer != actor.group:
-        refuse(ctx, board, Refusal(Verb.PLAN, ref, f"only the proposer ({agreement.proposer}) may create the issues for {ref}"))
+    rule = plan_rule(board, ctx.cfg, actor, "issues", ref)
+    if rule:
+        refuse(ctx, board, Refusal(Verb.PLAN, ref, rule))
+    agreement = agreement_for(board.comments, ref, ctx.cfg)
     items, errors = parse_plan_items(agreement.text or "")
     existing = {m.group(1) for i in board.issues.values() for m in [MARKER_RE.search(i.body or "")] if m}
     created: list[int] = []
@@ -116,11 +104,9 @@ def plan_approve(ctx) -> dict:
     _, board = build_status(ctx)
     actor = ctx.actor()
     ref = f"plan-{board.milestone}"
-    if not actor.is_human:
-        refuse(ctx, board, Refusal(Verb.PLAN, ref, "only a human may approve the plan"))
-    if board.phase != "planning":
-        refuse(ctx, board, Refusal(Verb.PLAN, ref, "the plan is already approved (milestone is executing)"))
-    _verified_joint(ctx, board, ref, ("PLAN",), Verb.PLAN)
+    rule = plan_rule(board, ctx.cfg, actor, "approve", ref)
+    if rule:
+        refuse(ctx, board, Refusal(Verb.PLAN, ref, rule))
     ready = sorted(n for n, i in board.issues.items() if PLANNED in i.labels)
     # Flip first, label last: the label is what makes the milestone `executing` (and this very call refuse as "already
     # approved"), so a failure while flipping leaves a still-planning board that a retry completes -- flipping is idempotent.
@@ -132,9 +118,9 @@ def plan_approve(ctx) -> dict:
 def plan_ack(ctx, ref: str) -> dict:
     _, board = build_status(ctx)
     actor = ctx.actor()
-    if not actor.is_human:
-        refuse(ctx, board, Refusal(Verb.PLAN, ref, "only a human may ack a plan addition"))
-    _verified_joint(ctx, board, ref, ("PLAN-ADD",), Verb.PLAN)
+    rule = plan_rule(board, ctx.cfg, actor, "ack", ref)
+    if rule:
+        refuse(ctx, board, Refusal(Verb.PLAN, ref, rule))
     already_acked = any(c.ok and c.header is not None and c.header.party.kind == "human" and c.header.verb == "ACK" and c.header.ref == ref
                         for c in board.comments)
     if not already_acked:

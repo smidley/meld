@@ -368,7 +368,10 @@ def tick(ctx, *, now: datetime | None = None, sleep=time.sleep, env: Mapping[str
         issue = board.issues.get(n)
         if lease.group == group.name or issue is None or issue.status != "in_progress" or not (board.now and lease.until < now_iso):
             continue
-        release(ctx, n)
+        # release() itself would also post a framework RELEASED note; announce=False suppresses that so this one
+        # event (an expired lease reclaimed by tick) writes exactly one framework comment -- the EXPIRED one below,
+        # which names the lease that expired (derive_leases treats both verbs as closers, so nothing is lost).
+        release(ctx, n, announce=False)
         ctx.gh.create_comment(board.coordination_issue, compose(Header(Party("pm", group.name), "EXPIRED", f"#{n}", None),
                                                                 f"Released #{n}: lease by {lease.group} expired at {lease.until} (now {now_iso})."))
         out["expired"].append(n)

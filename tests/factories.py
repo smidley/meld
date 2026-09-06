@@ -70,7 +70,18 @@ def mk_pr(number: int, issue: int, head_sha: str = "abc123", committer: str | No
                        labels=frozenset(extra_labels), state=state, merged=merged, statuses=dict(statuses or {}))
 
 
-def mk_comment(cfg: Config, id: int, author: str, body: str, created_at: str | None = None) -> ParsedComment:
+def mk_comment(*args, created_at: str | None = None) -> ParsedComment:
+    """Accepts either the original positional shape (cfg, id, author, body, created_at=None), used throughout the
+    rest of the suite, or the newer (id, author, body, created_at=None) shape (plan 5 task 1's test_rules_agreements.py
+    and the test_status.py addition), which defaults cfg to CFG2. The two are disambiguated by the type of the first
+    positional argument, since a Config and a comment id never overlap."""
+    if args and isinstance(args[0], Config):
+        cfg, id, author, body, *rest = args
+    else:
+        cfg = CFG2
+        id, author, body, *rest = args
+    if rest:
+        created_at = rest[0]
     return parse_comment({"id": id, "user": {"login": author}, "body": body,
                           "created_at": created_at or f"2026-09-03T10:{id % 60:02d}:00Z"}, cfg)
 
@@ -82,12 +93,19 @@ def mk_run(group: str, issue: int, alive: bool = True, collected: bool = False, 
                      model="claude-sonnet-5", effort="medium", tier=tier, milestone=3, alive=alive, collected=collected)
 
 
-def mk_board(cfg: Config, issues=(), pulls=(), comments=(), phase: str = "executing", halted: bool = False,
+def _keyed_by_number(items):
+    """`issues`/`pulls` accept either a sequence of objects (the original shape, keyed here by `.number`) or a dict
+    already keyed by number (plan 5 task 1's test_rules_agreements.py, which builds boards straight from
+    `{n: mk_issue(n, ...)}`/`{n: mk_pr(n, ...)}`)."""
+    return dict(items) if isinstance(items, dict) else {i.number: i for i in items}
+
+
+def mk_board(cfg: Config = CFG2, issues=(), pulls=(), comments=(), phase: str = "executing", halted: bool = False,
              runs: dict[str, dict[int, RunRecord]] | None = None, spend: dict[str, dict[str, int]] | None = None,
              open_challenges: frozenset[str] = frozenset(), leases: dict[int, Lease] | None = None,
              plan_text: str = "", now: str = "2026-09-03T12:00:00Z") -> Board:
     return Board(repo=cfg.repo_name, milestone=3, coordination_issue=10, phase=phase, halted=halted,
-                 issues={i.number: i for i in issues}, pulls={p.number: p for p in pulls}, comments=tuple(comments),
+                 issues=_keyed_by_number(issues), pulls=_keyed_by_number(pulls), comments=tuple(comments),
                  runs=runs or {g: {} for g in cfg.group_names}, spend=spend or {g: {} for g in cfg.group_names},
                  open_challenges=open_challenges, ignored_comments=0,
                  leases=leases or {}, plan_text=plan_text, now=now)

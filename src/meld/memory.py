@@ -14,7 +14,7 @@ from meld.config import Party
 from meld.dispatch import DispatchError, _iso, _now, git_identity, neutralise_closers
 from meld.gitops import GitError, create_worktree, git, push_branch, remove_worktree, slugify
 from meld.grammar import Agreement, Header, agreement_for, compose, verified_joint
-from meld.rules import Refusal, Verb
+from meld.rules import Refusal, Verb, decide_rule, remember_rule
 from meld.status import build_status
 
 DECISIONS_DIR = ".meld/decisions"
@@ -60,19 +60,6 @@ def comment_url(board, comment_id: int) -> str:
     return f"https://github.com/{board.repo}/issues/{board.coordination_issue}#issuecomment-{comment_id}"
 
 
-def _memory_pr_open(board, kind: str, ref: str) -> bool:
-    """An open memory PR for (kind, ref) -- by `PullRequest.memory`, so a marker in an ordinary PR's body never counts."""
-    return any(p.memory is not None and p.memory[:2] == (kind, ref) for p in board.pulls.values() if p.state == "open")
-
-
-def _already_recorded(ctx, board, ref: str, slug: str) -> bool:
-    """A decision is already handled if a memory PR for it is open, or its file already landed on origin's default
-    branch (via `_default_branch_files`, not `ctx.repo_root`'s own working copy)."""
-    if _memory_pr_open(board, "decision", ref):
-        return True
-    return any(p.endswith(f"-{slug}.md") for p in _default_branch_files(ctx, DECISIONS_DIR))
-
-
 def _open_memory_pr(ctx, board, group, *, branch: str, path: str, text: str, mode: str, title: str, body: str) -> tuple[int, str]:
     """Write `text` at `path` (mode 'w' or 'a') on a fresh branch from the default branch, commit as the bot, push, open the PR.
     Everything from here through `create_pull` runs inside `try`/`finally`: the worktree is scratch space only, so
@@ -116,20 +103,14 @@ def _request_review(ctx, board, group, pr_number: int, what: str) -> None:
 def decide(ctx, ref: str, *, now: datetime | None = None) -> dict:
     _, board = build_status(ctx)
     actor = ctx.actor()
-    if actor.party.kind not in ("group", "pm"):
-        refuse(ctx, board, Refusal(Verb.DECIDE, ref, "only the proposer group's orchestrator or PM may record a decision"))
-    agreement = agreement_for(board.comments, ref, ctx.cfg)
-    if not agreement.joint_posted or agreement.joint_verb != "DECISION":
-        refuse(ctx, board, Refusal(Verb.DECIDE, ref, f"no verified [joint] DECISION {ref} on the coordination issue"))
+    rule = decide_rule(board, ctx.cfg, actor, ref)
+    if rule:
+        refuse(ctx, board, Refusal(Verb.DECIDE, ref, rule))
     joint = verified_joint(board.comments, ref, ctx.cfg)
-    if joint is None:
-        refuse(ctx, board, Refusal(Verb.DECIDE, ref, f"the [joint] DECISION {ref} comment is not verified (wrong author or posted before the round closed)"))
-    if agreement.status not in ("agreed", "majority"):
-        refuse(ctx, board, Refusal(Verb.DECIDE, ref, f"{ref} ended in DISAGREE; the human decides"))
-    if agreement.proposer != actor.group:
-        refuse(ctx, board, Refusal(Verb.DECIDE, ref, f"only the proposer ({agreement.proposer}) may record {ref}"))
+    assert joint is not None  # decide_rule verified it
+    agreement = agreement_for(board.comments, ref, ctx.cfg)
     slug = slugify(ref)
-    if _already_recorded(ctx, board, ref, slug):
+    if any(p.endswith(f"-{slug}.md") for p in _default_branch_files(ctx, DECISIONS_DIR)):
         refuse(ctx, board, Refusal(Verb.DECIDE, ref, f"{ref} is already recorded or has an open memory PR"))
     group = ctx.cfg.groups[actor.group]  # type: ignore[index]
     when = _now(now)
@@ -149,17 +130,12 @@ def remember(ctx, ref: str, text: str, *, now: datetime | None = None) -> dict:
         raise DispatchError("a lesson needs text: what went wrong, what fixed it, what to check next time")
     _, board = build_status(ctx)
     actor = ctx.actor()
-    if actor.party.kind not in ("group", "pm"):
-        refuse(ctx, board, Refusal(Verb.REMEMBER, ref, "only an orchestrator or PM may record a lesson"))
     n = int(ref[1:]) if ref.startswith("#") and ref[1:].isdigit() else None
     issue = board.issues.get(n) if n is not None else None
     pr = board.pulls.get(n) if n is not None else None
-    if issue is None and pr is None:
-        refuse(ctx, board, Refusal(Verb.REMEMBER, ref, f"{ref} is not an issue or PR on the board"))
-    if issue is not None and issue.status in ("blocked", "needs_human"):
-        refuse(ctx, board, Refusal(Verb.REMEMBER, ref, f"{ref} is still {issue.status}; a lesson is recorded once the item resolves"))
-    if board.is_challenged(ref):
-        refuse(ctx, board, Refusal(Verb.REMEMBER, ref, f"{ref} has an open CHALLENGE; resolve it first"))
+    rule = remember_rule(board, ctx.cfg, actor, ref)
+    if rule:
+        refuse(ctx, board, Refusal(Verb.REMEMBER, ref, rule))
     group = ctx.cfg.groups[actor.group]  # type: ignore[index]
     when = _now(now)
     entry = render_lesson(ref, neutralise_closers(text), group.name, when.strftime("%Y-%m-%d"))

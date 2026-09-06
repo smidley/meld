@@ -168,7 +168,9 @@ def test_reopen_accepts_a_fail_audit_posted_on_the_pr_that_closed_the_issue():
 def test_legal_issue_verbs_and_party_of_login():
     i = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",))
     b = mk_board(CFG2, issues=[i], runs={"claude": {12: mk_run("claude", 12, alive=False)}, "codex": {}})
-    assert legal_issue_verbs(b, CFG2, CLAUDE_PM, i, REG) == ["release", "collect"]
+    # plan 5 task 1 adds Verb.REMEMBER to ISSUE_VERBS; remember_rule is legal here too (an in-progress, unchallenged,
+    # non-blocked/needs_human issue), so it now closes out the list alongside release/collect
+    assert legal_issue_verbs(b, CFG2, CLAUDE_PM, i, REG) == ["release", "collect", "remember"]
     assert party_of_login(CFG2, "meld-codex-bot") == "codex"
     assert party_of_login(CFG2, "empowerScott") == "human:empowerScott"
     assert party_of_login(CFG2, "randouser") is None

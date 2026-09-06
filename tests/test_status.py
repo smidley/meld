@@ -72,15 +72,15 @@ def test_status_command_reports_board_and_legal_actions(project: Path, monkeypat
     assert data["party"] == "[claude:pm]" and data["actor"] == "meld-claude-bot" and data["phase"] == "executing"
     assert data["quorum"] == 1
     issues = {i["number"]: i for i in data["issues"]}
-    assert issues[11]["legal"] == ["claim"]
+    assert issues[11]["legal"] == ["claim", "remember"]
     assert issues[12]["challenged"] and "dispatch" not in issues[12]["legal"] and "release" in issues[12]["legal"]
     assert issues[14]["status"] == "needs_human"
     assert issues[12]["lease"] is None
     assert data["needs_human"][0]["issue"] == 14 and data["needs_human"][0]["age_minutes"] > 0
     pulls = {p["number"]: p for p in data["pulls"]}
     assert pulls[20]["committer_party"] == "codex" and pulls[20]["approvals"] == ["claude"]
-    assert pulls[20]["legal"] == ["approve", "request-changes", "push-fix", "merge", "review"]
-    assert pulls[19]["state"] == "closed" and pulls[19]["legal"] == []
+    assert pulls[20]["legal"] == ["approve", "request-changes", "push-fix", "merge", "review", "remember"]
+    assert pulls[19]["state"] == "closed" and pulls[19]["legal"] == ["remember"]
     assert data["coordination"]["open_challenges"] == ["#12"] and data["coordination"]["ignored_comments"] == 1
     assert data["budget"]["cap"] == {"small": 200, "medium": 80, "large": 20}
     assert "digest" in data
@@ -119,7 +119,7 @@ def test_status_as_orchestrator_cannot_claim(project: Path, monkeypatch):
     result = CliRunner().invoke(cli.main, ["--config", str(project / ".meld.toml"), "--compact", "status"],
                                 env=env_for(project, role="orchestrator"))
     data = json.loads(result.output)
-    assert {i["number"]: i["legal"] for i in data["issues"]}[11] == ["tag"]
+    assert {i["number"]: i["legal"] for i in data["issues"]}[11] == ["tag", "remember"]
 
 
 def test_status_as_human_uses_gh_identity(project: Path, monkeypatch):
@@ -175,7 +175,7 @@ def test_status_tolerates_an_unknown_head_committer(project: Path, monkeypatch):
     assert result.exit_code == 0, result.output
     pulls = {p["number"]: p for p in json.loads(result.output)["pulls"]}
     assert pulls[20]["committer_party"] is None
-    assert pulls[20]["legal"] == ["request-changes", "push-fix", "review"]
+    assert pulls[20]["legal"] == ["request-changes", "push-fix", "review", "remember"]
 
 
 def test_status_reports_an_unreadable_commit_status_in_state_errors(project: Path, monkeypatch):
@@ -240,7 +240,7 @@ def test_audit_schedule_excludes_merged_memory_prs():
     now = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
     both = render_status(mk_board(CFG2, pulls=[memory, ordinary]), CFG2, CODEX_PM, REG, now)
     assert both["audit"] == {"pending": [19], "merges_pending": 1, "oldest_pending_hours": 6.0, "due": True}
-    assert {p["number"]: p["legal"] for p in both["pulls"]} == {19: ["audit"], 40: []}
+    assert {p["number"]: p["legal"] for p in both["pulls"]} == {19: ["audit", "remember"], 40: ["remember"]}
     only_memory = render_status(mk_board(CFG2, pulls=[memory]), CFG2, CODEX_PM, REG, now)["audit"]
     assert only_memory == {"pending": [], "merges_pending": 0, "oldest_pending_hours": None, "due": False}
     # a marker smuggled into an ordinary build PR's body (head meld/9-slug) does not exempt it from audit (N1)
@@ -265,4 +265,18 @@ def test_status_agreements_report_verification():
               mk_comment(CFG2, 2, "meld-codex-bot", "[codex] AGREE plan-1\n\nyes"),
               mk_comment(CFG2, 3, "meld-codex-bot", "[joint] PLAN plan-1\n\nsplit\n\nverified-by: x")]
     data = render_status(mk_board(CFG2, comments=thread), CFG2, CLAUDE_PM, REG, datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc))
-    assert data["coordination"]["agreements"]["plan-1"] == {"status": "agreed", "joint_verified": False}
+    assert data["coordination"]["agreements"]["plan-1"] == {"status": "agreed", "joint_verified": False, "legal": []}
+
+
+def test_status_agreements_carry_legal_actions(board1_gh, tmp_path):
+    from meld.status import render_status
+    from meld.rules import Actor
+    from meld.config import Party
+    from tests.factories import CFG2, REG, mk_board, mk_comment
+    comments = [
+        mk_comment(101, "meld-claude-bot", "[claude] PROPOSE dec-1\n\nUse Postgres.", "2026-09-03T10:00:00Z"),
+        mk_comment(102, "meld-codex-bot", "[codex] AGREE dec-1\n\nyes", "2026-09-03T10:01:00Z"),
+        mk_comment(103, "meld-claude-bot", "[joint] DECISION dec-1\n\nUse Postgres.\n\nverified-by: agreed", "2026-09-03T10:02:00Z"),
+    ]
+    data = render_status(mk_board(comments=comments), CFG2, Actor(Party("pm", "claude"), "meld-claude-bot"), REG)
+    assert data["coordination"]["agreements"]["dec-1"]["legal"] == ["decide"]

@@ -316,3 +316,23 @@ def test_create_label_normalises_color(board1_gh):
     assert result["color"] == "cccccc"
     body = [c for c in fake.calls if c.method == "POST" and "labels" in c.endpoint][-1].body
     assert body == {"name": "meld:planned", "color": "cccccc", "description": ""}
+
+
+def test_github_uses_the_token_provider_and_refreshes_once_on_401(tmp_path):
+    fake = FakeGh()
+    fake.route("GET", "repos/acme/widgets/issues/1", {"number": 1})
+    asked = []
+
+    def provider(force=False):
+        # Stateful stand-in for AppAuth.token: returns the cached installation token until forced,
+        # then the refreshed one -- enough to exercise GitHub's retry-once-on-401 path.
+        asked.append(force)
+        return "ghs_new" if force else "ghs_old"
+
+    gh = GitHub("acme/widgets", run=fake, token_provider=provider)
+    assert gh.token == "ghs_old"                       # first ask, not forced
+    fake.route("GET", "repos/acme/widgets/issues/2", {"message": "Bad credentials"}, status=401)
+    with pytest.raises(GitHubError, match="401"):
+        gh.get("repos/acme/widgets/issues/2", use_cache=False)
+    assert True in asked                               # a forced refresh was requested after the 401
+    assert fake.envs[-1]["GH_TOKEN"] == "ghs_new"      # and the retry carried the refreshed token

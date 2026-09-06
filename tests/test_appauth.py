@@ -14,11 +14,14 @@ NOW = 1_800_000_000
 
 
 @pytest.fixture(scope="module")
-def keypair(tmp_path_factory):
+def keypair(keypair_pem, tmp_path_factory):
+    """(pem, pub_path) for this module: the private key comes from the session-scoped keypair_pem fixture
+    (shared with tests/test_context.py); only the public key still needs deriving here, for the tests below
+    that verify signatures against it."""
     d = tmp_path_factory.mktemp("keys")
-    subprocess.run(["openssl", "genrsa", "-out", str(d / "key.pem"), "2048"], check=True, capture_output=True)
-    subprocess.run(["openssl", "rsa", "-in", str(d / "key.pem"), "-pubout", "-out", str(d / "pub.pem")], check=True, capture_output=True)
-    return (d / "key.pem").read_text(), d / "pub.pem"
+    pub = d / "pub.pem"
+    subprocess.run(["openssl", "rsa", "-pubout", "-out", str(pub)], input=keypair_pem, capture_output=True, text=True, check=True)
+    return keypair_pem, pub
 
 
 def test_jwt_has_the_github_claims_and_a_verifiable_signature(keypair, tmp_path):

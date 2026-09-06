@@ -194,3 +194,14 @@ def test_app_group_config_parses_and_validates():
         Config.from_dict({**base, "groups": {"claude": {**app, "private_key_file": "/tmp/k.pem"}}})
     with pytest.raises(ConfigError, match="auth"):
         Config.from_dict({**base, "groups": {"claude": {**app, "auth": "oauth"}}})
+
+
+def test_app_group_non_numeric_ids_are_rejected():
+    base = {"repo": {"name": "acme/widgets"}, "humans": {"accounts": ["empowerScott"]}}
+    role = {"model": "claude-opus-5", "effort": "high"}
+    app = {"cli": "claude", "bot": "meld-claude[bot]", "auth": "app", "app_id": 1234, "installation_id": 55,
+           "private_key_env": "MELD_APP_KEY_CLAUDE", "orchestrator": role, "pm": role}
+    with pytest.raises(ConfigError, match=r"groups\.claude\.app_id must be an integer"):
+        Config.from_dict({**base, "groups": {"claude": {**app, "app_id": "not-a-number"}}})
+    with pytest.raises(ConfigError, match=r"groups\.claude\.installation_id must be an integer"):
+        Config.from_dict({**base, "groups": {"claude": {**app, "installation_id": "not-a-number"}}})

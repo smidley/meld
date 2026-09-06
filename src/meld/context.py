@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from meld.adapters import Adapter, get_adapter
+from meld.appauth import AppAuth, AppAuthError, load_pem
 from meld.config import Config, ConfigError, Party, load_config, party_from_env
 from meld.github import GitHub
 from meld.models import ModelRegistry
@@ -28,6 +29,7 @@ class Context:
     repo_root: Path
     actor_login: str
     adapter_for: Callable[[str], Adapter] = get_adapter
+    app_auth: AppAuth | None = None
     _adapter_cache: Any = field(default=_UNSET, init=False, repr=False, compare=False)
     _roster_cache: list[WorkerType] | None = field(default=None, init=False, repr=False, compare=False)
 
@@ -68,7 +70,8 @@ def find_config(start: Path) -> Path:
 
 
 def load_context(config_path: Path | None = None, env: Mapping[str, str] | None = None, run=subprocess.run,
-                 cwd: Path | None = None, models: ModelRegistry | None = None, adapter_for: Callable[[str], Adapter] = get_adapter) -> Context:
+                 cwd: Path | None = None, models: ModelRegistry | None = None, adapter_for: Callable[[str], Adapter] = get_adapter,
+                 app_post=None) -> Context:
     env = os.environ if env is None else env
     if env.get("MELD_WORKER") == "1":
         # Workers hold no token and no party; a worker that reaches for meld is trying to act as its group.
@@ -79,12 +82,22 @@ def load_context(config_path: Path | None = None, env: Mapping[str, str] | None 
     role = {"group": "orchestrator", "pm": "pm"}.get(party.kind)
     store = StateStore(meld_home(env), party.group, role)
     token: str | None = None
+    provider = None
+    app_auth: AppAuth | None = None
     if party.group:
         g = cfg.groups[party.group]
-        token = env.get(g.token_env)
-        if not token:
-            raise ConfigError(f"{g.token_env} is not set in the environment")
-    gh = GitHub(cfg.repo_name, token=token, run=run, cache_dir=store.cache_dir)
+        if g.is_app:
+            try:
+                pem = load_pem(env, g.private_key_env, g.private_key_file)
+            except AppAuthError as e:
+                raise ConfigError(f"[groups.{g.name}]: {e}") from e
+            app_auth = AppAuth(g.app_id, g.installation_id, pem, store.cache_dir / "app-token.json", post=app_post)  # type: ignore[arg-type]
+            provider = app_auth.token
+        else:
+            token = env.get(g.token_env or "")
+            if not token:
+                raise ConfigError(f"{g.token_env} is not set in the environment")
+    gh = GitHub(cfg.repo_name, token=token, run=run, cache_dir=store.cache_dir, token_provider=provider)
     login = cfg.groups[party.group].bot if party.group else gh.viewer_login()
     return Context(cfg=cfg, party=party, gh=gh, store=store, models=models or ModelRegistry.load(),
-                   repo_root=path.parent, actor_login=login, adapter_for=adapter_for)
+                   repo_root=path.parent, actor_login=login, adapter_for=adapter_for, app_auth=app_auth)

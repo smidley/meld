@@ -28,13 +28,20 @@ class RateLimited(GitHubError):
 
 
 class GitHub:
-    def __init__(self, repo: str, token: str | None = None, run: RunFn = subprocess.run, cache_dir: Path | None = None):
+    def __init__(self, repo: str, token: str | None = None, run: RunFn = subprocess.run, cache_dir: Path | None = None,
+                 token_provider: Callable[[bool], str] | None = None):
         self.repo = repo
-        self.token = token
+        self._token = token
+        self._provider = token_provider
         self._run = run
         self._cache_dir = cache_dir
         if cache_dir is not None:
             cache_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def token(self) -> str | None:
+        """The credential every call carries: the provider's current installation token for an App group, else the static PAT."""
+        return self._provider(False) if self._provider else self._token
 
     # ---- low level -------------------------------------------------------
 
@@ -43,16 +50,10 @@ class GitHub:
             return None
         return self._cache_dir / (hashlib.sha1(endpoint.encode()).hexdigest() + ".json")
 
-    def _call(self, method: str, endpoint: str, body: dict | None = None, headers: dict[str, str] | None = None) -> tuple[int, dict[str, str], Any]:
-        cmd = ["gh", "api", "--include", "-X", method]
-        for k, v in (headers or {}).items():
-            cmd += ["-H", f"{k}: {v}"]
-        if body is not None:
-            cmd += ["--input", "-"]
-        cmd.append(endpoint)
+    def _request(self, cmd: list[str], body: dict | None, token: str | None) -> tuple[int, dict[str, str], Any]:
         env = dict(os.environ)
-        if self.token:
-            env["GH_TOKEN"] = self.token
+        if token:
+            env["GH_TOKEN"] = token
         proc = self._run(cmd, input=json.dumps(body) if body is not None else None, capture_output=True, text=True, env=env)
         raw = (proc.stdout or "").replace("\r\n", "\n")
         head, _, text = raw.partition("\n\n")
@@ -60,7 +61,7 @@ class GitHub:
         try:
             status = int(lines[0].split()[1])
         except (IndexError, ValueError) as e:
-            raise GitHubError(f"could not parse gh response for {method} {endpoint}: {proc.stderr.strip() or raw[:200]}", status=None) from e
+            raise GitHubError(f"could not parse gh response for {' '.join(cmd)}: {proc.stderr.strip() or raw[:200]}", status=None) from e
         resp_headers = {}
         for line in lines[1:]:
             k, _, v = line.partition(": ")
@@ -75,6 +76,19 @@ class GitHub:
                 parsed = json.loads(text)
             except json.JSONDecodeError:
                 parsed = text
+        return status, resp_headers, parsed
+
+    def _call(self, method: str, endpoint: str, body: dict | None = None, headers: dict[str, str] | None = None) -> tuple[int, dict[str, str], Any]:
+        cmd = ["gh", "api", "--include", "-X", method]
+        for k, v in (headers or {}).items():
+            cmd += ["-H", f"{k}: {v}"]
+        if body is not None:
+            cmd += ["--input", "-"]
+        cmd.append(endpoint)
+        status, resp_headers, parsed = self._request(cmd, body, self.token)
+        if status == 401 and self._provider is not None:
+            # An installation token expired between the provider's freshness check and the call: refresh once and retry.
+            status, resp_headers, parsed = self._request(cmd, body, self._provider(True))
         return status, resp_headers, parsed
 
     def get(self, endpoint: str, params: dict[str, Any] | None = None, *, use_cache: bool = True) -> Any:

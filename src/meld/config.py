@@ -125,8 +125,18 @@ class Config:
             key_env = key_file = None
             bot = str(_require(g, "bot", path))
             if auth == "app":
-                app_id = int(_require(g, "app_id", path))
-                installation_id = int(_require(g, "installation_id", path))
+                # _require's own ConfigError (missing key) must propagate as-is, not be relabeled
+                # "must be an integer" -- so the lookup happens outside the int() try/except.
+                raw_app_id = _require(g, "app_id", path)
+                try:
+                    app_id = int(raw_app_id)
+                except (TypeError, ValueError) as e:
+                    raise ConfigError(f"{path}.app_id must be an integer") from e
+                raw_installation_id = _require(g, "installation_id", path)
+                try:
+                    installation_id = int(raw_installation_id)
+                except (TypeError, ValueError) as e:
+                    raise ConfigError(f"{path}.installation_id must be an integer") from e
                 key_env = str(g["private_key_env"]) if g.get("private_key_env") else None
                 key_file = str(g["private_key_file"]) if g.get("private_key_file") else None
                 if bool(key_env) == bool(key_file):

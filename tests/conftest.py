@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,17 @@ from meld.github import GitHub
 from tests.fakegh import FakeGh
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture(scope="session")
+def keypair_pem(tmp_path_factory) -> str:
+    """A 2048-bit RSA private key, generated once for the whole test session. Shared by tests/test_appauth.py
+    (which also needs the matching public key, derived from this PEM) and tests/test_context.py (which only
+    needs the PEM string to set as an App group's private_key_env)."""
+    d = tmp_path_factory.mktemp("keys")
+    key = d / "key.pem"
+    subprocess.run(["openssl", "genrsa", "-out", str(key), "2048"], check=True, capture_output=True)
+    return key.read_text()
 
 
 def load_board1_routes(fake: FakeGh, repo: str = "acme/widgets") -> None:

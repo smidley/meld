@@ -2,6 +2,13 @@
 
 Read-only, apart from the opt-in status probe. Every check is a Check(ok=True|False|None): None is a warning or a check that
 could not run. Nothing here prints or stores a token value -- only variable names and account logins.
+
+For a PAT group (spec 18), `token:<g>` and `token-permissions:<g>` verify the token is set, owned by the configured bot,
+and carries the needed permissions. For a GitHub App group (plan 6a), those two checks are replaced by `app:<g>` (the
+private key loads, the App JWT signs, and `GET /app` resolves to the configured bot) and `app-installation:<g>` (an
+installation access token mints, its granted permissions cover contents/issues/pull_requests/statuses, and the
+installation includes the product repo) -- App permissions come from the mint response, not a probe. `openssl` (needed
+to sign an App's JWT) is checked once per run, on PATH, regardless of whether any group uses App auth.
 """
 from __future__ import annotations
 
@@ -17,6 +24,7 @@ from typing import Callable, Mapping
 
 from meld.adapters import UnknownAdapter
 from meld.adapters.base import SCRUBBED_EXACT, SCRUBBED_PREFIXES
+from meld.appauth import AppAuthError, app_slug, load_pem, mint_installation_token
 from meld.atomic import write_atomic
 from meld.config import Config
 from meld.github import GitHub, GitHubError
@@ -94,7 +102,7 @@ def _memory_bytes(repo_root: Path) -> int:
 
 def run_checks(cfg: Config, repo_root: Path, *, env: Mapping[str, str], gh_factory: Callable[[str | None], GitHub], registry: ModelRegistry,
                adapter_for, which: Callable[[str], str | None] = shutil.which, home: Path, probe_status: bool = False,
-               user_home: Path = Path.home(), run=subprocess.run) -> list[Check]:
+               user_home: Path = Path.home(), run=subprocess.run, app_post=None, app_get=None) -> list[Check]:
     checks: list[Check] = []
     # 1. gh's own login is a listed human
     try:
@@ -108,6 +116,8 @@ def run_checks(cfg: Config, repo_root: Path, *, env: Mapping[str, str], gh_facto
         head_sha = gh_factory(None).get(f"repos/{cfg.repo_name}/branches/{cfg.default_branch}", use_cache=False)["commit"]["sha"]
     except (GitHubError, KeyError, TypeError):
         pass
+    checks.append(Check("openssl", bool(which("openssl")), "openssl on PATH" if which("openssl") else "openssl not found; App groups cannot sign their JWT",
+                        "" if which("openssl") else "install openssl (brew install openssl) or use PAT groups"))
     for group in cfg.groups.values():
         try:
             adapter = adapter_for(group.cli)
@@ -127,20 +137,45 @@ def run_checks(cfg: Config, repo_root: Path, *, env: Mapping[str, str], gh_facto
                 detail = f"{binary}: not found on PATH"
             checks.append(Check(f"cli:{group.name}", bool(found and version), detail,
                                 "" if found and version else f"install the {group.cli} CLI and log in"))
-        # 3. token present and owned by the configured bot
-        token = env.get(group.token_env)
-        if not token:
-            checks.append(Check(f"token:{group.name}", False, f"{group.token_env} is not set", f"export {group.token_env} (from 1Password) for the orchestrator and PM processes"))
+        # 3. token present and owned by the configured bot (PAT groups); key/JWT/slug and installation token (App groups)
+        if group.is_app:
             login = None
-        else:
+            pem = None
             try:
-                login = gh_factory(token).viewer_login()
-                checks.append(Check(f"token:{group.name}", login == group.bot,
-                                    f"{group.token_env} belongs to {login}; configured bot is {group.bot}",
-                                    "" if login == group.bot else "mint the token from the bot account, or fix [groups.%s].bot" % group.name))
-            except GitHubError as e:
+                pem = load_pem(env, group.private_key_env, group.private_key_file)
+                slug = app_slug(group.app_id, pem, get=app_get)  # type: ignore[arg-type]
+                login = f"{slug}[bot]"
+                checks.append(Check(f"app:{group.name}", login == group.bot, f"App {group.app_id} is {login}; configured bot is {group.bot}",
+                                    "" if login == group.bot else f"set [groups.{group.name}].bot = \"{login}\""))
+            except AppAuthError as e:
+                checks.append(Check(f"app:{group.name}", False, f"App auth failed: {e}", "check private_key_env/private_key_file and app_id"))
+            if pem is not None:
+                try:
+                    tok = mint_installation_token(group.app_id, group.installation_id, pem, post=app_post)  # type: ignore[arg-type]
+                    need = {"contents": "write", "issues": "write", "pull_requests": "write", "statuses": "write"}
+                    wrong = {k: tok.permissions.get(k, "none") for k, v in need.items() if tok.permissions.get(k) != v}
+                    covers = not tok.repositories or cfg.repo_name in tok.repositories
+                    detail = "permissions: " + ", ".join(f"{k}: {tok.permissions.get(k, 'none')}" for k in (*need, "checks"))
+                    if not covers:
+                        detail += f"; installation does not include {cfg.repo_name} (has: {', '.join(tok.repositories)})"
+                    checks.append(Check(f"app-installation:{group.name}", not wrong and covers, detail,
+                                        "" if not wrong and covers else "edit the App's permissions (Contents, Issues, Pull requests, Commit statuses: read & write; Checks optional) and install it on the repo"))
+                except AppAuthError as e:
+                    checks.append(Check(f"app-installation:{group.name}", False, f"installation token failed: {e}", "check installation_id (from the installation URL) and that the App is installed on the repo"))
+        else:
+            token = env.get(group.token_env)
+            if not token:
+                checks.append(Check(f"token:{group.name}", False, f"{group.token_env} is not set", f"export {group.token_env} (from 1Password) for the orchestrator and PM processes"))
                 login = None
-                checks.append(Check(f"token:{group.name}", False, f"{group.token_env}: gh api user failed: {e}", "check the token is valid and not expired"))
+            else:
+                try:
+                    login = gh_factory(token).viewer_login()
+                    checks.append(Check(f"token:{group.name}", login == group.bot,
+                                        f"{group.token_env} belongs to {login}; configured bot is {group.bot}",
+                                        "" if login == group.bot else "mint the token from the bot account, or fix [groups.%s].bot" % group.name))
+                except GitHubError as e:
+                    login = None
+                    checks.append(Check(f"token:{group.name}", False, f"{group.token_env}: gh api user failed: {e}", "check the token is valid and not expired"))
         # 4. git identity for worktree commits
         if group.git_email:
             checks.append(Check(f"git-identity:{group.name}", True, f"{group.git_name or group.bot} <{group.git_email}> (configured)"))
@@ -164,31 +199,32 @@ def run_checks(cfg: Config, repo_root: Path, *, env: Mapping[str, str], gh_facto
             ok = ceiling > cfg.wait_timeout_seconds
             checks.append(Check(f"timeout-ceiling:{group.name}", ok, f"command ceiling {ceiling}s vs polling.wait_timeout_seconds {cfg.wait_timeout_seconds}s",
                                 "" if ok else "lower polling.wait_timeout_seconds below the CLI's command ceiling"))
-        # 7. token permissions (read probes; write only with --probe-status)
-        if token and login == group.bot and head_sha:
-            gh = gh_factory(token)
-            missing = []
-            for perm, call in (("Issues", lambda: gh.get(f"repos/{cfg.repo_name}/issues", {"per_page": 1}, use_cache=False)),
-                               ("Pull requests", lambda: gh.get(f"repos/{cfg.repo_name}/pulls", {"per_page": 1}, use_cache=False)),
-                               ("Commit statuses", lambda: gh.combined_status(head_sha))):
-                try:
-                    call()
-                except GitHubError:
-                    missing.append(perm)
-            detail = "read: Issues, Pull requests, Commit statuses" if not missing else f"cannot read: {', '.join(missing)}"
-            if probe_status and "Commit statuses" not in missing:
-                try:
-                    gh.create_status(head_sha, "success", PROBE_CONTEXT, f"meld doctor probe by {group.name}")
-                    detail += "; write: Commit statuses (probed)"
-                except GitHubError:
-                    missing.append("Commit statuses (write)")
-                    detail += "; cannot write Commit statuses"
-            elif not missing:
-                detail += "; write not probed (pass --probe-status)"
-            checks.append(Check(f"token-permissions:{group.name}", not missing, detail,
-                                "" if not missing else "re-mint the token with Contents, Issues, Pull requests, Commit statuses: read and write"))
-        else:
-            checks.append(Check(f"token-permissions:{group.name}", None, "skipped (token or default-branch head unavailable)"))
+        # 7. token permissions (read probes; write only with --probe-status) -- App permissions come from the token response (step 3)
+        if not group.is_app:
+            if token and login == group.bot and head_sha:
+                gh = gh_factory(token)
+                missing = []
+                for perm, call in (("Issues", lambda: gh.get(f"repos/{cfg.repo_name}/issues", {"per_page": 1}, use_cache=False)),
+                                   ("Pull requests", lambda: gh.get(f"repos/{cfg.repo_name}/pulls", {"per_page": 1}, use_cache=False)),
+                                   ("Commit statuses", lambda: gh.combined_status(head_sha))):
+                    try:
+                        call()
+                    except GitHubError:
+                        missing.append(perm)
+                detail = "read: Issues, Pull requests, Commit statuses" if not missing else f"cannot read: {', '.join(missing)}"
+                if probe_status and "Commit statuses" not in missing:
+                    try:
+                        gh.create_status(head_sha, "success", PROBE_CONTEXT, f"meld doctor probe by {group.name}")
+                        detail += "; write: Commit statuses (probed)"
+                    except GitHubError:
+                        missing.append("Commit statuses (write)")
+                        detail += "; cannot write Commit statuses"
+                elif not missing:
+                    detail += "; write not probed (pass --probe-status)"
+                checks.append(Check(f"token-permissions:{group.name}", not missing, detail,
+                                    "" if not missing else "re-mint the token with Contents, Issues, Pull requests, Commit statuses: read and write"))
+            else:
+                checks.append(Check(f"token-permissions:{group.name}", None, "skipped (token or default-branch head unavailable)"))
     # 8. settings.json env blocks that would re-inject a token or party into a worker
     hits = _settings_env_names([user_home / ".claude" / "settings.json", repo_root / ".claude" / "settings.json", repo_root / ".claude" / "settings.local.json"])
     checks.append(Check("settings-env", None if hits else True,

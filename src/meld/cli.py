@@ -458,7 +458,7 @@ def doctor(ctx: click.Context, probe_status: bool, do_sweep: bool, dry_run: bool
             c = load_context(path, run=RUN, adapter_for=ADAPTER_FOR)
             _, board = build_status(c)
             states = {n: ("merged" if p.merged else p.state) for n, p in board.pulls.items()}
-        except (BoardError, GitHubError, ConfigError):
+        except (BoardError, GitHubError, ConfigError, AppAuthError):
             states = None
         emit(sweep(meld_home(os.environ), cfg, repo_root=path.parent, pull_states=states, older_than_days=older_than_days, apply=not dry_run), ctx.obj["pretty"])
         return

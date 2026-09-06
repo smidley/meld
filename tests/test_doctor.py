@@ -8,6 +8,7 @@ from click.testing import CliRunner
 
 import meld.cli as cli
 from meld.adapters import UnknownAdapter
+from meld.appauth import AppAuthError
 from meld.config import Config
 from meld.doctor import run_checks, summary, sweep
 from meld.github import GitHub
@@ -258,3 +259,80 @@ def test_doctor_reports_unknown_cli_and_skips_dependent_checks_for_that_group(tm
     assert checks["token:codex"].ok is True
     # The other group is entirely unaffected.
     assert checks["cli:claude"].ok is True and checks["timeout-ceiling:claude"].ok is True
+
+
+def app_cfg():
+    text = PROJECT_TOML.replace('token_env = "MELD_TOKEN_CLAUDE"', 'auth = "app"\napp_id = 1234\ninstallation_id = 55\nprivate_key_env = "MELD_APP_KEY_CLAUDE"').replace('bot = "meld-claude-bot"', 'bot = "meld-claude[bot]"')
+    return Config.from_dict(tomllib.loads(text))
+
+
+def app_http(*, slug="meld-claude", perms=None, repos=("acme/widgets",), token_status=201):
+    perms = perms if perms is not None else {"contents": "write", "issues": "write", "pull_requests": "write", "statuses": "write", "checks": "write"}
+    calls = []
+
+    def get(url, headers):
+        calls.append(("GET", url))
+        return 200, {"slug": slug, "id": 1234}
+
+    def post(url, headers, body):
+        calls.append(("POST", url))
+        return token_status, {"token": "ghs_doc", "expires_at": "2999-01-01T00:00:00Z", "permissions": perms, "repositories": [{"full_name": r} for r in repos]}
+
+    return get, post, calls
+
+
+def run_app(tmp_path, by_token, keypair_pem, *, cfg_=None, get=None, post=None, env=None):
+    env = {"MELD_APP_KEY_CLAUDE": keypair_pem.replace("\n", "\\n"), "MELD_TOKEN_CODEX": "tok-x", **(env or {})}
+    by_token["ghs_doc"] = by_token[None]
+    return run_checks(cfg_ or app_cfg(), tmp_path, env=env, gh_factory=lambda token: GitHub("acme/widgets", token=token, run=by_token[token]),
+                      registry=ModelRegistry.load(), adapter_for=lambda name: FakeAdapter(ceiling=600, name=name), which=lambda b: "/bin/" + b,
+                      home=tmp_path / "home", user_home=tmp_path / "userhome", app_get=get, app_post=post)
+
+
+def test_doctor_verifies_an_app_group(tmp_path, keypair_pem):
+    by_token = fakes()
+    by_token[None].route("GET", "users/meld-claude[bot]", {"login": "meld-claude[bot]", "id": 99})
+    get, post, calls = app_http()
+    checks = by_name(run_app(tmp_path, by_token, keypair_pem, get=get, post=post))
+    assert checks["openssl"].ok
+    assert checks["app:claude"].ok and "meld-claude[bot]" in checks["app:claude"].detail
+    assert checks["app-installation:claude"].ok and "checks: write" in checks["app-installation:claude"].detail
+    assert "token:claude" not in checks and "token-permissions:claude" not in checks
+    assert checks["token:codex"].ok                      # the PAT group still gets its own checks
+    assert checks["git-identity:claude"].ok and "99+meld-claude[bot]@users.noreply.github.com" in checks["git-identity:claude"].detail
+    assert ("GET", "https://api.github.com/app") in calls and ("POST", "https://api.github.com/app/installations/55/access_tokens") in calls
+
+
+def test_doctor_flags_a_slug_mismatch_missing_permission_and_uninstalled_repo(tmp_path, keypair_pem):
+    by_token = fakes()
+    by_token[None].route("GET", "users/meld-claude[bot]", {"login": "meld-claude[bot]", "id": 99})
+    get, post, _ = app_http(slug="other-app", perms={"contents": "write", "issues": "write", "pull_requests": "read", "statuses": "write"}, repos=("acme/other",))
+    checks = by_name(run_app(tmp_path, by_token, keypair_pem, get=get, post=post))
+    assert checks["app:claude"].ok is False and "other-app[bot]" in checks["app:claude"].detail
+    inst = checks["app-installation:claude"]
+    assert inst.ok is False and "pull_requests: read" in inst.detail and "acme/widgets" in inst.detail
+
+
+def test_doctor_reports_a_missing_key_and_a_failed_mint(tmp_path, keypair_pem):
+    by_token = fakes()
+    checks = by_name(run_app(tmp_path, by_token, keypair_pem, env={"MELD_APP_KEY_CLAUDE": ""}))
+    assert checks["app:claude"].ok is False and "MELD_APP_KEY_CLAUDE" in checks["app:claude"].detail
+    get, post, _ = app_http(token_status=401)
+    checks = by_name(run_app(tmp_path, by_token, keypair_pem, get=get, post=post))
+    assert checks["app-installation:claude"].ok is False and "401" in checks["app-installation:claude"].detail
+
+
+def test_cli_doctor_sweep_tolerates_an_app_auth_failure_while_building_board_state(tmp_path, monkeypatch):
+    """Task 3 review tidy-up: `doctor --sweep` builds board state through `load_context`, which for an App group
+    can raise AppAuthError (e.g. a bad key or a failed installation-token mint reached while resolving the
+    group's GitHub client). That must fall back to pull_states=None like BoardError/GitHubError/ConfigError
+    already do, not crash the whole invocation."""
+    (tmp_path / ".meld.toml").write_text(PROJECT_TOML)
+    monkeypatch.setenv("MELD_HOME", str(tmp_path / "home"))
+
+    def _raise(*a, **kw):
+        raise AppAuthError("installation token failed")
+    monkeypatch.setattr(cli, "load_context", _raise)
+    result = CliRunner().invoke(cli.main, ["--config", str(tmp_path / ".meld.toml"), "doctor", "--sweep", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["dry_run"] is True

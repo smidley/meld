@@ -324,3 +324,11 @@ def test_get_contents_falls_back_to_the_blob_endpoint_for_large_files(board1_gh)
     fake.route("GET", "repos/acme/widgets/contents/.meld/memory/lessons.md", {"encoding": "none", "sha": "blob1", "size": 2_000_000}, query={"ref": "main"})
     fake.route("GET", "repos/acme/widgets/git/blobs/blob1", {"encoding": "base64", "content": base64.b64encode(b"# Lessons\n").decode()})
     assert gh.get_contents(".meld/memory/lessons.md", "main") == "# Lessons\n"
+
+
+def test_get_contents_raises_when_the_blob_has_no_content(board1_gh):
+    fake, gh = board1_gh
+    fake.route("GET", "repos/acme/widgets/contents/.meld/memory/lessons.md", {"encoding": "none", "sha": "blob2", "size": 2_000_000}, query={"ref": "main"})
+    fake.route("GET", "repos/acme/widgets/git/blobs/blob2", {"encoding": "base64"})
+    with pytest.raises(GitHubError, match="blob has no content"):
+        gh.get_contents(".meld/memory/lessons.md", "main")

@@ -163,15 +163,26 @@ def _local_hits(repo_root: Path, terms: list[str], ref: str | None = None) -> li
         except GitError:
             return []
         for path in (out.splitlines() if out else []):
+            # Filter to the two shapes we ever read BEFORE `git show`: ls-tree can list anything under these two
+            # directories (a stray non-.md file, a binary someone committed by mistake), and there is no reason to
+            # spend a `git show` -- or risk decoding one -- on a file this function was never going to score anyway.
+            is_decision = path.startswith(".meld/decisions/") and path.endswith(".md")
+            is_lessons = path == ".meld/memory/lessons.md"
+            if not (is_decision or is_lessons):
+                continue
             try:
                 text = git(["show", f"{ref}:{path}"], repo_root)
-            except GitError:
+            except (GitError, UnicodeDecodeError):
+                # GitError: the show itself failed (rare once ls-tree just listed it). UnicodeDecodeError: gitops.git
+                # runs with text=True, so a file that is not valid UTF-8 at this ref (a binary, or a mis-encoded
+                # decision file) raises here rather than returning garbage -- either way, skip just this one file;
+                # a neighbouring, well-formed decision or lesson must still be found.
                 continue
-            if path.startswith(".meld/decisions/") and path.endswith(".md"):
+            if is_decision:
                 hit = _decision_hit(path, text, terms)
                 if hit:
                     hits.append(hit)
-            elif path == ".meld/memory/lessons.md":
+            else:
                 hits.extend(_lesson_hits(path, text, terms))
         return hits
     hits = []

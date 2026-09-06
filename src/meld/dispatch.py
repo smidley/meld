@@ -373,6 +373,19 @@ def dispatch(ctx, number: int, *, kind: str = "build", worker: str | None = None
     return _dispatch_pr(ctx, board, actor, number, kind, adapter, when, env, worker)
 
 
+def _recall_for_brief(ctx, text: str) -> tuple[list[str], str | None]:
+    """recall_snippets at origin/<default>, refreshing that ref first: the checkout reaching this call cannot be
+    trusted to have it current on its own -- a reused build worktree skips create_worktree's fetch entirely (the
+    `mode == "reused"` branch in _dispatch_build never calls it), and checkout_pr_head only fetches the PR's own
+    branch, never the default branch. A fetch failure (e.g. offline) must never fail a dispatch: it falls back to
+    the working copy and returns a note for the caller to fold into the dispatch result instead of raising."""
+    try:
+        git(["fetch", "--quiet", "origin", ctx.cfg.default_branch], ctx.repo_root)
+    except GitError:
+        return recall_snippets(ctx.repo_root, text), "origin fetch failed; recall used the local checkout"
+    return recall_snippets(ctx.repo_root, text, ref=f"origin/{ctx.cfg.default_branch}"), None
+
+
 def _dispatch_build(ctx, board: Board, actor: Actor, number: int, adapter: Adapter | None, when: datetime, env: dict | None) -> dict:
     issue = board.issues.get(number)
     if issue is None:
@@ -390,11 +403,12 @@ def _dispatch_build(ctx, board: Board, actor: Actor, number: int, adapter: Adapt
     mode = "reused" if worktree_exists(ctx.repo_root, wt) else create_worktree(ctx.repo_root, wt, branch, ctx.cfg.default_branch)
     exclude_paths(wt)
     skills_result = materialise_skills(wt, adp, [w for w in ctx.roster_entries() if w.source == "product-skill"])
+    recall_hits, recall_note = _recall_for_brief(ctx, f"{issue.title}\n{issue.body}")
     brief = render_brief(role=worker, kind="build", group=group.name, model=issue.model or "", effort=issue.effort or "", issue=issue,
                          pr=None, plan_text=board.plan_text, repo_root=ctx.repo_root, worktree=wt, base_branch=ctx.cfg.default_branch,
                          skills=select_skills(f"{issue.title}\n{issue.body}",
                                               [w for w in ctx.roster_entries() if w.source in ("skill", "product-skill")], pinned=issue.skills),
-                         recall=recall_snippets(ctx.repo_root, f"{issue.title}\n{issue.body}", ref=f"origin/{ctx.cfg.default_branch}"))
+                         recall=recall_hits)
     timeout = ctx.cfg.timeout_seconds(issue.size or "M")
     deadline = when + timedelta(seconds=timeout)
     pid, log_path = _launch(ctx, group, adp, worktree=wt, brief=brief, model=issue.model or "", effort=issue.effort or "",
@@ -410,8 +424,11 @@ def _dispatch_build(ctx, board: Board, actor: Actor, number: int, adapter: Adapt
     ctx.store.write_run(replace(record, lease_comment=int(lease["id"])))
     ctx.gh.create_comment(number, f"Meld: `{group.name}` dispatched a `{worker.name}` worker on `{issue.model}` at effort {issue.effort} "
                                   f"(size {issue.size}, {mode} worktree). Branch `{branch}`, deadline {_iso(deadline)}, lease until {until}.")
-    return {"dispatched": number, "kind": "build", "pid": pid, "worktree": str(wt), "branch": branch, "deadline": _iso(deadline),
-            "lease_until": until, "worktree_mode": mode, "skills_materialised": skills_result}
+    result = {"dispatched": number, "kind": "build", "pid": pid, "worktree": str(wt), "branch": branch, "deadline": _iso(deadline),
+              "lease_until": until, "worktree_mode": mode, "skills_materialised": skills_result}
+    if recall_note:
+        result["recall_note"] = recall_note
+    return result
 
 
 def _dispatch_pr(ctx, board: Board, actor: Actor, number: int, kind: str, adapter: Adapter | None, when: datetime, env: dict | None,
@@ -444,11 +461,12 @@ def _dispatch_pr(ctx, board: Board, actor: Actor, number: int, kind: str, adapte
     skills_result = materialise_skills(wt, adp, [w for w in ctx.roster_entries() if w.source == "product-skill"])
     model, effort = group.orchestrator.model, group.orchestrator.effort
     concern = review_concern(ctx.cfg, pr, group.name) if kind == "review" and role_name == "reviewer" else None
+    recall_hits, recall_note = _recall_for_brief(ctx, pr.title)
     brief = render_brief(role=worker, kind=kind, group=group.name, model=model, effort=effort, issue=None, pr=pr,
                          plan_text=board.plan_text, repo_root=ctx.repo_root, worktree=wt, base_branch=ctx.cfg.default_branch, concern=concern,
                          skills=select_skills(f"{pr.title}\n{pr.body}",
                                               [w for w in ctx.roster_entries() if w.source in ("skill", "product-skill")]),
-                         recall=recall_snippets(ctx.repo_root, pr.title, ref=f"origin/{ctx.cfg.default_branch}"))
+                         recall=recall_hits)
     timeout = ctx.cfg.timeout_seconds("M")
     deadline = when + timedelta(seconds=timeout)
     pid, log_path = _launch(ctx, group, adp, worktree=wt, brief=brief, model=model, effort=effort, timeout=timeout, kind=kind,
@@ -462,8 +480,11 @@ def _dispatch_pr(ctx, board: Board, actor: Actor, number: int, kind: str, adapte
     article = "an" if worker.name[0] in "aeiou" else "a"
     ctx.gh.create_comment(number, f"Meld: `{group.name}` dispatched {article} `{worker.name}` worker on `{model}` at effort {effort} "
                                   f"against {where}. Deadline {_iso(deadline)}.")
-    return {"dispatched": number, "kind": kind, "pid": pid, "worktree": str(wt), "branch": pr.head_ref, "deadline": _iso(deadline),
-            "lease_until": None, "worktree_mode": "fresh", "skills_materialised": skills_result}
+    result = {"dispatched": number, "kind": kind, "pid": pid, "worktree": str(wt), "branch": pr.head_ref, "deadline": _iso(deadline),
+              "lease_until": None, "worktree_mode": "fresh", "skills_materialised": skills_result}
+    if recall_note:
+        result["recall_note"] = recall_note
+    return result
 
 
 def tick(ctx, *, now: datetime | None = None, sleep=time.sleep, env: Mapping[str, str] | None = None, post=None) -> dict:

@@ -99,6 +99,36 @@ def test_dispatch_reuses_an_existing_worktree(tmp_path):
     wait_for_exit(second["pid"])
 
 
+def test_dispatch_refreshes_origin_before_recall_on_a_reused_worktree(tmp_path):
+    # A reused build worktree skips create_worktree entirely (see _dispatch_build's `mode` ternary), so it never
+    # fetches on its own; recall must still see what landed on origin's default branch since the first dispatch.
+    fake, ctx, repo, origin = make_product(tmp_path)
+    claim_issue_11(fake)
+    first = dispatch(ctx, 11, adapter=FakeAdapter(), now=NOW)
+    wait_for_exit(first["pid"])
+    # pretend the first run was collected so a second dispatch is legal (same trick as test_dispatch_reuses_an_existing_worktree)
+    rec_path = tmp_path / "home" / "runs" / "claude" / "11.json"
+    rec = json.loads(rec_path.read_text())
+    rec["collected"] = True
+    rec_path.write_text(json.dumps(rec))
+    # A second clone pushes a new decision straight to origin's default branch; repo's own checkout never pulls it.
+    second_clone = tmp_path / "second-clone"
+    sh(["git", "clone", "-q", str(origin), str(second_clone)], tmp_path)
+    sh(["git", "config", "user.name", "Fixture"], second_clone)
+    sh(["git", "config", "user.email", "fixture@example.com"], second_clone)
+    (second_clone / ".meld" / "decisions").mkdir(parents=True)
+    (second_clone / ".meld" / "decisions" / "0001-health.md").write_text(
+        "# Decision health-1\n\n## Decision\n\nHealth endpoints must never touch the database.\n")
+    sh(["git", "add", ".meld"], second_clone)
+    sh(["git", "commit", "-q", "-m", "record decision"], second_clone)
+    sh(["git", "push", "-q", "origin", "main"], second_clone)
+    second = dispatch(ctx, 11, adapter=FakeAdapter(), now=NOW)
+    assert second["worktree_mode"] == "reused" and "recall_note" not in second
+    text2 = (Path(second["worktree"]) / BRIEF_FILE).read_text()
+    assert "## Relevant memory" in text2 and "Health endpoints must never touch the database." in text2
+    wait_for_exit(second["pid"])
+
+
 def test_dispatch_refusals(tmp_path):
     fake, ctx, repo, origin = make_product(tmp_path)
     with pytest.raises(Refused) as ei:

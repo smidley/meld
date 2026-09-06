@@ -192,6 +192,23 @@ def test_brief_carries_relevant_memory_and_result_reads_skills_used(tmp_path):
     assert "## Relevant memory" not in plain
     (tmp_path / ".meld-result.json").write_text(json.dumps({"outcome": "done", "summary": "s", "verified_by": "v", "skills_used": ["brand", "security-review"]}))
     assert read_result(tmp_path).skills_used == ("brand", "security-review")
+
+
+def test_recall_snippets_at_a_ref_skips_files_it_cannot_decode(tmp_path):
+    from tests.gitfixtures import make_origin_and_clone, sh
+    origin, repo = make_origin_and_clone(tmp_path)
+    d = repo / ".meld" / "decisions"
+    d.mkdir(parents=True)
+    (d / "0001-good.md").write_text("# Decision good\n\n## Decision\n\nUse Postgres for the ledger.\n")
+    # Not valid UTF-8 either way: junk.dat is filtered out by name before `git show` ever runs on it; bad.md passes
+    # the .meld/decisions/*.md filter and must be caught at the `git show`/decode step instead.
+    (d / "bad.md").write_bytes(b"\xff\xfe not valid utf-8")
+    (d / "junk.dat").write_bytes(b"\xff\xfe not valid utf-8 either")
+    sh(["git", "add", ".meld"], repo)
+    sh(["git", "commit", "-q", "-m", "seed decisions, two unreadable"], repo)
+    sh(["git", "push", "-q", "origin", "main"], repo)
+    hits = recall_snippets(repo, "postgres", ref="origin/main")
+    assert any("Postgres" in h for h in hits)
     (tmp_path / ".meld-result.json").write_text(json.dumps({"outcome": "done", "summary": "s", "verified_by": "v"}))
     assert read_result(tmp_path).skills_used == ()
     (tmp_path / ".meld-result.json").write_text(json.dumps({"outcome": "done", "summary": "s", "verified_by": "v", "skills_used": "brand"}))

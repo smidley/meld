@@ -263,9 +263,14 @@ class GitHub:
             return base64.b64decode(resp.get("content", "")).decode("utf-8")
         if isinstance(resp, dict) and resp.get("encoding") == "none" and resp.get("sha"):
             # Files over 1 MB come back without content; the blob endpoint serves up to 100 MB (spec 21 item 23).
-            blob = self.get(self._r(f"git/blobs/{resp['sha']}"), use_cache=False)
-            if isinstance(blob, dict) and blob.get("encoding") == "base64":
-                return base64.b64decode(blob.get("content", "")).decode("utf-8")
+            sha = resp["sha"]
+            blob = self.get(self._r(f"git/blobs/{sha}"), use_cache=False)
+            if not (isinstance(blob, dict) and blob.get("encoding") == "base64" and "content" in blob):
+                # Fail loudly rather than silently decoding an absent/empty payload into a blank file: a caller
+                # (verify_memory_pr's hash check, a brief's recall snippet) must never mistake "the blob endpoint
+                # gave us nothing usable" for "the file is genuinely empty".
+                raise GitHubError(f"GET git/blobs/{sha}: blob has no content")
+            return base64.b64decode(blob["content"]).decode("utf-8")
         raise GitHubError(f"GET contents/{path}@{ref}: unexpected payload {type(resp).__name__}")
 
     def issue_events(self, number: int) -> list[dict]:

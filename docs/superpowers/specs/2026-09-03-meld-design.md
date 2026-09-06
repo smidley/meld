@@ -119,10 +119,13 @@ effort = "high"
 model = "claude-sonnet-5"
 effort = "medium"
 
-[groups.codex]
+[groups.codex]                     # either form works per group: PAT (token_env, as groups.claude above) or GitHub App (below)
 cli = "codex"
-bot = "meld-codex-bot"
-token_env = "MELD_TOKEN_CODEX"
+bot = "meld-codex[bot]"
+auth = "app"
+app_id = 0                         # from the App's settings page
+installation_id = 0                # from the end of the installation URL
+private_key_env = "MELD_APP_KEY_CODEX"
 concurrency = 8
 review_concurrency = 4
 [groups.codex.orchestrator]
@@ -438,6 +441,7 @@ Budgets are per milestone in worker runs by model tier plus a wall-clock cap. `c
 - Filesystem isolation is only what each adapter provides. The Claude adapter runs `--permission-mode bypassPermissions` (no sandbox: a worker can write wherever the user can) and relies on the environment scrubbing above; the Codex adapter runs `-s workspace-write`.
 - `.meld/STANDARDS.md`, the product's own quality bar, is rendered into the `## Product standards` section of every worker brief and both role prompts; the framework's own default, used when the file is absent or empty, lives in `brief.DEFAULT_STANDARDS`.
 - Everything under `$MELD_HOME` is disposable state.
+- **GitHub App auth** (plan 6a, alternative to a PAT bot per `[groups.<g>].auth = "app"`): a short-lived RS256 JWT is signed by the `openssl` CLI (the App's private key reaches it through a 0600 temp file, never argv), exchanged for an installation access token minted over HTTPS; the token is cached 0600 under `$MELD_HOME/cache/<group>/app-token.json` and re-minted with 5 minutes to spare, plus once more on a 401. `MELD_APP_KEY_*` is scrubbed from workers alongside `MELD_TOKEN_*`. `meld doctor` verifies an App group from the minted token's own `permissions` (Contents, Issues, Pull requests, Commit statuses: read & write) rather than a probe call.
 
 ## 19. Testing
 
@@ -453,7 +457,7 @@ No test claims to measure decision quality. That is done by watching the first m
 
 ## 20. Bootstrap
 
-1. Human: create one GitHub machine account per group, add each as a collaborator on the product repo, mint one fine-grained token each with repository permissions Contents, Issues, Pull requests, and Commit statuses (read and write), store in 1Password.
+1. Human: create one GitHub machine account per group, add each as a collaborator on the product repo, mint one fine-grained token each with repository permissions Contents, Issues, Pull requests, and Commit statuses (read and write), store in 1Password. Or, per group, create a GitHub App instead (`meld setup --app` prints the steps) — no machine accounts.
 2. `git clone` the framework; `uv sync`; `task meld:doctor` verifies both CLIs installed and logged in, tokens resolve, `gh` is on the human's own account, and command-timeout ceilings exceed `wait_timeout_seconds`.
 3. `task meld:setup REPO=owner/name GOAL="..."` creates labels, milestone, coordination issue, CODEOWNERS entry, branch protection, and a starter `.meld.toml` with adapter-populated model fields, committed via a PR for the human to approve.
 4. `task meld:run GROUP=claude` and `task meld:run GROUP=codex`, in terminals or as launchd agents. Each posts `ROSTER` and `CONFIG`.
@@ -543,6 +547,11 @@ The final whole-branch review of plan 4 (its fix wave landed F1–F10, F12, and 
 26. **Merged memory PRs owe no audit — landed in the fix wave as code** (`rules._audit` and `status.audit_summary` exclude PRs `PullRequest.memory` recognises: a `meld/memory-*` branch carrying a `meld-memory:` marker); recorded here because it was the one §21 gap that was a bug rather than a deferral.
 27. **A later unverified `[joint]` still supersedes a verified one.** `agreement_for` lets the latest `[joint]` comment on a ref decide, so a hand-written `[joint]` posted after the proposer's verified one flips `joint_verified` back to false and `decide`/`plan issues`/`plan approve` refuse until the proposer posts again (the freeze keeps the round itself intact, and an unverified joint never blocks `meld post --joint`, so this is a liveness cost, not a trust one). The cleaner rule — once a ref has a verified `[joint]`, later `[joint]` comments are ignored — is an owner call.
 28. **A lesson whose text contains a line starting `## ` can never verify.** The verifier finds the appended entry with `rfind("\n## ")`, so a lesson body with its own `## ` heading makes the "entry" start at that heading; its hash never matches the marker and the PR is refused every time. `remember` should reject or indent such lines, or the entry boundary should come from the marker rather than from the last heading.
+
+### Carried into plan 6
+
+1. **App creation through the GitHub App manifest flow** (`meld setup` prints manual steps today). The manifest flow could let `meld setup --app` create the App itself via a browser redirect instead of the human clicking through https://github.com/settings/apps/new by hand.
+2. **`meld doctor` cannot verify CLI login status** (plan-5 note).
 
 ## 22. Glossary
 

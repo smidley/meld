@@ -76,7 +76,7 @@ The calling party comes from `MELD_GROUP` and `MELD_ROLE` (`orchestrator` or `pm
 Bootstrapping a fresh product repo, start to finish:
 
 1. `uv sync`.
-2. Create one GitHub machine account per group and mint a fine-grained token for each (spec 18: Contents, Issues, Pull requests, Commit statuses — read and write); export `MELD_TOKEN_<GROUP>` (e.g. `MELD_TOKEN_CLAUDE`), injected from 1Password via `op run` rather than left in plaintext.
+2. Create one GitHub machine account per group and mint a fine-grained token for each (spec 18: Contents, Issues, Pull requests, Commit statuses — read and write); export `MELD_TOKEN_<GROUP>` (e.g. `MELD_TOKEN_CLAUDE`), injected from 1Password via `op run` rather than left in plaintext. Or, to avoid extra GitHub accounts, `meld setup --app` and follow its printed steps to create one GitHub App per group.
 3. `cd <product clone> && meld setup owner/name --goal "..." --pr` — writes labels, the milestone, the coordination issue, `.github/CODEOWNERS`, branch protection, and a starter `.meld.toml`, then commits `.github/CODEOWNERS`, `.meld/STANDARDS.md`, and `.meld.toml` on a PR (labels, milestone, coordination issue, and branch protection are applied directly, not through the PR).
 4. Merge the setup PR, then uncomment or adjust the `[groups.*]` blocks it wrote (bot name, models, efforts) for the CLIs you're running.
 5. `meld doctor` until it reports green.

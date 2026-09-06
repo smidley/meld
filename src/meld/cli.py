@@ -427,9 +427,10 @@ def run(ctx: click.Context, group: str, once: bool) -> None:
 @click.option("--force", is_flag=True, help="Overwrite an existing .meld.toml.")
 @click.option("--no-protection", is_flag=True, help="Skip branch protection (require one approving review).")
 @click.option("--pr", is_flag=True, help="Commit the written files on meld/setup and open the setup PR (uses your own git credentials).")
+@click.option("--app", is_flag=True, help="Write the starter config for GitHub App identities (one App per group) and print the steps to create them.")
 @click.pass_context
 def setup(ctx: click.Context, repo: str, goal: str, milestone_title: str, target_dir: Path, allow_public: bool, force: bool,
-          no_protection: bool, pr: bool) -> None:
+          no_protection: bool, pr: bool, app: bool) -> None:
     """Bootstrap a product repo: labels, milestone, coordination issue, and a starter .meld.toml (runs as you, via gh)."""
     gh = GitHub(repo, token=None, run=RUN)
     human = _guard(gh.viewer_login)
@@ -437,7 +438,7 @@ def setup(ctx: click.Context, repo: str, goal: str, milestone_title: str, target
     # is the human's own git identity and credentials that commit and push, never a test's or a group's fake.
     emit(_guard(lambda: do_setup(gh, repo=repo, goal=goal, milestone_title=milestone_title, human=human, target_dir=target_dir,
                                  registry=ModelRegistry.load(), allow_public=allow_public, force=force,
-                                 protect=not no_protection, pr=pr)), ctx.obj["pretty"])
+                                 protect=not no_protection, pr=pr, app=app)), ctx.obj["pretty"])
 
 
 @main.command()

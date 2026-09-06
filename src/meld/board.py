@@ -25,6 +25,9 @@ NUDGED_LABEL = "meld:nudged"
 # Branches `meld decide`/`meld remember` push to. collect's build branches are `meld/<issue>-<slug>` (gitops.branch_name), so
 # the two namespaces never overlap; memory.py imports this rather than redefining it (board.py is the leaf both can reach).
 MEMORY_BRANCH_PREFIX = "meld/memory-"
+# The one meld-memory marker pattern: PullRequest.memory below and memory.py both match against it (memory.py imports
+# it as MARKER_RE) so a decision to change the marker's shape never needs to be made in two places at once.
+MEMORY_MARKER_RE = re.compile(r"^meld-memory: (decision|lesson) (\S+) ([0-9a-f]{64})$", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -149,7 +152,7 @@ class PullRequest:
         build PR into one that is refused a reviewer, never returned to in_progress, and never audited."""
         if not (self.head_ref or "").startswith(MEMORY_BRANCH_PREFIX):
             return None
-        m = re.search(r"^meld-memory: (decision|lesson) (\S+) ([0-9a-f]{64})$", self.body or "", re.MULTILINE)
+        m = MEMORY_MARKER_RE.search(self.body or "")
         return (m.group(1), m.group(2), m.group(3)) if m else None
 
 

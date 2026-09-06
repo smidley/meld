@@ -394,7 +394,7 @@ def _dispatch_build(ctx, board: Board, actor: Actor, number: int, adapter: Adapt
                          pr=None, plan_text=board.plan_text, repo_root=ctx.repo_root, worktree=wt, base_branch=ctx.cfg.default_branch,
                          skills=select_skills(f"{issue.title}\n{issue.body}",
                                               [w for w in ctx.roster_entries() if w.source in ("skill", "product-skill")], pinned=issue.skills),
-                         recall=recall_snippets(ctx.repo_root, f"{issue.title}\n{issue.body}"))
+                         recall=recall_snippets(ctx.repo_root, f"{issue.title}\n{issue.body}", ref=f"origin/{ctx.cfg.default_branch}"))
     timeout = ctx.cfg.timeout_seconds(issue.size or "M")
     deadline = when + timedelta(seconds=timeout)
     pid, log_path = _launch(ctx, group, adp, worktree=wt, brief=brief, model=issue.model or "", effort=issue.effort or "",
@@ -448,7 +448,7 @@ def _dispatch_pr(ctx, board: Board, actor: Actor, number: int, kind: str, adapte
                          plan_text=board.plan_text, repo_root=ctx.repo_root, worktree=wt, base_branch=ctx.cfg.default_branch, concern=concern,
                          skills=select_skills(f"{pr.title}\n{pr.body}",
                                               [w for w in ctx.roster_entries() if w.source in ("skill", "product-skill")]),
-                         recall=recall_snippets(ctx.repo_root, pr.title))
+                         recall=recall_snippets(ctx.repo_root, pr.title, ref=f"origin/{ctx.cfg.default_branch}"))
     timeout = ctx.cfg.timeout_seconds("M")
     deadline = when + timedelta(seconds=timeout)
     pid, log_path = _launch(ctx, group, adp, worktree=wt, brief=brief, model=model, effort=effort, timeout=timeout, kind=kind,

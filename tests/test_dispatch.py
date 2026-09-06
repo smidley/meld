@@ -312,8 +312,13 @@ def test_missing_cli_binary_is_a_clean_dispatch_error(tmp_path, monkeypatch):
 
 def test_dispatch_renders_relevant_memory_into_the_brief(tmp_path):
     fake, ctx, repo, origin = make_product(tmp_path)
+    # dispatch's brief now reads recall_snippets at origin/<default> (F3-style), not repo's own working copy, so
+    # the seeded lesson must be committed and pushed here for the brief to pick it up.
     (repo / ".meld" / "memory").mkdir(parents=True)
     (repo / ".meld" / "memory" / "lessons.md").write_text("# Lessons\n\n## 2026-09-01 — #7 (codex)\n\nHealth endpoints must not touch the database.\n")
+    sh(["git", "add", ".meld"], repo)
+    sh(["git", "commit", "-q", "-m", "seed memory"], repo)
+    sh(["git", "push", "-q", "origin", "main"], repo)
     claim_issue_11(fake)
     out = dispatch(ctx, 11, adapter=FakeAdapter(), now=NOW)
     text = (Path(out["worktree"]) / BRIEF_FILE).read_text()

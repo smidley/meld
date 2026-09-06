@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from meld.actions import refuse
-from meld.board import MEMORY_BRANCH_PREFIX
+from meld.board import MEMORY_BRANCH_PREFIX, MEMORY_MARKER_RE as MARKER_RE
 from meld.brief import _local_hits, _terms, recall_snippets
 from meld.config import Party
 from meld.dispatch import DispatchError, _iso, _now, git_identity, neutralise_closers
@@ -20,7 +20,6 @@ from meld.status import build_status
 DECISIONS_DIR = ".meld/decisions"
 LESSONS_FILE = ".meld/memory/lessons.md"
 LESSONS_HEADER = "# Lessons\n"     # what a fresh lessons.md starts with; the verifier assumes the same when the default branch has none
-MARKER_RE = re.compile(r"^meld-memory: (decision|lesson) (\S+) ([0-9a-f]{64})$", re.MULTILINE)
 _NUMBER_RE = re.compile(r"^(\d{4})-")
 
 
@@ -49,6 +48,13 @@ def next_decision_number(ctx) -> int:
 def render_decision(ref: str, agreement: Agreement, url: str, date: str) -> str:
     agreed = ", ".join(sorted(agreement.agreed))
     return f"# Decision {ref}\n\n- Date: {date}\n- Agreed by: {agreed}\n- Source: {url}\n\n## Decision\n\n{(agreement.text or '').strip()}\n"
+
+
+def escape_headings(text: str) -> str:
+    """Neutralise any line in a lesson's own text that starts with `#`: unescaped, it would read as a markdown
+    heading once appended into lessons.md, confusing both a human skimming the file and `_local_hits`' entry
+    splitter (which finds the next entry by looking for a line starting `## `)."""
+    return "\n".join(("\\" + line) if line.startswith("#") else line for line in text.splitlines())
 
 
 def render_lesson(ref: str, text: str, group: str, date: str) -> str:
@@ -105,6 +111,21 @@ def decide(ctx, ref: str, *, now: datetime | None = None) -> dict:
     actor = ctx.actor()
     rule = decide_rule(board, ctx.cfg, actor, ref)
     if rule:
+        if rule == f"{ref} is already recorded or has an open memory PR":
+            # decide_rule's own check (board-derived: an open PR whose marker matches) -- the git-based "a decision
+            # file already landed on origin's default branch" case below has not run yet at this point, so this
+            # branch is reached only for the open-memory-PR half of the (deliberately shared) refusal message.
+            open_prs = [p for p in board.pulls.values() if p.memory and p.memory[:2] == ("decision", ref) and p.state == "open"]
+            if open_prs:
+                pr = open_prs[0]
+                requested = any(c.ok and c.header.verb == "REVIEW-REQUEST" and c.header.ref == f"#{pr.number}" for c in board.comments)
+                if not requested:
+                    # The PM's earlier REVIEW-REQUEST never landed (or never posted): re-post it instead of
+                    # refusing outright, so an open memory PR is never left with nobody told to review it.
+                    group = ctx.cfg.groups[actor.group]  # type: ignore[index]
+                    what = f"Decision {ref} recorded as {pr.files[0]}" if pr.files else f"Decision {ref} already recorded (PR #{pr.number})"
+                    _request_review(ctx, board, group, pr.number, what)
+                    return {"decided": ref, "pr": pr.number, "review_requested": True}
         refuse(ctx, board, Refusal(Verb.DECIDE, ref, rule))
     joint = verified_joint(board.comments, ref, ctx.cfg)
     assert joint is not None  # decide_rule verified it
@@ -138,7 +159,7 @@ def remember(ctx, ref: str, text: str, *, now: datetime | None = None) -> dict:
         refuse(ctx, board, Refusal(Verb.REMEMBER, ref, rule))
     group = ctx.cfg.groups[actor.group]  # type: ignore[index]
     when = _now(now)
-    entry = render_lesson(ref, neutralise_closers(text), group.name, when.strftime("%Y-%m-%d"))
+    entry = render_lesson(ref, escape_headings(neutralise_closers(text)), group.name, when.strftime("%Y-%m-%d"))
     digest = content_hash(entry)
     stamp = when.strftime("%Y%m%dT%H%M%SZ")
     body = f"Records a lesson from {ref}.\n\nmeld-memory: lesson {ref} {digest}\nverified-by: {ref} resolved on the board at {_iso(when)}"
@@ -149,11 +170,23 @@ def remember(ctx, ref: str, text: str, *, now: datetime | None = None) -> dict:
 
 
 def recall(ctx, query: str, *, limit: int = 10) -> list[dict]:
-    """Unlike `decide`'s already-recorded check, the local half here (`_local_hits`, via `ctx.repo_root`) reads the
-    working copy directly and so can lag behind origin's default branch by however stale that checkout is."""
+    """Like `decide`'s already-recorded check, the local half here (`_local_hits`) now reads origin's default
+    branch (a fetch, then `ref=origin/<default>`), not `ctx.repo_root`'s own working copy -- so it no longer lags
+    behind origin by however stale that checkout is. When the fetch itself fails (e.g. offline), this falls back
+    to the working copy instead of raising, and the result carries a "note" entry saying so."""
     terms = _terms(query)
-    hits = _local_hits(ctx.repo_root, terms)
+    ref: str | None = f"origin/{ctx.cfg.default_branch}"
+    note: str | None = None
+    try:
+        git(["fetch", "--quiet", "origin"], ctx.repo_root)
+    except GitError as e:
+        ref = None
+        note = f"git fetch origin failed ({e}); local decisions/lessons read from the working copy and may be stale"
+    hits = _local_hits(ctx.repo_root, terms, ref=ref)
     for item in ctx.gh.search_issues(f"repo:{ctx.cfg.repo_name} label:meld:coordination {query}"):
         hits.append({"kind": "coordination", "number": item.get("number"), "title": item.get("title", ""), "url": item.get("html_url", ""), "score": 1})
     hits.sort(key=lambda h: (-h["score"], h["title"]))
-    return hits[:limit]
+    result = hits[:limit]
+    if note is not None:
+        result.append({"kind": "note", "text": note})
+    return result

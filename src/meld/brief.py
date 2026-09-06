@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Sequence
 
 from meld.board import Issue, PullRequest
-from meld.gitops import branch_name
+from meld.gitops import GitError, branch_name, git
 from meld.roster import WorkerType
 
 BRIEF_FILE = ".meld-brief.md"
@@ -130,32 +130,65 @@ def select_skills(text: str, skills: Sequence[WorkerType], pinned: Sequence[str]
     return chosen[:limit]
 
 
-def _local_hits(repo_root: Path, terms: list[str]) -> list[dict]:
-    """Decisions and lessons whose text contains any of `terms`, each scored by how many terms matched.
-    Lives here (not in memory.py, which owns the DECISIONS_DIR/LESSONS_FILE constants) so that dispatch.py
-    can import recall_snippets without memory.py's own dispatch import becoming a cycle (see memory.py)."""
+def _decision_hit(path: str, text: str, terms: list[str]) -> dict | None:
+    score = sum(1 for t in terms if t in text.lower())
+    if not score:
+        return None
+    title = next((l[2:].strip() for l in text.splitlines() if l.startswith("# ")), Path(path).stem)
+    return {"kind": "decision", "path": path, "title": title, "score": score, "snippet": text.strip()[:300]}
+
+
+def _lesson_hits(path: str, text: str, terms: list[str]) -> list[dict]:
     hits: list[dict] = []
-    d = repo_root / ".meld" / "decisions"
-    for f in sorted(d.glob("*.md")) if d.is_dir() else []:
-        text = f.read_text()
-        score = sum(1 for t in terms if t in text.lower())
+    for block in re.split(r"\n(?=## )", text):
+        if not block.startswith("## "):
+            continue
+        score = sum(1 for t in terms if t in block.lower())
         if score:
-            title = next((l[2:].strip() for l in text.splitlines() if l.startswith("# ")), f.stem)
-            hits.append({"kind": "decision", "path": str(f.relative_to(repo_root)), "title": title, "score": score, "snippet": text.strip()[:300]})
-    lessons = repo_root / ".meld" / "memory" / "lessons.md"
-    if lessons.is_file():
-        for block in re.split(r"\n(?=## )", lessons.read_text()):
-            if not block.startswith("## "):
-                continue
-            score = sum(1 for t in terms if t in block.lower())
-            if score:
-                hits.append({"kind": "lesson", "path": ".meld/memory/lessons.md", "title": block.splitlines()[0][3:].strip(), "score": score, "snippet": block.strip()[:300]})
+            hits.append({"kind": "lesson", "path": path, "title": block.splitlines()[0][3:].strip(), "score": score, "snippet": block.strip()[:300]})
     return hits
 
 
-def recall_snippets(repo_root: Path, text: str, limit: int = 3) -> list[str]:
+def _local_hits(repo_root: Path, terms: list[str], ref: str | None = None) -> list[dict]:
+    """Decisions and lessons whose text contains any of `terms`, each scored by how many terms matched.
+    Lives here (not in memory.py, which owns the DECISIONS_DIR/LESSONS_FILE constants) so that dispatch.py
+    can import recall_snippets without memory.py's own dispatch import becoming a cycle (see memory.py).
+
+    With `ref` (typically `origin/<default branch>`), reads that ref through git (ls-tree to list, show to read)
+    instead of `repo_root`'s own working copy, which nothing ever pulls forward -- see memory.recall."""
+    if ref is not None:
+        hits: list[dict] = []
+        try:
+            out = git(["ls-tree", "-r", "--name-only", ref, "--", ".meld/decisions", ".meld/memory"], repo_root)
+        except GitError:
+            return []
+        for path in (out.splitlines() if out else []):
+            try:
+                text = git(["show", f"{ref}:{path}"], repo_root)
+            except GitError:
+                continue
+            if path.startswith(".meld/decisions/") and path.endswith(".md"):
+                hit = _decision_hit(path, text, terms)
+                if hit:
+                    hits.append(hit)
+            elif path == ".meld/memory/lessons.md":
+                hits.extend(_lesson_hits(path, text, terms))
+        return hits
+    hits = []
+    d = repo_root / ".meld" / "decisions"
+    for f in sorted(d.glob("*.md")) if d.is_dir() else []:
+        hit = _decision_hit(str(f.relative_to(repo_root)), f.read_text(), terms)
+        if hit:
+            hits.append(hit)
+    lessons = repo_root / ".meld" / "memory" / "lessons.md"
+    if lessons.is_file():
+        hits.extend(_lesson_hits(".meld/memory/lessons.md", lessons.read_text(), terms))
+    return hits
+
+
+def recall_snippets(repo_root: Path, text: str, limit: int = 3, ref: str | None = None) -> list[str]:
     """The local (non-GitHub) part of `memory.recall`, without a coordination-issue search: used by briefs."""
-    hits = sorted(_local_hits(repo_root, _terms(text)), key=lambda h: (-h["score"], h["title"]))
+    hits = sorted(_local_hits(repo_root, _terms(text), ref=ref), key=lambda h: (-h["score"], h["title"]))
     return [h["snippet"] for h in hits[:limit]]
 
 

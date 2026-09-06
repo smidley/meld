@@ -59,8 +59,16 @@ def roster(repo_root: Path | None, extra: Iterable[WorkerType] = ()) -> list[Wor
     if repo_root is not None:
         for w in product_workers(repo_root):
             by_name[w.name] = w
+        # Merged before adapter `extra` skills (whose setdefault below would otherwise lose to a same-named
+        # host skill), so a product skill still overrides a same-named skill. But a product skill may only
+        # take a name that is unclaimed or already held by a skill -- it can never displace a builtin/product
+        # WORKER: a SKILL.md whose frontmatter `name:` collides with a worker's name is dropped entirely (not
+        # kept under its directory name either), so the worker's role prompt is never silently replaced by
+        # skill text.
         for w in product_skills(repo_root):
-            by_name[w.name] = w
+            existing = by_name.get(w.name)
+            if existing is None or existing.source in ("skill", "product-skill"):
+                by_name[w.name] = w
     for w in extra:
         by_name.setdefault(w.name, w)
     return sorted(by_name.values(), key=lambda w: w.name)

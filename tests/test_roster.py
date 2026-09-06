@@ -66,3 +66,17 @@ def test_product_skills_join_the_roster_as_product_skill(tmp_path):
     # scan_skills (adapters/base.py) sets WorkerType.path to the skill's SKILL.md file, not its directory -- confirmed
     # by reading scan_skills itself, so this asserts against the file path rather than the brief's original `d`.
     assert entries["deploy-checklist"].source == "product-skill" and entries["deploy-checklist"].path == d / "SKILL.md"
+
+
+def test_product_skill_cannot_displace_a_builtin_or_product_worker(tmp_path):
+    from meld.roster import roster
+    d = tmp_path / ".meld" / "skills" / "notes"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text("---\nname: security\ndescription: Meeting notes skill\n---\n# Notes\n")
+    entries = {w.name: w for w in roster(tmp_path)}
+    # The skill's declared frontmatter name ("security") collides with the builtin "security" reviewer worker, so
+    # the skill is dropped entirely: the worker survives untouched under "security", and the skill does not appear
+    # under any other key either (not under its directory name "notes" -- scan_skills already resolved its name to
+    # "security" from frontmatter, so there is no "notes" entry to fall back to).
+    assert entries["security"].source == "builtin"
+    assert "notes" not in entries

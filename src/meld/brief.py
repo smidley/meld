@@ -103,6 +103,15 @@ def _terms(query: str) -> list[str]:
     return [t for t in re.split(r"\W+", query.lower()) if len(t) > 2]
 
 
+def _term_match(a: str, b: str) -> bool:
+    """Deliberate stemmer stand-in: two terms match when equal, or when one is a prefix of the other and both are
+    at least 4 characters (invoice/invoices, deploy/deployment, test/tests). Short terms (pdf/pdfs) stay exact-only
+    -- below 4 characters a prefix relationship is too likely to be coincidental to count as a real match."""
+    if a == b:
+        return True
+    return len(a) >= 4 and len(b) >= 4 and (a.startswith(b) or b.startswith(a))
+
+
 def select_skills(text: str, skills: Sequence[WorkerType], pinned: Sequence[str] = (), limit: int = MAX_SKILLS) -> list[WorkerType]:
     """Skills worth naming in a brief: the orchestrator's pins first (skill:<name> labels), then every skill whose name or
     description shares a term with the task text, by score. Unmatched skills stay out: a 30-item list nobody reads is noise."""
@@ -114,7 +123,7 @@ def select_skills(text: str, skills: Sequence[WorkerType], pinned: Sequence[str]
         if s.name in pinned:
             continue
         hay = set(_terms(f"{s.name.replace('-', ' ')} {s.description}"))
-        score = len(terms & hay)
+        score = sum(1 for t in terms if any(_term_match(t, h) for h in hay))
         if score:
             scored.append((-score, s.name, s))
     chosen += [s for _, _, s in sorted(scored)]

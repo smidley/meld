@@ -14,6 +14,7 @@ from typing import Mapping, Sequence
 
 from meld.actions import BLOCKED, IN_PROGRESS, refuse, release
 from meld.adapters import Adapter, LaunchSpec, scrub_env
+from meld.adapters.base import SKILL_NAME_RE
 from meld.board import Board, RunRecord
 from meld.brief import BRIEF_FILE, RESULT_FILE, ResultError, WorkerResult, read_result, recall_snippets, render_brief, select_skills
 from meld.config import GroupConfig, Party
@@ -273,51 +274,88 @@ def materialise_skills(worktree: Path, adapter: Adapter, skills: Sequence[Worker
     run, but only a name this function itself wrote to that manifest is ever removed on that basis -- never
     anything else found under that directory. A destination already tracked by git on this worktree's
     checked-out branch is the product's own file, not meld's to make or prune: it is left alone entirely
-    (never copied over, never pruned as stale) and reported in `skipped` instead of `made`.
+    (never copied over, never pruned as stale, whether it is a currently-listed skill or a prune candidate)
+    and reported in `skipped` instead of `made`.
 
     `skills` is the caller's already-filtered roster entries (`ctx.roster_entries()` filtered to
     `source == "product-skill"`), not a fresh `product_skills(repo_root)` scan: `roster()` is what drops a
     product skill whose name collides with a worker (see roster.py), so materialising straight off disk would
     copy a skill the roster itself excludes.
 
+    Defence in depth against a hostile or malformed `skill.name` (frontmatter is free text; `scan_skills`
+    already validates it at the source, but a `skills` entry could in principle be built any other way): every
+    name -- including one already sitting in a previous manifest -- is re-checked against `SKILL_NAME_RE`
+    before it is ever used to build a filesystem path, so a name like `../../src` can never rmtree or
+    copytree anything outside `target_dir`. Every filesystem operation is wrapped in `try/except OSError`, and
+    a plain file sitting where `target_dir` itself needs to be a directory (e.g. a product-committed file at
+    the adapter's project skill path) is detected up front: a missing skill copy must never fail a dispatch.
+
     Returns `{"made": [...], "skipped": [...]}`. `made` is the relative dirs actually (re)written this run
-    (e.g. `[".claude/skills/deploy-checklist"]`). `skipped` names a tracked destination left untouched, with
-    the reason (e.g. `".claude/skills/deploy-checklist (tracked in the product repo; left alone)"`).
+    (e.g. `[".claude/skills/deploy-checklist"]`). `skipped` names anything left untouched or that failed, with
+    the reason (e.g. `".claude/skills/deploy-checklist (tracked in the product repo; left alone)"`,
+    `"../../x: not a valid skill name"`, `"deploy-checklist: PermissionError"`).
     """
     target_dir = adapter.project_skills_dir()
     if target_dir is None:
         return {"made": [], "skipped": []}
     base = worktree / target_dir
+    # A product file sitting where a directory needs to go (e.g. a tracked `.claude` or `.fake` file) must
+    # never crash a dispatch: walk each prefix of target_dir and bail out cleanly the moment one is a file.
+    probe = worktree
+    for part in Path(target_dir).parts:
+        probe = probe / part
+        if probe.exists() and not probe.is_dir():
+            return {"made": [], "skipped": [f"{target_dir} is a file in this repo; skills not materialised"]}
     manifest_path = base / MATERIALISED_MANIFEST
-    previous = _read_materialised_manifest(manifest_path)
-    current_names = {skill.name for skill in skills if skill.path is not None}
-    for name in previous:
-        if name in current_names:
-            continue
-        stale = base / name
-        if stale.exists():
-            shutil.rmtree(stale)
+    previous = [n for n in _read_materialised_manifest(manifest_path) if SKILL_NAME_RE.match(n)]
     made: list[str] = []
     skipped: list[str] = []
-    made_names: list[str] = []
+    valid_skills: list[WorkerType] = []
     for skill in skills:
         if skill.path is None:
             continue
+        if not SKILL_NAME_RE.match(skill.name):
+            skipped.append(f"{skill.name}: not a valid skill name")
+            continue
+        valid_skills.append(skill)
+    current_names = {skill.name for skill in valid_skills}
+    for name in previous:
+        if name in current_names:
+            continue
+        relpath = f"{target_dir}/{name}"
+        if _tracked_in_worktree(worktree, relpath):
+            skipped.append(f"{relpath} (tracked in the product repo; left alone)")
+            continue
+        stale = base / name
+        try:
+            if stale.exists():
+                shutil.rmtree(stale)
+        except OSError as e:
+            skipped.append(f"{name}: {type(e).__name__}")
+    made_names: list[str] = []
+    for skill in valid_skills:
         relpath = f"{target_dir}/{skill.name}"
         if _tracked_in_worktree(worktree, relpath):
             skipped.append(f"{relpath} (tracked in the product repo; left alone)")
             continue
         # `skill.path` from `scan_skills` is the skill's SKILL.md file, not its directory -- copy the parent.
         dest = base / skill.name
-        if dest.exists():
-            shutil.rmtree(dest)
-        shutil.copytree(skill.path.parent, dest)
+        try:
+            if dest.exists():
+                shutil.rmtree(dest)
+            shutil.copytree(skill.path.parent, dest)
+        except OSError as e:
+            skipped.append(f"{skill.name}: {type(e).__name__}")
+            continue
         made.append(relpath)
         made_names.append(skill.name)
     if made_names or previous:
-        base.mkdir(parents=True, exist_ok=True)
-        manifest_path.write_text(json.dumps(made_names))
-        exclude_paths(worktree, (f"{target_dir}/", f"{target_dir}/{MATERIALISED_MANIFEST}"))
+        try:
+            base.mkdir(parents=True, exist_ok=True)
+            manifest_path.write_text(json.dumps(made_names))
+            exclude_paths(worktree, (f"{target_dir}/", f"{target_dir}/{MATERIALISED_MANIFEST}"))
+        except OSError as e:
+            skipped.append(f"{MATERIALISED_MANIFEST}: {type(e).__name__}")
     return {"made": made, "skipped": skipped}
 
 

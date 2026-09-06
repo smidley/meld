@@ -1,6 +1,7 @@
 """Adapter protocol: the only layer that knows how a particular CLI is launched."""
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +11,10 @@ from meld.roster import WorkerType
 
 SCRUBBED_EXACT = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "MELD_GROUP", "MELD_ROLE", "MELD_PUSH_TOKEN")
 SCRUBBED_PREFIXES = ("MELD_TOKEN_",)
+# A skill's name becomes a single path component (materialise_skills copies into `target_dir/<name>`), but
+# frontmatter is free text a product author writes -- never let it carry a path separator, a leading dot, or
+# anything else that could turn `<name>` into `../../src` and escape the skill directory it belongs in.
+SKILL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 @dataclass(frozen=True)
@@ -78,7 +83,15 @@ def scan_skills(dirs: Iterable[Path], source: str = "skill") -> list[WorkerType]
             except (OSError, UnicodeDecodeError):
                 continue
             meta = parse_frontmatter(text)
-            name = meta.get("name") or skill_dir.name
+            frontmatter_name = meta.get("name", "")
+            if frontmatter_name and SKILL_NAME_RE.match(frontmatter_name):
+                name = frontmatter_name
+            elif SKILL_NAME_RE.match(skill_dir.name):
+                # An unsafe or absent frontmatter name falls back to the directory name, itself validated --
+                # `name: ../../src` must never reach a consumer that turns a skill name into a path component.
+                name = skill_dir.name
+            else:
+                continue
             found.setdefault(name, WorkerType(name=name, description=meta.get("description", ""), source=source, path=f, text=text))
     return sorted(found.values(), key=lambda w: w.name)
 

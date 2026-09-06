@@ -12,7 +12,7 @@ from meld.actions import Refused
 from meld.adapters.claude import ClaudeAdapter
 from meld.brief import BRIEF_FILE
 from meld.context import load_context
-from meld.dispatch import DispatchError, dispatch, git_identity, worker_env
+from meld.dispatch import DispatchError, dispatch, git_identity, materialise_skills, worker_env
 from meld.gitops import head_sha, worktree_exists
 from meld.roster import WorkerType
 from tests.conftest import env_for
@@ -442,4 +442,84 @@ def test_dispatch_never_replaces_a_skill_destination_tracked_in_the_product_repo
     assert out["skills_materialised"] == {"made": [],
                                           "skipped": [".fake/skills/deploy-checklist (tracked in the product repo; left alone)"]}
     assert not (wt / ".fake" / "skills" / ".meld-materialised.json").exists()
+    wait_for_exit(out["pid"])
+
+
+def test_materialise_skills_rejects_an_unsafe_skill_name(tmp_path):
+    """C1: skill.name is free text (frontmatter, or in principle any caller) and is used as a path component --
+    a hand-built WorkerType whose name is a traversal attempt must be skipped, never used to build a path, and
+    must touch nothing that happens to sit at the path the traversal would otherwise have reached."""
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    (worktree / "x").mkdir()  # stands in for real product content two levels above target_dir (".fake/skills")
+    (worktree / "x" / "keep.txt").write_text("do not delete me\n")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "SKILL.md").write_text("---\nname: y\n---\n")
+    bad = WorkerType(name="../../x", description="", source="product-skill", path=elsewhere / "SKILL.md")
+    out = materialise_skills(worktree, FakeAdapter(), [bad])
+    assert out == {"made": [], "skipped": ["../../x: not a valid skill name"]}
+    assert (worktree / "x" / "keep.txt").read_text() == "do not delete me\n"
+
+
+def test_dispatch_never_prunes_a_stale_copy_that_became_tracked(tmp_path):
+    """C2: a name in the previous manifest that is no longer a current skill is normally pruned as stale -- but
+    if the product has since committed a real file at that exact path on the worktree's own branch, it is the
+    product's file now, and pruning must leave it alone (and say so), never delete it."""
+    fake, ctx, repo, origin = make_product(tmp_path)
+    a = repo / ".meld" / "skills" / "skill-a"
+    a.mkdir(parents=True)
+    (a / "SKILL.md").write_text("---\nname: skill-a\ndescription: First skill\n---\n# A\n")
+    sh(["git", "add", "."], repo)
+    sh(["git", "commit", "-q", "-m", "skill a"], repo)
+    sh(["git", "push", "-q", "origin", "main"], repo)
+    issues = claim_issue_11(fake)
+    for i in issues:
+        if i["number"] == 11:
+            i["labels"].append({"name": "skill:skill-a"})
+    fake.route("GET", R + "issues", issues)
+    first = dispatch(ctx, 11, adapter=FakeAdapter())
+    wait_for_exit(first["pid"])
+    wt = Path(first["worktree"])
+    assert (wt / ".fake" / "skills" / "skill-a" / "SKILL.md").exists()
+    mark_collected(tmp_path, 11)  # the first run must be collected before a second dispatch on #11 is legal
+    # The product adopts this exact path inside the worktree's own branch: a real commit, force-added past the
+    # info/exclude entry materialise_skills wrote for it -- this must survive the next dispatch's pruning pass.
+    (wt / ".fake" / "skills" / "skill-a" / "SKILL.md").write_text("adopted by the product\n")
+    sh(["git", "add", "-f", ".fake/skills/skill-a"], wt)
+    sh(["git", "commit", "-q", "-m", "adopt skill-a"], wt)
+    shutil.rmtree(a)  # skill-a is no longer a current product skill
+    fake.route("GET", R + "issues", claim_issue_11(fake))
+    ctx.refresh_roster()  # the roster was cached by the first dispatch; it must re-scan .meld/skills/ to see the removal
+    second = dispatch(ctx, 11, adapter=FakeAdapter())
+    assert (wt / ".fake" / "skills" / "skill-a" / "SKILL.md").read_text() == "adopted by the product\n"
+    assert second["skills_materialised"] == {"made": [],
+                                             "skipped": [".fake/skills/skill-a (tracked in the product repo; left alone)"]}
+    manifest = json.loads((wt / ".fake" / "skills" / ".meld-materialised.json").read_text())
+    assert manifest == []
+    wait_for_exit(second["pid"])
+
+
+def test_dispatch_survives_a_tracked_file_blocking_the_project_skills_directory(tmp_path):
+    """I4: if the product has committed a plain FILE at the adapter's project_skills_dir()'s first path
+    component (here FakeAdapter's `.fake`), materialise_skills must not crash the dispatch trying to create a
+    directory where a file already sits -- it reports the collision and makes nothing, and the dispatch as a
+    whole still succeeds (a missing skill copy must never fail a dispatch)."""
+    fake, ctx, repo, origin = make_product(tmp_path)
+    (repo / ".fake").write_text("not a directory\n")
+    d = repo / ".meld" / "skills" / "deploy-checklist"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text("---\nname: deploy-checklist\ndescription: Pre-deploy steps\n---\n# Deploy\n")
+    sh(["git", "add", "."], repo)
+    sh(["git", "commit", "-q", "-m", "a file named .fake plus the product skill"], repo)
+    sh(["git", "push", "-q", "origin", "main"], repo)
+    issues = claim_issue_11(fake)
+    for i in issues:
+        if i["number"] == 11:
+            i["labels"].append({"name": "skill:deploy-checklist"})
+    fake.route("GET", R + "issues", issues)
+    out = dispatch(ctx, 11, adapter=FakeAdapter())
+    wt = Path(out["worktree"])
+    assert (wt / ".fake").is_file()
+    assert out["skills_materialised"] == {"made": [], "skipped": [".fake/skills is a file in this repo; skills not materialised"]}
     wait_for_exit(out["pid"])

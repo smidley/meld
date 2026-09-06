@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from meld.adapters import ADAPTER_NAMES, UnknownAdapter, get_adapter
-from meld.adapters.base import LaunchSpec, parse_frontmatter, scan_skills, scrub_env
+from meld.adapters.base import LaunchSpec, SKILL_NAME_RE, parse_frontmatter, scan_skills, scrub_env
 from tests.fakeadapter import FakeAdapter
 
 
@@ -81,3 +81,27 @@ def test_project_skills_dirs():
     from meld.adapters.claude import ADAPTER as claude
     from meld.adapters.codex import ADAPTER as codex
     assert claude.project_skills_dir() == ".claude/skills" and codex.project_skills_dir() == ".agents/skills"
+
+
+def test_scan_skills_falls_back_to_the_directory_name_for_an_unsafe_frontmatter_name(tmp_path: Path):
+    """C1: `name:` is free text in a product-authored file; a value shaped like a path (`../../src`) must never
+    reach a consumer that turns a skill name into a filesystem path component (materialise_skills)."""
+    escaping = tmp_path / "deploy-checklist"
+    escaping.mkdir()
+    (escaping / "SKILL.md").write_text("---\nname: ../../src\ndescription: path traversal attempt\n---\n")
+    assert [s.name for s in scan_skills([tmp_path])] == ["deploy-checklist"]
+    # I3: the rule requires an alnum first character, so a manifest-lookalike name is rejected outright -- a
+    # directory literally named ".meld-materialised.json" would also be skipped upstream (scan_skills excludes
+    # any dot-prefixed directory before frontmatter is even read), but the name rule itself must reject the
+    # string too, since a name reaches materialise_skills without going through that directory-listing filter.
+    assert SKILL_NAME_RE.match(".meld-materialised.json") is None
+
+
+def test_scan_skills_skips_a_directory_when_neither_name_is_valid(tmp_path: Path):
+    """Frontmatter carries an unsafe name AND the directory name itself is unsafe (an underscore is not in the
+    rule's alnum-first-character set): the directory is skipped entirely, never included under an invalid
+    name (there is no third fallback)."""
+    unsafe_dir = tmp_path / "_unsafe"
+    unsafe_dir.mkdir()
+    (unsafe_dir / "SKILL.md").write_text("---\nname: ../../also-bad\ndescription: x\n---\n")
+    assert scan_skills([tmp_path]) == []

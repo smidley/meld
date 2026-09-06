@@ -129,6 +129,33 @@ def test_dispatch_refreshes_origin_before_recall_on_a_reused_worktree(tmp_path):
     wait_for_exit(second["pid"])
 
 
+def test_dispatch_falls_back_to_the_working_copy_when_the_origin_fetch_fails(tmp_path, monkeypatch):
+    from meld.gitops import GitError
+    from meld.gitops import git as real_git
+    fake, ctx, repo, origin = make_product(tmp_path)
+    claim_issue_11(fake)
+    # Seeded straight into the working copy, never committed or pushed -- reachable only via _recall_for_brief's
+    # ref=None fallback, never via ref="origin/main", so finding it in the brief proves the fallback path ran.
+    (repo / ".meld" / "memory").mkdir(parents=True)
+    (repo / ".meld" / "memory" / "lessons.md").write_text("# Lessons\n\n## 2026-09-01 — #7 (codex)\n\nHealth endpoints must not touch the database.\n")
+
+    def failing_fetch(args, cwd, *a, **kw):
+        # meld.dispatch.git has exactly two direct callers: _tracked_in_worktree's `ls-files` (unaffected here --
+        # this dispatch has no product skills to materialise) and _recall_for_brief's `fetch`, which is the one
+        # this test needs to fail. create_worktree's own earlier fetch runs through gitops.py's own `git` name,
+        # a separate binding this patch never touches, so the worktree itself is still created normally.
+        if args[:1] == ["fetch"]:
+            raise GitError("simulated offline")
+        return real_git(args, cwd, *a, **kw)
+
+    monkeypatch.setattr("meld.dispatch.git", failing_fetch)
+    out = dispatch(ctx, 11, adapter=FakeAdapter(), now=NOW)
+    assert out["dispatched"] == 11 and out["recall_note"] == "origin fetch failed; recall used the local checkout"
+    text = (Path(out["worktree"]) / BRIEF_FILE).read_text()
+    assert "## Relevant memory" in text and "Health endpoints must not touch the database." in text
+    wait_for_exit(out["pid"])
+
+
 def test_dispatch_refusals(tmp_path):
     fake, ctx, repo, origin = make_product(tmp_path)
     with pytest.raises(Refused) as ei:

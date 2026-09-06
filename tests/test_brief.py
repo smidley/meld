@@ -192,6 +192,11 @@ def test_brief_carries_relevant_memory_and_result_reads_skills_used(tmp_path):
     assert "## Relevant memory" not in plain
     (tmp_path / ".meld-result.json").write_text(json.dumps({"outcome": "done", "summary": "s", "verified_by": "v", "skills_used": ["brand", "security-review"]}))
     assert read_result(tmp_path).skills_used == ("brand", "security-review")
+    (tmp_path / ".meld-result.json").write_text(json.dumps({"outcome": "done", "summary": "s", "verified_by": "v"}))
+    assert read_result(tmp_path).skills_used == ()
+    (tmp_path / ".meld-result.json").write_text(json.dumps({"outcome": "done", "summary": "s", "verified_by": "v", "skills_used": "brand"}))
+    with pytest.raises(ResultError, match="skills_used"):
+        read_result(tmp_path)
 
 
 def test_recall_snippets_at_a_ref_skips_files_it_cannot_decode(tmp_path):
@@ -209,11 +214,6 @@ def test_recall_snippets_at_a_ref_skips_files_it_cannot_decode(tmp_path):
     sh(["git", "push", "-q", "origin", "main"], repo)
     hits = recall_snippets(repo, "postgres", ref="origin/main")
     assert any("Postgres" in h for h in hits)
-    (tmp_path / ".meld-result.json").write_text(json.dumps({"outcome": "done", "summary": "s", "verified_by": "v"}))
-    assert read_result(tmp_path).skills_used == ()
-    (tmp_path / ".meld-result.json").write_text(json.dumps({"outcome": "done", "summary": "s", "verified_by": "v", "skills_used": "brand"}))
-    with pytest.raises(ResultError, match="skills_used"):
-        read_result(tmp_path)
 
 
 def test_read_result_skills_used_tolerates_null_and_is_bounded(tmp_path):

@@ -364,7 +364,82 @@ def test_dispatch_materialises_product_skills_into_the_adapters_project_dir(tmp_
     wt = Path(out["worktree"])
     assert (wt / ".fake" / "skills" / "deploy-checklist" / "SKILL.md").read_text().startswith("---")
     exclude = sh(["git", "rev-parse", "--git-path", "info/exclude"], wt)
-    assert ".fake/skills/" in Path(exclude if exclude.startswith("/") else str(wt / exclude)).read_text()
+    exclude_text = Path(exclude if exclude.startswith("/") else str(wt / exclude)).read_text()
+    assert ".fake/skills/" in exclude_text and ".fake/skills/.meld-materialised.json" in exclude_text
     assert "deploy-checklist" in (wt / ".meld-brief.md").read_text()
-    assert out["skills_materialised"] == [".fake/skills/deploy-checklist"]
+    assert out["skills_materialised"] == {"made": [".fake/skills/deploy-checklist"], "skipped": []}
+    manifest = json.loads((wt / ".fake" / "skills" / ".meld-materialised.json").read_text())
+    assert manifest == ["deploy-checklist"]
+    wait_for_exit(out["pid"])
+
+
+def test_dispatch_prunes_a_stale_skill_copy_on_a_reused_worktree(tmp_path):
+    """A skill copied on an earlier dispatch into this same worktree, then removed from .meld/skills/, does not
+    linger once a later dispatch reuses the worktree: only a name materialise_skills itself wrote to the
+    manifest is ever pruned, and the manifest is kept current with what is actually there now."""
+    fake, ctx, repo, origin = make_product(tmp_path)
+    a = repo / ".meld" / "skills" / "skill-a"
+    a.mkdir(parents=True)
+    (a / "SKILL.md").write_text("---\nname: skill-a\ndescription: First skill\n---\n# A\n")
+    sh(["git", "add", "."], repo)
+    sh(["git", "commit", "-q", "-m", "skill a"], repo)
+    sh(["git", "push", "-q", "origin", "main"], repo)
+    issues = claim_issue_11(fake)
+    for i in issues:
+        if i["number"] == 11:
+            i["labels"].append({"name": "skill:skill-a"})
+    fake.route("GET", R + "issues", issues)
+    first = dispatch(ctx, 11, adapter=FakeAdapter())
+    wait_for_exit(first["pid"])
+    wt = Path(first["worktree"])
+    assert (wt / ".fake" / "skills" / "skill-a" / "SKILL.md").exists()
+    assert first["skills_materialised"] == {"made": [".fake/skills/skill-a"], "skipped": []}
+    mark_collected(tmp_path, 11)  # the first run must be collected before a second dispatch on #11 is legal
+    shutil.rmtree(a)
+    b = repo / ".meld" / "skills" / "skill-b"
+    b.mkdir(parents=True)
+    (b / "SKILL.md").write_text("---\nname: skill-b\ndescription: Second skill\n---\n# B\n")
+    sh(["git", "add", "-A"], repo)
+    sh(["git", "commit", "-q", "-m", "swap skill-a for skill-b"], repo)
+    sh(["git", "push", "-q", "origin", "main"], repo)
+    issues2 = claim_issue_11(fake)
+    for i in issues2:
+        if i["number"] == 11:
+            i["labels"].append({"name": "skill:skill-b"})
+    fake.route("GET", R + "issues", issues2)
+    ctx.refresh_roster()  # the roster was cached by the first dispatch; it must re-scan .meld/skills/ to see the swap
+    second = dispatch(ctx, 11, adapter=FakeAdapter())
+    assert second["worktree"] == first["worktree"]
+    assert not (wt / ".fake" / "skills" / "skill-a").exists()
+    assert (wt / ".fake" / "skills" / "skill-b" / "SKILL.md").exists()
+    assert second["skills_materialised"] == {"made": [".fake/skills/skill-b"], "skipped": []}
+    manifest = json.loads((wt / ".fake" / "skills" / ".meld-materialised.json").read_text())
+    assert manifest == ["skill-b"]
+    wait_for_exit(second["pid"])
+
+
+def test_dispatch_never_replaces_a_skill_destination_tracked_in_the_product_repo(tmp_path):
+    """A file the product itself committed at the exact destination materialise_skills would otherwise write is
+    the product's file, not meld's copy to make: it is left completely untouched and named in `skipped`."""
+    fake, ctx, repo, origin = make_product(tmp_path)
+    tracked = repo / ".fake" / "skills" / "deploy-checklist"
+    tracked.mkdir(parents=True)
+    (tracked / "SKILL.md").write_text("Committed by the product, not meld.\n")
+    d = repo / ".meld" / "skills" / "deploy-checklist"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text("---\nname: deploy-checklist\ndescription: Pre-deploy steps\n---\n# Deploy\n")
+    sh(["git", "add", "."], repo)
+    sh(["git", "commit", "-q", "-m", "tracked skill destination plus the product skill"], repo)
+    sh(["git", "push", "-q", "origin", "main"], repo)
+    issues = claim_issue_11(fake)
+    for i in issues:
+        if i["number"] == 11:
+            i["labels"].append({"name": "skill:deploy-checklist"})
+    fake.route("GET", R + "issues", issues)
+    out = dispatch(ctx, 11, adapter=FakeAdapter())
+    wt = Path(out["worktree"])
+    assert (wt / ".fake" / "skills" / "deploy-checklist" / "SKILL.md").read_text() == "Committed by the product, not meld.\n"
+    assert out["skills_materialised"] == {"made": [],
+                                          "skipped": [".fake/skills/deploy-checklist (tracked in the product repo; left alone)"]}
+    assert not (wt / ".fake" / "skills" / ".meld-materialised.json").exists()
     wait_for_exit(out["pid"])

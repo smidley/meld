@@ -123,8 +123,8 @@ def mint_installation_token(app_id: int, installation_id: int, pem: str, *, now:
         raise AppAuthError(f"installation {installation_id} does not cover {', '.join(repositories)} (HTTP 422: {message})")
     if status not in (200, 201) or not isinstance(data, dict) or not data.get("token"):
         raise AppAuthError(f"installation token request failed with HTTP {status}: {message or 'no token in response'}")
-    repositories = data.get("repositories") or []
-    repos = tuple(str(r.get("full_name", "")) for r in repositories if isinstance(r, dict)) if isinstance(repositories, list) else ()
+    granted = data.get("repositories") or []
+    repos = tuple(str(r.get("full_name", "")) for r in granted if isinstance(r, dict)) if isinstance(granted, list) else ()
     permissions = data.get("permissions") or {}
     permissions = permissions if isinstance(permissions, dict) else {}
     return InstallationToken(str(data["token"]), str(data.get("expires_at", "")), permissions, repos)

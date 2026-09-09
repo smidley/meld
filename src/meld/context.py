@@ -94,7 +94,7 @@ def load_context(config_path: Path | None = None, env: Mapping[str, str] | None 
             # Least privilege, and the evidence doctor's coverage check reads: the token is scoped to the product
             # repository. The API wants bare repository names, not owner/name.
             app_auth = AppAuth(g.app_id, g.installation_id, pem, store.cache_dir / "app-token.json", post=app_post,  # type: ignore[arg-type]
-                               repositories=[cfg.repo_name.split("/", 1)[1]])
+                               repositories=[cfg.repo_name.rpartition("/")[2] or cfg.repo_name])
             provider = app_auth.token
         else:
             token = env.get(g.token_env or "")

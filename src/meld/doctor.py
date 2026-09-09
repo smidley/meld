@@ -162,7 +162,7 @@ def run_checks(cfg: Config, repo_root: Path, *, env: Mapping[str, str], gh_facto
             if pem is not None:
                 try:
                     tok = mint_installation_token(group.app_id, group.installation_id, pem,  # type: ignore[arg-type]
-                                                  repositories=[cfg.repo_name.split("/", 1)[1]], post=app_post)
+                                                  repositories=[cfg.repo_name.rpartition("/")[2] or cfg.repo_name], post=app_post)
                     need = {"contents": "write", "issues": "write", "pull_requests": "write", "statuses": "write"}
                     wrong = {k: tok.permissions.get(k, "none") for k, v in need.items() if tok.permissions.get(k) != v}
                     detail = "permissions: " + ", ".join(f"{k}: {tok.permissions.get(k, 'none')}" for k in (*need, "checks"))

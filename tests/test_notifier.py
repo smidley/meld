@@ -2,7 +2,7 @@ import http.client
 from datetime import datetime, timedelta, timezone
 
 from meld.dispatch import tick
-from meld.notifier import notify, slack_text
+from meld.notifier import NUDGE_STAGGER_MINUTES, notify, slack_text
 from meld.status import build_status
 from tests.productfixtures import R, fixture, make_product
 
@@ -32,6 +32,68 @@ def test_notify_sends_once_and_repeats_after_the_configured_delay_using_the_shar
     assert out2["notified"] == [] and len(sent) == 1
     out3 = notify(ctx, board, now + timedelta(minutes=121), post=lambda u, p: sent.append(p), env={"MELD_SLACK_DM_WEBHOOK": "https://hooks.example/x"})
     assert out3["notified"] == [14] and len(sent) == 2
+
+
+def test_notify_staggers_a_later_party_so_it_is_not_immediately_due(tmp_path):
+    """Two parties ticking within the same GitHub round-trip must not both see "no recent nudge" and both send: each
+    party's due check is offset by its alphabetical position among the configured groups, so with no nudge events at
+    all the alphabetically-first party (claude, offset 0) is due the instant the item appears, but the next party
+    (codex, offset NUDGE_STAGGER_MINUTES) is not due until the item is that much older."""
+    fake, ctx, repo, origin = make_product(tmp_path)                       # claude: first alphabetically, offset 0
+    other_party_ctx = make_product(tmp_path / "codex", group="codex")[1]   # codex: second, offset NUDGE_STAGGER_MINUTES
+    other_party_ctx.gh = ctx.gh                                            # same GitHub, different party
+    events_for(fake, 14, [])
+    _, board = build_status(ctx)
+    then = datetime(2025, 1, 1, 9, 0, tzinfo=timezone.utc)                 # issue #14's updated_at in the fixture
+    assert notify(ctx, board, then, env={})["due"] == [14]
+    assert notify(other_party_ctx, board, then, env={})["due"] == []       # not due yet at the same moment
+    later = then + timedelta(minutes=NUDGE_STAGGER_MINUTES)
+    assert notify(other_party_ctx, board, later, env={})["due"] == [14]    # due once it's one stagger-minute older
+
+
+def test_notify_second_party_waits_window_plus_offset_after_the_first_partys_label(tmp_path):
+    """Once a nudge label exists (posted by whichever party), the repeat window is measured from that shared event --
+    but a later party still adds its own offset on top of the window, not just the window alone."""
+    fake, ctx, repo, origin = make_product(tmp_path)                       # claude: offset 0
+    other_party_ctx = make_product(tmp_path / "codex", group="codex")[1]   # codex: offset NUDGE_STAGGER_MINUTES
+    other_party_ctx.gh = ctx.gh
+    last = datetime(2026, 9, 5, 12, 0, tzinfo=timezone.utc)
+    events_for(fake, 14, [last.strftime("%Y-%m-%dT%H:%M:%SZ")])
+    _, board = build_status(ctx)
+    at_window = last + timedelta(minutes=ctx.cfg.notify_repeat_after_minutes)
+    assert notify(ctx, board, at_window, env={})["due"] == [14]                  # window alone is enough for the first party
+    assert notify(other_party_ctx, board, at_window, env={})["due"] == []        # ...but not for the second
+    at_window_plus_offset = last + timedelta(minutes=ctx.cfg.notify_repeat_after_minutes + NUDGE_STAGGER_MINUTES)
+    assert notify(other_party_ctx, board, at_window_plus_offset, env={})["due"] == [14]
+
+
+def test_notify_ignores_a_labeled_event_from_a_non_bot_login(tmp_path):
+    """`last_nudge` only counts a `labeled meld:nudged` event whose actor is a configured bot; a human who hand-added
+    the label (e.g. while triaging) must not be mistaken for a nudge that was already sent."""
+    fake, ctx, repo, origin = make_product(tmp_path)
+    fake.route("GET", R + "issues/14/events",
+               [{"id": 501, "event": "labeled", "label": {"name": "meld:nudged"}, "actor": {"login": "empowerScott"}, "created_at": "2026-09-03T11:59:00Z"}])
+    _, board = build_status(ctx)
+    out = notify(ctx, board, NOW, env={})
+    assert out["due"] == [14]
+
+
+def test_notify_clears_a_stale_label_even_without_a_webhook_configured(tmp_path):
+    """Clearing a stale `meld:nudged` label is not "sending" -- it must run whether or not a Slack webhook is
+    configured. Only the send itself is gated on the webhook."""
+    fake, ctx, repo, origin = make_product(tmp_path)
+    issues = fixture("issues.json")
+    for issue in issues:
+        if issue["number"] == 11:                                   # ready, but still carries the nudge label
+            issue["labels"].append({"name": "meld:nudged"})
+    fake.route("GET", R + "issues", issues)
+    fake.route("DELETE", R + "issues/11/labels/meld%3Anudged", {}, status=200)
+    fake.route("DELETE", R + "issues/11/labels/meld:nudged", {}, status=200)   # whichever encoding remove_label uses
+    _, board = build_status(ctx)
+    out = notify(ctx, board, NOW, env={})   # no MELD_SLACK_DM_WEBHOOK configured at all
+    assert out["skipped"] is not None
+    assert out["cleared"] == [11]
+    assert not [c for c in fake.calls if c.method == "POST" and "labels" in c.endpoint]   # nothing sent or nudge-labeled
 
 
 def test_notify_removes_the_label_when_the_item_no_longer_needs_a_human(tmp_path):

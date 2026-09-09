@@ -1,6 +1,10 @@
 """Slack nudges for items that need a person: one message listing every due needs-human issue, each repeated after a
-configured delay -- gated by GitHub's own record of the shared `meld:nudged` label rather than a local per-party file,
-so N groups nudging the same board can never send N independent copies."""
+configured delay -- gated by GitHub's own record of the shared `meld:nudged` label rather than a local per-party file.
+Concurrent parties are staggered `NUDGE_STAGGER_MINUTES` apart by their alphabetical position among `cfg.group_names`,
+so under normal operation only one party is ever due to nudge a given item at a time even though GitHub offers no
+compare-and-swap on labels. The residual: a duplicate nudge is still possible if the earlier party's label event takes
+longer than `NUDGE_STAGGER_MINUTES` to land after it read the events (an unusually slow GitHub round-trip) -- accepted
+as the cost of having no atomic check-then-act primitive."""
 from __future__ import annotations
 
 import http.client
@@ -15,6 +19,7 @@ from meld.github import GitHubError
 from meld.status import _age_minutes
 
 _ISO = "%Y-%m-%dT%H:%M:%SZ"
+NUDGE_STAGGER_MINUTES = 1
 
 
 def _post_webhook(url: str, payload: dict) -> None:
@@ -53,11 +58,28 @@ def last_nudge(events: list[dict], bots: set[str]) -> datetime | None:
     return max(stamps) if stamps else None
 
 
+def _stagger_offset(ctx) -> int:
+    """This caller's stagger offset in minutes: its position among the alphabetically sorted configured groups, times
+    `NUDGE_STAGGER_MINUTES`, so concurrent parties are never all due for the same item in the same GitHub round-trip.
+    A caller with no group (a human running `meld notify` directly) gets 0, same as the alphabetically first group."""
+    names = sorted(ctx.cfg.group_names)
+    group = ctx.actor().group
+    return names.index(group) * NUDGE_STAGGER_MINUTES if group in names else 0
+
+
+def _result(due: list[int], notified: list[int], skipped: str | None, text: str | None, cleared: list[int], errors: list[str]) -> dict:
+    result = {"due": due, "notified": notified, "skipped": skipped, "text": text, "cleared": cleared}
+    if errors:
+        result["errors"] = errors
+    return result
+
+
 def notify(ctx, board: Board, now: datetime, *, post: Callable[[str, dict], None] | None = None, env: Mapping[str, str] | None = None,
            dry_run: bool = False, events: Callable[[int], list[dict]] | None = None) -> dict:
     env = os.environ if env is None else env
     events_fn = events or ctx.gh.issue_events
     bots = {g.bot for g in ctx.cfg.groups.values()}
+    offset = _stagger_offset(ctx)
     items = sorted(({"issue": i.number, "title": i.title, "age_minutes": _age_minutes(i.updated_at, now)}
                     for i in board.issues.values() if i.status == "needs_human"), key=lambda d: d["issue"])
     errors: list[str] = []
@@ -71,10 +93,32 @@ def notify(ctx, board: Board, now: datetime, *, post: Callable[[str, dict], None
             errors.append(f"{type(e).__name__}: failed to read nudge history for #{item['issue']}")
             continue
         last = last_nudge(evs, bots)
-        if last is None or (now - last).total_seconds() >= ctx.cfg.notify_repeat_after_minutes * 60:
+        # Staggered by party: with no prior nudge, a later party waits until the item is `offset` minutes old before
+        # it is due; once a nudge exists, a later party waits `offset` minutes past the window on top of everyone
+        # else. The alphabetically first group (and a human with no group) has offset 0, so its behaviour is exactly
+        # the un-staggered rule.
+        if last is None:
+            is_due = item["age_minutes"] >= offset
+        else:
+            is_due = (now - last).total_seconds() >= (ctx.cfg.notify_repeat_after_minutes + offset) * 60
+        if is_due:
             due.append(item)
     numbers = [d["issue"] for d in due]
     text = slack_text(due, ctx.cfg.repo_name) if due else None
+
+    # Clearing a stale label is not "sending": it runs whenever this isn't a dry run, regardless of whether a Slack
+    # webhook is configured, so an unconfigured deployment still keeps `meld:nudged` truthful. Only a dry run --
+    # which must touch nothing -- skips it.
+    cleared: list[int] = []
+    if not dry_run:
+        for issue in sorted(board.issues.values(), key=lambda i: i.number):
+            if NUDGED_LABEL in issue.labels and issue.status != "needs_human":
+                try:
+                    ctx.gh.remove_label(issue.number, NUDGED_LABEL)
+                except GitHubError as e:
+                    errors.append(f"{type(e).__name__}: failed to clear the nudge label on #{issue.number}")
+                else:
+                    cleared.append(issue.number)
 
     webhook_env = ctx.cfg.notify_webhook_env
     url = env.get(webhook_env) if webhook_env else None
@@ -84,16 +128,10 @@ def notify(ctx, board: Board, now: datetime, *, post: Callable[[str, dict], None
     elif not url:
         skipped = f"{webhook_env} is not set"
     if skipped is not None:
-        result = {"due": numbers, "notified": [], "skipped": skipped, "text": text, "cleared": []}
-        if errors:
-            result["errors"] = errors
-        return result
+        return _result(numbers, [], skipped, text, cleared, errors)
 
     if dry_run:
-        result = {"due": numbers, "notified": [], "skipped": None, "text": text, "cleared": []}
-        if errors:
-            result["errors"] = errors
-        return result
+        return _result(numbers, [], None, text, cleared, errors)
 
     notified: list[int] = []
     if due:
@@ -118,17 +156,4 @@ def notify(ctx, board: Board, now: datetime, *, post: Callable[[str, dict], None
                     # documented cost of never silently losing a send that really went out.
                     errors.append(f"{type(e).__name__}: failed to record the nudge label on #{n}")
 
-    cleared: list[int] = []
-    for issue in sorted(board.issues.values(), key=lambda i: i.number):
-        if NUDGED_LABEL in issue.labels and issue.status != "needs_human":
-            try:
-                ctx.gh.remove_label(issue.number, NUDGED_LABEL)
-            except GitHubError as e:
-                errors.append(f"{type(e).__name__}: failed to clear the nudge label on #{issue.number}")
-            else:
-                cleared.append(issue.number)
-
-    result = {"due": numbers, "notified": notified, "skipped": None, "text": text, "cleared": cleared}
-    if errors:
-        result["errors"] = errors
-    return result
+    return _result(numbers, notified, None, text, cleared, errors)

@@ -354,13 +354,13 @@ def test_doctor_warns_when_the_mint_returns_no_repository_list(tmp_path, keypair
 
 def test_doctor_says_an_app_bot_cannot_hold_the_assignee_claim_lock(tmp_path, keypair_pem):
     """Final-review Critical 1: `GET /repos/{repo}/assignees/{login}` 404s for an App's bot user (probe 2026-09-09),
-    so the check fails for an App group and its fix text names the limitation and plan 6b rather than a collaborator
+    so the check is a warning for an App group (a documented limitation, not a fixable fault) and its fix text names the limitation and plan 6b rather than a collaborator
     invite that cannot exist. The login is percent-encoded: a bare `[bot]` would not survive the URL."""
     by_token = fakes()
     by_token[None].route("GET", "users/meld-claude[bot]", {"login": "meld-claude[bot]", "id": 99})
     get, post, _ = app_http()
     checks = by_name(run_app(tmp_path, by_token, keypair_pem, get=get, post=post))
-    assert checks["assignable:claude"].ok is False
+    assert checks["assignable:claude"].ok is None          # a warning: documented limitation, doctor stays green
     assert "cannot claim and build" in checks["assignable:claude"].fix and "plan 6b" in checks["assignable:claude"].fix
     assert any(c.endpoint == R + "assignees/meld-claude%5Bbot%5D" for c in by_token[None].calls)
     assert checks["assignable:codex"].ok is True           # the PAT group in the same config is unaffected

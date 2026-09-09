@@ -10,7 +10,7 @@ installation access token mints, its granted permissions cover contents/issues/p
 installation includes the product repo) -- App permissions come from the mint response, not a probe. `openssl` (needed
 to sign an App's JWT) is checked once per run, on PATH, regardless of whether any group uses App auth. Every group,
 PAT and App alike, also gets `assignable:<g>`: the claim lock is the issue assignee, so a bot login the product repo
-will not accept as an assignee cannot claim (see APP_ASSIGNEE_FIX).
+will not accept as an assignee cannot claim (see APP_ASSIGNEE_FIX; a warning for App groups, a failure for PAT groups).
 """
 from __future__ import annotations
 
@@ -48,7 +48,9 @@ RUN_SCRATCH_MIN_AGE_SECONDS = 3600
 # The claim lock is the issue assignee (spec 8), and GitHub validates assignees against the repository's assignable
 # users. An App's bot user is never assignable (probe 2026-09-09: `GET repos/<repo>/assignees/<login>` answers 204 for
 # a collaborator and 404 for github-actions[bot], dependabot[bot] and copilot-swe-agent[bot] alike), so an App group
-# cannot take the lock today. This is a report, never a legality decision -- rules.py stays the only such authority.
+# cannot take the lock today. For an App group that is a warning (a documented limitation the human cannot fix, so
+# doctor still reports green); for a PAT group a 404 is a failure (the machine user is not a collaborator yet). This is a
+# report, never a legality decision -- rules.py stays the only such authority.
 APP_ASSIGNEE_FIX = ("GitHub does not let an App's bot user be an issue assignee; with the assignee claim lock this group "
                     "can review, audit and merge but cannot claim and build until plan 6b's App-compatible claim lock")
 PAT_ASSIGNEE_FIX = "add the machine user as a collaborator"
@@ -210,7 +212,7 @@ def run_checks(cfg: Config, repo_root: Path, *, env: Mapping[str, str], gh_facto
             gh_factory(None).get(f"repos/{cfg.repo_name}/assignees/{quote(group.bot, safe='')}", use_cache=False)
             checks.append(Check(f"assignable:{group.name}", True, f"{group.bot} can be assigned issues on {cfg.repo_name}"))
         except GitHubError as e:
-            checks.append(Check(f"assignable:{group.name}", False, f"{group.bot} cannot be assigned issues on {cfg.repo_name}: {e}",
+            checks.append(Check(f"assignable:{group.name}", None if group.is_app else False, f"{group.bot} cannot be assigned issues on {cfg.repo_name}: {e}",
                                 APP_ASSIGNEE_FIX if group.is_app else PAT_ASSIGNEE_FIX))
         # 4. git identity for worktree commits
         if group.git_email:

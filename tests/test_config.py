@@ -196,12 +196,18 @@ def test_app_group_config_parses_and_validates():
         Config.from_dict({**base, "groups": {"claude": {**app, "auth": "oauth"}}})
 
 
-def test_app_group_non_numeric_ids_are_rejected():
+def test_app_group_ids_must_be_positive_integers():
+    """Final-review Minor 9 + 10: the starter config writes `app_id = 0`/`installation_id = 0` as placeholders, and
+    an unfilled 0 used to reach GitHub and come back as an opaque 401/404. `int()` also silently accepted floats and
+    booleans (`int(True)` is 1). Both settings must be a real, positive TOML integer."""
     base = {"repo": {"name": "acme/widgets"}, "humans": {"accounts": ["empowerScott"]}}
     role = {"model": "claude-opus-5", "effort": "high"}
     app = {"cli": "claude", "bot": "meld-claude[bot]", "auth": "app", "app_id": 1234, "installation_id": 55,
            "private_key_env": "MELD_APP_KEY_CLAUDE", "orchestrator": role, "pm": role}
-    with pytest.raises(ConfigError, match=r"groups\.claude\.app_id must be an integer"):
-        Config.from_dict({**base, "groups": {"claude": {**app, "app_id": "not-a-number"}}})
-    with pytest.raises(ConfigError, match=r"groups\.claude\.installation_id must be an integer"):
-        Config.from_dict({**base, "groups": {"claude": {**app, "installation_id": "not-a-number"}}})
+    for field in ("app_id", "installation_id"):
+        for bad in ("not-a-number", 0, -1, 12.5, True, None):
+            with pytest.raises(ConfigError, match=rf"groups\.claude\.{field} must be a positive integer"):
+                Config.from_dict({**base, "groups": {"claude": {**app, field: bad}}})
+    with pytest.raises(ConfigError, match="0 is the starter placeholder"):
+        Config.from_dict({**base, "groups": {"claude": {**app, "app_id": 0}}})
+    assert Config.from_dict({**base, "groups": {"claude": app}}).groups["claude"].app_id == 1234

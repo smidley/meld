@@ -52,6 +52,15 @@ def _require(data: Mapping[str, Any], key: str, path: str) -> Any:
     return data[key]
 
 
+def _positive_int(value: Any, path: str) -> int:
+    """A real TOML integer, greater than zero. `int()` would quietly accept "12", 12.5 and True (bool is an int
+    subclass); and 0 is the placeholder `meld setup --app` writes, which otherwise reaches GitHub and comes back as
+    an opaque 401 or 404 instead of a config error the human can act on."""
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ConfigError(f"{path} must be a positive integer (0 is the starter placeholder), got {value!r}")
+    return value
+
+
 def _role(data: Mapping[str, Any], path: str) -> RoleConfig:
     return RoleConfig(model=str(_require(data, "model", path)), effort=str(_require(data, "effort", path)))
 
@@ -126,17 +135,9 @@ class Config:
             bot = str(_require(g, "bot", path))
             if auth == "app":
                 # _require's own ConfigError (missing key) must propagate as-is, not be relabeled
-                # "must be an integer" -- so the lookup happens outside the int() try/except.
-                raw_app_id = _require(g, "app_id", path)
-                try:
-                    app_id = int(raw_app_id)
-                except (TypeError, ValueError) as e:
-                    raise ConfigError(f"{path}.app_id must be an integer") from e
-                raw_installation_id = _require(g, "installation_id", path)
-                try:
-                    installation_id = int(raw_installation_id)
-                except (TypeError, ValueError) as e:
-                    raise ConfigError(f"{path}.installation_id must be an integer") from e
+                # "must be a positive integer" -- so the lookup happens outside _positive_int.
+                app_id = _positive_int(_require(g, "app_id", path), f"{path}.app_id")
+                installation_id = _positive_int(_require(g, "installation_id", path), f"{path}.installation_id")
                 key_env = str(g["private_key_env"]) if g.get("private_key_env") else None
                 key_file = str(g["private_key_file"]) if g.get("private_key_file") else None
                 if bool(key_env) == bool(key_file):

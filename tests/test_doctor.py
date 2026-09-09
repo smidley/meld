@@ -332,6 +332,16 @@ def test_doctor_fails_the_installation_check_when_the_scoped_mint_is_refused(tmp
     assert inst.ok is False and "does not cover widgets" in inst.detail
 
 
+def test_doctor_warns_when_the_app_has_no_checks_permission(tmp_path, keypair_pem):
+    """Final-review Minor 8: Checks was documented as "optional", but without it every review this group publishes
+    records check_run_error. A warning, not a failure -- the review itself still lands."""
+    by_token = fakes()
+    get, post, _ = app_http(perms={"contents": "write", "issues": "write", "pull_requests": "write", "statuses": "write"})
+    checks = by_name(run_app(tmp_path, by_token, keypair_pem, get=get, post=post))
+    inst = checks["app-installation:claude"]
+    assert inst.ok is None and "check_run_error" in inst.detail and "Checks" in inst.fix
+
+
 def test_doctor_warns_when_the_mint_returns_no_repository_list(tmp_path, keypair_pem):
     """Final-review Important 2: absent evidence is a warning, never a pass -- "no list" used to map to "covers"."""
     by_token = fakes()

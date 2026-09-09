@@ -365,3 +365,5 @@ def test_setup_app_flag_writes_app_form_and_next_steps(tmp_path):
     assert any("github.com/settings/apps/new" in step for step in out["next"]) and any("installation_id" in step for step in out["next"])
     # Final-review Critical 1b: the App path must say plainly what an App group cannot do yet.
     assert any("cannot claim and build" in step and "assignee" in step for step in out["next"])
+    # Final-review Minor 8: Checks is recommended, not "optional" -- the printed steps must say what is lost without it.
+    assert any("check_run_error" in step for step in out["next"])

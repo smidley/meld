@@ -174,9 +174,19 @@ def run_checks(cfg: Config, repo_root: Path, *, env: Mapping[str, str], gh_facto
                         detail += f"; the mint returned no repository list, so coverage of {cfg.repo_name} is unverified"
                     elif not covers:
                         detail += f"; installation does not include {cfg.repo_name} (has: {', '.join(tok.repositories)})"
+                    # Checks is not required to review, but review.py publishes its neutral check run only for App
+                    # groups: without the permission every review this group submits records check_run_error.
+                    no_checks = tok.permissions.get("checks") != "write"
+                    if no_checks:
+                        detail += "; each review by this group will record check_run_error"
                     bad = bool(wrong) or (not unverified and not covers)
-                    checks.append(Check(f"app-installation:{group.name}", False if bad else (None if unverified else True), detail,
-                                        "edit the App's permissions (Contents, Issues, Pull requests, Commit statuses: read & write; Checks optional) and install it on the repo" if bad else ""))
+                    fix = ""
+                    if bad:
+                        fix = ("edit the App's permissions (Contents, Issues, Pull requests, Commit statuses: read & write; "
+                               "Checks: read & write recommended) and install it on the repo")
+                    elif no_checks:
+                        fix = "grant the App Checks: read & write"
+                    checks.append(Check(f"app-installation:{group.name}", False if bad else (None if unverified or no_checks else True), detail, fix))
                 except AppAuthError as e:
                     checks.append(Check(f"app-installation:{group.name}", False, f"installation token failed: {e}", "check installation_id (from the installation URL) and that the App is installed on the repo"))
         else:

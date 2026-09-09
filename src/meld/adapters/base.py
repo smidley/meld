@@ -102,8 +102,9 @@ def open_log(path: Path) -> IO[bytes]:
 
 
 class DetachedPopen(subprocess.Popen):
-    """A child we deliberately never wait on (workers outlive the meld process that launched them). Popen.__del__ would
-    warn 'subprocess N is still running' and register the object for later reaping; meld reaps by pid through
+    """A child the launching process may never wait on: dispatch fires a worker and forgets it (the worker outlives the
+    meld process), while runners poll and wait on role processes explicitly. Popen.__del__ would warn 'subprocess N is
+    still running' for a fire-and-forget child and register it for later reaping; meld reaps those by pid through
     state.pid_alive's waitpid instead, so the destructor is a no-op here (spec 21 item 6)."""
 
     def __del__(self) -> None:  # noqa: D401

@@ -118,7 +118,7 @@ def test_popen_detached_never_warns_when_collected_before_the_child_exits(tmp_pa
     """Popen.__del__ warns ResourceWarning: subprocess N is still running for a still-alive child that gets garbage
     collected; a detached worker process is deliberately never waited on by meld (spec 21 item 6), so DetachedPopen's
     no-op __del__ must keep that warning from firing even while the child is still running at collection time."""
-    import gc, subprocess, sys, warnings
+    import gc, sys, warnings
     from meld.adapters.base import DetachedPopen, LaunchSpec, open_log, popen_detached
     spec = LaunchSpec(role="worker", model="m", effort="e", cwd=tmp_path, prompt="", log_path=tmp_path / "log",
                       timeout_seconds=5, env={}, max_turns=1)
@@ -130,10 +130,8 @@ def test_popen_detached_never_warns_when_collected_before_the_child_exits(tmp_pa
         warnings.simplefilter("error")
         del proc
         gc.collect()
-    import os, time
-    for _ in range(50):
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            break
-        time.sleep(0.1)
+    import os
+    # Reap the child ourselves: a finished-but-unreaped child still answers kill(pid, 0), so polling that could never
+    # observe the exit; waitpid is what meld's state.pid_alive uses too, and it leaves no zombie under pytest.
+    _, status = os.waitpid(pid, 0)
+    assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0

@@ -1,4 +1,6 @@
-"""Thin wrapper over `gh api`. The only module that talks to GitHub."""
+"""Thin wrapper over `gh api`. The only module that talks to GitHub, plus `appauth.py`'s two App-JWT calls
+(`GET /app`, `POST /app/installations/{id}/access_tokens`), which `gh api` cannot make: they must send the App JWT
+as `Bearer`, and `gh` overwrites that header from `GH_TOKEN`."""
 from __future__ import annotations
 
 import base64

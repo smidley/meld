@@ -178,7 +178,8 @@ def setup(gh: GitHub, *, repo: str, goal: str, milestone_title: str, human: str,
     pr_info = open_setup_pr(gh, target_dir, default_branch, files, run) if pr else None
     if app:
         next_steps = [
-            "for each group, create a GitHub App at https://github.com/settings/apps/new named meld-<group>: Homepage any URL, Webhook OFF, "
+            "for each group, create a GitHub App at https://github.com/settings/apps/new named meld-<group> -- App names are global on GitHub, "
+            "so if meld-<group> is taken pick another; `meld doctor` prints the resulting bot login. Homepage any URL, Webhook OFF, "
             "Repository permissions: Contents, Issues, Pull requests, Commit statuses (read & write), Checks (read & write, recommended -- "
             "without it each review records check_run_error); Where can it be installed: only this account",
             "generate a private key on the App page and store the .pem in 1Password; note the App ID",

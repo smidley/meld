@@ -174,13 +174,23 @@ class TokenCache:
             return None
 
     def save(self, tok: InstallationToken) -> None:
+        # A group's orchestrator and PM share $MELD_HOME/cache/<group>, so two refreshes can land at once: the temp
+        # file must be unique per save, or the second saver's os.replace moves the first saver's file out from under
+        # it (the first then dies on FileNotFoundError). mkstemp creates it 0600 and never reuses a name.
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            json.dump({"token": tok.token, "expires_at": tok.expires_at, "permissions": tok.permissions, "repositories": list(tok.repositories)}, f)
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, self.path)
+        fd, name = tempfile.mkstemp(dir=self.path.parent, prefix="app-token-", suffix=".tmp")
+        tmp = Path(name)
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump({"token": tok.token, "expires_at": tok.expires_at, "permissions": tok.permissions, "repositories": list(tok.repositories)}, f)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, self.path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 
 
 class AppAuth:

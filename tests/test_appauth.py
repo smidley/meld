@@ -173,6 +173,50 @@ def test_token_cache_is_private_and_tolerates_garbage(tmp_path):
     assert cache.load() is None
 
 
+def test_token_cache_save_survives_a_concurrent_save_in_the_same_directory(tmp_path, monkeypatch):
+    """Final-review Minor 6: an orchestrator and its PM share $MELD_HOME/cache/<group>, so two refreshes can save at
+    once. With a fixed sibling temp name the second saver's os.replace moves the first saver's file out from under it
+    and the first raises FileNotFoundError. Each save must own a unique temp file."""
+    import meld.appauth as appauth
+    a = TokenCache(tmp_path / "app-token.json")
+    b = TokenCache(tmp_path / "app-token.json")
+    real_replace = os.replace
+    reentered = []
+
+    def replace_racing(src, dst):
+        if not reentered:                     # the other process completes its whole save mid-flight, exactly once
+            reentered.append(1)
+            b.save(InstallationToken("ghs_b", "2027-01-01T00:00:00Z", {}, ()))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(appauth.os, "replace", replace_racing)
+    a.save(InstallationToken("ghs_a", "2027-01-01T00:00:00Z", {}, ()))
+    assert a.load().token == "ghs_a"                                   # the later saver won, and neither crashed
+    assert oct(os.stat(a.path).st_mode & 0o777) == "0o600"
+    assert list(tmp_path.glob("*.tmp")) == []                          # no temp file left behind
+
+
+def test_token_cache_save_removes_its_temp_file_when_the_replace_fails(tmp_path, monkeypatch):
+    import meld.appauth as appauth
+
+    def boom(src, dst):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(appauth.os, "replace", boom)
+    cache = TokenCache(tmp_path / "app-token.json")
+    with pytest.raises(OSError):
+        cache.save(InstallationToken("ghs_1", "2027-01-01T00:00:00Z", {}, ()))
+    assert list(tmp_path.glob("*.tmp")) == [] and not cache.path.exists()
+
+
+def test_token_cache_load_tolerates_a_file_written_before_repositories_existed(tmp_path):
+    """Final-review Important 2: caches written by an earlier meld carry no `repositories` key; they stay usable."""
+    cache = TokenCache(tmp_path / "app-token.json")
+    cache.path.write_text(json.dumps({"token": "t", "expires_at": "2027-01-01T00:00:00Z", "permissions": {"contents": "write"}}))
+    tok = cache.load()
+    assert tok is not None and tok.token == "t" and tok.repositories == ()
+
+
 def test_token_cache_load_returns_none_when_permissions_is_the_wrong_shape(tmp_path):
     cache = TokenCache(tmp_path / "app-token.json")
     cache.path.write_text(json.dumps({"token": "t", "expires_at": "2027-01-01T00:00:00Z", "permissions": "oops"}))

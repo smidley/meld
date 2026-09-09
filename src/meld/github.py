@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote, urlencode
 
+from meld.appauth import AppAuthError
 from meld.atomic import write_atomic
 
 RunFn = Callable[..., subprocess.CompletedProcess]
@@ -38,10 +39,19 @@ class GitHub:
         if cache_dir is not None:
             cache_dir.mkdir(parents=True, exist_ok=True)
 
+    def _provider_token(self, force: bool) -> str:
+        """A provider failure (a mint or refresh that could not complete) is GitHub trouble as far as every caller is
+        concerned: `review` and `housekeeping` contain it by catching GitHubError, and a bare AppAuthError would sail
+        straight through them. Load-time App failures still surface as AppAuthError, from `context.load_context`."""
+        try:
+            return self._provider(force)                    # type: ignore[misc]
+        except AppAuthError as e:
+            raise GitHubError(str(e), status=None) from e
+
     @property
     def token(self) -> str | None:
         """The credential every call carries: the provider's current installation token for an App group, else the static PAT."""
-        return self._provider(False) if self._provider else self._token
+        return self._provider_token(False) if self._provider else self._token
 
     # ---- low level -------------------------------------------------------
 
@@ -88,7 +98,7 @@ class GitHub:
         status, resp_headers, parsed = self._request(cmd, body, self.token)
         if status == 401 and self._provider is not None:
             # An installation token expired between the provider's freshness check and the call: refresh once and retry.
-            status, resp_headers, parsed = self._request(cmd, body, self._provider(True))
+            status, resp_headers, parsed = self._request(cmd, body, self._provider_token(True))
         return status, resp_headers, parsed
 
     def get(self, endpoint: str, params: dict[str, Any] | None = None, *, use_cache: bool = True) -> Any:

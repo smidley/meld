@@ -98,12 +98,13 @@ def test_doctor_flags_missing_tokens_binaries_and_unknown_models(tmp_path):
 def test_doctor_warns_on_settings_env_and_permissions_and_ceilings(tmp_path):
     home = tmp_path / "userhome"
     (home / ".claude").mkdir(parents=True)
-    (home / ".claude" / "settings.json").write_text(json.dumps({"env": {"MELD_TOKEN_CLAUDE": "leak", "OTHER": "x"}}))
+    (home / ".claude" / "settings.json").write_text(json.dumps({"env": {"MELD_TOKEN_CLAUDE": "leak", "MELD_APP_KEY_CLAUDE": "leak", "OTHER": "x"}}))
     (tmp_path / ".claude").mkdir()
     (tmp_path / ".claude" / "settings.json").write_text(json.dumps({"env": {"GH_TOKEN": "leak"}}))
     slow = {"claude": FakeAdapter(ceiling=100, name="claude"), "codex": FakeAdapter(ceiling=600, name="codex")}
     checks = by_name(run(tmp_path, fakes(statuses_ok=False), adapters=slow, user_home=home))
     assert checks["settings-env"].ok is None and "MELD_TOKEN_CLAUDE" in checks["settings-env"].detail and "GH_TOKEN" in checks["settings-env"].detail
+    assert "MELD_APP_KEY_CLAUDE" in checks["settings-env"].detail       # an App key re-injected into a worker is the same leak
     assert checks["token-permissions:claude"].ok is False and "Commit statuses" in checks["token-permissions:claude"].detail
     assert checks["timeout-ceiling:claude"].ok is False and "300" in checks["timeout-ceiling:claude"].detail
 

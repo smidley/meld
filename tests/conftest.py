@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from meld.adapters.base import SCRUBBED_PREFIXES
 from meld.github import GitHub
 from tests.fakegh import FakeGh
 
@@ -50,10 +51,11 @@ def _hermetic_cli_adapter(monkeypatch):
 def _hermetic_env(monkeypatch):
     """No operator secret reaches the code under test through the process environment. `notify` (and so `tick`) falls
     back to os.environ for the Slack webhook when no `env=` is injected, and the fixture board carries a needs_human
-    issue -- so a developer's real webhook would be posted to. The webhook and every MELD_TOKEN_* are removed for each
-    test; tests inject what they need through `env=` (see env_for)."""
+    issue -- so a developer's real webhook would be posted to. The webhook and every variable under a scrubbed prefix
+    (MELD_TOKEN_*, MELD_APP_KEY_*) are removed for each test; the prefixes come from meld.adapters.base so this stays
+    true as the list grows. Tests inject what they need through `env=` (see env_for)."""
     monkeypatch.delenv("MELD_SLACK_DM_WEBHOOK", raising=False)
-    for key in [k for k in os.environ if k.startswith("MELD_TOKEN_")]:
+    for key in [k for k in os.environ if k.startswith(SCRUBBED_PREFIXES)]:
         monkeypatch.delenv(key, raising=False)
 
 

@@ -256,6 +256,11 @@ class GitHub:
             body["target_url"] = target_url
         return self.post(self._r(f"statuses/{sha}"), body)
 
+    def create_check_run(self, name: str, head_sha: str, conclusion: str, title: str, summary: str) -> dict:
+        """Requires App authentication (GitHub refuses check runs from personal tokens)."""
+        return self.post(self._r("check-runs"), {"name": name, "head_sha": head_sha, "status": "completed", "conclusion": conclusion,
+                                                 "output": {"title": title[:255], "summary": summary[:65535]}})
+
     def update_issue(self, number: int, **fields: Any) -> dict:
         return self.patch(self._r(f"issues/{number}"), fields)
 

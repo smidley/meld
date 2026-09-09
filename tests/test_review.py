@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from meld.actions import Refused
+from meld.appauth import AppAuth
 from meld.context import load_context
 from meld.dispatch import DispatchError, collect, dispatch
 from meld.github import GitHubError
@@ -69,6 +70,7 @@ def test_review_approve_submits_a_github_review_and_a_status(tmp_path):
     assert status == {"state": "success", "context": "meld/review/claude", "description": "claude review: approve",
                       "target_url": "https://github.com/acme/widgets/pull/20#pullrequestreview-501"}
     assert not calls(fake, "POST", "issues/13/labels")                               # approve moves no labels
+    assert not calls(fake, "POST", "check-runs")                                     # a PAT group never gets a check run
     assert load_result(tmp_path / "home", "claude", "review", 20) is None
     assert list((tmp_path / "home" / "results" / "claude" / "submitted").glob("review-20-abc123-*.json"))
     with pytest.raises(DispatchError, match="no collected review result"):
@@ -210,6 +212,28 @@ def test_review_approve_survives_a_failing_status_post(tmp_path):
     assert json.loads(submitted[0].read_text())["status_error"] is not None
     with pytest.raises(DispatchError, match="no collected review result"):    # the verdict was consumed, not stuck
         review(ctx, 20, now=NOW)
+
+
+def test_app_groups_publish_a_neutral_check_run_alongside_the_status(tmp_path):
+    fake, ctx, repo, wt = reviewed_pr(tmp_path, REVIEW_SCRIPT)
+    ctx.app_auth = AppAuth(1, 1, "unused", tmp_path / "t.json",
+                           post=lambda u, h, b: (201, {"token": "ghs", "expires_at": "2999-01-01T00:00:00Z", "permissions": {}, "repositories": []}))
+    fake.route("POST", R + "check-runs", {"id": 9}, status=201)
+    out = review(ctx, 20, now=NOW)
+    (run,) = calls(fake, "POST", "check-runs")
+    assert run["name"] == "meld/review/claude" and run["conclusion"] == "neutral" and run["head_sha"] == out["head"]
+    assert "check_run_error" not in out
+
+
+def test_review_approve_survives_a_failing_check_run_post(tmp_path):
+    fake, ctx, repo, wt = reviewed_pr(tmp_path, REVIEW_SCRIPT)
+    ctx.app_auth = AppAuth(1, 1, "unused", tmp_path / "t.json",
+                           post=lambda u, h, b: (201, {"token": "ghs", "expires_at": "2999-01-01T00:00:00Z", "permissions": {}, "repositories": []}))
+    fake.route("POST", R + "check-runs", {"message": "Internal Server Error"}, status=500)
+    out = review(ctx, 20, now=NOW)
+    assert out["status_error"] is None and out["check_run_error"] is not None    # the review and status still land
+    assert len(calls(fake, "POST", "pulls/20/reviews")) == 1
+    assert len(calls(fake, "POST", "statuses/abc123")) == 1
 
 
 def test_review_push_fix_resumes_after_a_failed_review_post(tmp_path):

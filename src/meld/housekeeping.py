@@ -130,6 +130,16 @@ def ci_red_sweep(ctx, board: Board, group: GroupConfig) -> list[dict]:
             item["commented"] = record["commented"]
             item["swapped"] = record["swapped"]
         out.append(item)
+    open_prs = {str(n) for n, p in board.pulls.items() if p.state == "open"}
+    stale = [k for k in raw if k not in open_prs]
+    if stale:
+        for k in stale:
+            raw.pop(k, None)
+            out.append({"pr": int(k) if k.isdigit() else k, "pruned": True})
+        try:
+            _save(path, raw)
+        except OSError:
+            pass
     return out
 
 

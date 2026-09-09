@@ -135,9 +135,14 @@ def test_tick_notifies_needs_human_items_when_a_webhook_is_configured(tmp_path):
     fake, ctx, repo, origin = make_product(tmp_path)
     sent = []
     import meld.dispatch as dispatch_mod
-    out = tick(ctx, now=NOW, env={"MELD_SLACK_DM_WEBHOOK": "https://hooks.slack.test/abc"}, post=lambda u, p: sent.append(p))
+    env = {"MELD_SLACK_DM_WEBHOOK": "https://hooks.slack.test/abc"}
+    fake.route("POST", R + "issues/14/labels", [], status=200)
+    out = tick(ctx, now=NOW, env=env, post=lambda u, p: sent.append(p))
     assert out["notified"] == [14] and len(sent) == 1
-    assert tick(ctx, now=NOW, env={}, post=lambda u, p: sent.append(p))["notified"] == []
+    # GitHub now reports the label tick just added: the shared meld:nudged event is what throttles the repeat, not a local file.
+    fake.route("GET", R + "issues/14/events", [{"id": 501, "event": "labeled", "label": {"name": "meld:nudged"},
+                                                 "actor": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T12:00:00Z"}])
+    assert tick(ctx, now=NOW, env=env, post=lambda u, p: sent.append(p))["notified"] == []
 
 
 def test_tick_with_an_explicit_env_never_reaches_the_webhook_in_the_process_environment(tmp_path, monkeypatch):

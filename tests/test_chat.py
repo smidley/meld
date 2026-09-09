@@ -217,3 +217,13 @@ def test_cli_chat_once_exits_non_zero_when_the_line_failed(tmp_path, monkeypatch
     fake.route("POST", R + "issues/10/comments", {"id": 310, "html_url": "u10"})
     ok = CliRunner().invoke(cli.main, ["--config", str(repo / ".meld.toml"), "--compact", "chat", "--once", "/halt"], env=env)
     assert ok.exit_code == 0, ok.output
+
+
+def test_budget_items_clear_only_on_a_human_answer_to_their_ref():
+    comments = [
+        mk_comment(1, "meld-claude-bot", "[claude:pm] BUDGET budget-1\n\nmedium tier at 90%", "2026-09-05T10:00:00Z"),
+        mk_comment(2, "meld-codex-bot", "[codex:pm] BUDGET budget-2\n\nlarge tier at 95%", "2026-09-05T10:01:00Z"),
+        mk_comment(3, "empowerScott", "[human] DIRECTIVE budget-1\n\nraise medium to 120", "2026-09-05T10:02:00Z"),
+    ]
+    box = inbox(mk_board(comments=comments), CFG2, datetime(2026, 9, 5, 11, tzinfo=timezone.utc))
+    assert [b["ref"] for b in box["budget"]] == ["budget-2"]

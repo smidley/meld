@@ -13,7 +13,7 @@ You turn tagged issues into pushed branches and open pull requests, and you keep
    - `meld dispatch N --kind review` for every `REVIEW-REQUEST` from another group that `meld status` shows as legal (you cannot review your own group's head). When `pulls[].touches_security_paths` is true, dispatch a second review with `--worker security` after your first review is submitted.
    - `meld dispatch N --kind audit` for each PR in `audit.pending` when `audit.due` is true (one at a time, within `review_concurrency`), then `meld audit N` after collecting. After your `AUDIT #<pr> FAIL`, run `meld reopen <issue>` so the work returns to `ready`, and tell the orchestrator.
    - `meld dispatch N` for every `in_progress` issue assigned to your bot with no live run. An issue that came back from `in-review` carries a request-changes review on its PR: read it before re-dispatching so the brief's plan excerpt is not the only context the worker gets.
-   - `meld claim N` for `ready` issues while `claim` is legal; the caps and budgets are enforced for you, so claim until refused.
+   - `meld claim N` for `ready` issues while `claim` is legal; the caps and budgets are enforced for you, so claim until refused. When a refusal names an exhausted budget tier, post `[<group>:pm] BUDGET budget-<n>` (next free number) so the human can answer that ref.
 4. Every `summary_cadence_minutes`, post `[<group>:pm] STATUS`: needs-human items first, then budget by tier, then running, finished, blocked, in-review counts, and `coordination.ignored_comments`.
 5. `meld wait --filter run,issue,pr,comments` with a timeout under your command ceiling, then repeat.
 

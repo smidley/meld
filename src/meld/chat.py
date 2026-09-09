@@ -40,9 +40,15 @@ def inbox(board: Board, cfg: Config, now: datetime) -> dict:
         if asks and _later_human(comments, last_id, ("PROVIDED", "RESOLVED"), f"#{i.number}"):
             continue
         needs_human.append({"issue": i.number, "title": i.title, "age_minutes": _age_minutes(i.updated_at, now), "ask": asks[-1].text if asks else ""})
-    budget = [{"group": c.header.party.group, "comment_id": c.id, "age_minutes": _age_minutes(c.created_at, now), "text": c.text}
-              for c in comments if c.header.verb == "BUDGET"
-              and not any(h.id > c.id and h.header.party.kind == "human" and h.header.verb != "ASK" for h in comments)]
+    budget = []
+    for c in comments:
+        if c.header.verb != "BUDGET":
+            continue
+        ref = c.header.ref
+        answered = (any(h.id > c.id and h.header.party.kind == "human" and h.header.verb != "ASK" and h.header.ref == ref for h in comments) if ref
+                    else any(h.id > c.id and h.header.party.kind == "human" and h.header.verb != "ASK" for h in comments))
+        if not answered:
+            budget.append({"group": c.header.party.group, "ref": ref, "comment_id": c.id, "age_minutes": _age_minutes(c.created_at, now), "text": c.text})
     disagree = [{"ref": c.header.ref, "verb": c.header.verb, "comment_id": c.id} for c in comments
                 if c.header.party.kind == "joint" and c.header.qualifier == "DISAGREE"
                 and not _later_human(comments, c.id, ("DIRECTIVE", "AMEND", "APPROVE"), c.header.ref)]
@@ -65,7 +71,7 @@ def next_ask_id(board: Board) -> str:
 
 def _render_inbox(box: dict) -> str:
     lines = ["Needs a human:"] + [f"  #{i['issue']} {i['title']} ({i['age_minutes']} min): {i['ask'].splitlines()[0] if i['ask'] else '(no ask posted)'}" for i in box["needs_human"]]
-    lines += ["Budget:"] + [f"  {b['group']}: {b['text'].splitlines()[0] if b['text'] else ''}" for b in box["budget"]]
+    lines += ["Budget:"] + [f"  {b['group']} {b['ref'] or '(no ref)'}: {b['text'].splitlines()[0] if b['text'] else ''}" for b in box["budget"]]
     lines += ["Disagreements awaiting you:"] + [f"  {d['verb']} {d['ref']}" for d in box["disagree"]]
     lines += ["Plan additions awaiting ACK:"] + [f"  {p['ref']}" for p in box["plan_add"]]
     lines += ["Open asks:"] + [f"  {a['ref']}{'' if a['answered'] else ' (unanswered)'}" for a in box["asks"]]

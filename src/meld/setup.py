@@ -97,29 +97,38 @@ def _effort(spec: ModelSpec, role: str) -> str:
     return spec.efforts[-1]
 
 
-def _group_block(name: str, registry: ModelRegistry, commented: bool) -> tuple[str, bool]:
+def _group_block(name: str, registry: ModelRegistry, commented: bool, app: bool = False) -> tuple[str, bool]:
     """Returns the rendered block plus whether it ended up commented -- the single source of truth for "does this
     adapter have registry models", so callers (setup's groups/warnings) derive it from here instead of re-querying
-    the registry themselves."""
+    the registry themselves. `app` selects the App-form block (auth = "app", app_id/installation_id/private_key_env)
+    instead of the PAT form (bot/token_env)."""
     specs = registry.for_adapter(name)
     commented = commented or not specs  # a CLI with no models in the registry is as unusable as no CLI at all
     orch = _pick(specs, "large")
     pm = _pick(specs, "medium") or orch
     prefix = "# " if commented else ""
-    lines = [f"{prefix}[groups.{name}]", f'{prefix}cli = "{name}"', f'{prefix}bot = "meld-{name}-bot"',
-             f'{prefix}token_env = "MELD_TOKEN_{name.upper()}"', f"{prefix}concurrency = 8", f"{prefix}review_concurrency = 4"]
+    if app:
+        lines = [f"{prefix}[groups.{name}]", f'{prefix}cli = "{name}"', f'{prefix}bot = "meld-{name}[bot]"',
+                 f'{prefix}auth = "app"', f"{prefix}app_id = 0", f"{prefix}installation_id = 0",
+                 f'{prefix}private_key_env = "MELD_APP_KEY_{name.upper()}"', f"{prefix}concurrency = 8", f"{prefix}review_concurrency = 4"]
+    else:
+        lines = [f"{prefix}[groups.{name}]", f'{prefix}cli = "{name}"', f'{prefix}bot = "meld-{name}-bot"',
+                 f'{prefix}token_env = "MELD_TOKEN_{name.upper()}"', f"{prefix}concurrency = 8", f"{prefix}review_concurrency = 4"]
     for role, spec in (("orchestrator", orch), ("pm", pm)):
         model = spec.id if spec else "<model id from meld models>"
         effort = _effort(spec, role) if spec else "medium"
         lines += [f"{prefix}[groups.{name}.{role}]", f'{prefix}model = "{model}"', f'{prefix}effort = "{effort}"']
+    if not app:
+        lines += ["# To run this group as a GitHub App instead of a machine user (no extra GitHub account), replace bot/token_env with:",
+                  f'# bot = "meld-{name}[bot]"', '# auth = "app"', "# app_id = 0", "# installation_id = 0", f'# private_key_env = "MELD_APP_KEY_{name.upper()}"']
     return "\n".join(lines) + "\n", commented
 
 
-def starter_toml(repo: str, default_branch: str, human: str, installed: list[str], registry: ModelRegistry) -> str:
+def starter_toml(repo: str, default_branch: str, human: str, installed: list[str], registry: ModelRegistry, app: bool = False) -> str:
     parts = [f'[repo]\nname = "{repo}"\ndefault_branch = "{default_branch}"\nprivate = true\n',
              f'[humans]\naccounts = ["{human}"]\n']
     for name in ADAPTER_NAMES:
-        text, _ = _group_block(name, registry, commented=name not in installed)
+        text, _ = _group_block(name, registry, commented=name not in installed, app=app)
         parts.append(text)
     parts.append('[review]\nquorum = 2\npingpong_cap = 3\nsecurity_paths = ["auth/**", "**/secrets*", "infra/**"]\n')
     parts.append('[notify]\nslack_dm_webhook_env = "MELD_SLACK_DM_WEBHOOK"\nrepeat_after_minutes = 120\n')
@@ -128,7 +137,7 @@ def starter_toml(repo: str, default_branch: str, human: str, installed: list[str
 
 def setup(gh: GitHub, *, repo: str, goal: str, milestone_title: str, human: str, target_dir: Path, registry: ModelRegistry,
           allow_public: bool = False, which: Callable[[str], str | None] = shutil.which, force: bool = False,
-          protect: bool = True, pr: bool = False, run=subprocess.run) -> dict:
+          protect: bool = True, pr: bool = False, run=subprocess.run, app: bool = False) -> dict:
     info = gh.get_repo()
     if not info.get("private", False) and not allow_public:
         raise SetupError(f"{repo} is public; meld setup refuses without --allow-public "
@@ -148,7 +157,7 @@ def setup(gh: GitHub, *, repo: str, goal: str, milestone_title: str, human: str,
         warnings.append("no CLI found on PATH for any adapter (claude, codex); every [groups.*] block is commented out -- install a CLI and uncomment its block")
     groups = []
     for name in installed:
-        _, commented = _group_block(name, registry, commented=False)
+        _, commented = _group_block(name, registry, commented=False, app=app)
         if commented:
             warnings.append(f"{name} is installed but models.toml lists no models for it; its [groups.{name}] block is commented out")
         else:
@@ -161,18 +170,36 @@ def setup(gh: GitHub, *, repo: str, goal: str, milestone_title: str, human: str,
         # run before any setup file is written below: switching branches after writing would risk the checkout
         # overwriting or conflicting with those just-written files.
         _checkout_setup_branch(target_dir, default_branch, run)
-    write_atomic(config_path, starter_toml(repo, default_branch, human, installed, registry))
+    write_atomic(config_path, starter_toml(repo, default_branch, human, installed, registry, app=app))
     files = repo_files(target_dir, human) + [".meld.toml"]
     ci = ci_paths_warnings(target_dir)
     warnings.extend(ci)
     protection = protect_branch(gh, default_branch) if protect else {"protected": False, "skipped": True}
     pr_info = open_setup_pr(gh, target_dir, default_branch, files, run) if pr else None
+    if app:
+        next_steps = [
+            "for each group, create a GitHub App at https://github.com/settings/apps/new named meld-<group> -- App names are global on GitHub, "
+            "so if meld-<group> is taken pick another; `meld doctor` prints the resulting bot login. Homepage any URL, Webhook OFF, "
+            "Repository permissions: Contents, Issues, Pull requests, Commit statuses (read & write), Checks (read & write, recommended -- "
+            "without it each review records check_run_error); Where can it be installed: only this account",
+            "generate a private key on the App page and store the .pem in 1Password; note the App ID",
+            f"install the App on {repo} (Install App → only select repositories); the installation_id is the number at the end of the installation URL",
+            f"fill app_id and installation_id in {config_path.name} and export MELD_APP_KEY_<GROUP> with the PEM contents (op run injects it); "
+            f"or set private_key_file = \"<path>\" in {config_path.name} instead of private_key_env",
+            "run `meld doctor` to verify: it prints the App's bot login to put in [groups.<g>].bot if it differs",
+            "run `meld run <group>` for each group, then `meld chat`",
+            "known limitation: GitHub does not let an App's bot user be an issue assignee, and the claim lock is the assignee -- "
+            "an App group can review, audit and merge, but cannot claim and build until plan 6b's App-compatible claim lock "
+            "(spec 21, Carried into plan 6); `meld doctor`'s assignable:<group> check reports this",
+        ]
+    else:
+        next_steps = [f"create one GitHub machine account per group named in {config_path.name} and add each as a collaborator on {repo}",
+                      "mint one fine-grained token per bot (Contents, Issues, Pull requests, Commit statuses: read and write) and export MELD_TOKEN_<GROUP>",
+                      "run `meld doctor` to verify tokens, CLIs, and models", "run `meld run <group>` for each group, then `meld chat`"]
     return {"repo": repo, "labels": labels, "milestone": milestone, "milestone_how": milestone_how,
             "coordination_issue": coordination, "coordination_how": issue_how, "config": str(config_path), "config_written": True,
             "groups": groups, "warnings": warnings, "files": files, "ci_warnings": ci, "protection": protection, "pr": pr_info,
-            "next": [f"create one GitHub machine account per group named in {config_path.name} and add each as a collaborator on {repo}",
-                     "mint one fine-grained token per bot (Contents, Issues, Pull requests, Commit statuses: read and write) and export MELD_TOKEN_<GROUP>",
-                     "run `meld doctor` to verify tokens, CLIs, and models", "run `meld run <group>` for each group, then `meld chat`"]}
+            "next": next_steps}
 
 
 _CODEOWNERS_LINE = "/.meld/workers/ @{human}"

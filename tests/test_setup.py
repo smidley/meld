@@ -336,3 +336,34 @@ def test_ci_paths_warning_never_looks_inside_jobs(tmp_path):
         "jobs:\n  build:\n    steps:\n      - uses: some/action\n        with:\n          paths: '.meld/**'\n"
     )
     assert ci_paths_warnings(tmp_path) == []
+
+
+def test_starter_toml_app_form_and_commented_alternative():
+    registry = ModelRegistry.load()
+    text = starter_toml("acme/widgets", "main", "empowerScott", ["claude", "codex"], registry, app=True)
+    data = tomllib.loads(text)
+    g = data["groups"]["claude"]
+    assert g["auth"] == "app" and g["bot"] == "meld-claude[bot]" and g["private_key_env"] == "MELD_APP_KEY_CLAUDE" and "token_env" not in g
+    assert g["app_id"] == 0 and g["installation_id"] == 0
+    pat = starter_toml("acme/widgets", "main", "empowerScott", ["claude"], registry)
+    assert tomllib.loads(pat)["groups"]["claude"]["token_env"] == "MELD_TOKEN_CLAUDE"
+    assert '# auth = "app"' in pat and '# private_key_env = "MELD_APP_KEY_CLAUDE"' in pat
+
+
+def test_setup_app_flag_writes_app_form_and_next_steps(tmp_path):
+    fake = FakeGh()
+    route_repo(fake)
+    fake.route("GET", R + "labels", [])
+    fake.route("POST", R + "labels", {"name": "x"}, status=201)
+    fake.route("GET", R + "milestones", [])
+    fake.route("POST", R + "milestones", {"number": 1, "title": "M1"}, status=201)
+    fake.route("GET", R + "issues", [])
+    fake.route("POST", R + "issues", {"number": 2}, status=201)
+    out = setup(gh_for(fake), repo="acme/widgets", goal="g", milestone_title="M1", human="empowerScott", target_dir=tmp_path,
+                registry=ModelRegistry.load(), which=lambda b: "/bin/" + b, protect=False, app=True)
+    assert 'auth = "app"' in (tmp_path / ".meld.toml").read_text()
+    assert any("github.com/settings/apps/new" in step for step in out["next"]) and any("installation_id" in step for step in out["next"])
+    # Final-review Critical 1b: the App path must say plainly what an App group cannot do yet.
+    assert any("cannot claim and build" in step and "assignee" in step for step in out["next"])
+    # Final-review Minor 8: Checks is recommended, not "optional" -- the printed steps must say what is lost without it.
+    assert any("check_run_error" in step for step in out["next"])

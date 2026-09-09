@@ -3,6 +3,7 @@ import os
 
 import pytest
 
+from meld.appauth import AppAuthError
 from meld.github import GitHub, GitHubError, RateLimited
 from tests.fakegh import FakeGh
 
@@ -316,3 +317,55 @@ def test_create_label_normalises_color(board1_gh):
     assert result["color"] == "cccccc"
     body = [c for c in fake.calls if c.method == "POST" and "labels" in c.endpoint][-1].body
     assert body == {"name": "meld:planned", "color": "cccccc", "description": ""}
+
+
+def test_github_uses_the_token_provider_and_refreshes_once_on_401(tmp_path):
+    fake = FakeGh()
+    fake.route("GET", "repos/acme/widgets/issues/1", {"number": 1})
+    asked = []
+
+    def provider(force=False):
+        # Stateful stand-in for AppAuth.token: returns the cached installation token until forced,
+        # then the refreshed one -- enough to exercise GitHub's retry-once-on-401 path.
+        asked.append(force)
+        return "ghs_new" if force else "ghs_old"
+
+    gh = GitHub("acme/widgets", run=fake, token_provider=provider)
+    assert gh.token == "ghs_old"                       # first ask, not forced
+    fake.route("GET", "repos/acme/widgets/issues/2", {"message": "Bad credentials"}, status=401)
+    with pytest.raises(GitHubError, match="401"):
+        gh.get("repos/acme/widgets/issues/2", use_cache=False)
+    assert True in asked                               # a forced refresh was requested after the 401
+    assert fake.envs[-1]["GH_TOKEN"] == "ghs_new"      # and the retry carried the refreshed token
+
+
+def test_a_token_provider_failure_surfaces_as_a_github_error(tmp_path):
+    """Final-review Minor 13: `review` and `housekeeping` contain GitHub trouble by catching GitHubError. A mint that
+    fails at refresh time must arrive as one of those, not as an AppAuthError that escapes every containment site."""
+    fake = FakeGh()
+    fake.route("GET", "repos/acme/widgets/issues/1", {"number": 1})
+
+    def dead(force=False):
+        raise AppAuthError("installation token request failed with HTTP 401: Bad credentials")
+
+    gh = GitHub("acme/widgets", run=fake, token_provider=dead)
+    with pytest.raises(GitHubError, match="Bad credentials"):
+        _ = gh.token
+    with pytest.raises(GitHubError, match="Bad credentials"):
+        gh.get("repos/acme/widgets/issues/1", use_cache=False)
+    with pytest.raises(GitHubError):
+        gh.post("repos/acme/widgets/issues/1/comments", {"body": "x"})
+
+
+def test_a_provider_that_fails_only_on_the_401_refresh_also_surfaces_as_a_github_error(tmp_path):
+    fake = FakeGh()
+    fake.route("GET", "repos/acme/widgets/issues/2", {"message": "Bad credentials"}, status=401)
+
+    def flaky(force=False):
+        if force:
+            raise AppAuthError("could not reach api.github.com")
+        return "ghs_old"
+
+    gh = GitHub("acme/widgets", run=fake, token_provider=flaky)
+    with pytest.raises(GitHubError, match="could not reach"):
+        gh.get("repos/acme/widgets/issues/2", use_cache=False)

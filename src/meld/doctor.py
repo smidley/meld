@@ -161,15 +161,22 @@ def run_checks(cfg: Config, repo_root: Path, *, env: Mapping[str, str], gh_facto
                 checks.append(Check(f"app:{group.name}", False, f"App auth failed: {e}", "check private_key_env/private_key_file and app_id"))
             if pem is not None:
                 try:
-                    tok = mint_installation_token(group.app_id, group.installation_id, pem, post=app_post)  # type: ignore[arg-type]
+                    tok = mint_installation_token(group.app_id, group.installation_id, pem,  # type: ignore[arg-type]
+                                                  repositories=[cfg.repo_name.split("/", 1)[1]], post=app_post)
                     need = {"contents": "write", "issues": "write", "pull_requests": "write", "statuses": "write"}
                     wrong = {k: tok.permissions.get(k, "none") for k, v in need.items() if tok.permissions.get(k) != v}
-                    covers = not tok.repositories or cfg.repo_name in tok.repositories
                     detail = "permissions: " + ", ".join(f"{k}: {tok.permissions.get(k, 'none')}" for k in (*need, "checks"))
-                    if not covers:
+                    # The mint above asked for the product repo by name, so a 422 (handled below) is the "not covered"
+                    # answer and a listed repo is the "covered" one. An empty list is neither: absent evidence warns.
+                    unverified = not tok.repositories
+                    covers = cfg.repo_name in tok.repositories
+                    if unverified:
+                        detail += f"; the mint returned no repository list, so coverage of {cfg.repo_name} is unverified"
+                    elif not covers:
                         detail += f"; installation does not include {cfg.repo_name} (has: {', '.join(tok.repositories)})"
-                    checks.append(Check(f"app-installation:{group.name}", not wrong and covers, detail,
-                                        "" if not wrong and covers else "edit the App's permissions (Contents, Issues, Pull requests, Commit statuses: read & write; Checks optional) and install it on the repo"))
+                    bad = bool(wrong) or (not unverified and not covers)
+                    checks.append(Check(f"app-installation:{group.name}", False if bad else (None if unverified else True), detail,
+                                        "edit the App's permissions (Contents, Issues, Pull requests, Commit statuses: read & write; Checks optional) and install it on the repo" if bad else ""))
                 except AppAuthError as e:
                     checks.append(Check(f"app-installation:{group.name}", False, f"installation token failed: {e}", "check installation_id (from the installation URL) and that the App is installed on the repo"))
         else:

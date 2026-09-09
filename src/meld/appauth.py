@@ -19,7 +19,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Callable, Mapping, Sequence
 
 API = "https://api.github.com"
 JWT_LIFETIME_SECONDS = 540      # GitHub caps App JWTs at 10 minutes; 9 leaves room for clock skew on top of iat-60
@@ -103,13 +103,25 @@ class InstallationToken:
 
 
 def mint_installation_token(app_id: int, installation_id: int, pem: str, *, now: int | None = None,
+                            repositories: Sequence[str] | None = None,
                             post: Callable[[str, dict[str, str], bytes | None], tuple[int, dict]] | None = None,
                             sign: Callable[[bytes, str], bytes] | None = None) -> InstallationToken:
+    """`repositories` are bare repository NAMES (`widgets`, not `acme/widgets`). Passing them scopes the token to
+    those repositories, which is both least privilege and the only way the response's own `repositories` list is
+    evidence of coverage: an unscoped mint may answer with no list at all."""
     jwt = jwt_for_app(app_id, pem, now=now, sign=sign)
     url = f"{API}/app/installations/{installation_id}/access_tokens"
-    status, data = (post or (lambda u, h, b: _http("POST", u, h, b)))(url, _bearer(jwt), None)
+    headers = _bearer(jwt)
+    body: bytes | None = None
+    if repositories:
+        body = json.dumps({"repositories": list(repositories)}).encode()
+        headers = {**headers, "Content-Type": "application/json"}
+    status, data = (post or (lambda u, h, b: _http("POST", u, h, b)))(url, headers, body)
+    message = data.get("message", "") if isinstance(data, dict) else ""
+    if status == 422 and repositories:
+        # GitHub's answer when a requested repository is not part of this installation.
+        raise AppAuthError(f"installation {installation_id} does not cover {', '.join(repositories)} (HTTP 422: {message})")
     if status not in (200, 201) or not isinstance(data, dict) or not data.get("token"):
-        message = data.get("message", "") if isinstance(data, dict) else ""
         raise AppAuthError(f"installation token request failed with HTTP {status}: {message or 'no token in response'}")
     repositories = data.get("repositories") or []
     repos = tuple(str(r.get("full_name", "")) for r in repositories if isinstance(r, dict)) if isinstance(repositories, list) else ()
@@ -175,11 +187,12 @@ class AppAuth:
     """Token provider for one App group: cached installation token, re-minted with REFRESH_MARGIN_SECONDS to spare."""
 
     def __init__(self, app_id: int, installation_id: int, pem: str, cache_path: Path, *, now: Callable[[], int] | None = None,
-                 post=None, sign=None):
+                 post=None, sign=None, repositories: Sequence[str] | None = None):
         self.app_id, self.installation_id, self.pem = app_id, installation_id, pem
         self.cache = TokenCache(cache_path)
         self._now = now or (lambda: int(time.time()))
         self._post, self._sign = post, sign
+        self.repositories = tuple(repositories or ())
         self.last: InstallationToken | None = None
 
     def token(self, force: bool = False) -> str:
@@ -188,7 +201,8 @@ class AppAuth:
         if cached is not None and not force and cached.seconds_left(now) > REFRESH_MARGIN_SECONDS:
             self.last = cached
             return cached.token
-        fresh = mint_installation_token(self.app_id, self.installation_id, self.pem, now=now, post=self._post, sign=self._sign)
+        fresh = mint_installation_token(self.app_id, self.installation_id, self.pem, now=now, repositories=self.repositories or None,
+                                        post=self._post, sign=self._sign)
         self.cache.save(fresh)
         self.last = fresh
         return fresh.token

@@ -280,7 +280,7 @@ def app_cfg():
     return Config.from_dict(tomllib.loads(text))
 
 
-def app_http(*, slug="meld-claude", perms=None, repos=("acme/widgets",), token_status=201):
+def app_http(*, slug="meld-claude", perms=None, repos=("acme/widgets",), token_status=201, token_body=None):
     perms = perms if perms is not None else {"contents": "write", "issues": "write", "pull_requests": "write", "statuses": "write", "checks": "write"}
     calls = []
 
@@ -289,7 +289,9 @@ def app_http(*, slug="meld-claude", perms=None, repos=("acme/widgets",), token_s
         return 200, {"slug": slug, "id": 1234}
 
     def post(url, headers, body):
-        calls.append(("POST", url))
+        calls.append(("POST", url, body))
+        if token_body is not None:
+            return token_status, token_body
         return token_status, {"token": "ghs_doc", "expires_at": "2999-01-01T00:00:00Z", "permissions": perms, "repositories": [{"full_name": r} for r in repos]}
 
     return get, post, calls
@@ -297,7 +299,6 @@ def app_http(*, slug="meld-claude", perms=None, repos=("acme/widgets",), token_s
 
 def run_app(tmp_path, by_token, keypair_pem, *, cfg_=None, get=None, post=None, env=None):
     env = {"MELD_APP_KEY_CLAUDE": keypair_pem.replace("\n", "\\n"), "MELD_TOKEN_CODEX": "tok-x", **(env or {})}
-    by_token["ghs_doc"] = by_token[None]
     return run_checks(cfg_ or app_cfg(), tmp_path, env=env, gh_factory=lambda token: GitHub("acme/widgets", token=token, run=by_token[token]),
                       registry=ModelRegistry.load(), adapter_for=lambda name: FakeAdapter(ceiling=600, name=name), which=lambda b: "/bin/" + b,
                       home=tmp_path / "home", user_home=tmp_path / "userhome", app_get=get, app_post=post)
@@ -314,7 +315,30 @@ def test_doctor_verifies_an_app_group(tmp_path, keypair_pem):
     assert "token:claude" not in checks and "token-permissions:claude" not in checks
     assert checks["token:codex"].ok                      # the PAT group still gets its own checks
     assert checks["git-identity:claude"].ok and "99+meld-claude[bot]@users.noreply.github.com" in checks["git-identity:claude"].detail
-    assert ("GET", "https://api.github.com/app") in calls and ("POST", "https://api.github.com/app/installations/55/access_tokens") in calls
+    assert ("GET", "https://api.github.com/app") in calls
+    # Final-review Important 2: the mint is scoped to the product repo by name, so the response proves coverage.
+    posts = [c for c in calls if c[0] == "POST"]
+    assert posts and posts[0][1] == "https://api.github.com/app/installations/55/access_tokens"
+    assert json.loads(posts[0][2]) == {"repositories": ["widgets"]}
+
+
+def test_doctor_fails_the_installation_check_when_the_scoped_mint_is_refused(tmp_path, keypair_pem):
+    """Final-review Important 2: a 422 means the installation does not include the product repo -- a failure with a
+    detail that names the repo, never a silent pass."""
+    by_token = fakes()
+    get, post, _ = app_http(token_status=422, token_body={"message": "There is at least one repository that does not exist or is not accessible"})
+    checks = by_name(run_app(tmp_path, by_token, keypair_pem, get=get, post=post))
+    inst = checks["app-installation:claude"]
+    assert inst.ok is False and "does not cover widgets" in inst.detail
+
+
+def test_doctor_warns_when_the_mint_returns_no_repository_list(tmp_path, keypair_pem):
+    """Final-review Important 2: absent evidence is a warning, never a pass -- "no list" used to map to "covers"."""
+    by_token = fakes()
+    get, post, _ = app_http(repos=())
+    checks = by_name(run_app(tmp_path, by_token, keypair_pem, get=get, post=post))
+    inst = checks["app-installation:claude"]
+    assert inst.ok is None and "unverified" in inst.detail and "acme/widgets" in inst.detail
 
 
 def test_doctor_says_an_app_bot_cannot_hold_the_assignee_claim_lock(tmp_path, keypair_pem):

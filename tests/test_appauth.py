@@ -70,7 +70,52 @@ def test_mint_installation_token_posts_a_bearer_jwt_and_parses_the_response(keyp
     url, headers, body = calls[0]
     assert url == "https://api.github.com/app/installations/55/access_tokens"
     assert headers["Authorization"].startswith("Bearer ") and headers["Accept"] == "application/vnd.github+json"
-    assert headers["X-GitHub-Api-Version"] == "2022-11-28" and body is None
+    assert headers["X-GitHub-Api-Version"] == "2022-11-28"
+    assert body is None and "Content-Type" not in headers          # unscoped: no body at all
+
+
+def test_mint_scopes_the_token_to_the_named_repositories(keypair):
+    """Final-review Important 2: the mint asks for the product repo by NAME, so the response's `repositories` is
+    evidence of coverage rather than an unscoped token's silence."""
+    pem, _ = keypair
+    calls = []
+
+    def post(url, headers, body):
+        calls.append((headers, body))
+        return 201, {"token": "ghs_abc", "expires_at": "2027-01-01T00:00:00Z", "permissions": {},
+                     "repositories": [{"full_name": "acme/widgets"}]}
+
+    tok = mint_installation_token(1234, 55, pem, now=NOW, repositories=["widgets"], post=post)
+    headers, body = calls[0]
+    assert json.loads(body) == {"repositories": ["widgets"]}
+    assert headers["Content-Type"] == "application/json"
+    assert tok.repositories == ("acme/widgets",)
+
+
+def test_mint_turns_a_422_on_a_scoped_request_into_a_coverage_error(keypair):
+    """Final-review Important 2: GitHub answers 422 when a requested repository is not part of the installation."""
+    pem, _ = keypair
+
+    def post(url, headers, body):
+        return 422, {"message": "There is at least one repository that does not exist or is not accessible"}
+
+    with pytest.raises(AppAuthError) as e:
+        mint_installation_token(1234, 55, pem, now=NOW, repositories=["widgets"], post=post)
+    assert "does not cover widgets" in str(e.value) and "55" in str(e.value) and "eyJ" not in str(e.value)
+
+
+def test_app_auth_scopes_every_mint_to_its_repositories(keypair, tmp_path):
+    pem, _ = keypair
+    bodies = []
+
+    def post(url, headers, body):
+        bodies.append(body)
+        return 201, {"token": f"ghs_{len(bodies)}", "expires_at": "2027-01-01T00:00:00Z", "permissions": {},
+                     "repositories": [{"full_name": "acme/widgets"}]}
+
+    auth = AppAuth(1234, 55, pem, tmp_path / "app-token.json", now=lambda: NOW, post=post, repositories=["widgets"])
+    assert auth.token() == "ghs_1" and auth.token(force=True) == "ghs_2"
+    assert [json.loads(b) for b in bodies] == [{"repositories": ["widgets"]}] * 2
 
 
 def test_mint_installation_token_treats_null_repositories_as_empty(keypair):

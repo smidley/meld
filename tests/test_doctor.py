@@ -8,6 +8,7 @@ from click.testing import CliRunner
 
 import meld.cli as cli
 from meld.adapters import UnknownAdapter
+from meld.appauth import AppAuthError
 from meld.config import Config
 from meld.doctor import run_checks, summary, sweep
 from meld.github import GitHub
@@ -33,6 +34,8 @@ def fakes(*, claude_login="meld-claude-bot", codex_login="meld-codex-bot", human
         f.route("GET", "users/meld-claude-bot", {"login": "meld-claude-bot", "id": 11})
         f.route("GET", "users/meld-codex-bot", {"login": "meld-codex-bot", "id": 12})
         f.route("GET", R + "branches/main", {"commit": {"sha": "abc123"}})
+        f.route("GET", R + "assignees/meld-claude-bot", None, status=204)
+        f.route("GET", R + "assignees/meld-codex-bot", None, status=204)
         f.route("GET", R + "issues", [])
         f.route("GET", R + "pulls", [])
         if statuses_ok:
@@ -68,6 +71,18 @@ def test_doctor_passes_a_healthy_setup(tmp_path):
     assert summary(run(tmp_path, fakes()))["failed"] == ["models:codex"]
 
 
+def test_doctor_checks_every_bot_login_is_an_assignable_user(tmp_path):
+    """Final-review Critical 1: the claim lock is the issue assignee, and GitHub validates assignees against the
+    repo's assignable users -- so a bot login that is not assignable can never claim. Every group is checked, PAT
+    and App alike, through the human's own gh login (assignability is a property of the repository)."""
+    checks = by_name(run(tmp_path, fakes()))
+    assert checks["assignable:claude"].ok is True and "meld-claude-bot" in checks["assignable:claude"].detail
+    by_token = fakes()
+    del by_token[None].routes[("GET", R + "assignees/meld-codex-bot")]      # 404: not a collaborator
+    checks = by_name(run(tmp_path, by_token))
+    assert checks["assignable:codex"].ok is False and "collaborator" in checks["assignable:codex"].fix
+
+
 def test_doctor_fails_when_a_token_belongs_to_the_wrong_account(tmp_path):
     checks = by_name(run(tmp_path, fakes(codex_login="someone-else")))
     assert checks["token:codex"].ok is False and "someone-else" in checks["token:codex"].detail and "meld-codex-bot" in checks["token:codex"].detail
@@ -83,12 +98,13 @@ def test_doctor_flags_missing_tokens_binaries_and_unknown_models(tmp_path):
 def test_doctor_warns_on_settings_env_and_permissions_and_ceilings(tmp_path):
     home = tmp_path / "userhome"
     (home / ".claude").mkdir(parents=True)
-    (home / ".claude" / "settings.json").write_text(json.dumps({"env": {"MELD_TOKEN_CLAUDE": "leak", "OTHER": "x"}}))
+    (home / ".claude" / "settings.json").write_text(json.dumps({"env": {"MELD_TOKEN_CLAUDE": "leak", "MELD_APP_KEY_CLAUDE": "leak", "OTHER": "x"}}))
     (tmp_path / ".claude").mkdir()
     (tmp_path / ".claude" / "settings.json").write_text(json.dumps({"env": {"GH_TOKEN": "leak"}}))
     slow = {"claude": FakeAdapter(ceiling=100, name="claude"), "codex": FakeAdapter(ceiling=600, name="codex")}
     checks = by_name(run(tmp_path, fakes(statuses_ok=False), adapters=slow, user_home=home))
     assert checks["settings-env"].ok is None and "MELD_TOKEN_CLAUDE" in checks["settings-env"].detail and "GH_TOKEN" in checks["settings-env"].detail
+    assert "MELD_APP_KEY_CLAUDE" in checks["settings-env"].detail       # an App key re-injected into a worker is the same leak
     assert checks["token-permissions:claude"].ok is False and "Commit statuses" in checks["token-permissions:claude"].detail
     assert checks["timeout-ceiling:claude"].ok is False and "300" in checks["timeout-ceiling:claude"].detail
 
@@ -258,3 +274,128 @@ def test_doctor_reports_unknown_cli_and_skips_dependent_checks_for_that_group(tm
     assert checks["token:codex"].ok is True
     # The other group is entirely unaffected.
     assert checks["cli:claude"].ok is True and checks["timeout-ceiling:claude"].ok is True
+
+
+def app_cfg():
+    text = PROJECT_TOML.replace('token_env = "MELD_TOKEN_CLAUDE"', 'auth = "app"\napp_id = 1234\ninstallation_id = 55\nprivate_key_env = "MELD_APP_KEY_CLAUDE"').replace('bot = "meld-claude-bot"', 'bot = "meld-claude[bot]"')
+    return Config.from_dict(tomllib.loads(text))
+
+
+def app_http(*, slug="meld-claude", perms=None, repos=("acme/widgets",), token_status=201, token_body=None):
+    perms = perms if perms is not None else {"contents": "write", "issues": "write", "pull_requests": "write", "statuses": "write", "checks": "write"}
+    calls = []
+
+    def get(url, headers):
+        calls.append(("GET", url))
+        return 200, {"slug": slug, "id": 1234}
+
+    def post(url, headers, body):
+        calls.append(("POST", url, body))
+        if token_body is not None:
+            return token_status, token_body
+        return token_status, {"token": "ghs_doc", "expires_at": "2999-01-01T00:00:00Z", "permissions": perms, "repositories": [{"full_name": r} for r in repos]}
+
+    return get, post, calls
+
+
+def run_app(tmp_path, by_token, keypair_pem, *, cfg_=None, get=None, post=None, env=None):
+    env = {"MELD_APP_KEY_CLAUDE": keypair_pem.replace("\n", "\\n"), "MELD_TOKEN_CODEX": "tok-x", **(env or {})}
+    return run_checks(cfg_ or app_cfg(), tmp_path, env=env, gh_factory=lambda token: GitHub("acme/widgets", token=token, run=by_token[token]),
+                      registry=ModelRegistry.load(), adapter_for=lambda name: FakeAdapter(ceiling=600, name=name), which=lambda b: "/bin/" + b,
+                      home=tmp_path / "home", user_home=tmp_path / "userhome", app_get=get, app_post=post)
+
+
+def test_doctor_verifies_an_app_group(tmp_path, keypair_pem):
+    by_token = fakes()
+    by_token[None].route("GET", "users/meld-claude[bot]", {"login": "meld-claude[bot]", "id": 99})
+    get, post, calls = app_http()
+    checks = by_name(run_app(tmp_path, by_token, keypair_pem, get=get, post=post))
+    assert checks["openssl"].ok
+    assert checks["app:claude"].ok and "meld-claude[bot]" in checks["app:claude"].detail
+    assert checks["app-installation:claude"].ok and "checks: write" in checks["app-installation:claude"].detail
+    assert "token:claude" not in checks and "token-permissions:claude" not in checks
+    assert checks["token:codex"].ok                      # the PAT group still gets its own checks
+    assert checks["git-identity:claude"].ok and "99+meld-claude[bot]@users.noreply.github.com" in checks["git-identity:claude"].detail
+    assert ("GET", "https://api.github.com/app") in calls
+    # Final-review Important 2: the mint is scoped to the product repo by name, so the response proves coverage.
+    posts = [c for c in calls if c[0] == "POST"]
+    assert posts and posts[0][1] == "https://api.github.com/app/installations/55/access_tokens"
+    assert json.loads(posts[0][2]) == {"repositories": ["widgets"]}
+
+
+def test_doctor_fails_the_installation_check_when_the_scoped_mint_is_refused(tmp_path, keypair_pem):
+    """Final-review Important 2: a 422 means the installation does not include the product repo -- a failure with a
+    detail that names the repo, never a silent pass."""
+    by_token = fakes()
+    get, post, _ = app_http(token_status=422, token_body={"message": "There is at least one repository that does not exist or is not accessible"})
+    checks = by_name(run_app(tmp_path, by_token, keypair_pem, get=get, post=post))
+    inst = checks["app-installation:claude"]
+    assert inst.ok is False and "does not cover widgets" in inst.detail
+
+
+def test_doctor_warns_when_the_app_has_no_checks_permission(tmp_path, keypair_pem):
+    """Final-review Minor 8: Checks was documented as "optional", but without it every review this group publishes
+    records check_run_error. A warning, not a failure -- the review itself still lands."""
+    by_token = fakes()
+    get, post, _ = app_http(perms={"contents": "write", "issues": "write", "pull_requests": "write", "statuses": "write"})
+    checks = by_name(run_app(tmp_path, by_token, keypair_pem, get=get, post=post))
+    inst = checks["app-installation:claude"]
+    assert inst.ok is None and "check_run_error" in inst.detail and "Checks" in inst.fix
+
+
+def test_doctor_warns_when_the_mint_returns_no_repository_list(tmp_path, keypair_pem):
+    """Final-review Important 2: absent evidence is a warning, never a pass -- "no list" used to map to "covers"."""
+    by_token = fakes()
+    get, post, _ = app_http(repos=())
+    checks = by_name(run_app(tmp_path, by_token, keypair_pem, get=get, post=post))
+    inst = checks["app-installation:claude"]
+    assert inst.ok is None and "unverified" in inst.detail and "acme/widgets" in inst.detail
+
+
+def test_doctor_says_an_app_bot_cannot_hold_the_assignee_claim_lock(tmp_path, keypair_pem):
+    """Final-review Critical 1: `GET /repos/{repo}/assignees/{login}` 404s for an App's bot user (probe 2026-09-09),
+    so the check is a warning for an App group (a documented limitation, not a fixable fault) and its fix text names the limitation and plan 6b rather than a collaborator
+    invite that cannot exist. The login is percent-encoded: a bare `[bot]` would not survive the URL."""
+    by_token = fakes()
+    by_token[None].route("GET", "users/meld-claude[bot]", {"login": "meld-claude[bot]", "id": 99})
+    get, post, _ = app_http()
+    checks = by_name(run_app(tmp_path, by_token, keypair_pem, get=get, post=post))
+    assert checks["assignable:claude"].ok is None          # a warning: documented limitation, doctor stays green
+    assert "cannot claim and build" in checks["assignable:claude"].fix and "plan 6b" in checks["assignable:claude"].fix
+    assert any(c.endpoint == R + "assignees/meld-claude%5Bbot%5D" for c in by_token[None].calls)
+    assert checks["assignable:codex"].ok is True           # the PAT group in the same config is unaffected
+
+
+def test_doctor_flags_a_slug_mismatch_missing_permission_and_uninstalled_repo(tmp_path, keypair_pem):
+    by_token = fakes()
+    by_token[None].route("GET", "users/meld-claude[bot]", {"login": "meld-claude[bot]", "id": 99})
+    get, post, _ = app_http(slug="other-app", perms={"contents": "write", "issues": "write", "pull_requests": "read", "statuses": "write"}, repos=("acme/other",))
+    checks = by_name(run_app(tmp_path, by_token, keypair_pem, get=get, post=post))
+    assert checks["app:claude"].ok is False and "other-app[bot]" in checks["app:claude"].detail
+    inst = checks["app-installation:claude"]
+    assert inst.ok is False and "pull_requests: read" in inst.detail and "acme/widgets" in inst.detail
+
+
+def test_doctor_reports_a_missing_key_and_a_failed_mint(tmp_path, keypair_pem):
+    by_token = fakes()
+    checks = by_name(run_app(tmp_path, by_token, keypair_pem, env={"MELD_APP_KEY_CLAUDE": ""}))
+    assert checks["app:claude"].ok is False and "MELD_APP_KEY_CLAUDE" in checks["app:claude"].detail
+    get, post, _ = app_http(token_status=401)
+    checks = by_name(run_app(tmp_path, by_token, keypair_pem, get=get, post=post))
+    assert checks["app-installation:claude"].ok is False and "401" in checks["app-installation:claude"].detail
+
+
+def test_cli_doctor_sweep_tolerates_an_app_auth_failure_while_building_board_state(tmp_path, monkeypatch):
+    """Task 3 review tidy-up: `doctor --sweep` builds board state through `load_context`, which for an App group
+    can raise AppAuthError (e.g. a bad key or a failed installation-token mint reached while resolving the
+    group's GitHub client). That must fall back to pull_states=None like BoardError/GitHubError/ConfigError
+    already do, not crash the whole invocation."""
+    (tmp_path / ".meld.toml").write_text(PROJECT_TOML)
+    monkeypatch.setenv("MELD_HOME", str(tmp_path / "home"))
+
+    def _raise(*a, **kw):
+        raise AppAuthError("installation token failed")
+    monkeypatch.setattr(cli, "load_context", _raise)
+    result = CliRunner().invoke(cli.main, ["--config", str(tmp_path / ".meld.toml"), "doctor", "--sweep", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["dry_run"] is True

@@ -105,3 +105,10 @@ def test_scan_skills_skips_a_directory_when_neither_name_is_valid(tmp_path: Path
     unsafe_dir.mkdir()
     (unsafe_dir / "SKILL.md").write_text("---\nname: ../../also-bad\ndescription: x\n---\n")
     assert scan_skills([tmp_path]) == []
+
+
+def test_app_key_env_is_scrubbed_from_workers():
+    from meld.adapters.base import SCRUBBED_PREFIXES, scrub_env
+    assert "MELD_APP_KEY_" in SCRUBBED_PREFIXES
+    out = scrub_env({"MELD_APP_KEY_CLAUDE": "pem", "MELD_TOKEN_CODEX": "t", "PATH": "/bin"})
+    assert "MELD_APP_KEY_CLAUDE" not in out and "MELD_TOKEN_CODEX" not in out and out["PATH"] == "/bin"

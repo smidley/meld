@@ -1,4 +1,6 @@
-"""Thin wrapper over `gh api`. The only module that talks to GitHub."""
+"""Thin wrapper over `gh api`. The only module that talks to GitHub, plus `appauth.py`'s two App-JWT calls
+(`GET /app`, `POST /app/installations/{id}/access_tokens`), which `gh api` cannot make: they must send the App JWT
+as `Bearer`, and `gh` overwrites that header from `GH_TOKEN`."""
 from __future__ import annotations
 
 import base64
@@ -10,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote, urlencode
 
+from meld.appauth import AppAuthError
 from meld.atomic import write_atomic
 
 RunFn = Callable[..., subprocess.CompletedProcess]
@@ -28,13 +31,29 @@ class RateLimited(GitHubError):
 
 
 class GitHub:
-    def __init__(self, repo: str, token: str | None = None, run: RunFn = subprocess.run, cache_dir: Path | None = None):
+    def __init__(self, repo: str, token: str | None = None, run: RunFn = subprocess.run, cache_dir: Path | None = None,
+                 token_provider: Callable[[bool], str] | None = None):
         self.repo = repo
-        self.token = token
+        self._token = token
+        self._provider = token_provider
         self._run = run
         self._cache_dir = cache_dir
         if cache_dir is not None:
             cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def _provider_token(self, force: bool) -> str:
+        """A provider failure (a mint or refresh that could not complete) is GitHub trouble as far as every caller is
+        concerned: `review` and `housekeeping` contain it by catching GitHubError, and a bare AppAuthError would sail
+        straight through them. Load-time App failures still surface as AppAuthError, from `context.load_context`."""
+        try:
+            return self._provider(force)                    # type: ignore[misc]
+        except AppAuthError as e:
+            raise GitHubError(str(e), status=None) from e
+
+    @property
+    def token(self) -> str | None:
+        """The credential every call carries: the provider's current installation token for an App group, else the static PAT."""
+        return self._provider_token(False) if self._provider else self._token
 
     # ---- low level -------------------------------------------------------
 
@@ -43,16 +62,10 @@ class GitHub:
             return None
         return self._cache_dir / (hashlib.sha1(endpoint.encode()).hexdigest() + ".json")
 
-    def _call(self, method: str, endpoint: str, body: dict | None = None, headers: dict[str, str] | None = None) -> tuple[int, dict[str, str], Any]:
-        cmd = ["gh", "api", "--include", "-X", method]
-        for k, v in (headers or {}).items():
-            cmd += ["-H", f"{k}: {v}"]
-        if body is not None:
-            cmd += ["--input", "-"]
-        cmd.append(endpoint)
+    def _request(self, cmd: list[str], body: dict | None, token: str | None) -> tuple[int, dict[str, str], Any]:
         env = dict(os.environ)
-        if self.token:
-            env["GH_TOKEN"] = self.token
+        if token:
+            env["GH_TOKEN"] = token
         proc = self._run(cmd, input=json.dumps(body) if body is not None else None, capture_output=True, text=True, env=env)
         raw = (proc.stdout or "").replace("\r\n", "\n")
         head, _, text = raw.partition("\n\n")
@@ -60,7 +73,7 @@ class GitHub:
         try:
             status = int(lines[0].split()[1])
         except (IndexError, ValueError) as e:
-            raise GitHubError(f"could not parse gh response for {method} {endpoint}: {proc.stderr.strip() or raw[:200]}", status=None) from e
+            raise GitHubError(f"could not parse gh response for {' '.join(cmd)}: {proc.stderr.strip() or raw[:200]}", status=None) from e
         resp_headers = {}
         for line in lines[1:]:
             k, _, v = line.partition(": ")
@@ -75,6 +88,19 @@ class GitHub:
                 parsed = json.loads(text)
             except json.JSONDecodeError:
                 parsed = text
+        return status, resp_headers, parsed
+
+    def _call(self, method: str, endpoint: str, body: dict | None = None, headers: dict[str, str] | None = None) -> tuple[int, dict[str, str], Any]:
+        cmd = ["gh", "api", "--include", "-X", method]
+        for k, v in (headers or {}).items():
+            cmd += ["-H", f"{k}: {v}"]
+        if body is not None:
+            cmd += ["--input", "-"]
+        cmd.append(endpoint)
+        status, resp_headers, parsed = self._request(cmd, body, self.token)
+        if status == 401 and self._provider is not None:
+            # An installation token expired between the provider's freshness check and the call: refresh once and retry.
+            status, resp_headers, parsed = self._request(cmd, body, self._provider_token(True))
         return status, resp_headers, parsed
 
     def get(self, endpoint: str, params: dict[str, Any] | None = None, *, use_cache: bool = True) -> Any:
@@ -241,6 +267,11 @@ class GitHub:
         if target_url:
             body["target_url"] = target_url
         return self.post(self._r(f"statuses/{sha}"), body)
+
+    def create_check_run(self, name: str, head_sha: str, conclusion: str, title: str, summary: str) -> dict:
+        """Requires App authentication (GitHub refuses check runs from personal tokens)."""
+        return self.post(self._r("check-runs"), {"name": name, "head_sha": head_sha, "status": "completed", "conclusion": conclusion,
+                                                 "output": {"title": title[:255], "summary": summary[:65535]}})
 
     def update_issue(self, number: int, **fields: Any) -> dict:
         return self.patch(self._r(f"issues/{number}"), fields)

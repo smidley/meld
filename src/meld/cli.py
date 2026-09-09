@@ -13,6 +13,7 @@ import click
 from meld import __version__
 from meld.actions import Refused, claim as do_claim, release as do_release
 from meld.adapters import UnknownAdapter, get_adapter
+from meld.appauth import AppAuthError
 from meld.assemble import BoardError
 from meld.audit import audit as do_audit, reopen as do_reopen
 from meld.challenge import challenge as do_challenge
@@ -63,7 +64,7 @@ def _load(ctx: click.Context) -> Context:
 def _guard(fn):
     try:
         return fn()
-    except (BoardError, GitHubError, ConfigError, DispatchError, GitError, UnknownAdapter, ResultsError, SetupError) as e:
+    except (BoardError, GitHubError, ConfigError, AppAuthError, DispatchError, GitError, UnknownAdapter, ResultsError, SetupError) as e:
         raise click.ClickException(str(e)) from e
 
 
@@ -427,9 +428,10 @@ def run(ctx: click.Context, group: str, once: bool) -> None:
 @click.option("--force", is_flag=True, help="Overwrite an existing .meld.toml.")
 @click.option("--no-protection", is_flag=True, help="Skip branch protection (require one approving review).")
 @click.option("--pr", is_flag=True, help="Commit the written files on meld/setup and open the setup PR (uses your own git credentials).")
+@click.option("--app", is_flag=True, help="Write the starter config for GitHub App identities (one App per group) and print the steps to create them.")
 @click.pass_context
 def setup(ctx: click.Context, repo: str, goal: str, milestone_title: str, target_dir: Path, allow_public: bool, force: bool,
-          no_protection: bool, pr: bool) -> None:
+          no_protection: bool, pr: bool, app: bool) -> None:
     """Bootstrap a product repo: labels, milestone, coordination issue, and a starter .meld.toml (runs as you, via gh)."""
     gh = GitHub(repo, token=None, run=RUN)
     human = _guard(gh.viewer_login)
@@ -437,7 +439,7 @@ def setup(ctx: click.Context, repo: str, goal: str, milestone_title: str, target
     # is the human's own git identity and credentials that commit and push, never a test's or a group's fake.
     emit(_guard(lambda: do_setup(gh, repo=repo, goal=goal, milestone_title=milestone_title, human=human, target_dir=target_dir,
                                  registry=ModelRegistry.load(), allow_public=allow_public, force=force,
-                                 protect=not no_protection, pr=pr)), ctx.obj["pretty"])
+                                 protect=not no_protection, pr=pr, app=app)), ctx.obj["pretty"])
 
 
 @main.command()
@@ -458,7 +460,7 @@ def doctor(ctx: click.Context, probe_status: bool, do_sweep: bool, dry_run: bool
             c = load_context(path, run=RUN, adapter_for=ADAPTER_FOR)
             _, board = build_status(c)
             states = {n: ("merged" if p.merged else p.state) for n, p in board.pulls.items()}
-        except (BoardError, GitHubError, ConfigError):
+        except (BoardError, GitHubError, ConfigError, AppAuthError):
             states = None
         emit(sweep(meld_home(os.environ), cfg, repo_root=path.parent, pull_states=states, older_than_days=older_than_days, apply=not dry_run), ctx.obj["pretty"])
         return

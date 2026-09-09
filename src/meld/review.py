@@ -18,9 +18,11 @@ from meld.rules import VERB_FOR, Refusal, Verb, approving_parties, author_party,
 from meld.status import build_status
 
 EVENTS = {"approve": "APPROVE", "request-changes": "REQUEST_CHANGES", "push-fix": "COMMENT"}
-# Spec 21.4 asked for a neutral check run; personal tokens cannot create check runs, so each group's review is a
-# commit status instead: visible on the PR, never blocking unless a human lists it as a required check. The context
-# itself (`meld/review/<group>`) is defined in rules.status_context, since the quorum reads it.
+# Spec 21.4 asked for a neutral check run; a personal token cannot create one, so every group's review is also a
+# commit status: visible on the PR, never blocking unless a human lists it as a required check. An App group
+# (ctx.app_auth is not None) additionally gets the real thing -- a create_check_run with conclusion "neutral" --
+# alongside the status. The status context itself (`meld/review/<group>`) is defined in rules.status_context,
+# since the quorum reads only the status, never the check run.
 STATUS_STATE = {"approve": "success", "request-changes": "failure", "push-fix": "pending"}
 _AUTHOR_VERB = {"approve": "approving", "request-changes": "requesting changes on"}
 _DATE_LINE_RE = re.compile(r"^- Date: (\d{4}-\d{2}-\d{2})$", re.MULTILINE)
@@ -170,11 +172,20 @@ def review(ctx, number: int, *, now: datetime | None = None) -> dict:
         except GitHubError as e:
             status_error = str(e)
             update_result(ctx.store.home, group.name, "review", number, {"status_error": status_error})
+        check_run_error: str | None = None
+        if ctx.app_auth is not None:
+            memory_check_description = f"{group.name} memory check: {'ok' if ok else reason}"
+            try:
+                ctx.gh.create_check_run(status_context(group.name), pr.head_sha, "neutral", memory_check_description, memory_check_description)
+            except GitHubError as e:
+                check_run_error = str(e)
         out = {"reviewed": number, "memory": pr.memory[0], "event": event, "review_id": resp.get("id")}
         if not ok:
             out["reason"] = reason
         if status_error is not None:
             out["status_error"] = status_error
+        if check_run_error is not None:
+            out["check_run_error"] = check_run_error
         return out
     stored = load_result(ctx.store.home, group.name, "review", number)
     if stored is None:
@@ -269,6 +280,12 @@ def review(ctx, number: int, *, now: datetime | None = None) -> dict:
         ctx.gh.create_status(sha, STATUS_STATE[verdict], status_context(group.name), description, resp.get("html_url"))
     except GitHubError as e:
         status_error = str(e)
+    check_run_error: str | None = None
+    if ctx.app_auth is not None:
+        try:
+            ctx.gh.create_check_run(status_context(group.name), sha, "neutral", description, body[:60000])
+        except GitHubError as e:
+            check_run_error = str(e)
     issue_status = None
     if verdict == "request-changes" and pr.issue_number is not None and pr.issue_number in board.issues:
         # A review that already went out as REQUEST_CHANGES is in pr.changes_requested_total(); adding 1 again would
@@ -293,6 +310,8 @@ def review(ctx, number: int, *, now: datetime | None = None) -> dict:
                     "new_head": sha if verdict == "push-fix" else None, "as_author": as_author}, when)
     out = {"reviewed": number, "verdict": verdict, "event": event, "review_id": resp.get("id"), "issue": pr.issue_number,
            "issue_status": issue_status, "head": sha, "status_error": status_error}
+    if check_run_error is not None:
+        out["check_run_error"] = check_run_error
     if as_author:
         out["as_author"] = True
     return out

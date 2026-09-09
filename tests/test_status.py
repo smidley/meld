@@ -13,7 +13,7 @@ from meld.context import find_config, load_context
 from meld.rules import Actor
 from meld.status import render_status
 from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
-from tests.factories import CFG2, REG, mk_board, mk_comment, mk_pr
+from tests.factories import CFG2, REG, mk_board, mk_comment, mk_issue, mk_pr
 from tests.fakeadapter import no_skills
 from tests.fakegh import FakeGh
 
@@ -222,11 +222,17 @@ def test_status_reports_the_audit_schedule_for_the_calling_group():
     board = mk_board(CFG2, pulls=[merged])
     now = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
     codex = render_status(board, CFG2, CODEX_PM, REG, now)["audit"]
-    assert codex == {"pending": [19], "merges_pending": 1, "oldest_pending_hours": 6.0, "due": True}
+    # No issues are tracked on this board fixture, so the milestone reads as vacuously complete (spec 21 item 10) --
+    # already true here regardless, since codex's batch is due on merge count/age alone.
+    assert codex == {"pending": [19], "merges_pending": 1, "oldest_pending_hours": 6.0, "due": True, "milestone_complete": True}
     claude = render_status(board, CFG2, CLAUDE_PM, REG, now)["audit"]
-    assert claude == {"pending": [], "merges_pending": 0, "oldest_pending_hours": None, "due": False}
+    assert claude == {"pending": [], "merges_pending": 0, "oldest_pending_hours": None, "due": False, "milestone_complete": True}
     fresh = replace(merged, merged_at="2026-09-03T11:30:00Z")
-    assert render_status(mk_board(CFG2, pulls=[fresh]), CFG2, CODEX_PM, REG, now)["audit"]["due"] is False
+    # An open issue keeps the milestone incomplete, so this checks the age/batch-count gate alone (spec 21 item 10
+    # would otherwise make a fresh, low-volume merge due anyway once the milestone reads as finished).
+    still_open = mk_board(CFG2, issues=[mk_issue(11)], pulls=[fresh])
+    assert render_status(still_open, CFG2, CODEX_PM, REG, now)["audit"] == {
+        "pending": [19], "merges_pending": 1, "oldest_pending_hours": 0.5, "due": False, "milestone_complete": False}
     done = replace(board, audits={19: {"codex": "pass"}})
     assert render_status(done, CFG2, CODEX_PM, REG, now)["audit"]["pending"] == []
     assert render_status(board, CFG2, HUMAN, REG, now)["audit"]["pending"] == []
@@ -239,10 +245,10 @@ def test_audit_schedule_excludes_merged_memory_prs():
     ordinary = replace(mk_pr(19, 9, committer="meld-claude-bot", state="closed", merged=True), merged_at="2026-09-03T06:00:00Z")
     now = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
     both = render_status(mk_board(CFG2, pulls=[memory, ordinary]), CFG2, CODEX_PM, REG, now)
-    assert both["audit"] == {"pending": [19], "merges_pending": 1, "oldest_pending_hours": 6.0, "due": True}
+    assert both["audit"] == {"pending": [19], "merges_pending": 1, "oldest_pending_hours": 6.0, "due": True, "milestone_complete": True}
     assert {p["number"]: p["legal"] for p in both["pulls"]} == {19: ["audit", "remember"], 40: ["remember"]}
     only_memory = render_status(mk_board(CFG2, pulls=[memory]), CFG2, CODEX_PM, REG, now)["audit"]
-    assert only_memory == {"pending": [], "merges_pending": 0, "oldest_pending_hours": None, "due": False}
+    assert only_memory == {"pending": [], "merges_pending": 0, "oldest_pending_hours": None, "due": False, "milestone_complete": True}
     # a marker smuggled into an ordinary build PR's body (head meld/9-slug) does not exempt it from audit (N1)
     smuggled = replace(ordinary, body=body)
     assert render_status(mk_board(CFG2, pulls=[smuggled]), CFG2, CODEX_PM, REG, now)["audit"]["pending"] == [19]
@@ -280,3 +286,15 @@ def test_status_agreements_carry_legal_actions(board1_gh, tmp_path):
     ]
     data = render_status(mk_board(comments=comments), CFG2, Actor(Party("pm", "claude"), "meld-claude-bot"), REG)
     assert data["coordination"]["agreements"]["dec-1"]["legal"] == ["decide"]
+
+
+def test_audit_is_due_when_the_milestone_is_complete():
+    from datetime import datetime, timezone
+    from meld.config import Party
+    from meld.rules import Actor
+    from meld.status import audit_summary
+    from tests.factories import CFG2, mk_board, mk_issue, mk_pr
+    merged = mk_pr(19, 9, author="meld-codex-bot", state="closed", merged=True)
+    board = mk_board(issues={9: mk_issue(9, "ready", state="closed")}, pulls={19: merged})
+    out = audit_summary(board, CFG2, Actor(Party("pm", "claude"), "meld-claude-bot"), datetime(2026, 9, 5, tzinfo=timezone.utc))
+    assert out["pending"] == [19] and out["milestone_complete"] is True and out["due"] is True

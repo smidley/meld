@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 
@@ -261,9 +262,6 @@ def test_github_error_carries_the_http_status(board1_gh):
     assert ei.value.status == 422
 
 
-import base64
-
-
 def test_issue_milestone_contents_events_labels_and_search_endpoints(board1_gh):
     fake, gh = board1_gh
     fake.route("POST", "repos/acme/widgets/issues", {"number": 31, "html_url": "https://github.com/acme/widgets/issues/31"})
@@ -320,7 +318,6 @@ def test_create_label_normalises_color(board1_gh):
 
 
 def test_get_contents_falls_back_to_the_blob_endpoint_for_large_files(board1_gh):
-    import base64
     fake, gh = board1_gh
     fake.route("GET", "repos/acme/widgets/contents/.meld/memory/lessons.md", {"encoding": "none", "sha": "blob1", "size": 2_000_000}, query={"ref": "main"})
     fake.route("GET", "repos/acme/widgets/git/blobs/blob1", {"encoding": "base64", "content": base64.b64encode(b"# Lessons\n").decode()})

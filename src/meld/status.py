@@ -89,17 +89,21 @@ def render_status(board: Board, cfg: Config, actor: Actor, models: ModelRegistry
 def audit_summary(board: Board, cfg: Config, actor: Actor, now: datetime) -> dict:
     """What the calling group owes the audit rule (spec 14): merged PRs it did not author and has not yet audited -- never a
     memory PR, whose content was verified against the board at review (rules._audit refuses those too) -- and whether the
-    batch is due (audit.batch_merges pending, or the oldest pending merge older than audit.batch_hours)."""
+    batch is due (audit.batch_merges pending, the oldest pending merge older than audit.batch_hours, or the milestone is
+    complete -- no open non-coordination issue left, so there will be no later, bigger batch to fold this one into)
+    (spec 21 item 10)."""
+    complete = all(i.state == "closed" for i in board.issues.values())   # the coordination issue is not in board.issues
     if actor.group is None:
-        return {"pending": [], "merges_pending": 0, "oldest_pending_hours": None, "due": False}
+        return {"pending": [], "merges_pending": 0, "oldest_pending_hours": None, "due": False, "milestone_complete": complete}
     pending = sorted((p for p in board.pulls.values()
                       if p.merged and not p.memory and party_of_login(cfg, p.author) != actor.group
                       and actor.group not in board.audits.get(p.number, {})),
                      key=lambda p: p.number)
     ages = [_age_minutes(p.merged_at, now) for p in pending if p.merged_at]
     hours = round(max(ages) / 60, 1) if ages else None
-    due = bool(pending) and (len(pending) >= cfg.audit_batch_merges or (hours is not None and hours >= cfg.audit_batch_hours))
-    return {"pending": [p.number for p in pending], "merges_pending": len(pending), "oldest_pending_hours": hours, "due": due}
+    due = bool(pending) and (len(pending) >= cfg.audit_batch_merges or (hours is not None and hours >= cfg.audit_batch_hours) or complete)
+    return {"pending": [p.number for p in pending], "merges_pending": len(pending), "oldest_pending_hours": hours, "due": due,
+            "milestone_complete": complete}
 
 
 def build_status(ctx, now: datetime | None = None) -> tuple[dict, Board]:

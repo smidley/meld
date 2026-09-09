@@ -97,7 +97,13 @@ def _open_memory_pr(ctx, board, group, *, branch: str, path: str, text: str, mod
         push_branch(wt, branch, ctx.gh.token)
         pr = ctx.gh.create_pull(title, branch, ctx.cfg.default_branch, body)
     finally:
-        remove_worktree(ctx.repo_root, wt)
+        try:
+            remove_worktree(ctx.repo_root, wt)
+        except GitError as exc:
+            # A stuck removal (a lingering lock, a reaped-but-not-unregistered worktree) must never mask whatever
+            # exception is already propagating from the try block above, nor stop a clean return below -- the
+            # worktree is disposable scratch space, so its own cleanup failure is only ever logged.
+            ctx.store.errors.append(f"cleanup of worktree {wt} failed: {exc}")
     return int(pr["number"]), str(pr.get("html_url", ""))
 
 

@@ -170,7 +170,7 @@ def agreement_for(comments: Sequence[ParsedComment], ref: str, cfg: Config) -> A
                 # merely redundant -- must not flip the ref back to unverified (spec 21 item 27).
                 continue
             joint_posted, joint_verb, joint_author, joint_id = True, h.verb, cmt.author, cmt.id
-            closed = text is not None and ((agreed >= set(cfg.group_names)) or ((agreed | set(dissent)) >= set(cfg.group_names)))
+            closed = text is not None and (agreed | set(dissent)) >= set(cfg.group_names)
             joint_verified = closed and proposer is not None and cmt.author == cfg.groups[proposer].bot
             continue
         if joint_posted:

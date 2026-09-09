@@ -4,16 +4,34 @@ from click.testing import CliRunner
 import meld.cli as cli
 from meld.actions import Refused
 from meld.review import merge
+from meld.status import build_status
 from tests.conftest import env_for
 from tests.productfixtures import R, fixture, make_product
 
 
-def test_merge_squashes_with_the_head_sha_guard(tmp_path):
-    fake, ctx, repo, origin = make_product(tmp_path)   # claude PM; PR #20's head is codex's and claude approved it on abc123
+def _merge_ready(tmp_path):
+    """A claude PM whose PR #20 (codex's head, approved by claude on abc123) is ready to merge, with the merge PUT routed to succeed."""
+    fake, ctx, repo, origin = make_product(tmp_path)
     fake.route("PUT", R + "pulls/20/merge", {"sha": "m123", "merged": True})
+    return fake, ctx
+
+
+def test_merge_squashes_with_the_head_sha_guard(tmp_path):
+    fake, ctx = _merge_ready(tmp_path)
     assert merge(ctx, 20) == {"merged": 20, "sha": "m123", "issue": 13, "approvals": ["claude"]}
     (body,) = [c.body for c in fake.calls if c.method == "PUT"]
-    assert body == {"sha": "abc123", "merge_method": "squash", "commit_title": "CI pipeline"}
+    assert body == {"sha": "abc123", "merge_method": "squash", "commit_title": "CI pipeline",
+                    "commit_message": "Closes #13\n\nverified-by: act -j ci (passed)"}
+
+
+def test_merge_sends_the_pr_body_as_the_squash_message(tmp_path):
+    # The squash-merge message becomes the PR body, not the worker's own commit history (spec 21 item 5).
+    fake, ctx = _merge_ready(tmp_path)
+    _, board = build_status(ctx)
+    out = merge(ctx, 20)
+    assert out["merged"] == 20
+    put = [c for c in fake.calls if c.method == "PUT" and c.endpoint.endswith("pulls/20/merge")][0]
+    assert put.body["commit_message"] == board.pulls[20].body and put.body["merge_method"] == "squash"
 
 
 def test_human_approval_counts_toward_the_quorum(tmp_path):

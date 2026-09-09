@@ -112,3 +112,28 @@ def test_app_key_env_is_scrubbed_from_workers():
     assert "MELD_APP_KEY_" in SCRUBBED_PREFIXES
     out = scrub_env({"MELD_APP_KEY_CLAUDE": "pem", "MELD_TOKEN_CODEX": "t", "PATH": "/bin"})
     assert "MELD_APP_KEY_CLAUDE" not in out and "MELD_TOKEN_CODEX" not in out and out["PATH"] == "/bin"
+
+
+def test_popen_detached_never_warns_when_collected_before_the_child_exits(tmp_path):
+    """Popen.__del__ warns ResourceWarning: subprocess N is still running for a still-alive child that gets garbage
+    collected; a detached worker process is deliberately never waited on by meld (spec 21 item 6), so DetachedPopen's
+    no-op __del__ must keep that warning from firing even while the child is still running at collection time."""
+    import gc, subprocess, sys, warnings
+    from meld.adapters.base import DetachedPopen, LaunchSpec, open_log, popen_detached
+    spec = LaunchSpec(role="worker", model="m", effort="e", cwd=tmp_path, prompt="", log_path=tmp_path / "log",
+                      timeout_seconds=5, env={}, max_turns=1)
+    with open_log(spec.log_path) as log:
+        proc = popen_detached([sys.executable, "-c", "import time; time.sleep(0.5)"], spec, log)
+    assert isinstance(proc, DetachedPopen)
+    pid = proc.pid
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        del proc
+        gc.collect()
+    import os, time
+    for _ in range(50):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.1)

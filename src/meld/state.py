@@ -240,7 +240,7 @@ def diff_changes(old: dict | None, new: dict) -> list[Change]:
     for ref in sorted(set(old.get("challenges", {})) | set(new.get("challenges", {}))):
         a, b = old.get("challenges", {}).get(ref), new.get("challenges", {}).get(ref)
         if a != b:
-            out.append(Change("challenges", ref, a, b, f"challenge {ref}: challenger {a} -> {b}"))
+            out.append(Change("challenges", ref, a, b, f"challenge {ref}: challenger {a or {}} -> {b or {}}"))
     for n in sorted(set(old.get("audits", {})) | set(new.get("audits", {})), key=int):
         a, b = old.get("audits", {}).get(n), new.get("audits", {}).get(n)
         if a != b:

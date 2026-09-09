@@ -101,7 +101,16 @@ def open_log(path: Path) -> IO[bytes]:
     return open(path, "ab")
 
 
+class DetachedPopen(subprocess.Popen):
+    """A child we deliberately never wait on (workers outlive the meld process that launched them). Popen.__del__ would
+    warn 'subprocess N is still running' and register the object for later reaping; meld reaps by pid through
+    state.pid_alive's waitpid instead, so the destructor is a no-op here (spec 21 item 6)."""
+
+    def __del__(self) -> None:  # noqa: D401
+        pass
+
+
 def popen_detached(argv: list[str], spec: LaunchSpec, log: IO[bytes]) -> subprocess.Popen:
     """Start the CLI in its own session so a timeout can kill the whole process group."""
-    return subprocess.Popen(argv, cwd=str(spec.cwd), env=spec.env, stdin=subprocess.DEVNULL, stdout=log,
-                            stderr=subprocess.STDOUT, start_new_session=True)
+    return DetachedPopen(argv, cwd=str(spec.cwd), env=spec.env, stdin=subprocess.DEVNULL, stdout=log,
+                         stderr=subprocess.STDOUT, start_new_session=True)

@@ -331,5 +331,8 @@ def merge(ctx, number: int) -> dict:
     refusal = pr_refusal(board, ctx.cfg, actor, Verb.MERGE, pr)
     if refusal:
         refuse(ctx, board, refusal)
-    resp = ctx.gh.merge_pull(number, pr.head_sha, pr.title)   # the sha guard makes GitHub refuse (409) if the head moved since this board
+    # The sha guard makes GitHub refuse (409) if the head moved since this board; the PR body (already
+    # closer-neutralised by collect, except the framework's own `Closes #N` line) becomes the squash message, so a
+    # worker's commit messages never reach the default branch (spec 21 item 5).
+    resp = ctx.gh.merge_pull(number, pr.head_sha, pr.title, message=pr.body)
     return {"merged": number, "sha": resp.get("sha"), "issue": pr.issue_number, "approvals": sorted(approving_parties(ctx.cfg, pr))}

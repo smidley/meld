@@ -57,7 +57,7 @@
 - Test: `tests/test_appauth.py` (new)
 
 **Interfaces:**
-- Consumes: `atomic.write_atomic` (for the cache), `openssl` CLI, `urllib.request`.
+- Consumes: `openssl` CLI, `urllib.request`; the token cache is written via a sibling `.tmp` file and `os.replace` (see `TokenCache.save`), not `atomic.write_atomic`.
 - Produces: `appauth.AppAuthError(RuntimeError)`; `appauth.b64url(data: bytes) -> str`; `appauth.jwt_for_app(app_id: int, pem: str, *, now: int | None = None, sign: Callable[[bytes, str], bytes] | None = None) -> str` (claims `iat = now - 60`, `exp = now + 540`, `iss = str(app_id)`); `appauth.sign_rs256(message: bytes, pem: str, run=subprocess.run) -> bytes` (default signer); `appauth.InstallationToken(token: str, expires_at: str, permissions: dict[str, str], repositories: tuple[str, ...])`; `appauth.mint_installation_token(app_id, installation_id, pem, *, now=None, post: Callable[[str, dict[str, str], bytes | None], tuple[int, dict]] | None = None, sign=None) -> InstallationToken`; `appauth.app_slug(app_id, pem, *, now=None, get=None, sign=None) -> str`; `appauth.load_pem(env: Mapping[str, str], private_key_env: str | None, private_key_file: str | None) -> str` (unescapes literal `\n`); `appauth.TokenCache(path: Path)` with `.load() -> InstallationToken | None` and `.save(tok)` (0600); `appauth.AppAuth(app_id, installation_id, pem, cache_path, *, now=None, post=None, sign=None)` with `.token(force: bool = False) -> str` (reuses the cached token while > 300 s remain) and `.last: InstallationToken | None`.
 
 - [ ] **Step 1: Write the failing tests**

@@ -100,7 +100,8 @@ def _effort(spec: ModelSpec, role: str) -> str:
 def _group_block(name: str, registry: ModelRegistry, commented: bool, app: bool = False) -> tuple[str, bool]:
     """Returns the rendered block plus whether it ended up commented -- the single source of truth for "does this
     adapter have registry models", so callers (setup's groups/warnings) derive it from here instead of re-querying
-    the registry themselves."""
+    the registry themselves. `app` selects the App-form block (auth = "app", app_id/installation_id/private_key_env)
+    instead of the PAT form (bot/token_env)."""
     specs = registry.for_adapter(name)
     commented = commented or not specs  # a CLI with no models in the registry is as unusable as no CLI at all
     orch = _pick(specs, "large")
@@ -118,7 +119,7 @@ def _group_block(name: str, registry: ModelRegistry, commented: bool, app: bool 
         effort = _effort(spec, role) if spec else "medium"
         lines += [f"{prefix}[groups.{name}.{role}]", f'{prefix}model = "{model}"', f'{prefix}effort = "{effort}"']
     if not app:
-        lines += [f"# To run this group as a GitHub App instead of a machine user (no extra GitHub account), replace bot/token_env with:",
+        lines += ["# To run this group as a GitHub App instead of a machine user (no extra GitHub account), replace bot/token_env with:",
                   f'# bot = "meld-{name}[bot]"', '# auth = "app"', "# app_id = 0", "# installation_id = 0", f'# private_key_env = "MELD_APP_KEY_{name.upper()}"']
     return "\n".join(lines) + "\n", commented
 
@@ -181,7 +182,8 @@ def setup(gh: GitHub, *, repo: str, goal: str, milestone_title: str, human: str,
             "Repository permissions: Contents, Issues, Pull requests, Commit statuses (read & write), Checks (read & write, optional); Where can it be installed: only this account",
             "generate a private key on the App page and store the .pem in 1Password; note the App ID",
             f"install the App on {repo} (Install App → only select repositories); the installation_id is the number at the end of the installation URL",
-            f"fill app_id and installation_id in {config_path.name} and export MELD_APP_KEY_<GROUP> with the PEM contents (op run injects it)",
+            f"fill app_id and installation_id in {config_path.name} and export MELD_APP_KEY_<GROUP> with the PEM contents (op run injects it); "
+            f"or set private_key_file = \"<path>\" in {config_path.name} instead of private_key_env",
             "run `meld doctor` to verify: it prints the App's bot login to put in [groups.<g>].bot if it differs",
             "run `meld run <group>` for each group, then `meld chat`",
         ]

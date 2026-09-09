@@ -34,6 +34,8 @@ def fakes(*, claude_login="meld-claude-bot", codex_login="meld-codex-bot", human
         f.route("GET", "users/meld-claude-bot", {"login": "meld-claude-bot", "id": 11})
         f.route("GET", "users/meld-codex-bot", {"login": "meld-codex-bot", "id": 12})
         f.route("GET", R + "branches/main", {"commit": {"sha": "abc123"}})
+        f.route("GET", R + "assignees/meld-claude-bot", None, status=204)
+        f.route("GET", R + "assignees/meld-codex-bot", None, status=204)
         f.route("GET", R + "issues", [])
         f.route("GET", R + "pulls", [])
         if statuses_ok:
@@ -67,6 +69,18 @@ def test_doctor_passes_a_healthy_setup(tmp_path):
     # PROJECT_TOML's codex model is the deliberately-invalid "gpt-x" (shared with the unknown-model test below), so
     # even an otherwise healthy setup fails models:codex against any real registry; nothing else fails or warns as a failure.
     assert summary(run(tmp_path, fakes()))["failed"] == ["models:codex"]
+
+
+def test_doctor_checks_every_bot_login_is_an_assignable_user(tmp_path):
+    """Final-review Critical 1: the claim lock is the issue assignee, and GitHub validates assignees against the
+    repo's assignable users -- so a bot login that is not assignable can never claim. Every group is checked, PAT
+    and App alike, through the human's own gh login (assignability is a property of the repository)."""
+    checks = by_name(run(tmp_path, fakes()))
+    assert checks["assignable:claude"].ok is True and "meld-claude-bot" in checks["assignable:claude"].detail
+    by_token = fakes()
+    del by_token[None].routes[("GET", R + "assignees/meld-codex-bot")]      # 404: not a collaborator
+    checks = by_name(run(tmp_path, by_token))
+    assert checks["assignable:codex"].ok is False and "collaborator" in checks["assignable:codex"].fix
 
 
 def test_doctor_fails_when_a_token_belongs_to_the_wrong_account(tmp_path):
@@ -301,6 +315,20 @@ def test_doctor_verifies_an_app_group(tmp_path, keypair_pem):
     assert checks["token:codex"].ok                      # the PAT group still gets its own checks
     assert checks["git-identity:claude"].ok and "99+meld-claude[bot]@users.noreply.github.com" in checks["git-identity:claude"].detail
     assert ("GET", "https://api.github.com/app") in calls and ("POST", "https://api.github.com/app/installations/55/access_tokens") in calls
+
+
+def test_doctor_says_an_app_bot_cannot_hold_the_assignee_claim_lock(tmp_path, keypair_pem):
+    """Final-review Critical 1: `GET /repos/{repo}/assignees/{login}` 404s for an App's bot user (probe 2026-09-09),
+    so the check fails for an App group and its fix text names the limitation and plan 6b rather than a collaborator
+    invite that cannot exist. The login is percent-encoded: a bare `[bot]` would not survive the URL."""
+    by_token = fakes()
+    by_token[None].route("GET", "users/meld-claude[bot]", {"login": "meld-claude[bot]", "id": 99})
+    get, post, _ = app_http()
+    checks = by_name(run_app(tmp_path, by_token, keypair_pem, get=get, post=post))
+    assert checks["assignable:claude"].ok is False
+    assert "cannot claim and build" in checks["assignable:claude"].fix and "plan 6b" in checks["assignable:claude"].fix
+    assert any(c.endpoint == R + "assignees/meld-claude%5Bbot%5D" for c in by_token[None].calls)
+    assert checks["assignable:codex"].ok is True           # the PAT group in the same config is unaffected
 
 
 def test_doctor_flags_a_slug_mismatch_missing_permission_and_uninstalled_repo(tmp_path, keypair_pem):

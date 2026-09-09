@@ -151,6 +151,7 @@ def test_pid_alive_reaps_own_exited_child_and_archive_run(tmp_path):
     assert pid_alive(proc.pid) is False  # pid_alive reaps it via waitpid and reports it dead
     with pytest.raises(ProcessLookupError):
         os.kill(proc.pid, 0)  # proof that pid_alive really reaped it
+    proc.wait()  # tell the Popen object its child is gone (pid_alive reaped it), so Popen.__del__ never warns it is still running
     store = StateStore(tmp_path, "claude")
     store.write_run(mk_run("claude", 12))
     archived = store.archive_run("claude", 12)

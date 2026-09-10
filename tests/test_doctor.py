@@ -188,6 +188,28 @@ def test_sweep_lists_then_removes_only_what_it_listed(tmp_path):
     assert set(remaining) == {"23"}
 
 
+def test_sweep_lists_the_legacy_per_party_notify_state(tmp_path):
+    """Plan 4's per-party nudge throttle wrote `state/<who>[/<role>]/notify.json`; plan 5 replaced it with the
+    shared `meld:nudged` label and nothing reads the file any more. An upgraded install still has one per party,
+    so the sweep names them (with a reason) and `--apply` deletes them -- while state the framework still uses,
+    like `snapshot.json` next door, is never a candidate."""
+    home = tmp_path / "home"
+    _touch(home / "state" / "claude" / "pm" / "notify.json", text='{"14": "2026-09-01T10:00:00Z"}')
+    _touch(home / "state" / "claude" / "orchestrator" / "notify.json", text="{}")
+    _touch(home / "state" / "human" / "notify.json", text="{}")                 # a human's own `meld notify`
+    _touch(home / "state" / "claude" / "pm" / "snapshot.json", text="{}")       # still read: never swept
+    out = sweep(home, cfg(), repo_root=tmp_path, pull_states=None)
+    legacy = {c["path"] for c in out["candidates"] if c["kind"] == "legacy-notify-state"}
+    assert legacy == {str(home / "state" / "claude" / "pm" / "notify.json"), str(home / "state" / "claude" / "orchestrator" / "notify.json"),
+                      str(home / "state" / "human" / "notify.json")}
+    assert all("no longer read" in c["reason"] for c in out["candidates"] if c["kind"] == "legacy-notify-state")
+    assert out["removed"] == [] and (home / "state" / "claude" / "pm" / "notify.json").exists()
+    applied = sweep(home, cfg(), repo_root=tmp_path, pull_states=None, apply=True)
+    assert sorted(applied["removed"]) == sorted(legacy)
+    assert not (home / "state" / "claude" / "pm" / "notify.json").exists()
+    assert (home / "state" / "claude" / "pm" / "snapshot.json").exists()
+
+
 def test_sweep_without_board_state_skips_pr_dependent_kinds(tmp_path):
     home = tmp_path / "home"
     _touch(home / "results" / "claude" / "review-22.json", text='{"head_sha": "x", "event": "APPROVE"}')

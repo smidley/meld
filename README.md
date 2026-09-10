@@ -80,7 +80,7 @@ Warnings do not fail the run: a `settings.json` `env` block that would hand a wo
 
 `--probe-status` also proves **write** access to commit statuses, by posting one `meld/doctor` status on the default-branch head. It is opt-in because it leaves that mark.
 
-`meld doctor --sweep` is the only thing doctor writes. It lists the scratch meld leaves under `$MELD_HOME` — consumed verdict archives, orphaned per-run `gh` and gitconfig directories, memory worktrees left behind by a crash, and memory-review and CI-red records for PRs that have since merged or closed — and deletes exactly what it listed. `--sweep --dry-run` lists without deleting; `--older-than-days N` moves the age threshold (default 7).
+`meld doctor --sweep` is the only thing doctor writes. It lists the scratch meld leaves under `$MELD_HOME` — consumed verdict archives, orphaned per-run `gh` and gitconfig directories, memory worktrees left behind by a crash, memory-review and CI-red records for PRs that have since merged or closed, and the dead per-party `notify.json` throttle files an older Meld wrote — and deletes exactly what it listed. `--sweep --dry-run` lists without deleting; `--older-than-days N` moves the age threshold (default 7).
 
 ## Exit codes
 

@@ -29,9 +29,9 @@ Design: `docs/superpowers/specs/2026-09-03-meld-design.md`. Plans: `docs/superpo
 | `meld audit N` | Post a collected auditor's `AUDIT #<pr> PASS|FAIL` verdict on the coordination issue; a `FAIL` makes `meld reopen` legal for that group |
 | `meld reopen N` | Return a closed issue to `ready` after your group's own `AUDIT ... FAIL`, quoting the findings |
 | `meld reap N` | Remove a finished run's worktree and archive its record |
-| `meld tag N [--worker W] [--model M] [--effort E] [--size S] [--skill NAME]...` | Set the worker, model, effort, size, and `skill:` labels on an issue |
-| `meld decide REF` | Record a verified `[joint] DECISION` as `.meld/decisions/NNNN-<slug>.md` through a memory PR |
-| `meld remember REF -m TEXT` | Append a lesson about a resolved issue or PR to `.meld/memory/lessons.md` through a memory PR |
+| `meld tag N [--worker W] [--model M] [--effort E] [--size S] [--skill NAME]... [--scope GLOB]... [--may-delete PATH]... [--held CATEGORY]...` | Set the worker, model, effort, size, and `skill:` labels on an issue, and write its declarations: `--scope`/`--may-delete` replace the body's `## Scope` and `## May delete` sections, `--held` adds `meld:held:<category>` plus `meld:needs-human` and asks the human to authorize it |
+| `meld decide REF [--supersedes FILE]` | Record a verified `[joint] DECISION` as `.meld/decisions/NNNN-<slug>.md` through a memory PR; `--supersedes NNNN-<slug>.md` retires that earlier decision in the same PR |
+| `meld remember REF -m TEXT [--supersedes HEADING]` | Append a lesson about a resolved issue or PR to `.meld/memory/lessons.md` through a memory PR; `--supersedes "<heading>"` retires the earlier entry with that `## ` heading |
 | `meld recall QUERY [--limit N]` | Search decisions, lessons, and past coordination issues |
 | `meld plan issues REF [--dry-run]` \| `approve` \| `ack REF` | The plan gate: the proposer orchestrator creates `meld:planned` issues from a verified `[joint] PLAN`/`PLAN-ADD` (`--dry-run` reports what it would create); the human's `approve` adds `meld:plan-approved` and flips every planned issue to ready; the human's `ack REF` does the same for one `PLAN-ADD` |
 | `meld inbox` | What needs a person: needs-human items, budget alerts, disagreements, plan additions, open asks |
@@ -52,7 +52,21 @@ Real-CLI smoke tests (they spend tokens): `task test:smoke`.
 
 ## Memory
 
-Agreed decisions become `.meld/decisions/NNNN-<id>.md` (`meld decide`), lessons append to `.meld/memory/lessons.md` (`meld remember`), both through memory PRs that the other groups' PMs approve with `meld review N` — a decision file must be byte-identical to `meld decide`'s rendering of the verified `[joint] DECISION`, a lesson PR must append exactly one entry to the existing file — no reviewer worker runs, and a merged memory PR is never audited. Once a `[joint]` comment is on a ref the round is closed; a `DISAGREE` round is never recorded. `meld recall QUERY` searches both plus past coordination issues — reading `origin`'s default branch after a fetch, so it never lags the local checkout — and dispatch renders matching snippets into every brief as `## Relevant memory`.
+Agreed decisions become `.meld/decisions/NNNN-<id>.md` (`meld decide`), lessons append to `.meld/memory/lessons.md` (`meld remember`), both through memory PRs that the other groups' PMs approve with `meld review N` — a decision file must be byte-identical to `meld decide`'s rendering of the verified `[joint] DECISION`, a lesson PR must append exactly one entry to the existing file — no reviewer worker runs, and a merged memory PR is never audited. Once a `[joint]` comment is on a ref the round is closed; a `DISAGREE` round is never recorded. `meld recall QUERY` searches both plus past coordination issues — reading `origin`'s default branch after a fetch, so it never lags the local checkout — and dispatch renders matching snippets into every brief as `## Relevant memory`. Memory is superseded, never edited: `meld decide REF --supersedes NNNN-<slug>.md` opens a two-file PR that records the new decision (carrying a `- Supersedes:` line) and appends one `Status: superseded by ...` trailer to the old file, `meld remember REF -m TEXT --supersedes "<heading>"` names the retired lesson on the new entry's first line, and `meld recall` marks each hit `active` or `superseded` while briefs quote only what is still in force.
+
+## Guardrails
+
+Three things stop a worker from doing more than its task asked for. All three are declared by an orchestrator or a human and enforced by `meld`, never by the worker's own restraint.
+
+**Write scope.** An issue body's `## Scope` section lists the globs the task may change, one `- ` bullet each (`fnmatch`, so `*` crosses `/`). `meld merge` refuses a PR that changes anything else — `PR changes files outside #N's declared scope: ...` — and `meld status` shows `scope_violations` on the PR long before that. Scope is opt-in per issue: no `## Scope`, no check.
+
+**Deletion gate.** A `## May delete` section lists exact paths, and the gate is always on: any other deletion by a PR that closes an issue is refused with `PR deletes files not listed under '## May delete' in #N: ...`. A rename is not a deletion. Memory PRs close no issue, so neither check reaches them.
+
+**Held categories.** Seven consequential kinds of action — `cleanup`, `credential-change`, `delete`, `live-outreach`, `paid-media`, `production-mutation`, `public-release` — have a `meld:held:<category>` label each, created by `meld setup`. `meld tag N --held delete` adds the label plus `meld:needs-human` and, when an orchestrator runs it, posts `NEEDS-HUMAN #N` (only for a category the issue does not already carry, so a re-tag never re-gates an answered issue; and not at all when a human is the one tagging, since there is nobody left to ask). `meld dispatch` then refuses the issue — `held (delete): a listed human must post RESOLVED #N (or PROVIDED #N) first` — until a listed human answers, after which any PM's `meld tick` swaps `meld:needs-human` back to `meld:in-progress` or `meld:ready`. The held labels stay on the issue as the record of that authority. The worker brief lists the authorized categories under `## Authorized by a human`, and the worker contract forbids every held action that section does not name — so a worker is never handed authority a person did not grant.
+
+Widening a scope, allowing a deletion, or authorizing a category is an edit to the issue (or a `meld tag` call) plus, for a held category, a human's answer. There is no merge override.
+
+A fourth guardrail protects memory itself: a wrong or stale decision or lesson is superseded, never edited or deleted, so no brief can quote something already known to be wrong (see Memory above).
 
 ## The human console
 

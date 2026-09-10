@@ -236,13 +236,16 @@ def derive_leases(comments: Sequence[ParsedComment]) -> dict[int, Lease]:
 
 
 # A lease is valid only while the leasing group's bot is assigned to the issue. The LEASE
-# comment outlives the claim it describes: `meld release` posts nothing, so once the leasing
-# group lets go and another group claims the issue, the old comment would still read as a
-# lease on the new claim, and once its `until` passed any PM could release the new owner
-# (a LEASE forged by hand would do the same on purpose). Assignment, not the thread, is the
-# claim lock (spec section 6), so it decides validity too. The check lives here, next to the
-# derivation, but is applied by the board assembler, which knows each group's bot; Board
-# itself stays free of Config.
+# comment can outlive the claim it describes: a group's or PM's own `meld release` posts a
+# framework RELEASED note, and a human's `--force` a `[human] RELEASE`, both of which
+# `derive_leases` above drops the lease on (plan-5 decision 2) -- but a human's plain release
+# posts nothing, and a claim can end without any comment at all (an assignee removed on
+# GitHub). So once the leasing group lets go and another group claims the issue, an old LEASE
+# comment could still read as a lease on the new claim, and once its `until` passed any PM
+# could release the new owner (a LEASE forged by hand would do the same on purpose).
+# Assignment, not the thread, is the claim lock (spec section 6), so it decides validity too.
+# The check lives here, next to the derivation, but is applied by the board assembler, which
+# knows each group's bot; Board itself stays free of Config.
 def assigned_leases(leases: Mapping[int, Lease], issues: Mapping[int, Issue], bot_of_group: Mapping[str, str]) -> dict[int, Lease]:
     """Keep only the leases whose group's bot is currently assigned to the leased issue."""
     out: dict[int, Lease] = {}

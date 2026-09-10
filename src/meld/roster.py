@@ -51,7 +51,9 @@ def product_skills(repo_root: Path) -> list[WorkerType]:
     """Skills the product ships under .meld/skills/<name>/SKILL.md (frontmatter name/description), shared by every group."""
     from meld.adapters.base import scan_skills   # local import: adapters.base imports roster
     d = repo_root / ".meld" / "skills"
-    return scan_skills([d], source="product-skill") if d.is_dir() else []
+    # A symlinked skills root is skipped for the same reason scan_skills skips a symlinked skill directory or SKILL.md:
+    # it points wherever its author aimed it, and everything under it would be read, briefed, and copied into worktrees.
+    return scan_skills([d], source="product-skill") if d.is_dir() and not d.is_symlink() else []
 
 
 def roster(repo_root: Path | None, extra: Iterable[WorkerType] = ()) -> list[WorkerType]:

@@ -281,6 +281,21 @@ def test_claim_proceeds_past_its_own_stale_claim_label_on_a_ready_issue(tmp_path
     assert posted_headers(fake) == []
 
 
+def test_claim_counts_an_oddly_cased_re_read_label_as_its_own(tmp_path):
+    """GitHub label names are case-insensitive, so a hand-made `Meld:Claimed-By:Claude` coming back from the fresh
+    re-read is our own label and not a lost race."""
+    fake, ctx = make(tmp_path)
+    fake.route("POST", R + "labels", {}, status=422)
+    fake.route("POST", R + "issues/11/labels", [])
+    fake.route("GET", R + "issues/11", {**fixture_issue(11),
+                                       "labels": fixture_issue(11)["labels"] + [{"name": "Meld:Claimed-By:Claude"}]})
+    fake.route("DELETE", label_ep(11, "meld:ready"), {}, status=200)
+    assert claim(ctx, 11) == {"claimed": 11, "claimed_by": "claude"}
+    assert [c.body["labels"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/11/labels"] == \
+        [[CLAIM], ["meld:in-progress"]]
+    assert posted_headers(fake) == []
+
+
 def test_another_groups_stale_claim_label_still_refuses_a_claim(tmp_path):
     fake, ctx = make(tmp_path)
     stale_claim_board(fake, label="meld:claimed-by:codex")

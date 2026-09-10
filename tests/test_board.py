@@ -166,6 +166,18 @@ def test_issue_derives_its_claim_from_the_claimed_by_labels():
     assert contested.claimants == ("claude", "codex") and contested.claimed_by is None
 
 
+def test_claim_labels_are_read_case_insensitively():
+    """GitHub label names are case-insensitive for uniqueness, so a hand-made `Meld:Claimed-By:Claude` is the same
+    label as ours. Group names are lowercase by rule (config.GROUP_NAME_RE), so the group it names is lowercased too."""
+    from meld.board import claim_group
+    from tests.factories import mk_issue
+    assert claim_group("MELD:CLAIMED-BY:Claude") == "claude"
+    assert claim_group("Meld:Claimed-By:CODEX") == "codex"
+    assert claim_group("MELD:CLAIMED-BY:") is None and claim_group("MELD:IN-PROGRESS") is None
+    odd = mk_issue(11, status="in_progress", extra_labels=("meld:Claimed-by:Claude",))
+    assert odd.claimants == ("claude",) and odd.claimed_by == "claude"
+
+
 def test_held_leases_keep_only_the_lease_whose_group_holds_the_label():
     from meld.board import Lease, held_leases
     from tests.factories import mk_issue

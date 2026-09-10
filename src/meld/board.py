@@ -32,7 +32,10 @@ def claim_label(group: str) -> str:
 
 
 def claim_group(label: str) -> str | None:
-    """The claiming party a label names, or None for any other label (the bare prefix names nobody)."""
+    """The claiming party a label names, or None for any other label (the bare prefix names nobody). GitHub label names
+    are case-insensitive for uniqueness, so a hand-made `Meld:Claimed-By:Claude` is our own label; group names are
+    lowercase by rule (`config.GROUP_NAME_RE`), so the party it names is lowercased with it."""
+    label = label.lower()
     return label[len(CLAIM_LABEL_PREFIX):] or None if label.startswith(CLAIM_LABEL_PREFIX) else None
 
 

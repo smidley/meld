@@ -33,7 +33,7 @@ STATUS_TO_LABEL = {"planned": "meld:planned", "ready": "meld:ready", "in_progres
 def mk_issue(number: int, status: str = "ready", worker: str | None = "backend", model: str | None = "claude-sonnet-5",
              effort: str | None = "medium", size: str | None = "S",
              claimed_by: str | None = None, extra_labels: tuple[str, ...] = (), state: str = "open",
-             title: str | None = None, updated_at: str = "2026-09-03T10:00:00Z") -> Issue:
+             title: str | None = None, updated_at: str = "2026-09-03T10:00:00Z", body: str = "") -> Issue:
     labels = set(extra_labels)
     if status in STATUS_TO_LABEL:
         labels.add(STATUS_TO_LABEL[status])
@@ -42,7 +42,7 @@ def mk_issue(number: int, status: str = "ready", worker: str | None = "backend",
             labels.add(prefix + val)
     if claimed_by is not None:
         labels.add(claim_label(claimed_by))
-    return Issue(number=number, title=title or f"Issue {number}", body="", labels=frozenset(labels),
+    return Issue(number=number, title=title or f"Issue {number}", body=body, labels=frozenset(labels),
                  state=state, milestone=3, created_at="2026-09-03T09:00:00Z",
                  updated_at=updated_at)
 
@@ -51,7 +51,8 @@ def mk_pr(number: int, issue: int, head_sha: str = "abc123", committer: str | No
           author: str | None = None, approvals: tuple[str, ...] = (), stale_approvals: tuple[str, ...] = (),
           changes_requested: tuple[str, ...] = (), extra_changes_requested_history: int = 0,
           checks: str = "green", state: str = "open", merged: bool = False,
-          extra_labels: tuple[str, ...] = (), statuses: dict[str, str] | None = None) -> PullRequest:
+          extra_labels: tuple[str, ...] = (), statuses: dict[str, str] | None = None,
+          files: tuple[str, ...] = (), removed: tuple[str, ...] = ()) -> PullRequest:
     reviews: list[Review] = []
     t = 0
     for a in stale_approvals:
@@ -69,7 +70,8 @@ def mk_pr(number: int, issue: int, head_sha: str = "abc123", committer: str | No
     return PullRequest(number=number, title=f"PR {number}", body=f"Closes #{issue}\n\nverified-by: pytest",
                        head_ref=f"meld/{issue}-slug", head_sha=head_sha, author=author or committer or "",
                        head_committer=committer, issue_number=issue, reviews=tuple(reviews), checks=checks,
-                       labels=frozenset(extra_labels), state=state, merged=merged, statuses=dict(statuses or {}))
+                       labels=frozenset(extra_labels), state=state, merged=merged, statuses=dict(statuses or {}),
+                       files=files, removed=removed)
 
 
 def mk_comment(*args, created_at: str | None = None) -> ParsedComment:

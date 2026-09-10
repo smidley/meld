@@ -39,6 +39,30 @@ def claim_group(label: str) -> str | None:
     return label[len(CLAIM_LABEL_PREFIX):] or None if label.startswith(CLAIM_LABEL_PREFIX) else None
 
 
+HELD_LABEL_PREFIX = "meld:held:"
+HELD_CATEGORIES = ("cleanup", "credential-change", "delete", "live-outreach", "paid-media", "production-mutation", "public-release")
+
+
+def held_label(category: str) -> str:
+    return HELD_LABEL_PREFIX + category
+
+
+def body_section(body: str, heading: str) -> tuple[str, ...]:
+    """The `- ` bullets under `## <heading>` in an issue body, up to the next heading; backticks stripped. Declarations
+    live in the body because only orchestrators and humans can write it (spec 6): `## Scope`, `## May delete`."""
+    out: list[str] = []
+    active = False
+    for line in (body or "").splitlines():
+        if line.startswith("## "):
+            active = line[3:].strip().lower() == heading.lower()
+            continue
+        if active and line.lstrip().startswith("- "):
+            item = line.lstrip()[2:].strip().strip("`").strip()
+            if item:
+                out.append(item)
+    return tuple(out)
+
+
 # Branches `meld decide`/`meld remember` push to. collect's build branches are `meld/<issue>-<slug>` (gitops.branch_name), so
 # the two namespaces never overlap; memory.py imports this rather than redefining it (board.py is the leaf both can reach).
 MEMORY_BRANCH_PREFIX = "meld/memory-"
@@ -111,6 +135,19 @@ class Issue:
         c = self.claimants
         return c[0] if len(c) == 1 else None
 
+    @property
+    def scope(self) -> tuple[str, ...]:
+        return body_section(self.body, "Scope")
+
+    @property
+    def may_delete(self) -> tuple[str, ...]:
+        return body_section(self.body, "May delete")
+
+    @property
+    def held(self) -> tuple[str, ...]:
+        """Held categories on this issue (spec 6): dispatch needs a listed human's answer while any is present."""
+        return tuple(sorted(l[len(HELD_LABEL_PREFIX):] for l in self.labels if l.startswith(HELD_LABEL_PREFIX) and len(l) > len(HELD_LABEL_PREFIX)))
+
 
 # The first line of the author group's COMMENT-review body (review.py), so assemble._pull can tell that review apart
 # from an ordinary comment: GitHub refuses an APPROVE/REQUEST_CHANGES from the PR's own author, so that group's verdict
@@ -145,6 +182,7 @@ class PullRequest:
     state: str
     merged: bool
     files: tuple[str, ...] = ()
+    removed: tuple[str, ...] = ()   # files the PR deletes (GitHub status "removed"; a rename is not a deletion)
     merge_commit_sha: str | None = None
     merged_at: str = ""
     statuses: dict[str, str] = field(default_factory=dict)   # commit-status context -> state, on the head
@@ -322,6 +360,39 @@ class Board:
         else:
             candidates.sort(key=lambda p: (p.state != "open", p.author != holder, -p.number))
         return candidates[0] if candidates else None
+
+    def scope_violations(self, pr: PullRequest) -> tuple[str, ...]:
+        """Changed files outside the linked issue's declared `## Scope`; empty when no scope is declared or no issue is linked."""
+        issue = self.issues.get(pr.issue_number) if pr.issue_number is not None else None
+        if issue is None or not issue.scope:
+            return ()
+        return tuple(f for f in pr.files if not any(fnmatch(f, g) for g in issue.scope))
+
+    def blocked_deletions(self, pr: PullRequest) -> tuple[str, ...]:
+        """Deleted files the linked issue's `## May delete` does not list; the gate is always on for a PR that closes an issue."""
+        issue = self.issues.get(pr.issue_number) if pr.issue_number is not None else None
+        if issue is None:
+            return ()
+        return tuple(f for f in pr.removed if f not in issue.may_delete)
+
+    def human_answer(self, issue: int) -> ParsedComment | None:
+        """The newest `PROVIDED #issue` / `RESOLVED #issue` from a listed human. A stranger's `[human]` comment still
+        parses with party kind "human" (the bracket names no login, see config.Party.parse), but grammar.is_authorized
+        checks `cfg.is_human(author)` at parse time, so an impostor's comment already carries `ok=False` -- the `c.ok`
+        filter below is enough on its own and no separate humans list is needed on the board (see assemble.build_board,
+        which parses every coordination comment with the real cfg before Board ever sees it)."""
+        answers = [c for c in self.comments if c.ok and c.header is not None and c.header.party.kind == "human"
+                   and c.header.verb in ("PROVIDED", "RESOLVED") and c.header.ref == f"#{issue}"]
+        return max(answers, key=lambda c: c.id) if answers else None
+
+    def needs_human_answered(self, issue: int) -> bool:
+        """A listed human answered after the newest `NEEDS-HUMAN #issue` (or at all, when no ask was posted) -- the condition
+        that unlocks a needs-human or held issue (spec 8, 14)."""
+        answer = self.human_answer(issue)
+        if answer is None:
+            return False
+        asks = [c.id for c in self.comments if c.ok and c.header is not None and c.header.verb == "NEEDS-HUMAN" and c.header.ref == f"#{issue}"]
+        return not asks or answer.id > max(asks)
 
     def run_for(self, group: str, issue: int) -> RunRecord | None:
         return self.runs.get(group, {}).get(issue)

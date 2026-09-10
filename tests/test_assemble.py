@@ -117,6 +117,17 @@ def test_board_carries_files_challenges_audits_and_merge_metadata(board1_gh):
     assert board.audits == {}
 
 
+def test_board_reads_removed_files_from_pull_files_status(board1_gh):
+    fake, gh = board1_gh
+    fake.route("GET", "repos/acme/widgets/pulls/20/files",
+               [{"filename": "old.py", "status": "removed"},
+                {"filename": "new.py", "status": "renamed", "previous_filename": "was.py"},
+                {"filename": "k.py", "status": "modified"}])
+    board = build_board(gh, CFG2, {}, {})
+    assert board.pulls[20].files == ("old.py", "new.py", "k.py")
+    assert board.pulls[20].removed == ("old.py",)
+
+
 def test_board_carries_the_head_statuses(board1_gh):
     fake, gh = board1_gh
     fake.route("GET", "repos/acme/widgets/commits/abc123/status",

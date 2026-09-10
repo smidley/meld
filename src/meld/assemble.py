@@ -109,6 +109,7 @@ def _pull(gh: GitHub, raw: dict, errors: list[str] | None = None) -> PullRequest
     head_committer: str | None = None
     checks = "none"
     files: tuple[str, ...] = ()
+    removed: tuple[str, ...] = ()
     statuses: dict[str, str] = {}
     if state == "open":
         reviews = tuple(_review(r) for r in gh.pull_reviews(number))
@@ -117,7 +118,9 @@ def _pull(gh: GitHub, raw: dict, errors: list[str] | None = None) -> PullRequest
             last = commits[-1]
             head_committer = (last.get("author") or {}).get("login") or (last.get("committer") or {}).get("login") or None
         checks = checks_state(gh.check_runs(head_sha))
-        files = tuple(gh.pull_files(number))
+        entries = gh.pull_files(number)
+        files = tuple(e["filename"] for e in entries)
+        removed = tuple(e["filename"] for e in entries if e["status"] == "removed")
         # The `meld/review/<group>` contexts feed rules.approving_parties. Statuses only ever ADD approvals, so a
         # token minted without "Commit statuses: read" degrades to an empty map (and a recorded error) instead of
         # failing every command the moment one meld/ PR is open. A rate limit is not a permissions problem: it
@@ -139,7 +142,7 @@ def _pull(gh: GitHub, raw: dict, errors: list[str] | None = None) -> PullRequest
         number=number, title=raw.get("title", ""), body=raw.get("body") or "", head_ref=raw["head"]["ref"], head_sha=head_sha,
         author=author, head_committer=head_committer, issue_number=issue_number_from_pr(raw.get("body") or "", raw["head"]["ref"]),
         reviews=reviews, checks=checks, labels=_labels(raw), state=state, merged=merged,
-        files=files, merge_commit_sha=raw.get("merge_commit_sha"), merged_at=raw.get("merged_at") or "", statuses=statuses,
+        files=files, removed=removed, merge_commit_sha=raw.get("merge_commit_sha"), merged_at=raw.get("merged_at") or "", statuses=statuses,
     )
 
 

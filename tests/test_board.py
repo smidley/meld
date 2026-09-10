@@ -208,3 +208,51 @@ def test_claimants_dedupe_case_variants_of_one_group():
     from tests.factories import mk_issue
     issue = mk_issue(12, status="in_progress", extra_labels=("meld:claimed-by:Claude", "meld:claimed-by:claude"))
     assert issue.claimants == ("claude",) and issue.claimed_by == "claude"
+
+
+def test_issue_declarations_come_from_body_sections_and_held_labels():
+    from meld.board import HELD_CATEGORIES, HELD_LABEL_PREFIX, body_section, held_label
+    from tests.factories import mk_issue
+    body = ("plan-item: p1\n\n## Acceptance criteria\n- works\n\n## Scope\n- src/meld/board.py\n- `tests/test_board*.py`\n\n"
+            "## May delete\n- src/meld/legacy.py\n\n## Notes\n- not a scope line\n")
+    assert body_section(body, "Scope") == ("src/meld/board.py", "tests/test_board*.py")
+    assert body_section(body, "May delete") == ("src/meld/legacy.py",)
+    assert body_section(body, "Missing") == () and body_section("", "Scope") == ()
+    issue = mk_issue(12, status="in_progress", claimed_by="claude", body=body, extra_labels=("meld:held:delete", "meld:held:public-release"))
+    assert issue.scope == ("src/meld/board.py", "tests/test_board*.py") and issue.may_delete == ("src/meld/legacy.py",)
+    assert issue.held == ("delete", "public-release")
+    assert held_label("delete") == HELD_LABEL_PREFIX + "delete" and "credential-change" in HELD_CATEGORIES and len(HELD_CATEGORIES) == 7
+    assert mk_issue(13).scope == () and mk_issue(13).held == ()
+
+
+def test_board_reports_scope_violations_and_blocked_deletions():
+    from tests.factories import mk_board, mk_issue, mk_pr
+    body = "## Scope\n- src/meld/*.py\n- tests/**\n\n## May delete\n- src/meld/legacy.py\n"
+    scoped = mk_issue(12, status="in_review", claimed_by="claude", body=body)
+    free = mk_issue(13, status="in_review", claimed_by="codex")
+    pr_ok = mk_pr(20, 12, files=("src/meld/board.py", "tests/test_board.py"))
+    pr_out = mk_pr(21, 12, files=("src/meld/board.py", "README.md", "docs/x.md"))
+    pr_del = mk_pr(22, 12, files=("src/meld/board.py", "src/meld/legacy.py", "src/meld/old.py"), removed=("src/meld/legacy.py", "src/meld/old.py"))
+    pr_free = mk_pr(23, 13, files=("anything/at/all.py", "gone.py"), removed=("gone.py",))
+    board = mk_board(issues={12: scoped, 13: free}, pulls={20: pr_ok, 21: pr_out, 22: pr_del, 23: pr_free})
+    assert board.scope_violations(pr_ok) == () and board.blocked_deletions(pr_ok) == ()
+    assert board.scope_violations(pr_out) == ("README.md", "docs/x.md")
+    assert board.blocked_deletions(pr_del) == ("src/meld/old.py",)          # legacy.py is listed, old.py is not
+    assert board.scope_violations(pr_free) == ()                              # no scope declared: no scope check
+    assert board.blocked_deletions(pr_free) == ("gone.py",)                   # the deletion gate is always on
+
+
+def test_needs_human_answered_needs_a_listed_humans_answer_after_the_ask():
+    from tests.factories import mk_board, mk_comment, mk_issue
+    issue = mk_issue(14, status="needs_human", claimed_by="codex")
+    ask = mk_comment(50, "meld-codex-bot", "[codex] NEEDS-HUMAN #14\n\nheld: delete", "2026-09-05T10:00:00Z")
+    stranger = mk_comment(51, "someone", "[human] RESOLVED #14\n\ndone", "2026-09-05T10:05:00Z")
+    early = mk_comment(49, "empowerScott", "[human] RESOLVED #14\n\nold answer", "2026-09-05T09:00:00Z")
+    answer = mk_comment(52, "empowerScott", "[human] PROVIDED #14\n\nauthorized", "2026-09-05T10:10:00Z")
+    other = mk_comment(53, "empowerScott", "[human] RESOLVED #15\n\nwrong issue", "2026-09-05T10:11:00Z")
+    assert mk_board(issues={14: issue}, comments=[ask]).needs_human_answered(14) is False
+    assert mk_board(issues={14: issue}, comments=[ask, stranger]).needs_human_answered(14) is False   # not a listed human
+    assert mk_board(issues={14: issue}, comments=[early, ask]).needs_human_answered(14) is False      # answered before the ask
+    assert mk_board(issues={14: issue}, comments=[ask, answer, other]).needs_human_answered(14) is True
+    assert mk_board(issues={14: issue}, comments=[ask, answer]).human_answer(14).id == 52
+    assert mk_board(issues={14: issue}, comments=[answer]).needs_human_answered(14) is True           # label without an ask: any answer counts

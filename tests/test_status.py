@@ -263,6 +263,7 @@ def test_status_pull_fields_and_challenge_details():
     data = render_status(board, cfg, CLAUDE_PM, REG, datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc))
     (p,) = data["pulls"]
     assert p["touches_security_paths"] is True and p["files"] == 1 and p["merged"] is False and p["merged_at"] == "" and p["audited_by"] == {"codex": "pass"}
+    assert p["scope_violations"] == [] and p["blocked_deletions"] == []
     assert data["coordination"]["challenges"] == [{"ref": "#20", "challenger": "codex", "comment_id": 104, "opened_at": "2026-09-03T10:04:00Z"}]
     assert data["coordination"]["open_challenges"] == ["#20"]
 

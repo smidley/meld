@@ -50,10 +50,16 @@ def _stamp(value: str | None) -> datetime | None:
         return None
 
 
-def last_nudge(events: list[dict], bots: set[str]) -> datetime | None:
-    """The newest `labeled meld:nudged` event by a configured bot (a human adding the label by hand does not count as a nudge)."""
+def last_nudge(events: list[dict], nudgers: set[str]) -> datetime | None:
+    """The newest `labeled meld:nudged` event by a party whose nudge counts: a configured bot or a listed human.
+
+    Humans are in that set because a human running `meld notify` sends and labels under their own login, and the
+    throttle would otherwise not see it -- the next PM tick inside the window would nudge the same people again.
+    The consequence is deliberate: a listed human who adds the label by hand, without sending anything, snoozes
+    the item for exactly one `notify.repeat_after_minutes` window, which is the most plausible reading of that
+    act. Any other login (a passing collaborator, another tool's bot) still does not count."""
     stamps = [_stamp(e.get("created_at")) for e in events
-              if e.get("event") == "labeled" and (e.get("label") or {}).get("name") == NUDGED_LABEL and (e.get("actor") or {}).get("login") in bots]
+              if e.get("event") == "labeled" and (e.get("label") or {}).get("name") == NUDGED_LABEL and (e.get("actor") or {}).get("login") in nudgers]
     stamps = [s for s in stamps if s is not None]
     return max(stamps) if stamps else None
 
@@ -78,7 +84,7 @@ def notify(ctx, board: Board, now: datetime, *, post: Callable[[str, dict], None
            dry_run: bool = False, events: Callable[[int], list[dict]] | None = None) -> dict:
     env = os.environ if env is None else env
     events_fn = events or ctx.gh.issue_events
-    bots = {g.bot for g in ctx.cfg.groups.values()}
+    nudgers = {g.bot for g in ctx.cfg.groups.values()} | set(ctx.cfg.humans)
     offset = _stagger_offset(ctx)
     items = sorted(({"issue": i.number, "title": i.title, "age_minutes": _age_minutes(i.updated_at, now)}
                     for i in board.issues.values() if i.status == "needs_human"), key=lambda d: d["issue"])
@@ -92,7 +98,7 @@ def notify(ctx, board: Board, now: datetime, *, post: Callable[[str, dict], None
             # reconsidered from scratch next time) rather than guessed at from incomplete information.
             errors.append(f"{type(e).__name__}: failed to read nudge history for #{item['issue']}")
             continue
-        last = last_nudge(evs, bots)
+        last = last_nudge(evs, nudgers)
         # Staggered by party: with no prior nudge, a later party waits until the item is `offset` minutes old before
         # it is due; once a nudge exists, a later party waits `offset` minutes past the window on top of everyone
         # else. The alphabetically first group (and a human with no group) has offset 0, so its behaviour is exactly

@@ -67,15 +67,29 @@ def test_notify_second_party_waits_window_plus_offset_after_the_first_partys_lab
     assert notify(other_party_ctx, board, at_window_plus_offset, env={})["due"] == [14]
 
 
-def test_notify_ignores_a_labeled_event_from_a_non_bot_login(tmp_path):
-    """`last_nudge` only counts a `labeled meld:nudged` event whose actor is a configured bot; a human who hand-added
-    the label (e.g. while triaging) must not be mistaken for a nudge that was already sent."""
+def test_notify_ignores_a_labeled_event_from_an_unrelated_login(tmp_path):
+    """`last_nudge` counts a `labeled meld:nudged` event only from a configured bot or a listed human; a login that is
+    neither (a passing collaborator, a bot from some other tool) must not be mistaken for a nudge that was sent."""
     fake, ctx, repo, origin = make_product(tmp_path)
     fake.route("GET", R + "issues/14/events",
-               [{"id": 501, "event": "labeled", "label": {"name": "meld:nudged"}, "actor": {"login": "empowerScott"}, "created_at": "2026-09-03T11:59:00Z"}])
+               [{"id": 501, "event": "labeled", "label": {"name": "meld:nudged"}, "actor": {"login": "stranger"}, "created_at": "2026-09-03T11:59:00Z"}])
     _, board = build_status(ctx)
     out = notify(ctx, board, NOW, env={})
     assert out["due"] == [14]
+
+
+def test_notify_counts_a_labeled_event_from_a_configured_human(tmp_path):
+    """Important 2: a listed human running `meld notify` sends and labels under their own login, so their nudge must
+    close the window for every PM too -- otherwise the next tick inside `repeat_after_minutes` nudges again. The same
+    rule makes a human hand-adding the label snooze exactly one window, which is what that human most plausibly means."""
+    fake, ctx, repo, origin = make_product(tmp_path)
+    assert "empowerScott" in ctx.cfg.humans
+    fake.route("GET", R + "issues/14/events",
+               [{"id": 501, "event": "labeled", "label": {"name": "meld:nudged"}, "actor": {"login": "empowerScott"}, "created_at": "2026-09-03T11:59:00Z"}])
+    _, board = build_status(ctx)
+    assert notify(ctx, board, NOW, env={})["due"] == []                                  # inside the window: not due
+    later = NOW + timedelta(minutes=ctx.cfg.notify_repeat_after_minutes + 1)
+    assert notify(ctx, board, later, env={})["due"] == [14]                              # ...and due again after it
 
 
 def test_notify_clears_a_stale_label_even_without_a_webhook_configured(tmp_path):

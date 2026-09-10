@@ -125,8 +125,8 @@ def test_a_stale_lease_cannot_release_another_groups_fresh_claim(tmp_path):
     assert tick(codex, now=NOW, env={})["expired"] == []                       # codex's own claim is not "expired"
     _, board = build_status(claude)
     assert board.leases == {} and issue_refusal(board, claude.cfg, claude.actor(), Verb.RELEASE, board.issues[13], claude.models).rule == \
-        "issue is not assigned to meld-claude-bot"
-    with pytest.raises(Refused, match="not assigned to meld-claude-bot"):
+        "issue is not claimed by claude"
+    with pytest.raises(Refused, match="not claimed by claude"):
         release(claude, 13)                                             # claude cannot cite its own dead lease
     assert not [c for c in fake.calls if c.method == "DELETE" and c.endpoint == R + "issues/13/assignees"]
 

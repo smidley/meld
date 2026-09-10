@@ -46,8 +46,8 @@ def render_status(board: Board, cfg: Config, actor: Actor, models: ModelRegistry
         key=lambda d: -d["age_minutes"],
     )
     issues = [
-        {"number": i.number, "title": i.title, "status": i.status, "assignees": list(i.assignees), "worker": i.worker,
-         "model": i.model, "effort": i.effort, "size": i.size, "challenged": board.is_challenged(f"#{i.number}"),
+        {"number": i.number, "title": i.title, "status": i.status, "claimed_by": i.claimed_by, "claimants": list(i.claimants),
+         "worker": i.worker, "model": i.model, "effort": i.effort, "size": i.size, "challenged": board.is_challenged(f"#{i.number}"),
          "legal": legal_issue_verbs(board, cfg, actor, i, models), "lease": _lease_json(board, i)}
         for i in sorted(board.issues.values(), key=lambda i: i.number)
     ]

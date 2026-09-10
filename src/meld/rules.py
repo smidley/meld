@@ -90,8 +90,8 @@ def _claim(board: Board, cfg: Config, actor: Actor, issue: Issue, models: ModelR
         return "only a PM or a human may claim"
     if issue.status != "ready":
         return f"issue is {issue.status}, not ready"
-    if issue.assignees:
-        return f"already claimed by {', '.join(issue.assignees)}"
+    if issue.claimants:
+        return f"already claimed by {', '.join(issue.claimants)}"
     if actor.is_human:
         return None
     group = cfg.groups[actor.group]  # type: ignore[index]
@@ -122,8 +122,9 @@ def _dispatch(board: Board, cfg: Config, actor: Actor, issue: Issue, models: Mod
     group = cfg.groups[actor.group]  # type: ignore[index]
     if issue.status != "in_progress":
         return f"issue is {issue.status}, not in-progress"
-    if group.bot not in issue.assignees:
-        return f"issue is not assigned to {group.bot}"
+    if issue.claimed_by != group.name:
+        return (f"issue is claimed by {', '.join(issue.claimants)}, not {group.name}" if issue.claimants
+                else f"issue is not claimed by {group.name}")
     run = board.run_for(group.name, issue.number)
     if run is not None and (run.alive or not run.collected):
         return "a worker run already exists for this issue (running or uncollected)"
@@ -171,11 +172,11 @@ def _release(board: Board, cfg: Config, actor: Actor, issue: Issue) -> str | Non
     if actor.is_human:
         return None
     group = cfg.groups[actor.group]  # type: ignore[index]
-    if group.bot in issue.assignees:
+    if group.name in issue.claimants:
         return None
     if actor.is_pm and lease_rule(board, issue):
         return None
-    return f"issue is not assigned to {group.bot}"
+    return f"issue is not claimed by {group.name}"
 
 
 def _reopen(board: Board, cfg: Config, actor: Actor, issue: Issue) -> str | None:
@@ -466,19 +467,17 @@ CHALLENGE_ACTIONS = ("open", "evidence", "retract", "uphold", "dismiss")
 
 
 def challenged_party(board: Board, cfg: Config, ref: str) -> str | None:
-    """Who must answer a challenge on `ref`: a PR's head committer's party (else its author's), an issue's first
-    configured assignee's party, or an agreement ref's proposer. None when nobody owns the claim."""
+    """Who must answer a challenge on `ref`: a PR's head committer's party (else its author's), an issue's
+    claim holder's group (never a human holder or a contested issue), or an agreement ref's proposer. None
+    when nobody owns the claim."""
     if ref.startswith("#") and ref[1:].isdigit():
         n = int(ref[1:])
         if n in board.pulls:
             pr = board.pulls[n]
             return committer_party(cfg, pr) or party_of_login(cfg, pr.author)
         if n in board.issues:
-            for login in board.issues[n].assignees:
-                party = party_of_login(cfg, login)
-                if party:
-                    return party
-            return None
+            holder = board.issues[n].claimed_by
+            return holder if holder in cfg.groups else None
     return agreement_for(board.comments, ref, cfg).proposer
 
 

@@ -29,8 +29,8 @@ def test_claim_refusals_in_priority_order():
     assert rule(mk_board(CFG2, issues=[i]), CLAUDE_ORCH, Verb.CLAIM, i) == "only a PM or a human may claim"
     blocked = mk_issue(12, status="blocked")
     assert rule(mk_board(CFG2, issues=[blocked]), CLAUDE_PM, Verb.CLAIM, blocked) == "issue is blocked, not ready"
-    taken = mk_issue(13, assignees=("meld-codex-bot",))
-    assert rule(mk_board(CFG2, issues=[taken]), CLAUDE_PM, Verb.CLAIM, taken) == "already claimed by meld-codex-bot"
+    taken = mk_issue(13, claimed_by="codex")
+    assert rule(mk_board(CFG2, issues=[taken]), CLAUDE_PM, Verb.CLAIM, taken) == "already claimed by codex"
     no_worker = mk_issue(14, worker=None)
     assert rule(mk_board(CFG2, issues=[no_worker]), CLAUDE_PM, Verb.CLAIM, no_worker) == "issue has no worker: label"
     marketing = mk_issue(15, worker="marketing")
@@ -60,16 +60,16 @@ def test_claim_requires_known_model_and_budget():
 # ---- dispatch ----------------------------------------------------------------
 
 def test_dispatch_legal_for_assignee_pm():
-    i = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",), size="M")
+    i = mk_issue(12, status="in_progress", claimed_by="claude", size="M")
     assert rule(mk_board(CFG2, issues=[i]), CLAUDE_PM, Verb.DISPATCH, i) is None
 
 
 def test_dispatch_refusals():
-    i = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",))
+    i = mk_issue(12, status="in_progress", claimed_by="claude")
     assert rule(mk_board(CFG2, issues=[i], halted=True), CLAUDE_PM, Verb.DISPATCH, i) == "HALT is in effect"
     assert rule(mk_board(CFG2, issues=[i]), CLAUDE_ORCH, Verb.DISPATCH, i) == "only the PM may dispatch"
     assert rule(mk_board(CFG2, issues=[i]), HUMAN, Verb.DISPATCH, i) == "only the PM may dispatch"
-    assert rule(mk_board(CFG2, issues=[i]), CODEX_PM, Verb.DISPATCH, i) == "issue is not assigned to meld-codex-bot"
+    assert rule(mk_board(CFG2, issues=[i]), CODEX_PM, Verb.DISPATCH, i) == "issue is claimed by claude, not codex"
     ready = mk_issue(13)
     assert rule(mk_board(CFG2, issues=[ready]), CLAUDE_PM, Verb.DISPATCH, ready) == "issue is ready, not in-progress"
     running = mk_board(CFG2, issues=[i], runs={"claude": {12: mk_run("claude", 12)}, "codex": {}})
@@ -79,18 +79,18 @@ def test_dispatch_refusals():
     collected = mk_board(CFG2, issues=[i], runs={"claude": {12: mk_run("claude", 12, alive=False, collected=True)}, "codex": {}})
     assert rule(collected, CLAUDE_PM, Verb.DISPATCH, i) is None
     assert rule(mk_board(CFG2, issues=[i], open_challenges=frozenset({"#12"})), CLAUDE_PM, Verb.DISPATCH, i) == "issue has an open CHALLENGE"
-    labelled = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",), extra_labels=("meld:challenged",))
+    labelled = mk_issue(12, status="in_progress", claimed_by="claude", extra_labels=("meld:challenged",))
     assert rule(mk_board(CFG2, issues=[labelled]), CLAUDE_PM, Verb.DISPATCH, labelled) == "issue has an open CHALLENGE"
 
 
 def test_dispatch_validates_model_effort_size():
-    missing = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",), effort=None, size=None)
+    missing = mk_issue(12, status="in_progress", claimed_by="claude", effort=None, size=None)
     assert rule(mk_board(CFG2, issues=[missing]), CLAUDE_PM, Verb.DISPATCH, missing) == "issue is missing labels: effort, size"
-    bad_effort = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",), effort="turbo")
+    bad_effort = mk_issue(12, status="in_progress", claimed_by="claude", effort="turbo")
     assert "effort 'turbo' not valid" in rule(mk_board(CFG2, issues=[bad_effort]), CLAUDE_PM, Verb.DISPATCH, bad_effort)
-    bad_size = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",), size="XL")
+    bad_size = mk_issue(12, status="in_progress", claimed_by="claude", size="XL")
     assert rule(mk_board(CFG2, issues=[bad_size]), CLAUDE_PM, Verb.DISPATCH, bad_size) == "size 'XL' is not one of S, M, L"
-    too_big = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",), model="claude-haiku-4-5-20251001", size="L")
+    too_big = mk_issue(12, status="in_progress", claimed_by="claude", model="claude-haiku-4-5-20251001", size="L")
     assert rule(mk_board(CFG2, issues=[too_big]), CLAUDE_PM, Verb.DISPATCH, too_big) == \
         "size L does not fit model claude-haiku-4-5-20251001 (context class medium)"
 
@@ -113,28 +113,28 @@ def test_collect_rules():
 # ---- release -----------------------------------------------------------------
 
 def test_release_rules():
-    mine = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",))
+    mine = mk_issue(12, status="in_progress", claimed_by="claude")
     b = mk_board(CFG2, issues=[mine])
     assert rule(b, CLAUDE_PM, Verb.RELEASE, mine) is None
     assert rule(b, CLAUDE_ORCH, Verb.RELEASE, mine) is None
-    assert rule(b, CODEX_PM, Verb.RELEASE, mine) == "issue is not assigned to meld-codex-bot"
+    assert rule(b, CODEX_PM, Verb.RELEASE, mine) == "issue is not claimed by codex"
     assert rule(b, HUMAN, Verb.RELEASE, mine) is None
     ready = mk_issue(13)
     assert rule(mk_board(CFG2, issues=[ready]), HUMAN, Verb.RELEASE, ready) == \
         "issue is ready; release is only legal from in-progress or blocked"
-    blocked = mk_issue(14, status="blocked", assignees=("meld-claude-bot",))
+    blocked = mk_issue(14, status="blocked", claimed_by="claude")
     assert rule(mk_board(CFG2, issues=[blocked]), CLAUDE_PM, Verb.RELEASE, blocked) is None
 
 
 def test_any_pm_may_release_an_expired_lease():
-    claimed = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",))
+    claimed = mk_issue(12, status="in_progress", claimed_by="claude")
     live = mk_board(CFG2, issues=[claimed], leases={12: mk_lease(12, until="2026-09-03T13:00:00Z")}, now="2026-09-03T12:00:00Z")
-    assert rule(live, CODEX_PM, Verb.RELEASE, claimed) == "issue is not assigned to meld-codex-bot"
+    assert rule(live, CODEX_PM, Verb.RELEASE, claimed) == "issue is not claimed by codex"
     expired = mk_board(CFG2, issues=[claimed], leases={12: mk_lease(12, until="2026-09-03T11:00:00Z")}, now="2026-09-03T12:00:00Z")
     assert rule(expired, CODEX_PM, Verb.RELEASE, claimed) is None
     assert rule(expired, CLAUDE_ORCH, Verb.RELEASE, claimed) is None  # the owner may always release its own
     codex_orch = Actor(Party("group", "codex"), "meld-codex-bot", ROSTER)
-    assert rule(expired, codex_orch, Verb.RELEASE, claimed) == "issue is not assigned to meld-codex-bot"
+    assert rule(expired, codex_orch, Verb.RELEASE, claimed) == "issue is not claimed by codex"
 
 
 # ---- reopen ------------------------------------------------------------------
@@ -166,7 +166,7 @@ def test_reopen_accepts_a_fail_audit_posted_on_the_pr_that_closed_the_issue():
 
 
 def test_legal_issue_verbs_and_party_of_login():
-    i = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",))
+    i = mk_issue(12, status="in_progress", claimed_by="claude")
     b = mk_board(CFG2, issues=[i], runs={"claude": {12: mk_run("claude", 12, alive=False)}, "codex": {}})
     # plan 5 task 1 adds Verb.REMEMBER to ISSUE_VERBS; remember_rule is legal here too (an in-progress, unchallenged,
     # non-blocked/needs_human issue), so it now closes out the list alongside release/collect
@@ -230,3 +230,19 @@ def test_tag_legality():
     closed = mk_issue(12, state="closed")
     assert rule(mk_board(CFG2, issues=[closed]), CLAUDE_ORCH, Verb.TAG, closed) == "issue is closed"
     assert "tag" in legal_issue_verbs(b, CFG2, CLAUDE_ORCH, i, REG) and "tag" not in legal_issue_verbs(b, CFG2, CLAUDE_PM, i, REG)
+
+
+def test_claim_and_dispatch_follow_the_claim_label_not_the_assignee():
+    held_by_claude = mk_issue(12, status="in_progress", claimed_by="claude", assignees=("meld-codex-bot",))  # assignee lies; the label rules
+    board = mk_board(CFG2, issues=[held_by_claude])
+    assert rule(board, CODEX_PM, Verb.DISPATCH, held_by_claude) == "issue is claimed by claude, not codex"
+    free_but_assigned = mk_issue(11, status="ready", assignees=("meld-claude-bot",), model="gpt-test")  # codex-known model: the model check is not what's under test
+    board = mk_board(CFG2, issues=[free_but_assigned])
+    assert rule(board, CODEX_PM, Verb.CLAIM, free_but_assigned) is None
+    contested = mk_issue(13, status="in_progress", extra_labels=("meld:claimed-by:claude", "meld:claimed-by:codex"))
+    board = mk_board(CFG2, issues=[contested])
+    assert rule(board, CODEX_PM, Verb.DISPATCH, contested) == "issue is claimed by claude, codex, not codex"
+    assert rule(board, CODEX_PM, Verb.RELEASE, contested) is None          # either claimant may release
+    ready_claimed = mk_issue(14, status="ready", claimed_by="claude")
+    board = mk_board(CFG2, issues=[ready_claimed])
+    assert rule(board, CODEX_PM, Verb.CLAIM, ready_claimed) == "already claimed by claude"

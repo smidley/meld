@@ -74,6 +74,7 @@ def test_status_command_reports_board_and_legal_actions(project: Path, monkeypat
     issues = {i["number"]: i for i in data["issues"]}
     assert issues[11]["legal"] == ["claim", "remember"]
     assert issues[12]["challenged"] and "dispatch" not in issues[12]["legal"] and "release" in issues[12]["legal"]
+    assert issues[12]["claimed_by"] == "claude" and issues[12]["claimants"] == ["claude"]
     assert issues[14]["status"] == "needs_human"
     assert issues[12]["lease"] is None
     assert data["needs_human"][0]["issue"] == 14 and data["needs_human"][0]["age_minutes"] > 0

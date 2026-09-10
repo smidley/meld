@@ -348,3 +348,17 @@ def test_cursors_tolerate_non_numeric_state_values(tmp_path):
     assert [(o["issue"], o["event_id"]) for o in out] == [(13, 9001)]
     cursors = json.loads((claude.store.state_dir / OFF_PROTOCOL_STATE).read_text())
     assert cursors["13"] == 9001 and cursors["14"] == "12"        # untouched issues keep whatever was there (a digit string still reads as 12)
+
+
+def test_ci_red_sweep_prunes_records_for_prs_that_left_the_board(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path)
+    no_events(fake)
+    path = ctx.store.state_dir / CI_RED_STATE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"20": {"head": "abc123", "commented": True, "swapped": True},
+                                "99": {"head": "old", "commented": True, "swapped": True}}))
+    _, board = build_status(ctx)
+    out = ci_red_sweep(ctx, board, ctx.cfg.groups["claude"])
+    assert {"pr": 99, "pruned": True} in out
+    remaining = json.loads(path.read_text())
+    assert "20" in remaining and "99" not in remaining

@@ -12,6 +12,7 @@ from meld.dispatch import DispatchError, collect, dispatch
 from meld.github import GitHubError
 from meld.results import BODY_LIMIT, TRUNCATED, load_result, store_result, update_result
 from meld.review import merge, review, submit_review
+from meld.status import build_status
 from tests.conftest import env_for
 from tests.fakeadapter import FakeAdapter, no_skills
 from tests.gitfixtures import sh
@@ -600,9 +601,9 @@ def test_review_on_a_memory_pr_survives_a_failing_status_post(tmp_path):
     assert len(calls(fake, "POST", "pulls/40/reviews")) == 1
     fake.route("POST", R + "statuses/mem0001", {"id": 79})     # status endpoint recovers
     second = review(ctx, 40, now=NOW)
-    assert second["event"] == "APPROVE"
+    assert second["event"] == "APPROVE" and second.get("status_retried") is True
     assert len(calls(fake, "POST", "pulls/40/reviews")) == 1   # no duplicate review on the retry
-    assert len(calls(fake, "POST", "statuses/mem0001")) == 1   # the earlier failed attempt was not retried
+    assert len(calls(fake, "POST", "statuses/mem0001")) == 2   # the earlier failed status post is retried, and now succeeds
 
 
 def test_author_groups_request_changes_counts_toward_the_pingpong_cap():
@@ -623,3 +624,26 @@ def test_author_groups_request_changes_counts_toward_the_pingpong_cap():
     pr = _pull(gh, raw)
     assert pr.reviews[0].state == "CHANGES_REQUESTED" and pr.reviews[0].as_author
     assert pr.changes_requested_total() == 1
+
+
+def test_memory_review_retries_a_failed_status_post_on_the_next_call(tmp_path):
+    from meld.grammar import agreement_for
+    from meld.memory import comment_url, render_decision
+    from meld.results import load_result
+    from tests.test_memory import DECISION_THREAD, with_thread
+    fake, ctx, repo, origin = make_product(tmp_path, group="codex")          # the other group's PM reviews claude's memory PR
+    with_thread(fake, DECISION_THREAD)
+    _, board = build_status(ctx)
+    agreement = agreement_for(board.comments, "dec-1", ctx.cfg)
+    joint = [c for c in board.comments if c.ok and c.header.party.kind == "joint" and c.header.ref == "dec-1"][-1]
+    text = render_decision("dec-1", agreement, comment_url(board, joint.id), "2026-09-05")
+    memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", text)
+    fake.route("POST", "repos/acme/widgets/statuses/mem0001", {"message": "boom"}, status=500)
+    first = review(ctx, 40, now=NOW)
+    assert first["event"] == "APPROVE" and first["status_error"]
+    assert load_result(ctx.store.home, "codex", "review", 40)["status_error"]
+    fake.route("POST", "repos/acme/widgets/statuses/mem0001", {"id": 1}, status=201)
+    second = review(ctx, 40, now=NOW)
+    assert second["event"] == "APPROVE" and second.get("status_retried") is True and "status_error" not in second
+    assert len(calls(fake, "POST", "pulls/40/reviews")) == 1 and len(calls(fake, "POST", "statuses/mem0001")) == 2
+    assert not load_result(ctx.store.home, "codex", "review", 40).get("status_error")

@@ -9,7 +9,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 from urllib.parse import quote, urlencode
 
 from meld.appauth import AppAuthError
@@ -251,24 +251,31 @@ class GitHub:
     def pull_files(self, number: int) -> list[str]:
         return [f["filename"] for f in self.get_paginated(self._r(f"pulls/{number}/files"))]
 
-    def create_review(self, number: int, event: str, body: str, commit_id: str, comments: list[dict] | None = None) -> dict:
+    def create_review(self, number: int, event: Literal["APPROVE", "REQUEST_CHANGES", "COMMENT"], body: str, commit_id: str,
+                      comments: list[dict] | None = None) -> dict:
         """Submit one PR review. `comments` are diff comments ({path, line, body}); GitHub rejects lines outside the diff with 422."""
         payload: dict[str, Any] = {"event": event, "body": body, "commit_id": commit_id}
         if comments:
             payload["comments"] = [{"path": c["path"], "line": int(c["line"]), "side": "RIGHT", "body": c["body"]} for c in comments]
         return self.post(self._r(f"pulls/{number}/reviews"), payload)
 
-    def merge_pull(self, number: int, sha: str, title: str, method: str = "squash") -> dict:
-        """Squash-merge; `sha` makes GitHub refuse (409) if the head moved since we looked."""
-        return self.put(self._r(f"pulls/{number}/merge"), {"sha": sha, "merge_method": method, "commit_title": title})
+    def merge_pull(self, number: int, sha: str, title: str, method: str = "squash", message: str | None = None) -> dict:
+        """Squash-merge; `sha` makes GitHub refuse (409) if the head moved since we looked. `message` (the PR body,
+        already closer-neutralised) becomes the squash commit message when given, so a worker's own commit messages
+        never reach the default branch (spec 21 item 5)."""
+        body: dict[str, Any] = {"sha": sha, "merge_method": method, "commit_title": title}
+        if message is not None:
+            body["commit_message"] = message
+        return self.put(self._r(f"pulls/{number}/merge"), body)
 
-    def create_status(self, sha: str, state: str, context: str, description: str, target_url: str | None = None) -> dict:
+    def create_status(self, sha: str, state: Literal["success", "failure", "pending", "error"], context: str,
+                      description: str, target_url: str | None = None) -> dict:
         body: dict[str, Any] = {"state": state, "context": context, "description": description[:140]}
         if target_url:
             body["target_url"] = target_url
         return self.post(self._r(f"statuses/{sha}"), body)
 
-    def create_check_run(self, name: str, head_sha: str, conclusion: str, title: str, summary: str) -> dict:
+    def create_check_run(self, name: str, head_sha: str, conclusion: Literal["neutral", "success", "failure"], title: str, summary: str) -> dict:
         """Requires App authentication (GitHub refuses check runs from personal tokens)."""
         return self.post(self._r("check-runs"), {"name": name, "head_sha": head_sha, "status": "completed", "conclusion": conclusion,
                                                  "output": {"title": title[:255], "summary": summary[:65535]}})
@@ -292,7 +299,17 @@ class GitHub:
             raise GitHubError(f"GET contents/{path}@{ref} failed with HTTP {status}: {resp}", status)
         if isinstance(resp, dict) and resp.get("encoding") == "base64":
             return base64.b64decode(resp.get("content", "")).decode("utf-8")
-        raise GitHubError(f"GET contents/{path}@{ref}: unexpected payload {type(resp).__name__}")
+        if isinstance(resp, dict) and resp.get("encoding") == "none" and resp.get("sha"):
+            # Files over 1 MB come back without content; the blob endpoint serves up to 100 MB (spec 21 item 23).
+            sha = resp["sha"]
+            blob = self.get(self._r(f"git/blobs/{sha}"), use_cache=False)
+            if not (isinstance(blob, dict) and blob.get("encoding") == "base64" and "content" in blob):
+                # Fail loudly rather than silently decoding an absent/empty payload into a blank file: a caller
+                # (verify_memory_pr's hash check, a brief's recall snippet) must never mistake "the blob endpoint
+                # gave us nothing usable" for "the file is genuinely empty".
+                raise GitHubError(f"GET git/blobs/{sha}: blob has no content")
+            return base64.b64decode(blob["content"]).decode("utf-8")
+        raise GitHubError(f"GET contents/{path}@{ref}: unexpected payload {type(resp).__name__}: {str(resp)[:200]}")
 
     def issue_events(self, number: int) -> list[dict]:
         return self.get_paginated(self._r(f"issues/{number}/events"))

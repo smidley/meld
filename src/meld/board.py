@@ -25,6 +25,9 @@ NUDGED_LABEL = "meld:nudged"
 # Branches `meld decide`/`meld remember` push to. collect's build branches are `meld/<issue>-<slug>` (gitops.branch_name), so
 # the two namespaces never overlap; memory.py imports this rather than redefining it (board.py is the leaf both can reach).
 MEMORY_BRANCH_PREFIX = "meld/memory-"
+# The one meld-memory marker pattern: PullRequest.memory below and memory.py both match against it (memory.py imports
+# it as MARKER_RE) so a decision to change the marker's shape never needs to be made in two places at once.
+MEMORY_MARKER_RE = re.compile(r"^meld-memory: (decision|lesson) (\S+) ([0-9a-f]{64})$", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -70,6 +73,10 @@ class Issue:
     @property
     def size(self) -> str | None:
         return self.label_value("size:")
+
+    @property
+    def skills(self) -> tuple[str, ...]:
+        return tuple(sorted(label[len("skill:"):] for label in self.labels if label.startswith("skill:")))
 
     @property
     def challenged(self) -> bool:
@@ -145,7 +152,7 @@ class PullRequest:
         build PR into one that is refused a reviewer, never returned to in_progress, and never audited."""
         if not (self.head_ref or "").startswith(MEMORY_BRANCH_PREFIX):
             return None
-        m = re.search(r"^meld-memory: (decision|lesson) (\S+) ([0-9a-f]{64})$", self.body or "", re.MULTILINE)
+        m = MEMORY_MARKER_RE.search(self.body or "")
         return (m.group(1), m.group(2), m.group(3)) if m else None
 
 
@@ -229,13 +236,16 @@ def derive_leases(comments: Sequence[ParsedComment]) -> dict[int, Lease]:
 
 
 # A lease is valid only while the leasing group's bot is assigned to the issue. The LEASE
-# comment outlives the claim it describes: `meld release` posts nothing, so once the leasing
-# group lets go and another group claims the issue, the old comment would still read as a
-# lease on the new claim, and once its `until` passed any PM could release the new owner
-# (a LEASE forged by hand would do the same on purpose). Assignment, not the thread, is the
-# claim lock (spec section 6), so it decides validity too. The check lives here, next to the
-# derivation, but is applied by the board assembler, which knows each group's bot; Board
-# itself stays free of Config.
+# comment can outlive the claim it describes: a group's or PM's own `meld release` posts a
+# framework RELEASED note, and a human's `--force` a `[human] RELEASE`, both of which
+# `derive_leases` above drops the lease on (plan-5 decision 2) -- but a human's plain release
+# posts nothing, and a claim can end without any comment at all (an assignee removed on
+# GitHub). So once the leasing group lets go and another group claims the issue, an old LEASE
+# comment could still read as a lease on the new claim, and once its `until` passed any PM
+# could release the new owner (a LEASE forged by hand would do the same on purpose).
+# Assignment, not the thread, is the claim lock (spec section 6), so it decides validity too.
+# The check lives here, next to the derivation, but is applied by the board assembler, which
+# knows each group's bot; Board itself stays free of Config.
 def assigned_leases(leases: Mapping[int, Lease], issues: Mapping[int, Issue], bot_of_group: Mapping[str, str]) -> dict[int, Lease]:
     """Keep only the leases whose group's bot is currently assigned to the leased issue."""
     out: dict[int, Lease] = {}

@@ -1,6 +1,7 @@
 """Dispatch, tick, collect, reap: the only module that spawns workers or touches worktrees."""
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -9,14 +10,16 @@ import time
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Sequence
 
 from meld.actions import BLOCKED, IN_PROGRESS, refuse, release
 from meld.adapters import Adapter, LaunchSpec, scrub_env
+from meld.adapters.base import SKILL_NAME_RE
 from meld.board import Board, RunRecord
-from meld.brief import BRIEF_FILE, RESULT_FILE, ResultError, WorkerResult, read_result, recall_snippets, render_brief
+from meld.brief import BRIEF_FILE, FETCH_FAILED_NOTE, RESULT_FILE, ResultError, WorkerResult, read_result, recall_snippets, render_brief, select_skills
 from meld.config import GroupConfig, Party
 from meld.gitops import (
+    GitError,
     branch_name,
     checkout_pr_head,
     checkout_sha,
@@ -25,6 +28,7 @@ from meld.gitops import (
     delete_local_branch,
     detach_head,
     exclude_paths,
+    git,
     head_sha,
     noreply_email,
     push_branch,
@@ -236,6 +240,138 @@ def _launch(ctx, group: GroupConfig, adapter: Adapter, *, worktree: Path, brief:
     return proc.pid, log_path
 
 
+MATERIALISED_MANIFEST = ".meld-materialised.json"
+
+
+def _read_materialised_manifest(path: Path) -> list[str]:
+    """The skill names `materialise_skills` copied into this directory on a previous run, or `[]` when the
+    manifest is missing, unreadable, or not a JSON list of strings. Corrupt or absent state must never block
+    a dispatch -- it only costs a stale copy staying around one extra run."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return []
+    return data if isinstance(data, list) and all(isinstance(n, str) for n in data) else []
+
+
+def _tracked_in_worktree(worktree: Path, relpath: str) -> bool:
+    """True when `relpath` is tracked by git on the branch or commit this worktree has checked out: a file the
+    product itself committed there, never meld's own copy to write or prune."""
+    try:
+        git(["ls-files", "--error-unmatch", "--", relpath], worktree)
+        return True
+    except GitError:
+        return False
+
+
+def _drop_symlinks(directory: str, names: list[str]) -> set[str]:
+    """`shutil.copytree`'s `ignore` callback: never copy a symlink found inside a skill directory. By default
+    copytree writes the link's *target* into the worktree -- content from outside the skill tree, which a worker
+    then reads and could commit -- and a link that points back up its own tree makes the copy recurse until it
+    fails, losing the whole skill. Dropping links keeps the copy to files the skill directory really holds."""
+    return {n for n in names if Path(directory, n).is_symlink()}
+
+
+def materialise_skills(worktree: Path, adapter: Adapter, skills: Sequence[WorkerType]) -> dict:
+    """Copy the product's roster-listed product skills into the worktree under the adapter's project skill
+    directory, so the CLI discovers them natively (decision 14). Worktree-local, and each copy excluded from git
+    by its own exact path through the clone's shared info/exclude (see that call below): nothing is written under
+    the host's home, and a worker cannot accidentally commit the copies.
+
+    Idempotent across a reused worktree via a manifest of the names copied last time
+    (`<target_dir>/.meld-materialised.json`): a since-deleted product skill's stale copy is pruned on the next
+    run, but only a name this function itself wrote to that manifest is ever removed on that basis -- never
+    anything else found under that directory. A destination already tracked by git on this worktree's
+    checked-out branch is the product's own file, not meld's to make or prune: it is left alone entirely
+    (never copied over, never pruned as stale, whether it is a currently-listed skill or a prune candidate)
+    and reported in `skipped` instead of `made`.
+
+    `skills` is the caller's already-filtered roster entries (`ctx.roster_entries()` filtered to
+    `source == "product-skill"`), not a fresh `product_skills(repo_root)` scan: `roster()` is what drops a
+    product skill whose name collides with a worker (see roster.py), so materialising straight off disk would
+    copy a skill the roster itself excludes.
+
+    Defence in depth against a hostile or malformed `skill.name` (frontmatter is free text; `scan_skills`
+    already validates it at the source, but a `skills` entry could in principle be built any other way): every
+    name -- including one already sitting in a previous manifest -- is re-checked against `SKILL_NAME_RE`
+    before it is ever used to build a filesystem path, so a name like `../../src` can never rmtree or
+    copytree anything outside `target_dir`. Every filesystem operation is wrapped in `try/except OSError`, and
+    a plain file sitting where `target_dir` itself needs to be a directory (e.g. a product-committed file at
+    the adapter's project skill path) is detected up front: a missing skill copy must never fail a dispatch.
+
+    Returns `{"made": [...], "skipped": [...]}`. `made` is the relative dirs actually (re)written this run
+    (e.g. `[".claude/skills/deploy-checklist"]`). `skipped` names anything left untouched or that failed, with
+    the reason (e.g. `".claude/skills/deploy-checklist (tracked in the product repo; left alone)"`,
+    `"../../x: not a valid skill name"`, `"deploy-checklist: PermissionError"`).
+    """
+    target_dir = adapter.project_skills_dir()
+    if target_dir is None:
+        return {"made": [], "skipped": []}
+    base = worktree / target_dir
+    # A product file sitting where a directory needs to go (e.g. a tracked `.claude` or `.fake` file) must
+    # never crash a dispatch: walk each prefix of target_dir and bail out cleanly the moment one is a file.
+    probe = worktree
+    for part in Path(target_dir).parts:
+        probe = probe / part
+        if probe.exists() and not probe.is_dir():
+            return {"made": [], "skipped": [f"{target_dir} is a file in this repo; skills not materialised"]}
+    manifest_path = base / MATERIALISED_MANIFEST
+    previous = [n for n in _read_materialised_manifest(manifest_path) if SKILL_NAME_RE.match(n)]
+    made: list[str] = []
+    skipped: list[str] = []
+    valid_skills: list[WorkerType] = []
+    for skill in skills:
+        if skill.path is None:
+            continue
+        if not SKILL_NAME_RE.match(skill.name):
+            skipped.append(f"{skill.name}: not a valid skill name")
+            continue
+        valid_skills.append(skill)
+    current_names = {skill.name for skill in valid_skills}
+    for name in previous:
+        if name in current_names:
+            continue
+        relpath = f"{target_dir}/{name}"
+        if _tracked_in_worktree(worktree, relpath):
+            skipped.append(f"{relpath} (tracked in the product repo; left alone)")
+            continue
+        stale = base / name
+        try:
+            if stale.exists():
+                shutil.rmtree(stale)
+        except OSError as e:
+            skipped.append(f"{name}: {type(e).__name__}")
+    made_names: list[str] = []
+    for skill in valid_skills:
+        relpath = f"{target_dir}/{skill.name}"
+        if _tracked_in_worktree(worktree, relpath):
+            skipped.append(f"{relpath} (tracked in the product repo; left alone)")
+            continue
+        # `skill.path` from `scan_skills` is the skill's SKILL.md file, not its directory -- copy the parent.
+        dest = base / skill.name
+        try:
+            if dest.exists():
+                shutil.rmtree(dest)
+            shutil.copytree(skill.path.parent, dest, ignore=_drop_symlinks)
+        except OSError as e:
+            skipped.append(f"{skill.name}: {type(e).__name__}")
+            continue
+        made.append(relpath)
+        made_names.append(skill.name)
+    if made_names or previous:
+        try:
+            base.mkdir(parents=True, exist_ok=True)
+            manifest_path.write_text(json.dumps(made_names))
+            # One line per path meld actually wrote, never `{target_dir}/` itself: `info/exclude` belongs to the
+            # whole clone (a linked worktree shares `.git/info/exclude`), so a directory-wide pattern would hide
+            # a worker's -- or the human's -- own new project skill from `git add -A` here and in every other
+            # checkout of this clone. A per-name line left behind after a skill is removed is harmless.
+            exclude_paths(worktree, (*(f"{target_dir}/{n}/" for n in made_names), f"{target_dir}/{MATERIALISED_MANIFEST}"))
+        except OSError as e:
+            skipped.append(f"{MATERIALISED_MANIFEST}: {type(e).__name__}")
+    return {"made": made, "skipped": skipped}
+
+
 def dispatch(ctx, number: int, *, kind: str = "build", worker: str | None = None, adapter: Adapter | None = None,
              now: datetime | None = None, env: dict | None = None) -> dict:
     if kind not in KINDS:
@@ -248,6 +384,19 @@ def dispatch(ctx, number: int, *, kind: str = "build", worker: str | None = None
     if kind == "build":
         return _dispatch_build(ctx, board, actor, number, adapter, when, env)
     return _dispatch_pr(ctx, board, actor, number, kind, adapter, when, env, worker)
+
+
+def _recall_for_brief(ctx, text: str) -> tuple[list[str], str | None]:
+    """recall_snippets at origin/<default>, refreshing that ref first: the checkout reaching this call cannot be
+    trusted to have it current on its own -- a reused build worktree skips create_worktree's fetch entirely (the
+    `mode == "reused"` branch in _dispatch_build never calls it), and checkout_pr_head only fetches the PR's own
+    branch, never the default branch. A fetch failure (e.g. offline) must never fail a dispatch: it falls back to
+    the working copy and returns a note for the caller to fold into the dispatch result instead of raising."""
+    try:
+        git(["fetch", "--quiet", "origin", ctx.cfg.default_branch], ctx.repo_root)
+    except GitError:
+        return recall_snippets(ctx.repo_root, text), FETCH_FAILED_NOTE
+    return recall_snippets(ctx.repo_root, text, ref=f"origin/{ctx.cfg.default_branch}"), None
 
 
 def _dispatch_build(ctx, board: Board, actor: Actor, number: int, adapter: Adapter | None, when: datetime, env: dict | None) -> dict:
@@ -266,10 +415,13 @@ def _dispatch_build(ctx, board: Board, actor: Actor, number: int, adapter: Adapt
     wt = _worktree(ctx, group, f"{number}-{slugify(issue.title)}")
     mode = "reused" if worktree_exists(ctx.repo_root, wt) else create_worktree(ctx.repo_root, wt, branch, ctx.cfg.default_branch)
     exclude_paths(wt)
+    skills_result = materialise_skills(wt, adp, [w for w in ctx.roster_entries() if w.source == "product-skill"])
+    recall_hits, recall_note = _recall_for_brief(ctx, f"{issue.title}\n{issue.body}")
     brief = render_brief(role=worker, kind="build", group=group.name, model=issue.model or "", effort=issue.effort or "", issue=issue,
                          pr=None, plan_text=board.plan_text, repo_root=ctx.repo_root, worktree=wt, base_branch=ctx.cfg.default_branch,
-                         skills=[w for w in ctx.roster_entries() if w.source == "skill"],
-                         recall=recall_snippets(ctx.repo_root, f"{issue.title}\n{issue.body}"))
+                         skills=select_skills(f"{issue.title}\n{issue.body}",
+                                              [w for w in ctx.roster_entries() if w.source in ("skill", "product-skill")], pinned=issue.skills),
+                         recall=recall_hits, project_skills_dir=adp.project_skills_dir())
     timeout = ctx.cfg.timeout_seconds(issue.size or "M")
     deadline = when + timedelta(seconds=timeout)
     pid, log_path = _launch(ctx, group, adp, worktree=wt, brief=brief, model=issue.model or "", effort=issue.effort or "",
@@ -285,8 +437,11 @@ def _dispatch_build(ctx, board: Board, actor: Actor, number: int, adapter: Adapt
     ctx.store.write_run(replace(record, lease_comment=int(lease["id"])))
     ctx.gh.create_comment(number, f"Meld: `{group.name}` dispatched a `{worker.name}` worker on `{issue.model}` at effort {issue.effort} "
                                   f"(size {issue.size}, {mode} worktree). Branch `{branch}`, deadline {_iso(deadline)}, lease until {until}.")
-    return {"dispatched": number, "kind": "build", "pid": pid, "worktree": str(wt), "branch": branch, "deadline": _iso(deadline),
-            "lease_until": until, "worktree_mode": mode}
+    result = {"dispatched": number, "kind": "build", "pid": pid, "worktree": str(wt), "branch": branch, "deadline": _iso(deadline),
+              "lease_until": until, "worktree_mode": mode, "skills_materialised": skills_result}
+    if recall_note:
+        result["recall_note"] = recall_note
+    return result
 
 
 def _dispatch_pr(ctx, board: Board, actor: Actor, number: int, kind: str, adapter: Adapter | None, when: datetime, env: dict | None,
@@ -316,12 +471,15 @@ def _dispatch_pr(ctx, board: Board, actor: Actor, number: int, kind: str, adapte
     else:
         checkout_pr_head(ctx.repo_root, wt, pr.head_ref)
     exclude_paths(wt)
+    skills_result = materialise_skills(wt, adp, [w for w in ctx.roster_entries() if w.source == "product-skill"])
     model, effort = group.orchestrator.model, group.orchestrator.effort
     concern = review_concern(ctx.cfg, pr, group.name) if kind == "review" and role_name == "reviewer" else None
+    recall_hits, recall_note = _recall_for_brief(ctx, pr.title)
     brief = render_brief(role=worker, kind=kind, group=group.name, model=model, effort=effort, issue=None, pr=pr,
                          plan_text=board.plan_text, repo_root=ctx.repo_root, worktree=wt, base_branch=ctx.cfg.default_branch, concern=concern,
-                         skills=[w for w in ctx.roster_entries() if w.source == "skill"],
-                         recall=recall_snippets(ctx.repo_root, pr.title))
+                         skills=select_skills(f"{pr.title}\n{pr.body}",
+                                              [w for w in ctx.roster_entries() if w.source in ("skill", "product-skill")]),
+                         recall=recall_hits, project_skills_dir=adp.project_skills_dir())
     timeout = ctx.cfg.timeout_seconds("M")
     deadline = when + timedelta(seconds=timeout)
     pid, log_path = _launch(ctx, group, adp, worktree=wt, brief=brief, model=model, effort=effort, timeout=timeout, kind=kind,
@@ -335,8 +493,11 @@ def _dispatch_pr(ctx, board: Board, actor: Actor, number: int, kind: str, adapte
     article = "an" if worker.name[0] in "aeiou" else "a"
     ctx.gh.create_comment(number, f"Meld: `{group.name}` dispatched {article} `{worker.name}` worker on `{model}` at effort {effort} "
                                   f"against {where}. Deadline {_iso(deadline)}.")
-    return {"dispatched": number, "kind": kind, "pid": pid, "worktree": str(wt), "branch": pr.head_ref, "deadline": _iso(deadline),
-            "lease_until": None, "worktree_mode": "fresh"}
+    result = {"dispatched": number, "kind": kind, "pid": pid, "worktree": str(wt), "branch": pr.head_ref, "deadline": _iso(deadline),
+              "lease_until": None, "worktree_mode": "fresh", "skills_materialised": skills_result}
+    if recall_note:
+        result["recall_note"] = recall_note
+    return result
 
 
 def tick(ctx, *, now: datetime | None = None, sleep=time.sleep, env: Mapping[str, str] | None = None, post=None) -> dict:

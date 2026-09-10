@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Sequence
 
 from meld.board import Issue, PullRequest
-from meld.gitops import branch_name
+from meld.gitops import GitError, branch_name, git
 from meld.roster import WorkerType
 
 BRIEF_FILE = ".meld-brief.md"
@@ -103,32 +103,113 @@ def _terms(query: str) -> list[str]:
     return [t for t in re.split(r"\W+", query.lower()) if len(t) > 2]
 
 
-def _local_hits(repo_root: Path, terms: list[str]) -> list[dict]:
-    """Decisions and lessons whose text contains any of `terms`, each scored by how many terms matched.
-    Lives here (not in memory.py, which owns the DECISIONS_DIR/LESSONS_FILE constants) so that dispatch.py
-    can import recall_snippets without memory.py's own dispatch import becoming a cycle (see memory.py)."""
-    hits: list[dict] = []
-    d = repo_root / ".meld" / "decisions"
-    for f in sorted(d.glob("*.md")) if d.is_dir() else []:
-        text = f.read_text()
-        score = sum(1 for t in terms if t in text.lower())
+def _term_match(a: str, b: str) -> bool:
+    """Deliberate stemmer stand-in: two terms match when equal, or when one is a prefix of the other and both are
+    at least 4 characters (invoice/invoices, deploy/deployment, test/tests). Short terms (pdf/pdfs) stay exact-only
+    -- below 4 characters a prefix relationship is too likely to be coincidental to count as a real match."""
+    if a == b:
+        return True
+    return len(a) >= 4 and len(b) >= 4 and (a.startswith(b) or b.startswith(a))
+
+
+def select_skills(text: str, skills: Sequence[WorkerType], pinned: Sequence[str] = (), limit: int = MAX_SKILLS) -> list[WorkerType]:
+    """Skills worth naming in a brief: the orchestrator's pins first (skill:<name> labels), then every skill whose name or
+    description shares a term with the task text, by score. Unmatched skills stay out: a 30-item list nobody reads is noise."""
+    by_name = {s.name: s for s in skills}
+    chosen = [by_name[n] for n in pinned if n in by_name]
+    terms = set(_terms(text))
+    scored = []
+    for s in skills:
+        if s.name in pinned:
+            continue
+        hay = set(_terms(f"{s.name.replace('-', ' ')} {s.description}"))
+        score = sum(1 for t in terms if any(_term_match(t, h) for h in hay))
         if score:
-            title = next((l[2:].strip() for l in text.splitlines() if l.startswith("# ")), f.stem)
-            hits.append({"kind": "decision", "path": str(f.relative_to(repo_root)), "title": title, "score": score, "snippet": text.strip()[:300]})
-    lessons = repo_root / ".meld" / "memory" / "lessons.md"
-    if lessons.is_file():
-        for block in re.split(r"\n(?=## )", lessons.read_text()):
-            if not block.startswith("## "):
-                continue
-            score = sum(1 for t in terms if t in block.lower())
-            if score:
-                hits.append({"kind": "lesson", "path": ".meld/memory/lessons.md", "title": block.splitlines()[0][3:].strip(), "score": score, "snippet": block.strip()[:300]})
+            scored.append((-score, s.name, s))
+    chosen += [s for _, _, s in sorted(scored)]
+    return chosen[:limit]
+
+
+def _decision_hit(path: str, text: str, terms: list[str]) -> dict | None:
+    score = sum(1 for t in terms if t in text.lower())
+    if not score:
+        return None
+    title = next((l[2:].strip() for l in text.splitlines() if l.startswith("# ")), Path(path).stem)
+    return {"kind": "decision", "path": path, "title": title, "score": score, "snippet": text.strip()[:300]}
+
+
+def _lesson_hits(path: str, text: str, terms: list[str]) -> list[dict]:
+    hits: list[dict] = []
+    for block in re.split(r"\n(?=## )", text):
+        if not block.startswith("## "):
+            continue
+        score = sum(1 for t in terms if t in block.lower())
+        if score:
+            hits.append({"kind": "lesson", "path": path, "title": block.splitlines()[0][3:].strip(), "score": score, "snippet": block.strip()[:300]})
     return hits
 
 
-def recall_snippets(repo_root: Path, text: str, limit: int = 3) -> list[str]:
+# The one note a caller shows when reading memory at `origin/<default>` was not possible. Fixed words, shared by
+# `memory.recall` and `dispatch._recall_for_brief`: a GitError's text is git's stderr, which for a failed fetch
+# names the remote -- a URL that can carry a token or an internal hostname -- and this note is printed to humans
+# and folded into dispatch results.
+FETCH_FAILED_NOTE = "origin fetch failed; recall used the local checkout"
+
+
+def _local_hits(repo_root: Path, terms: list[str], ref: str | None = None) -> list[dict]:
+    """Decisions and lessons whose text contains any of `terms`, each scored by how many terms matched.
+    Lives here (not in memory.py, which owns the DECISIONS_DIR/LESSONS_FILE constants) so that dispatch.py
+    can import recall_snippets without memory.py's own dispatch import becoming a cycle (see memory.py).
+
+    With `ref` (typically `origin/<default branch>`), reads that ref through git (ls-tree to list, show to read)
+    instead of `repo_root`'s own working copy, which nothing ever pulls forward -- see memory.recall."""
+    if ref is not None:
+        hits: list[dict] = []
+        try:
+            # -c core.quotePath=false: by default ls-tree C-quotes any path with a non-ASCII byte
+            # (".meld/decisions/0002-caf\303\251.md"), which matches neither the .md filter below nor a later
+            # `git show` -- a hand-authored decision file with an accent in its name would just vanish at a ref.
+            out = git(["-c", "core.quotePath=false", "ls-tree", "-r", "--name-only", ref, "--", ".meld/decisions", ".meld/memory"], repo_root)
+        except GitError:
+            return []
+        for path in (out.splitlines() if out else []):
+            # Filter to the two shapes we ever read BEFORE `git show`: ls-tree can list anything under these two
+            # directories (a stray non-.md file, a binary someone committed by mistake), and there is no reason to
+            # spend a `git show` -- or risk decoding one -- on a file this function was never going to score anyway.
+            is_decision = path.startswith(".meld/decisions/") and path.endswith(".md")
+            is_lessons = path == ".meld/memory/lessons.md"
+            if not (is_decision or is_lessons):
+                continue
+            try:
+                text = git(["show", f"{ref}:{path}"], repo_root)
+            except (GitError, UnicodeDecodeError):
+                # GitError: the show itself failed (rare once ls-tree just listed it). UnicodeDecodeError: gitops.git
+                # runs with text=True, so a file that is not valid UTF-8 at this ref (a binary, or a mis-encoded
+                # decision file) raises here rather than returning garbage -- either way, skip just this one file;
+                # a neighbouring, well-formed decision or lesson must still be found.
+                continue
+            if is_decision:
+                hit = _decision_hit(path, text, terms)
+                if hit:
+                    hits.append(hit)
+            else:
+                hits.extend(_lesson_hits(path, text, terms))
+        return hits
+    hits = []
+    d = repo_root / ".meld" / "decisions"
+    for f in sorted(d.glob("*.md")) if d.is_dir() else []:
+        hit = _decision_hit(str(f.relative_to(repo_root)), f.read_text(), terms)
+        if hit:
+            hits.append(hit)
+    lessons = repo_root / ".meld" / "memory" / "lessons.md"
+    if lessons.is_file():
+        hits.extend(_lesson_hits(".meld/memory/lessons.md", lessons.read_text(), terms))
+    return hits
+
+
+def recall_snippets(repo_root: Path, text: str, limit: int = 3, ref: str | None = None) -> list[str]:
     """The local (non-GitHub) part of `memory.recall`, without a coordination-issue search: used by briefs."""
-    hits = sorted(_local_hits(repo_root, _terms(text)), key=lambda h: (-h["score"], h["title"]))
+    hits = sorted(_local_hits(repo_root, _terms(text), ref=ref), key=lambda h: (-h["score"], h["title"]))
     return [h["snippet"] for h in hits[:limit]]
 
 
@@ -136,9 +217,19 @@ def agent_instruction_files(worktree: Path) -> list[str]:
     return [name for name in _AGENT_FILES if (worktree / name).is_file()]
 
 
+def _skill_path(skill: WorkerType, worktree: Path, project_skills_dir: str | None) -> Path | None:
+    """The `SKILL.md` this worker can actually open. For a product skill that is the copy `materialise_skills`
+    wrote into this worktree under the adapter's project skill directory (it runs before every `render_brief`),
+    not the file in the PM's own clone, which is not the worker's checkout and may not even be on its machine.
+    An installed skill, or an adapter with no project skill directory, keeps the path the roster reported."""
+    if skill.source == "product-skill" and project_skills_dir:
+        return worktree / project_skills_dir / skill.name / "SKILL.md"
+    return skill.path
+
+
 def render_brief(*, role: WorkerType, kind: str, group: str, model: str, effort: str, issue: Issue | None, pr: PullRequest | None,
                  plan_text: str, repo_root: Path, worktree: Path, base_branch: str, concern: str | None = None,
-                 skills: Sequence[WorkerType] = (), recall: Sequence[str] = ()) -> str:
+                 skills: Sequence[WorkerType] = (), recall: Sequence[str] = (), project_skills_dir: str | None = None) -> str:
     if issue is not None:
         title = f"# Meld brief: {role.name} for #{issue.number}"
         task = f"## Your task\n\n**#{issue.number}: {issue.title}**\n\n{issue.body.strip() or '(no description)'}\n"
@@ -183,7 +274,8 @@ def render_brief(*, role: WorkerType, kind: str, group: str, model: str, effort:
     if skills:
         ordered = sorted(skills, key=lambda s: s.name)
         shown = ordered[:MAX_SKILLS]
-        bullets = [f"- `{s.name}` ({s.path}): {s.description}" if s.path else f"- `{s.name}`: {s.description}" for s in shown]
+        paths = [(s, _skill_path(s, worktree, project_skills_dir)) for s in shown]
+        bullets = [f"- `{s.name}` ({p}): {s.description}" if p else f"- `{s.name}`: {s.description}" for s, p in paths]
         parts += ["## Skills available", ""] + bullets
         overflow = len(ordered) - len(shown)
         if overflow:

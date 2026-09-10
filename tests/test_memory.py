@@ -8,6 +8,7 @@ from meld.actions import Refused
 from meld.github import GitHubError
 from meld.memory import (DECISIONS_DIR, LESSONS_FILE, MARKER_RE, content_hash, decide, next_decision_number, recall, recall_snippets,
                          remember, render_decision, render_lesson)
+from meld.status import build_status
 from tests.gitfixtures import sh
 from tests.productfixtures import R, fixture, make_product
 
@@ -126,6 +127,11 @@ def test_second_decide_is_refused_while_memory_pr_open(tmp_path):
     fake.route("GET", R + "pulls/40/reviews", [])
     fake.route("GET", R + "pulls/40/commits", [])
     fake.route("GET", R + "pulls/40/files", [])
+    # The first call's own REVIEW-REQUEST is already on the thread (decide()'s normal flow always posts one when it
+    # opens a PR) -- re-seed it here since FakeGh's GET route is static and won't reflect that POST on its own. Without
+    # this, decide() would re-post the request instead of refusing (see test_decide_reposts_a_missing_review_request...).
+    review_request = [c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/10/comments"][-1]
+    with_thread(fake, DECISION_THREAD + [{"id": 999, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T12:00:00Z", "body": review_request}])
     with pytest.raises(Refused, match="already recorded"):
         decide(ctx, "dec-1", now=NOW)
 
@@ -220,14 +226,80 @@ def test_remember_appends_a_lesson_and_refuses_unresolved_items(tmp_path):
 
 
 def test_recall_ranks_local_files_and_coordination_issues(tmp_path):
+    # recall() reads origin's default branch (F3-style), not ctx.repo_root's own working copy, so the seeded
+    # files are committed and pushed here; recall_snippets(repo, ...) below (no ref=) still reads the working
+    # copy directly, which is why the files are left in place rather than removed after the push.
     fake, ctx, repo, origin = make_product(tmp_path)
     (repo / ".meld" / "decisions").mkdir(parents=True)
     (repo / ".meld" / "decisions" / "0001-dec-1.md").write_text("# Decision dec-1\n\n## Decision\n\nUse PostgreSQL for the ledger.\n")
     (repo / ".meld" / "memory").mkdir()
     (repo / ".meld" / "memory" / "lessons.md").write_text("# Lessons\n\n## 2026-09-01 — #7 (codex)\n\nPostgreSQL migrations need a lock timeout.\n")
+    sh(["git", "add", ".meld"], repo)
+    sh(["git", "commit", "-q", "-m", "seed memory"], repo)
+    sh(["git", "push", "-q", "origin", "main"], repo)
     fake.route("GET", "search/issues", {"items": [{"number": 5, "title": "Coordination: M0 ledger", "html_url": "u5"}]})
     hits = recall(ctx, "postgresql ledger")
     assert [h["kind"] for h in hits] == ["decision", "lesson", "coordination"]
     assert hits[0]["score"] == 2 and hits[0]["path"].endswith("0001-dec-1.md") and hits[2]["number"] == 5
     assert recall_snippets(repo, "ledger migrations") and "lock timeout" in recall_snippets(repo, "ledger migrations")[0]
     assert recall_snippets(repo, "nothing matches here") == []
+
+
+def test_remember_escapes_lesson_lines_that_start_with_a_heading_marker(tmp_path):
+    from meld.memory import escape_headings, render_lesson
+    text = "Cause\n## Not a heading\n# Neither\nFix"
+    assert escape_headings(text) == "Cause\n\\## Not a heading\n\\# Neither\nFix"
+    entry = render_lesson("#13", escape_headings(text), "claude", "2026-09-05")
+    assert entry.count("\n## ") == 1
+
+
+def test_recall_reads_origin_not_the_working_copy(tmp_path):
+    from meld.brief import recall_snippets
+    from tests.gitfixtures import make_origin_and_clone, sh
+    origin, repo = make_origin_and_clone(tmp_path)
+    other = tmp_path / "other"
+    sh(["git", "clone", "-q", str(origin), str(other)], tmp_path)
+    d = other / ".meld" / "decisions"
+    d.mkdir(parents=True)
+    (d / "0001-dec-1.md").write_text("# Decision dec-1\n\n## Decision\n\nUse Postgres for the ledger.\n")
+    sh(["git", "add", "."], other); sh(["git", "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-q", "-m", "d"], other); sh(["git", "push", "-q", "origin", "main"], other)
+    sh(["git", "fetch", "-q", "origin"], repo)
+    assert recall_snippets(repo, "postgres ledger") == []                      # working copy has no .meld yet
+    hits = recall_snippets(repo, "postgres ledger", ref="origin/main")
+    assert hits and "Postgres" in hits[0]
+
+
+def test_recall_note_on_a_failed_fetch_never_carries_git_output(tmp_path):
+    """The fallback note is shown to whoever ran `meld recall`, and a `GitError` carries git's stderr, which for a
+    failed fetch names the remote -- a URL that can hold a token or an internal host. The note says what happened
+    in fixed words instead, exactly as `dispatch._recall_for_brief`'s does."""
+    fake, ctx, repo, origin = make_product(tmp_path)
+    fake.route("GET", "search/issues", {"items": []})
+    sh(["git", "remote", "set-url", "origin", str(tmp_path / "gone-x-secret-remote.git")], repo)
+    hits = recall(ctx, "anything at all")
+    notes = [h for h in hits if h["kind"] == "note"]
+    assert len(notes) == 1
+    assert notes[0]["text"] == "origin fetch failed; recall used the local checkout"   # the same fixed words dispatch uses
+    assert "secret-remote" not in notes[0]["text"] and "fatal" not in notes[0]["text"]
+
+
+def test_decide_reposts_a_missing_review_request_instead_of_refusing(tmp_path):
+    from meld.grammar import agreement_for
+    from meld.memory import comment_url, decide, render_decision
+    from tests.test_review import memory_pr_on_board
+    fake, ctx, repo, origin = make_product(tmp_path)
+    with_thread(fake, DECISION_THREAD)
+    _, board = build_status(ctx)
+    agreement = agreement_for(board.comments, "dec-1", ctx.cfg)
+    joint = [c for c in board.comments if c.ok and c.header.party.kind == "joint" and c.header.ref == "dec-1"][-1]
+    text = render_decision("dec-1", agreement, comment_url(board, joint.id), "2026-09-05")
+    memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", text)   # open memory PR #40; no REVIEW-REQUEST on the thread
+    out = decide(ctx, "dec-1")
+    assert out == {"decided": "dec-1", "pr": 40, "review_requested": True}
+    posts = [c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint.endswith("issues/10/comments")]
+    assert len(posts) == 1 and posts[0].startswith("[claude:pm] REVIEW-REQUEST #40")
+    # DECISION_THREAD must stay on the thread too, or decide_rule never gets past its "no verified [joint] DECISION"
+    # check to reach the open-PR branch this test is actually about (with_thread replaces the whole routed list).
+    with_thread(fake, DECISION_THREAD + [{"id": 999, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-05T12:00:00Z", "body": posts[0]}])
+    with pytest.raises(Refused, match="already recorded"):
+        decide(ctx, "dec-1")

@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from meld.adapters import ADAPTER_NAMES, UnknownAdapter, get_adapter
-from meld.adapters.base import LaunchSpec, parse_frontmatter, scan_skills, scrub_env
+from meld.adapters.base import LaunchSpec, SKILL_NAME_RE, parse_frontmatter, scan_skills, scrub_env
 from tests.fakeadapter import FakeAdapter
 
 
@@ -73,8 +73,66 @@ def test_scan_skills_skips_unreadable_and_undecodable_files(tmp_path: Path):
         (locked / "SKILL.md").chmod(0o644)
 
 
+def test_scan_skills_skips_a_symlinked_skill_file(tmp_path: Path):
+    """A `SKILL.md` that is a symlink points wherever its author aimed it -- reading it would put a file from
+    outside the skills tree into the roster, the brief, and (through materialise_skills) a worktree. Skipped,
+    the same way an unreadable one is; a real `SKILL.md` beside it is unaffected."""
+    outside = tmp_path / "outside.md"
+    outside.write_text("---\nname: borrowed\ndescription: Somewhere else entirely.\n---\n")
+    skills = tmp_path / "skills"
+    (skills / "borrowed").mkdir(parents=True)
+    (skills / "borrowed" / "SKILL.md").symlink_to(outside)
+    (skills / "real").mkdir()
+    (skills / "real" / "SKILL.md").write_text("---\nname: real\ndescription: An actual file.\n---\n")
+    assert [s.name for s in scan_skills([skills])] == ["real"]
+
+
+def test_scan_skills_skips_a_symlinked_skill_directory(tmp_path: Path):
+    """Final-review follow-up: a skill *directory* that is a symlink is skipped like a symlinked SKILL.md -- otherwise
+    every file under the link's target would be read into the roster and copied into worktrees by materialise_skills."""
+    outside = tmp_path / "outside-skill"
+    outside.mkdir()
+    (outside / "SKILL.md").write_text("---\nname: borrowed\ndescription: Somewhere else entirely.\n---\n")
+    skills = tmp_path / "skills"
+    skills.mkdir()
+    (skills / "borrowed").symlink_to(outside, target_is_directory=True)
+    (skills / "real").mkdir()
+    (skills / "real" / "SKILL.md").write_text("---\nname: real\ndescription: An actual directory.\n---\n")
+    assert [s.name for s in scan_skills([skills])] == ["real"]
+
+
 def test_parse_frontmatter_requires_a_closing_fence():
     assert parse_frontmatter("---\nname: brand\ndescription: never closed\nbody text") == {}
+
+
+def test_project_skills_dirs():
+    from meld.adapters.claude import ADAPTER as claude
+    from meld.adapters.codex import ADAPTER as codex
+    assert claude.project_skills_dir() == ".claude/skills" and codex.project_skills_dir() == ".agents/skills"
+
+
+def test_scan_skills_falls_back_to_the_directory_name_for_an_unsafe_frontmatter_name(tmp_path: Path):
+    """C1: `name:` is free text in a product-authored file; a value shaped like a path (`../../src`) must never
+    reach a consumer that turns a skill name into a filesystem path component (materialise_skills)."""
+    escaping = tmp_path / "deploy-checklist"
+    escaping.mkdir()
+    (escaping / "SKILL.md").write_text("---\nname: ../../src\ndescription: path traversal attempt\n---\n")
+    assert [s.name for s in scan_skills([tmp_path])] == ["deploy-checklist"]
+    # I3: the rule requires an alnum first character, so a manifest-lookalike name is rejected outright -- a
+    # directory literally named ".meld-materialised.json" would also be skipped upstream (scan_skills excludes
+    # any dot-prefixed directory before frontmatter is even read), but the name rule itself must reject the
+    # string too, since a name reaches materialise_skills without going through that directory-listing filter.
+    assert SKILL_NAME_RE.match(".meld-materialised.json") is None
+
+
+def test_scan_skills_skips_a_directory_when_neither_name_is_valid(tmp_path: Path):
+    """Frontmatter carries an unsafe name AND the directory name itself is unsafe (an underscore is not in the
+    rule's alnum-first-character set): the directory is skipped entirely, never included under an invalid
+    name (there is no third fallback)."""
+    unsafe_dir = tmp_path / "_unsafe"
+    unsafe_dir.mkdir()
+    (unsafe_dir / "SKILL.md").write_text("---\nname: ../../also-bad\ndescription: x\n---\n")
+    assert scan_skills([tmp_path]) == []
 
 
 def test_app_key_env_is_scrubbed_from_workers():
@@ -82,3 +140,26 @@ def test_app_key_env_is_scrubbed_from_workers():
     assert "MELD_APP_KEY_" in SCRUBBED_PREFIXES
     out = scrub_env({"MELD_APP_KEY_CLAUDE": "pem", "MELD_TOKEN_CODEX": "t", "PATH": "/bin"})
     assert "MELD_APP_KEY_CLAUDE" not in out and "MELD_TOKEN_CODEX" not in out and out["PATH"] == "/bin"
+
+
+def test_popen_detached_never_warns_when_collected_before_the_child_exits(tmp_path):
+    """Popen.__del__ warns ResourceWarning: subprocess N is still running for a still-alive child that gets garbage
+    collected; a detached worker process is deliberately never waited on by meld (spec 21 item 6), so DetachedPopen's
+    no-op __del__ must keep that warning from firing even while the child is still running at collection time."""
+    import gc, sys, warnings
+    from meld.adapters.base import DetachedPopen, LaunchSpec, open_log, popen_detached
+    spec = LaunchSpec(role="worker", model="m", effort="e", cwd=tmp_path, prompt="", log_path=tmp_path / "log",
+                      timeout_seconds=5, env={}, max_turns=1)
+    with open_log(spec.log_path) as log:
+        proc = popen_detached([sys.executable, "-c", "import time; time.sleep(0.5)"], spec, log)
+    assert isinstance(proc, DetachedPopen)
+    pid = proc.pid
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        del proc
+        gc.collect()
+    import os
+    # Reap the child ourselves: a finished-but-unreaped child still answers kill(pid, 0), so polling that could never
+    # observe the exit; waitpid is what meld's state.pid_alive uses too, and it leaves no zombie under pytest.
+    _, status = os.waitpid(pid, 0)
+    assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0

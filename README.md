@@ -29,7 +29,7 @@ Design: `docs/superpowers/specs/2026-09-03-meld-design.md`. Plans: `docs/superpo
 | `meld audit N` | Post a collected auditor's `AUDIT #<pr> PASS|FAIL` verdict on the coordination issue; a `FAIL` makes `meld reopen` legal for that group |
 | `meld reopen N` | Return a closed issue to `ready` after your group's own `AUDIT ... FAIL`, quoting the findings |
 | `meld reap N` | Remove a finished run's worktree and archive its record |
-| `meld tag N [--worker W] [--model M] [--effort E] [--size S]` | Set the worker, model, effort, and size labels on an issue |
+| `meld tag N [--worker W] [--model M] [--effort E] [--size S] [--skill NAME]...` | Set the worker, model, effort, size, and `skill:` labels on an issue |
 | `meld decide REF` | Record a verified `[joint] DECISION` as `.meld/decisions/NNNN-<slug>.md` through a memory PR |
 | `meld remember REF -m TEXT` | Append a lesson about a resolved issue or PR to `.meld/memory/lessons.md` through a memory PR |
 | `meld recall QUERY [--limit N]` | Search decisions, lessons, and past coordination issues |
@@ -39,6 +39,8 @@ Design: `docs/superpowers/specs/2026-09-03-meld-design.md`. Plans: `docs/superpo
 | `meld notify [--dry-run]` | Send the Slack nudge for needs-human items now (a PM's `tick` also does this on its own) |
 | `meld roster` | List the worker types available to the calling party |
 | `meld run GROUP [--once]` | Supervise a group's orchestrator and PM as headless CLI sessions |
+| `meld setup REPO --goal TEXT [--pr] [--app] [--allow-public] [--no-protection] [--force] [--milestone T] [--dir P]` | Bootstrap a product repo: labels, milestone, coordination issue, CODEOWNERS, `.meld/STANDARDS.md`, branch protection, and a starter `.meld.toml`; `--pr` opens the setup PR, `--app` writes the GitHub App form and prints the steps |
+| `meld doctor [--probe-status] [--sweep [--dry-run] [--older-than-days N]]` | Verify CLIs, credentials, identities, models, ceilings, and permissions (exit 1 on a failure); `--sweep` clears meld's scratch under `$MELD_HOME` |
 
 ## Running a group
 
@@ -50,15 +52,35 @@ Real-CLI smoke tests (they spend tokens): `task test:smoke`.
 
 ## Memory
 
-Agreed decisions become `.meld/decisions/NNNN-<id>.md` (`meld decide`), lessons append to `.meld/memory/lessons.md` (`meld remember`), both through memory PRs that the other groups' PMs approve with `meld review N` — a decision file must be byte-identical to `meld decide`'s rendering of the verified `[joint] DECISION`, a lesson PR must append exactly one entry to the existing file — no reviewer worker runs, and a merged memory PR is never audited. Once a `[joint]` comment is on a ref the round is closed; a `DISAGREE` round is never recorded. `meld recall QUERY` searches both plus past coordination issues, and dispatch renders matching snippets into every brief as `## Relevant memory`.
+Agreed decisions become `.meld/decisions/NNNN-<id>.md` (`meld decide`), lessons append to `.meld/memory/lessons.md` (`meld remember`), both through memory PRs that the other groups' PMs approve with `meld review N` — a decision file must be byte-identical to `meld decide`'s rendering of the verified `[joint] DECISION`, a lesson PR must append exactly one entry to the existing file — no reviewer worker runs, and a merged memory PR is never audited. Once a `[joint]` comment is on a ref the round is closed; a `DISAGREE` round is never recorded. `meld recall QUERY` searches both plus past coordination issues — reading `origin`'s default branch after a fetch, so it never lags the local checkout — and dispatch renders matching snippets into every brief as `## Relevant memory`.
 
 ## The human console
 
-`meld inbox` lists what needs a person; `meld chat` is a REPL: plain text posts `[human] ASK ask-<n>`, slash commands post the human verbs (`/halt`, `/resume`, `/directive`, `/provided`, `/resolved`, `/revert`, `/ack`, `/approve`, `/challenge`), `/wait` prints new coordination comments. With `[notify] slack_dm_webhook_env` set, each PM's `tick` sends one Slack message listing every due needs-human issue and repeats an issue only after `repeat_after_minutes`.
+`meld inbox` lists what needs a person; `meld chat` is a REPL: plain text posts `[human] ASK ask-<n>`, slash commands post the human verbs (`/halt`, `/resume`, `/directive`, `/provided`, `/resolved`, `/revert`, `/ack`, `/approve`, `/challenge`), `/wait` prints new coordination comments. With `[notify] slack_dm_webhook_env` set, each PM's `tick` sends one Slack message listing every due needs-human issue and repeats an issue only after `repeat_after_minutes`. The throttle is shared through a `meld:nudged` label on the issue, read back from GitHub's own label events, so it is one nudge per window however many PMs are running; the label is cleared once the issue stops needing a person.
 
 ## Product standards
 
 Put the product's quality bar in `.meld/STANDARDS.md`; it is rendered into every worker brief and both role prompts. Without one, Meld's default applies: visual design, performance, and security are acceptance criteria with the same weight as correctness; agents decide with industry standards and research and surface only approval-worthy decisions; installed skills are used when they match the task.
+
+## Skills
+
+A product can ship its own skills as `.meld/skills/<name>/SKILL.md`, with `name` and `description` in the frontmatter. They join the roster next to the framework's built-in workers, the product's `.meld/workers/`, and whatever skills the group's CLI already has installed on the machine. A product skill overrides a same-named installed one; a `SKILL.md` whose name collides with a *worker* is dropped rather than replacing that worker's role prompt.
+
+A brief lists only the skills that match the task: first whatever the orchestrator pinned with `meld tag N --skill <name>` (repeatable — it writes `skill:<name>` labels and refuses a name that is on neither the installed nor the product list), then every skill whose name or description shares a term with the issue's or PR's own title and body.
+
+At dispatch, the product's skills are copied into the worktree under the directory the launching CLI looks in — `.claude/skills/` for Claude Code, `.agents/skills/` for Codex — and each copied skill is added to the clone's shared `info/exclude` by its own exact path. So each CLI finds them where it natively looks, nothing is written to your home directory, and a worker cannot commit the copies — while a project skill you or a worker write by hand in that same directory stays perfectly visible to git. A worker whose CLI cannot invoke a skill by name is told to open the `SKILL.md` at the path the brief prints.
+
+## Doctor
+
+    uv run meld doctor        # or: task doctor
+
+Run it from a product clone. It checks that each configured CLI is installed and answers `--version`; that each group's credentials resolve to the bot named in `.meld.toml` (a PAT's own login, or an App's slug plus a freshly minted installation token whose permissions and repository coverage it prints); that every bot login is one the repo will accept as an assignee; that a git identity exists per bot; that every model named in `.meld.toml` exists in `models.toml` for that group's adapter; that each adapter's command-timeout ceiling exceeds `polling.wait_timeout_seconds`; that a PAT group can read issues, pull requests, and commit statuses; that `gh`'s own login is a listed human; and that `openssl` is on `PATH` (an App group needs it to sign its JWT). Exit code 1 when a check fails.
+
+Warnings do not fail the run: a `settings.json` `env` block that would hand a worker a token or a party identity, hidden `.pth` files (below), a memory store past 2 MB, a configured-but-unset Slack webhook, a non-HTTPS `origin`, an App group missing the Checks permission — and `assignable:<group>` for an App group, which is the claim-lock limitation in the Quick start, not something you can fix.
+
+`--probe-status` also proves **write** access to commit statuses, by posting one `meld/doctor` status on the default-branch head. It is opt-in because it leaves that mark.
+
+`meld doctor --sweep` is the only thing doctor writes. It lists the scratch meld leaves under `$MELD_HOME` — consumed verdict archives, orphaned per-run `gh` and gitconfig directories, memory worktrees left behind by a crash, memory-review and CI-red records for PRs that have since merged or closed, and the dead per-party `notify.json` throttle files an older Meld wrote — and deletes exactly what it listed. `--sweep --dry-run` lists without deleting; `--older-than-days N` moves the age threshold (default 7).
 
 ## Exit codes
 
@@ -76,12 +98,12 @@ The calling party comes from `MELD_GROUP` and `MELD_ROLE` (`orchestrator` or `pm
 Bootstrapping a fresh product repo, start to finish:
 
 1. `uv sync`.
-2. Create one GitHub machine account per group and mint a fine-grained token for each (spec 18: Contents, Issues, Pull requests, Commit statuses — read and write); export `MELD_TOKEN_<GROUP>` (e.g. `MELD_TOKEN_CLAUDE`), injected from 1Password via `op run` rather than left in plaintext. Or, to avoid extra GitHub accounts, `meld setup --app` and follow its printed steps to create one GitHub App per group (App names are global on GitHub, so `meld-<group>` may be taken; `meld doctor` prints the bot login the App actually got). One limitation today: an App group can review, audit and merge but cannot claim and build, because GitHub does not let an App's bot user be an issue assignee (probe 2026-09-09) and the claim lock is the assignee — `meld doctor`'s `assignable:<group>` check reports it for every group (as a warning for an App group), and spec section 21 ("Carried into plan 6") records the planned fix, an App-compatible claim lock.
+2. Create one GitHub machine account per group and mint a fine-grained token for each (spec 18: Contents, Issues, Pull requests, Commit statuses — read and write); export `MELD_TOKEN_<GROUP>` (e.g. `MELD_TOKEN_CLAUDE`), injected from 1Password via `op run` rather than left in plaintext. Or, to avoid extra GitHub accounts, add `--app` to step 3's `meld setup owner/name --goal "..."` and follow its printed steps to create one GitHub App per group (App names are global on GitHub, so `meld-<group>` may be taken; `meld doctor` prints the bot login the App actually got). One limitation today: an App group can review, audit and merge but cannot claim and build, because GitHub does not let an App's bot user be an issue assignee (probe 2026-09-09) and the claim lock is the assignee — `meld doctor`'s `assignable:<group>` check reports it for every group (as a warning for an App group), and spec section 21 ("Carried into plan 6") records the planned fix, an App-compatible claim lock.
 3. `cd <product clone> && meld setup owner/name --goal "..." --pr` — writes labels, the milestone, the coordination issue, `.github/CODEOWNERS`, branch protection, and a starter `.meld.toml`, then commits `.github/CODEOWNERS`, `.meld/STANDARDS.md`, and `.meld.toml` on a PR (labels, milestone, coordination issue, and branch protection are applied directly, not through the PR).
 4. Merge the setup PR, then uncomment or adjust the `[groups.*]` blocks it wrote (bot name, models, efforts) for the CLIs you're running.
 5. `meld doctor` until it reports green (an App group keeps one warning, `assignable:<group>`, for the claim-lock limitation in step 2).
 6. `task run GROUP=claude` and `task run GROUP=codex`, one per group.
-7. `meld chat`; approve the plan by adding the `meld:plan-approved` label to the coordination issue when it appears.
+7. `meld chat`; when the plan appears, approve it with `/approve` (or `uv run meld plan approve`) — that adds `meld:plan-approved` *and* flips every planned issue to ready. Adding the label by hand does neither for the issues.
 
 ## Known issue: macOS hidden `.pth` files
 

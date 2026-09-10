@@ -131,7 +131,19 @@ def review(ctx, number: int, *, now: datetime | None = None) -> dict:
         # commit), so the short-circuit below is keyed on (head_sha, event), never on review_id alone.
         cached = load_result(ctx.store.home, group.name, "review", number)
         if cached is not None and cached.get("head_sha") == pr.head_sha and cached.get("event") == "APPROVE":
-            return {"reviewed": number, "memory": pr.memory[0], "event": "APPROVE", "review_id": cached.get("review_id")}
+            out = {"reviewed": number, "memory": pr.memory[0], "event": "APPROVE", "review_id": cached.get("review_id")}
+            if cached.get("status_error"):
+                # The review already landed (on this exact head); only the best-effort status post failed last
+                # time. Retry just that -- never re-verify or re-post the review itself for an already-settled APPROVE.
+                try:
+                    ctx.gh.create_status(pr.head_sha, "success", status_context(group.name), f"{group.name} memory check: ok"[:140])
+                except GitHubError as e:
+                    out["status_error"] = str(e)
+                    update_result(ctx.store.home, group.name, "review", number, {"status_error": str(e)})
+                else:
+                    update_result(ctx.store.home, group.name, "review", number, {"status_error": None})
+                    out["status_retried"] = True
+            return out
         rule = memory_review_rule(board, ctx.cfg, actor, pr)
         if rule:
             refuse(ctx, board, Refusal(Verb.APPROVE, target, rule))
@@ -159,6 +171,7 @@ def review(ctx, number: int, *, now: datetime | None = None) -> dict:
             ctx.gh.create_status(pr.head_sha, "success" if ok else "failure", status_context(group.name), f"{group.name} memory check: {'ok' if ok else reason}"[:140], resp.get("html_url"))
         except GitHubError as e:
             status_error = str(e)
+            update_result(ctx.store.home, group.name, "review", number, {"status_error": status_error})
         check_run_error: str | None = None
         if ctx.app_auth is not None:
             memory_check_description = f"{group.name} memory check: {'ok' if ok else reason}"
@@ -318,5 +331,8 @@ def merge(ctx, number: int) -> dict:
     refusal = pr_refusal(board, ctx.cfg, actor, Verb.MERGE, pr)
     if refusal:
         refuse(ctx, board, refusal)
-    resp = ctx.gh.merge_pull(number, pr.head_sha, pr.title)   # the sha guard makes GitHub refuse (409) if the head moved since this board
+    # The sha guard makes GitHub refuse (409) if the head moved since this board; the PR body (already
+    # closer-neutralised by collect, except the framework's own `Closes #N` line) becomes the squash message, so a
+    # worker's commit messages never reach the default branch (spec 21 item 5).
+    resp = ctx.gh.merge_pull(number, pr.head_sha, pr.title, message=pr.body)
     return {"merged": number, "sha": resp.get("sha"), "issue": pr.issue_number, "approvals": sorted(approving_parties(ctx.cfg, pr))}

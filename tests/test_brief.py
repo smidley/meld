@@ -199,6 +199,62 @@ def test_brief_carries_relevant_memory_and_result_reads_skills_used(tmp_path):
         read_result(tmp_path)
 
 
+def test_recall_snippets_at_a_ref_skips_files_it_cannot_decode(tmp_path):
+    from tests.gitfixtures import make_origin_and_clone, sh
+    origin, repo = make_origin_and_clone(tmp_path)
+    d = repo / ".meld" / "decisions"
+    d.mkdir(parents=True)
+    (d / "0001-good.md").write_text("# Decision good\n\n## Decision\n\nUse Postgres for the ledger.\n")
+    # Not valid UTF-8 either way: junk.dat is filtered out by name before `git show` ever runs on it; bad.md passes
+    # the .meld/decisions/*.md filter and must be caught at the `git show`/decode step instead.
+    (d / "bad.md").write_bytes(b"\xff\xfe not valid utf-8")
+    (d / "junk.dat").write_bytes(b"\xff\xfe not valid utf-8 either")
+    sh(["git", "add", ".meld"], repo)
+    sh(["git", "commit", "-q", "-m", "seed decisions, two unreadable"], repo)
+    sh(["git", "push", "-q", "origin", "main"], repo)
+    hits = recall_snippets(repo, "postgres", ref="origin/main")
+    assert any("Postgres" in h for h in hits)
+
+
+def test_brief_prints_a_product_skills_worktree_copy_not_the_pms_checkout(tmp_path):
+    """The worker contract's item 10 tells a worker to open the `SKILL.md` at the path the brief prints, and the
+    copy it can actually open is the one materialise_skills wrote into its own worktree under the adapter's
+    project skill directory -- not `.meld/skills/<name>/SKILL.md` in the PM's clone. An installed (non-product)
+    skill still prints the path the adapter reported for it."""
+    issue = mk_issue(11)
+    backend = next(w for w in builtin_workers() if w.name == "backend")
+    worktree = tmp_path / "wt"
+    pm_copy = tmp_path / "repo" / ".meld" / "skills" / "deploy-checklist" / "SKILL.md"
+    installed = Path("/Users/x/.claude/skills/security-review/SKILL.md")
+    skills = [WorkerType("deploy-checklist", "Pre-deploy steps.", "product-skill", pm_copy, ""),
+              WorkerType("security-review", "OWASP-style review of a change.", "skill", installed, "")]
+    text = render_brief(role=backend, kind="build", group="claude", model="m", effort="medium", issue=issue, pr=None, plan_text="",
+                        repo_root=tmp_path, worktree=worktree, base_branch="main", skills=skills, project_skills_dir=".fake/skills")
+    assert f"- `deploy-checklist` ({worktree / '.fake/skills/deploy-checklist/SKILL.md'}): Pre-deploy steps." in text
+    assert str(pm_copy) not in text
+    assert f"- `security-review` ({installed}): OWASP-style review of a change." in text
+    # An adapter with no project skill directory at all has nowhere to have copied it: the source path stands.
+    plain = render_brief(role=backend, kind="build", group="claude", model="m", effort="medium", issue=issue, pr=None, plan_text="",
+                         repo_root=tmp_path, worktree=worktree, base_branch="main", skills=skills)
+    assert f"- `deploy-checklist` ({pm_copy}): Pre-deploy steps." in plain
+
+
+def test_recall_snippets_at_a_ref_finds_a_decision_with_a_non_ascii_filename(tmp_path):
+    """`git ls-tree --name-only` quotes any path with a non-ASCII byte under the default `core.quotePath`
+    (`".meld/decisions/0002-caf\\303\\251.md"`), and a quoted path matches neither the `.md` filter nor a
+    later `git show` -- so a hand-authored decision whose filename carries an accent would be silently
+    invisible at a ref while being found perfectly well in the working copy."""
+    from tests.gitfixtures import make_origin_and_clone, sh
+    origin, repo = make_origin_and_clone(tmp_path)
+    d = repo / ".meld" / "decisions"
+    d.mkdir(parents=True)
+    (d / "0002-caf\u00e9-ledger.md").write_text("# Decision caf\u00e9\n\n## Decision\n\nUse Postgres for the ledger.\n")
+    sh(["git", "add", ".meld"], repo)
+    sh(["git", "commit", "-q", "-m", "a decision with an accented filename"], repo)
+    sh(["git", "push", "-q", "origin", "main"], repo)
+    assert any("Postgres" in h for h in recall_snippets(repo, "postgres", ref="origin/main"))
+
+
 def test_read_result_skills_used_tolerates_null_and_is_bounded(tmp_path):
     (tmp_path / RESULT_FILE).write_text(json.dumps({"outcome": "done", "summary": "s", "verified_by": "v", "skills_used": None}))
     assert read_result(tmp_path).skills_used == ()
@@ -213,3 +269,27 @@ def test_read_result_skills_used_tolerates_null_and_is_bounded(tmp_path):
     (tmp_path / RESULT_FILE).write_text(json.dumps({"outcome": "done", "summary": "s", "verified_by": "v", "skills_used": ["brand", 5]}))
     with pytest.raises(ResultError, match="skills_used"):
         read_result(tmp_path)
+
+
+def test_select_skills_matches_the_task_and_keeps_pinned_first():
+    from meld.brief import select_skills
+    from meld.roster import WorkerType
+    skills = [WorkerType("pdf", "Read and write PDF files", "skill", None), WorkerType("stripe-billing", "Stripe payments and invoices", "skill", None),
+              WorkerType("frontend-design", "Distinctive UI design", "skill", None)]
+    # "invoice" (singular) still matches stripe-billing's "invoices" (plural) via _term_match's prefix rule
+    # (both >= 4 chars) -- this is the deliberate stemmer stand-in, not exact-term overlap.
+    chosen = select_skills("Add invoice download as PDF", skills, pinned=("frontend-design",))
+    assert [s.name for s in chosen] == ["frontend-design", "pdf", "stripe-billing"]
+    assert select_skills("Fix the CI cache key", skills) == []
+    assert [s.name for s in select_skills("anything", skills, pinned=("nope", "pdf"))] == ["pdf"]
+
+
+def test_brief_lists_only_selected_skills(tmp_path):
+    from meld.brief import render_brief
+    from meld.roster import WorkerType
+    from tests.factories import mk_issue
+    issue = mk_issue(11, title="Add invoice download as PDF")
+    text = render_brief(role=BACKEND, kind="build", group="claude", model="m", effort="e", issue=issue, pr=None, plan_text="",
+                        repo_root=tmp_path, worktree=tmp_path, base_branch="main",
+                        skills=[WorkerType("pdf", "Read and write PDF files", "skill", None)])
+    assert "`pdf`" in text and "## Skills available" in text

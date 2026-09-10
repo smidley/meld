@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 
@@ -261,9 +262,6 @@ def test_github_error_carries_the_http_status(board1_gh):
     assert ei.value.status == 422
 
 
-import base64
-
-
 def test_issue_milestone_contents_events_labels_and_search_endpoints(board1_gh):
     fake, gh = board1_gh
     fake.route("POST", "repos/acme/widgets/issues", {"number": 31, "html_url": "https://github.com/acme/widgets/issues/31"})
@@ -317,6 +315,21 @@ def test_create_label_normalises_color(board1_gh):
     assert result["color"] == "cccccc"
     body = [c for c in fake.calls if c.method == "POST" and "labels" in c.endpoint][-1].body
     assert body == {"name": "meld:planned", "color": "cccccc", "description": ""}
+
+
+def test_get_contents_falls_back_to_the_blob_endpoint_for_large_files(board1_gh):
+    fake, gh = board1_gh
+    fake.route("GET", "repos/acme/widgets/contents/.meld/memory/lessons.md", {"encoding": "none", "sha": "blob1", "size": 2_000_000}, query={"ref": "main"})
+    fake.route("GET", "repos/acme/widgets/git/blobs/blob1", {"encoding": "base64", "content": base64.b64encode(b"# Lessons\n").decode()})
+    assert gh.get_contents(".meld/memory/lessons.md", "main") == "# Lessons\n"
+
+
+def test_get_contents_raises_when_the_blob_has_no_content(board1_gh):
+    fake, gh = board1_gh
+    fake.route("GET", "repos/acme/widgets/contents/.meld/memory/lessons.md", {"encoding": "none", "sha": "blob2", "size": 2_000_000}, query={"ref": "main"})
+    fake.route("GET", "repos/acme/widgets/git/blobs/blob2", {"encoding": "base64"})
+    with pytest.raises(GitHubError, match="blob has no content"):
+        gh.get_contents(".meld/memory/lessons.md", "main")
 
 
 def test_github_uses_the_token_provider_and_refreshes_once_on_401(tmp_path):

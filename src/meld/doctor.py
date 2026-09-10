@@ -340,6 +340,14 @@ def sweep(home: Path, cfg: Config, *, repo_root: Path, pull_states: Mapping[int,
                         # "/"-joined (not "#") so Path(path).name is the bare key: a fragment-style "#" join collapses
                         # into the preceding path segment (ci-red.json#20).name == "ci-red.json#20", not "20".
                         candidates.append({"kind": "ci-red-record", "path": f"{state_file}/{key}", "reason": f"PR #{key} is {pull_states[int(key)]}"})
+    # Plan 4's per-party nudge throttle (`state/<who>[/<role>]/notify.json`, notifier.NOTIFY_STATE). Plan 5's shared
+    # `meld:nudged` label replaced it and nothing reads it any more, so an upgraded install carries one dead file per
+    # party. Listed for every party found, not just the configured groups: a group that has since been renamed or
+    # removed from `.meld.toml` left one behind too. No age threshold -- nothing writes these any more.
+    state = home / "state"
+    for p in sorted([*state.glob("*/notify.json"), *state.glob("*/*/notify.json")]):
+        candidates.append({"kind": "legacy-notify-state", "path": str(p),
+                           "reason": "plan-4 per-party nudge throttle, no longer read (the shared meld:nudged label replaced it)"})
     removed: list[str] = []
     if apply:
         for c in candidates:

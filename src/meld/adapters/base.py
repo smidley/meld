@@ -1,6 +1,7 @@
 """Adapter protocol: the only layer that knows how a particular CLI is launched."""
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +11,10 @@ from meld.roster import WorkerType
 
 SCRUBBED_EXACT = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "MELD_GROUP", "MELD_ROLE", "MELD_PUSH_TOKEN")
 SCRUBBED_PREFIXES = ("MELD_TOKEN_", "MELD_APP_KEY_")
+# A skill's name becomes a single path component (materialise_skills copies into `target_dir/<name>`), but
+# frontmatter is free text a product author writes -- never let it carry a path separator, a leading dot, or
+# anything else that could turn `<name>` into `../../src` and escape the skill directory it belongs in.
+SKILL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 @dataclass(frozen=True)
@@ -31,6 +36,8 @@ class Adapter(Protocol):
     def launch(self, spec: LaunchSpec) -> subprocess.Popen: ...
 
     def installed_skills(self) -> list[WorkerType]: ...
+
+    def project_skills_dir(self) -> str | None: ...
 
     def command_timeout_ceiling_seconds(self) -> int: ...
 
@@ -67,16 +74,28 @@ def scan_skills(dirs: Iterable[Path], source: str = "skill") -> list[WorkerType]
     for d in dirs:
         if not d.is_dir():
             continue
-        for skill_dir in sorted(p for p in d.iterdir() if p.is_dir() and not p.name.startswith(".")):
+        # A symlinked skill directory is skipped for the same reason a symlinked SKILL.md is (below): it points
+        # wherever its author aimed it, and everything under it would be read, briefed, and copied into worktrees.
+        for skill_dir in sorted(p for p in d.iterdir() if p.is_dir() and not p.is_symlink() and not p.name.startswith(".")):
             f = skill_dir / "SKILL.md"
-            if not f.is_file():
+            # is_symlink before is_file: a link points wherever its author aimed it, and reading it would put a
+            # file from outside the skills tree into the roster, a brief, and (via materialise_skills) a worktree.
+            if f.is_symlink() or not f.is_file():
                 continue
             try:
                 text = f.read_text()
             except (OSError, UnicodeDecodeError):
                 continue
             meta = parse_frontmatter(text)
-            name = meta.get("name") or skill_dir.name
+            frontmatter_name = meta.get("name", "")
+            if frontmatter_name and SKILL_NAME_RE.match(frontmatter_name):
+                name = frontmatter_name
+            elif SKILL_NAME_RE.match(skill_dir.name):
+                # An unsafe or absent frontmatter name falls back to the directory name, itself validated --
+                # `name: ../../src` must never reach a consumer that turns a skill name into a path component.
+                name = skill_dir.name
+            else:
+                continue
             found.setdefault(name, WorkerType(name=name, description=meta.get("description", ""), source=source, path=f, text=text))
     return sorted(found.values(), key=lambda w: w.name)
 
@@ -86,7 +105,17 @@ def open_log(path: Path) -> IO[bytes]:
     return open(path, "ab")
 
 
+class DetachedPopen(subprocess.Popen):
+    """A child the launching process may never wait on: dispatch fires a worker and forgets it (the worker outlives the
+    meld process), while runners poll and wait on role processes explicitly. Popen.__del__ would warn 'subprocess N is
+    still running' for a fire-and-forget child and register it for later reaping; meld reaps those by pid through
+    state.pid_alive's waitpid instead, so the destructor is a no-op here (spec 21 item 6)."""
+
+    def __del__(self) -> None:  # noqa: D401
+        pass
+
+
 def popen_detached(argv: list[str], spec: LaunchSpec, log: IO[bytes]) -> subprocess.Popen:
     """Start the CLI in its own session so a timeout can kill the whole process group."""
-    return subprocess.Popen(argv, cwd=str(spec.cwd), env=spec.env, stdin=subprocess.DEVNULL, stdout=log,
-                            stderr=subprocess.STDOUT, start_new_session=True)
+    return DetachedPopen(argv, cwd=str(spec.cwd), env=spec.env, stdin=subprocess.DEVNULL, stdout=log,
+                         stderr=subprocess.STDOUT, start_new_session=True)

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from meld.actions import refuse
 from meld.board import MEMORY_BRANCH_PREFIX, MEMORY_MARKER_RE as MARKER_RE
-from meld.brief import _local_hits, _terms, recall_snippets
+from meld.brief import FETCH_FAILED_NOTE, _local_hits, _terms, recall_snippets
 from meld.config import Party
 from meld.dispatch import DispatchError, _iso, _now, git_identity, neutralise_closers
 from meld.gitops import GitError, create_worktree, git, push_branch, remove_worktree, slugify
@@ -185,9 +185,11 @@ def recall(ctx, query: str, *, limit: int = 10) -> list[dict]:
     note: str | None = None
     try:
         git(["fetch", "--quiet", "origin"], ctx.repo_root)
-    except GitError as e:
+    except GitError:
+        # Fixed wording, never the GitError's own text: that is git's stderr, and a failed fetch's stderr names
+        # the remote URL (which can carry a token or an internal hostname) in something a human is shown.
         ref = None
-        note = f"git fetch origin failed ({e}); local decisions/lessons read from the working copy and may be stale"
+        note = FETCH_FAILED_NOTE
     hits = _local_hits(ctx.repo_root, terms, ref=ref)
     for item in ctx.gh.search_issues(f"repo:{ctx.cfg.repo_name} label:meld:coordination {query}"):
         hits.append({"kind": "coordination", "number": item.get("number"), "title": item.get("title", ""), "url": item.get("html_url", ""), "score": 1})

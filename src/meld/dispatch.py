@@ -16,7 +16,7 @@ from meld.actions import BLOCKED, IN_PROGRESS, refuse, release
 from meld.adapters import Adapter, LaunchSpec, scrub_env
 from meld.adapters.base import SKILL_NAME_RE
 from meld.board import Board, RunRecord
-from meld.brief import BRIEF_FILE, RESULT_FILE, ResultError, WorkerResult, read_result, recall_snippets, render_brief, select_skills
+from meld.brief import BRIEF_FILE, FETCH_FAILED_NOTE, RESULT_FILE, ResultError, WorkerResult, read_result, recall_snippets, render_brief, select_skills
 from meld.config import GroupConfig, Party
 from meld.gitops import (
     GitError,
@@ -386,7 +386,7 @@ def _recall_for_brief(ctx, text: str) -> tuple[list[str], str | None]:
     try:
         git(["fetch", "--quiet", "origin", ctx.cfg.default_branch], ctx.repo_root)
     except GitError:
-        return recall_snippets(ctx.repo_root, text), "origin fetch failed; recall used the local checkout"
+        return recall_snippets(ctx.repo_root, text), FETCH_FAILED_NOTE
     return recall_snippets(ctx.repo_root, text, ref=f"origin/{ctx.cfg.default_branch}"), None
 
 

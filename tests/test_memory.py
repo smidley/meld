@@ -269,6 +269,20 @@ def test_recall_reads_origin_not_the_working_copy(tmp_path):
     assert hits and "Postgres" in hits[0]
 
 
+def test_recall_note_on_a_failed_fetch_never_carries_git_output(tmp_path):
+    """The fallback note is shown to whoever ran `meld recall`, and a `GitError` carries git's stderr, which for a
+    failed fetch names the remote -- a URL that can hold a token or an internal host. The note says what happened
+    in fixed words instead, exactly as `dispatch._recall_for_brief`'s does."""
+    fake, ctx, repo, origin = make_product(tmp_path)
+    fake.route("GET", "search/issues", {"items": []})
+    sh(["git", "remote", "set-url", "origin", str(tmp_path / "gone-x-secret-remote.git")], repo)
+    hits = recall(ctx, "anything at all")
+    notes = [h for h in hits if h["kind"] == "note"]
+    assert len(notes) == 1
+    assert notes[0]["text"] == "origin fetch failed; recall used the local checkout"   # the same fixed words dispatch uses
+    assert "secret-remote" not in notes[0]["text"] and "fatal" not in notes[0]["text"]
+
+
 def test_decide_reposts_a_missing_review_request_instead_of_refusing(tmp_path):
     from meld.grammar import agreement_for
     from meld.memory import comment_url, decide, render_decision

@@ -149,6 +149,13 @@ def _lesson_hits(path: str, text: str, terms: list[str]) -> list[dict]:
     return hits
 
 
+# The one note a caller shows when reading memory at `origin/<default>` was not possible. Fixed words, shared by
+# `memory.recall` and `dispatch._recall_for_brief`: a GitError's text is git's stderr, which for a failed fetch
+# names the remote -- a URL that can carry a token or an internal hostname -- and this note is printed to humans
+# and folded into dispatch results.
+FETCH_FAILED_NOTE = "origin fetch failed; recall used the local checkout"
+
+
 def _local_hits(repo_root: Path, terms: list[str], ref: str | None = None) -> list[dict]:
     """Decisions and lessons whose text contains any of `terms`, each scored by how many terms matched.
     Lives here (not in memory.py, which owns the DECISIONS_DIR/LESSONS_FILE constants) so that dispatch.py
@@ -159,7 +166,10 @@ def _local_hits(repo_root: Path, terms: list[str], ref: str | None = None) -> li
     if ref is not None:
         hits: list[dict] = []
         try:
-            out = git(["ls-tree", "-r", "--name-only", ref, "--", ".meld/decisions", ".meld/memory"], repo_root)
+            # -c core.quotePath=false: by default ls-tree C-quotes any path with a non-ASCII byte
+            # (".meld/decisions/0002-caf\303\251.md"), which matches neither the .md filter below nor a later
+            # `git show` -- a hand-authored decision file with an accent in its name would just vanish at a ref.
+            out = git(["-c", "core.quotePath=false", "ls-tree", "-r", "--name-only", ref, "--", ".meld/decisions", ".meld/memory"], repo_root)
         except GitError:
             return []
         for path in (out.splitlines() if out else []):

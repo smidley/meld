@@ -216,6 +216,22 @@ def test_recall_snippets_at_a_ref_skips_files_it_cannot_decode(tmp_path):
     assert any("Postgres" in h for h in hits)
 
 
+def test_recall_snippets_at_a_ref_finds_a_decision_with_a_non_ascii_filename(tmp_path):
+    """`git ls-tree --name-only` quotes any path with a non-ASCII byte under the default `core.quotePath`
+    (`".meld/decisions/0002-caf\\303\\251.md"`), and a quoted path matches neither the `.md` filter nor a
+    later `git show` -- so a hand-authored decision whose filename carries an accent would be silently
+    invisible at a ref while being found perfectly well in the working copy."""
+    from tests.gitfixtures import make_origin_and_clone, sh
+    origin, repo = make_origin_and_clone(tmp_path)
+    d = repo / ".meld" / "decisions"
+    d.mkdir(parents=True)
+    (d / "0002-caf\u00e9-ledger.md").write_text("# Decision caf\u00e9\n\n## Decision\n\nUse Postgres for the ledger.\n")
+    sh(["git", "add", ".meld"], repo)
+    sh(["git", "commit", "-q", "-m", "a decision with an accented filename"], repo)
+    sh(["git", "push", "-q", "origin", "main"], repo)
+    assert any("Postgres" in h for h in recall_snippets(repo, "postgres", ref="origin/main"))
+
+
 def test_read_result_skills_used_tolerates_null_and_is_bounded(tmp_path):
     (tmp_path / RESULT_FILE).write_text(json.dumps({"outcome": "done", "summary": "s", "verified_by": "v", "skills_used": None}))
     assert read_result(tmp_path).skills_used == ()

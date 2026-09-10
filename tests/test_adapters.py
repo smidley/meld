@@ -73,6 +73,20 @@ def test_scan_skills_skips_unreadable_and_undecodable_files(tmp_path: Path):
         (locked / "SKILL.md").chmod(0o644)
 
 
+def test_scan_skills_skips_a_symlinked_skill_file(tmp_path: Path):
+    """A `SKILL.md` that is a symlink points wherever its author aimed it -- reading it would put a file from
+    outside the skills tree into the roster, the brief, and (through materialise_skills) a worktree. Skipped,
+    the same way an unreadable one is; a real `SKILL.md` beside it is unaffected."""
+    outside = tmp_path / "outside.md"
+    outside.write_text("---\nname: borrowed\ndescription: Somewhere else entirely.\n---\n")
+    skills = tmp_path / "skills"
+    (skills / "borrowed").mkdir(parents=True)
+    (skills / "borrowed" / "SKILL.md").symlink_to(outside)
+    (skills / "real").mkdir()
+    (skills / "real" / "SKILL.md").write_text("---\nname: real\ndescription: An actual file.\n---\n")
+    assert [s.name for s in scan_skills([skills])] == ["real"]
+
+
 def test_parse_frontmatter_requires_a_closing_fence():
     assert parse_frontmatter("---\nname: brand\ndescription: never closed\nbody text") == {}
 

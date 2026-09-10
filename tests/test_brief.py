@@ -216,6 +216,29 @@ def test_recall_snippets_at_a_ref_skips_files_it_cannot_decode(tmp_path):
     assert any("Postgres" in h for h in hits)
 
 
+def test_brief_prints_a_product_skills_worktree_copy_not_the_pms_checkout(tmp_path):
+    """The worker contract's item 10 tells a worker to open the `SKILL.md` at the path the brief prints, and the
+    copy it can actually open is the one materialise_skills wrote into its own worktree under the adapter's
+    project skill directory -- not `.meld/skills/<name>/SKILL.md` in the PM's clone. An installed (non-product)
+    skill still prints the path the adapter reported for it."""
+    issue = mk_issue(11)
+    backend = next(w for w in builtin_workers() if w.name == "backend")
+    worktree = tmp_path / "wt"
+    pm_copy = tmp_path / "repo" / ".meld" / "skills" / "deploy-checklist" / "SKILL.md"
+    installed = Path("/Users/x/.claude/skills/security-review/SKILL.md")
+    skills = [WorkerType("deploy-checklist", "Pre-deploy steps.", "product-skill", pm_copy, ""),
+              WorkerType("security-review", "OWASP-style review of a change.", "skill", installed, "")]
+    text = render_brief(role=backend, kind="build", group="claude", model="m", effort="medium", issue=issue, pr=None, plan_text="",
+                        repo_root=tmp_path, worktree=worktree, base_branch="main", skills=skills, project_skills_dir=".fake/skills")
+    assert f"- `deploy-checklist` ({worktree / '.fake/skills/deploy-checklist/SKILL.md'}): Pre-deploy steps." in text
+    assert str(pm_copy) not in text
+    assert f"- `security-review` ({installed}): OWASP-style review of a change." in text
+    # An adapter with no project skill directory at all has nowhere to have copied it: the source path stands.
+    plain = render_brief(role=backend, kind="build", group="claude", model="m", effort="medium", issue=issue, pr=None, plan_text="",
+                         repo_root=tmp_path, worktree=worktree, base_branch="main", skills=skills)
+    assert f"- `deploy-checklist` ({pm_copy}): Pre-deploy steps." in plain
+
+
 def test_recall_snippets_at_a_ref_finds_a_decision_with_a_non_ascii_filename(tmp_path):
     """`git ls-tree --name-only` quotes any path with a non-ASCII byte under the default `core.quotePath`
     (`".meld/decisions/0002-caf\\303\\251.md"`), and a quoted path matches neither the `.md` filter nor a

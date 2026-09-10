@@ -433,7 +433,10 @@ def test_dispatch_materialises_product_skills_into_the_adapters_project_dir(tmp_
     lines = exclude_text.splitlines()
     assert ".fake/skills/deploy-checklist/" in lines and ".fake/skills/.meld-materialised.json" in lines
     assert ".fake/skills/" not in lines
-    assert "deploy-checklist" in (wt / ".meld-brief.md").read_text()
+    # The brief names the copy in this worktree (worker contract item 10), never the PM checkout's own file.
+    brief_text = (wt / ".meld-brief.md").read_text()
+    assert f"- `deploy-checklist` ({wt / '.fake/skills/deploy-checklist/SKILL.md'}): Pre-deploy steps" in brief_text
+    assert str(repo / ".meld" / "skills") not in brief_text
     assert out["skills_materialised"] == {"made": [".fake/skills/deploy-checklist"], "skipped": []}
     manifest = json.loads((wt / ".fake" / "skills" / ".meld-materialised.json").read_text())
     assert manifest == ["deploy-checklist"]
@@ -562,6 +565,31 @@ def test_materialise_skills_rejects_an_unsafe_skill_name(tmp_path):
     out = materialise_skills(worktree, FakeAdapter(), [bad])
     assert out == {"made": [], "skipped": ["../../x: not a valid skill name"]}
     assert (worktree / "x" / "keep.txt").read_text() == "do not delete me\n"
+
+
+def test_materialise_skills_does_not_follow_a_symlink_out_of_the_skill_directory(tmp_path):
+    """`shutil.copytree` copies a symlink's *target* by default, so a link inside a product skill directory
+    would have its content written into the worktree, where a worker reads it and could commit it. Links are
+    dropped from the copy; the skill's real files still land."""
+    from tests.gitfixtures import make_origin_and_clone
+    origin, worktree = make_origin_and_clone(tmp_path)
+    secret = tmp_path / "id_rsa"
+    secret.write_text("PRIVATE KEY MATERIAL\n")
+    src = tmp_path / "skills" / "deploy-checklist"
+    (src / "reference").mkdir(parents=True)
+    (src / "SKILL.md").write_text("---\nname: deploy-checklist\ndescription: Pre-deploy steps\n---\n# Deploy\n")
+    (src / "reference" / "steps.md").write_text("1. Check the dashboard\n")
+    (src / "borrowed-key").symlink_to(secret)                        # a file link, beside the real files
+    (src / "reference" / "elsewhere").symlink_to(tmp_path / "skills")  # and a directory link, one level down
+    skill = WorkerType(name="deploy-checklist", description="", source="product-skill", path=src / "SKILL.md")
+    out = materialise_skills(worktree, FakeAdapter(), [skill])
+    assert out == {"made": [".fake/skills/deploy-checklist"], "skipped": []}
+    dest = worktree / ".fake" / "skills" / "deploy-checklist"
+    assert (dest / "SKILL.md").read_text().startswith("---") and (dest / "reference" / "steps.md").exists()
+    assert not (dest / "borrowed-key").exists() and not (dest / "borrowed-key").is_symlink()
+    assert not (dest / "reference" / "elsewhere").exists() and not (dest / "reference" / "elsewhere").is_symlink()
+    copied = [f for f in dest.rglob("*") if f.is_file()]
+    assert copied and all("PRIVATE KEY MATERIAL" not in f.read_text() for f in copied)
 
 
 def test_dispatch_never_prunes_a_stale_copy_that_became_tracked(tmp_path):

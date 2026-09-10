@@ -264,6 +264,14 @@ def _tracked_in_worktree(worktree: Path, relpath: str) -> bool:
         return False
 
 
+def _drop_symlinks(directory: str, names: list[str]) -> set[str]:
+    """`shutil.copytree`'s `ignore` callback: never copy a symlink found inside a skill directory. By default
+    copytree writes the link's *target* into the worktree -- content from outside the skill tree, which a worker
+    then reads and could commit -- and a link that points back up its own tree makes the copy recurse until it
+    fails, losing the whole skill. Dropping links keeps the copy to files the skill directory really holds."""
+    return {n for n in names if Path(directory, n).is_symlink()}
+
+
 def materialise_skills(worktree: Path, adapter: Adapter, skills: Sequence[WorkerType]) -> dict:
     """Copy the product's roster-listed product skills into the worktree under the adapter's project skill
     directory, so the CLI discovers them natively (decision 14). Worktree-local and excluded from git via
@@ -343,7 +351,7 @@ def materialise_skills(worktree: Path, adapter: Adapter, skills: Sequence[Worker
         try:
             if dest.exists():
                 shutil.rmtree(dest)
-            shutil.copytree(skill.path.parent, dest)
+            shutil.copytree(skill.path.parent, dest, ignore=_drop_symlinks)
         except OSError as e:
             skipped.append(f"{skill.name}: {type(e).__name__}")
             continue
@@ -412,7 +420,7 @@ def _dispatch_build(ctx, board: Board, actor: Actor, number: int, adapter: Adapt
                          pr=None, plan_text=board.plan_text, repo_root=ctx.repo_root, worktree=wt, base_branch=ctx.cfg.default_branch,
                          skills=select_skills(f"{issue.title}\n{issue.body}",
                                               [w for w in ctx.roster_entries() if w.source in ("skill", "product-skill")], pinned=issue.skills),
-                         recall=recall_hits)
+                         recall=recall_hits, project_skills_dir=adp.project_skills_dir())
     timeout = ctx.cfg.timeout_seconds(issue.size or "M")
     deadline = when + timedelta(seconds=timeout)
     pid, log_path = _launch(ctx, group, adp, worktree=wt, brief=brief, model=issue.model or "", effort=issue.effort or "",
@@ -470,7 +478,7 @@ def _dispatch_pr(ctx, board: Board, actor: Actor, number: int, kind: str, adapte
                          plan_text=board.plan_text, repo_root=ctx.repo_root, worktree=wt, base_branch=ctx.cfg.default_branch, concern=concern,
                          skills=select_skills(f"{pr.title}\n{pr.body}",
                                               [w for w in ctx.roster_entries() if w.source in ("skill", "product-skill")]),
-                         recall=recall_hits)
+                         recall=recall_hits, project_skills_dir=adp.project_skills_dir())
     timeout = ctx.cfg.timeout_seconds("M")
     deadline = when + timedelta(seconds=timeout)
     pid, log_path = _launch(ctx, group, adp, worktree=wt, brief=brief, model=model, effort=effort, timeout=timeout, kind=kind,

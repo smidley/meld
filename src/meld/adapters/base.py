@@ -76,7 +76,9 @@ def scan_skills(dirs: Iterable[Path], source: str = "skill") -> list[WorkerType]
             continue
         for skill_dir in sorted(p for p in d.iterdir() if p.is_dir() and not p.name.startswith(".")):
             f = skill_dir / "SKILL.md"
-            if not f.is_file():
+            # is_symlink before is_file: a link points wherever its author aimed it, and reading it would put a
+            # file from outside the skills tree into the roster, a brief, and (via materialise_skills) a worktree.
+            if f.is_symlink() or not f.is_file():
                 continue
             try:
                 text = f.read_text()

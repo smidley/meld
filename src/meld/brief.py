@@ -217,9 +217,19 @@ def agent_instruction_files(worktree: Path) -> list[str]:
     return [name for name in _AGENT_FILES if (worktree / name).is_file()]
 
 
+def _skill_path(skill: WorkerType, worktree: Path, project_skills_dir: str | None) -> Path | None:
+    """The `SKILL.md` this worker can actually open. For a product skill that is the copy `materialise_skills`
+    wrote into this worktree under the adapter's project skill directory (it runs before every `render_brief`),
+    not the file in the PM's own clone, which is not the worker's checkout and may not even be on its machine.
+    An installed skill, or an adapter with no project skill directory, keeps the path the roster reported."""
+    if skill.source == "product-skill" and project_skills_dir:
+        return worktree / project_skills_dir / skill.name / "SKILL.md"
+    return skill.path
+
+
 def render_brief(*, role: WorkerType, kind: str, group: str, model: str, effort: str, issue: Issue | None, pr: PullRequest | None,
                  plan_text: str, repo_root: Path, worktree: Path, base_branch: str, concern: str | None = None,
-                 skills: Sequence[WorkerType] = (), recall: Sequence[str] = ()) -> str:
+                 skills: Sequence[WorkerType] = (), recall: Sequence[str] = (), project_skills_dir: str | None = None) -> str:
     if issue is not None:
         title = f"# Meld brief: {role.name} for #{issue.number}"
         task = f"## Your task\n\n**#{issue.number}: {issue.title}**\n\n{issue.body.strip() or '(no description)'}\n"
@@ -264,7 +274,8 @@ def render_brief(*, role: WorkerType, kind: str, group: str, model: str, effort:
     if skills:
         ordered = sorted(skills, key=lambda s: s.name)
         shown = ordered[:MAX_SKILLS]
-        bullets = [f"- `{s.name}` ({s.path}): {s.description}" if s.path else f"- `{s.name}`: {s.description}" for s in shown]
+        paths = [(s, _skill_path(s, worktree, project_skills_dir)) for s in shown]
+        bullets = [f"- `{s.name}` ({p}): {s.description}" if p else f"- `{s.name}`: {s.description}" for s, p in paths]
         parts += ["## Skills available", ""] + bullets
         overflow = len(ordered) - len(shown)
         if overflow:

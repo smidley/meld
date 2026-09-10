@@ -101,6 +101,60 @@ def test_tick_posts_exactly_one_framework_comment_when_it_reclaims_an_expired_le
     assert len(for_13) == 1 and for_13[0].startswith("[claude:pm] EXPIRED #13\n")
 
 
+def test_tick_unlocks_an_answered_needs_human_issue(tmp_path):
+    # #14 is needs_human and claimed by codex in the fixture (Stripe sandbox key). A listed human's RESOLVED,
+    # newer than the ask, is the record (spec 14) -- tick just has to make the label follow it.
+    fake, ctx, repo, origin = make_product(tmp_path)
+    comments = fixture("comments_10.json") + [
+        {"id": 150, "user": {"login": "meld-codex-bot"}, "created_at": "2026-09-03T09:20:00Z",
+         "body": "[codex] NEEDS-HUMAN #14\n\nStripe sandbox key required"},
+        {"id": 151, "user": {"login": "empowerScott"}, "created_at": "2026-09-03T09:25:00Z",
+         "body": "[human] RESOLVED #14\n\nkey is in STRIPE_KEY now"},
+    ]
+    fake.route("GET", R + "issues/10/comments", comments)
+    fake.route("POST", R + "issues/14/labels", [])
+    fake.route("DELETE", R + "issues/14/labels/meld%3Aneeds-human", {})
+    out = tick(ctx, now=NOW, env={})
+    assert out["resumed"] == [14]
+    mutations = [(c.method, c.endpoint) for c in fake.calls if c.method != "GET" and "issues/14/labels" in c.endpoint]
+    assert ("POST", R + "issues/14/labels") in mutations and ("DELETE", R + "issues/14/labels/meld%3Aneeds-human") in mutations
+    posted = next(c.body for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/14/labels")
+    assert posted == {"labels": ["meld:in-progress"]}   # codex still holds the claim, so it resumes in-progress, not ready
+    # The human's RESOLVED comment is the record; resuming #14 posts nothing of its own (housekeeping's unrelated
+    # IGNORED-COMMENT sweep over the fixture's ever-unauthorized comment 103 still fires -- it never mentions #14).
+    coordination_bodies = [c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/10/comments"]
+    assert not any("#14" in b for b in coordination_bodies)
+
+
+def test_tick_leaves_an_unanswered_needs_human_issue_alone(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path)   # fixture #14 has no RESOLVED/PROVIDED comment at all
+    out = tick(ctx, now=NOW, env={})
+    assert out["resumed"] == []
+    assert not [c for c in fake.calls if c.method != "GET" and "issues/14/labels" in c.endpoint]
+
+
+def test_tick_resumes_an_unclaimed_needs_human_issue_to_ready(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path)
+    issues = fixture("issues.json")
+    for i in issues:
+        if i["number"] == 14:
+            i["labels"] = [l for l in i["labels"] if not l["name"].startswith("meld:claimed-by:")]
+    fake.route("GET", R + "issues", issues)
+    comments = fixture("comments_10.json") + [
+        {"id": 150, "user": {"login": "meld-codex-bot"}, "created_at": "2026-09-03T09:20:00Z",
+         "body": "[codex] NEEDS-HUMAN #14\n\nStripe sandbox key required"},
+        {"id": 151, "user": {"login": "empowerScott"}, "created_at": "2026-09-03T09:25:00Z",
+         "body": "[human] RESOLVED #14\n\nkey is in STRIPE_KEY now"},
+    ]
+    fake.route("GET", R + "issues/10/comments", comments)
+    fake.route("POST", R + "issues/14/labels", [])
+    fake.route("DELETE", R + "issues/14/labels/meld%3Aneeds-human", {})
+    out = tick(ctx, now=NOW, env={})
+    assert out["resumed"] == [14]
+    posted = next(c.body for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/14/labels")
+    assert posted == {"labels": ["meld:ready"]}
+
+
 def test_tick_is_pm_only(tmp_path):
     fake, orch, *_ = make_product(tmp_path, role="orchestrator")
     with pytest.raises(DispatchError, match="PM"):

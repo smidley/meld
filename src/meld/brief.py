@@ -229,7 +229,8 @@ def _skill_path(skill: WorkerType, worktree: Path, project_skills_dir: str | Non
 
 def render_brief(*, role: WorkerType, kind: str, group: str, model: str, effort: str, issue: Issue | None, pr: PullRequest | None,
                  plan_text: str, repo_root: Path, worktree: Path, base_branch: str, concern: str | None = None,
-                 skills: Sequence[WorkerType] = (), recall: Sequence[str] = (), project_skills_dir: str | None = None) -> str:
+                 skills: Sequence[WorkerType] = (), recall: Sequence[str] = (), project_skills_dir: str | None = None,
+                 scope: Sequence[str] = (), may_delete: Sequence[str] = (), authorized: Sequence[str] = ()) -> str:
     if issue is not None:
         title = f"# Meld brief: {role.name} for #{issue.number}"
         task = f"## Your task\n\n**#{issue.number}: {issue.title}**\n\n{issue.body.strip() or '(no description)'}\n"
@@ -262,6 +263,16 @@ def render_brief(*, role: WorkerType, kind: str, group: str, model: str, effort:
         parts += ["## Plan excerpt", "", excerpt, ""]
     if hints:
         parts += ["## Files to start from", ""] + [f"- `{h}`" for h in hints] + [""]
+    if scope or may_delete:
+        heading = "## Scope" if issue is not None else "## Scope declared by the issue"
+        parts += [heading, ""]
+        if scope:
+            parts += ["You may change only files matching these globs; merge will refuse changes to any other file:", ""] + [f"- `{g}`" for g in scope] + [""]
+        parts += (["Files you may delete (merge refuses any other deletion):", ""] + [f"- `{p}`" for p in may_delete] + [""]
+                  if may_delete else
+                  ["No deletions are allowed: merge refuses a PR that deletes a file this issue does not list under `## May delete`.", ""])
+    if authorized:
+        parts += ["## Authorized by a human", "", "A listed human has authorized these held categories for this task and no others:", ""] + [f"- {c}" for c in authorized] + [""]
     decisions = decision_titles(repo_root)
     if decisions:
         parts += ["## Decisions in force", ""] + [f"- {t}" for t in decisions] + ["", "Read the matching file under `.meld/decisions/` before departing from any of them.", ""]

@@ -89,6 +89,29 @@ def test_render_brief_for_a_builder_and_a_reviewer(tmp_path: Path):
     assert text.startswith("# Meld brief: reviewer for PR #20") and "codex" in text and "verdict" in text
 
 
+def test_render_brief_carries_scope_and_authorized_categories(tmp_path: Path):
+    backend = next(w for w in builtin_workers() if w.name == "backend")
+    issue = mk_issue(11, title="Add health endpoint", size="S")
+    text = render_brief(role=backend, kind="build", group="claude", model="claude-sonnet-5", effort="medium", issue=issue, pr=None,
+                        plan_text="", repo_root=tmp_path, worktree=tmp_path, base_branch="main",
+                        scope=("src/meld/*.py",), may_delete=("src/meld/legacy.py",), authorized=("delete",))
+    assert "## Scope" in text and "src/meld/*.py" in text and "src/meld/legacy.py" in text
+    assert "merge will refuse changes to any other file" in text
+    assert "## Authorized by a human" in text and "delete" in text
+    bare = render_brief(role=backend, kind="build", group="claude", model="claude-sonnet-5", effort="medium", issue=issue, pr=None,
+                        plan_text="", repo_root=tmp_path, worktree=tmp_path, base_branch="main")
+    # Neither dynamic section is added (the contract's own fixed rule still names "## Authorized by a human"
+    # generically, so the section's own heading/body text -- not that substring alone -- is what must be absent).
+    assert "## Scope" not in bare
+    assert "A listed human has authorized these held categories" not in bare
+
+    reviewer = next(w for w in builtin_workers() if w.name == "reviewer")
+    pr = mk_pr(20, 13, committer="meld-codex-bot")
+    review_text = render_brief(role=reviewer, kind="review", group="claude", model="claude-opus-5", effort="high", issue=None, pr=pr,
+                               plan_text="", repo_root=tmp_path, worktree=tmp_path, base_branch="main", scope=("src/meld/*.py",))
+    assert "## Scope declared by the issue" in review_text
+
+
 def test_read_result_missing_valid_and_malformed(tmp_path: Path):
     assert read_result(tmp_path) is None
     (tmp_path / RESULT_FILE).write_text(json.dumps({"outcome": "done", "summary": "did it", "verified_by": "pytest -> 3 passed"}))

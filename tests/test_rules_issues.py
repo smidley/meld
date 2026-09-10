@@ -83,6 +83,16 @@ def test_dispatch_refusals():
     assert rule(mk_board(CFG2, issues=[labelled]), CLAUDE_PM, Verb.DISPATCH, labelled) == "issue has an open CHALLENGE"
 
 
+def test_dispatch_refuses_a_held_issue_until_a_listed_human_answers():
+    from tests.factories import mk_board, mk_comment, mk_issue
+    held = mk_issue(12, status="in_progress", claimed_by="claude", extra_labels=("meld:held:delete", "meld:held:public-release"))
+    ask = mk_comment(50, "meld-claude-bot", "[claude] NEEDS-HUMAN #12\n\nheld: delete, public-release", "2026-09-05T10:00:00Z")
+    answer = mk_comment(51, "empowerScott", "[human] RESOLVED #12\n\ngo ahead", "2026-09-05T10:05:00Z")
+    assert rule(mk_board(CFG2, issues=[held], comments=[ask]), CLAUDE_PM, Verb.DISPATCH, held) == \
+        "held (delete, public-release): a listed human must post RESOLVED #12 (or PROVIDED #12) first"
+    assert rule(mk_board(CFG2, issues=[held], comments=[ask, answer]), CLAUDE_PM, Verb.DISPATCH, held) is None
+
+
 def test_dispatch_validates_model_effort_size():
     missing = mk_issue(12, status="in_progress", claimed_by="claude", effort=None, size=None)
     assert rule(mk_board(CFG2, issues=[missing]), CLAUDE_PM, Verb.DISPATCH, missing) == "issue is missing labels: effort, size"

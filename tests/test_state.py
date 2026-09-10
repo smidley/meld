@@ -48,7 +48,7 @@ def test_snapshot_round_trip(tmp_path):
 
 def test_digest_and_diff_name_what_changed():
     b1 = mk_board(CFG2, issues=[mk_issue(11)], pulls=[mk_pr(20, 13)], runs={"claude": {12: mk_run("claude", 12)}, "codex": {}})
-    b2 = mk_board(CFG2, issues=[mk_issue(11, status="in_progress", assignees=("meld-claude-bot",))],
+    b2 = mk_board(CFG2, issues=[mk_issue(11, status="in_progress")],
                   pulls=[mk_pr(20, 13, approvals=("meld-codex-bot",))],
                   runs={"claude": {12: mk_run("claude", 12, alive=False)}, "codex": {}}, halted=True)
     d1, d2 = board_digest(b1), board_digest(b2)
@@ -174,7 +174,7 @@ def test_run_record_extensions_round_trip(tmp_path):
 
 def test_diff_changes_are_structured_and_filterable():
     b1 = mk_board(CFG2, issues=[mk_issue(11)], pulls=[mk_pr(20, 13)])
-    b2 = mk_board(CFG2, issues=[mk_issue(11, status="in_progress", assignees=("meld-claude-bot",))],
+    b2 = mk_board(CFG2, issues=[mk_issue(11, status="in_progress")],
                   pulls=[mk_pr(20, 13, approvals=("meld-codex-bot",))], halted=True)
     d1, d2 = board_digest(b1), board_digest(b2)
     changes = diff_changes(d1, d2)

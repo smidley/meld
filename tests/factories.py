@@ -31,7 +31,7 @@ STATUS_TO_LABEL = {"planned": "meld:planned", "ready": "meld:ready", "in_progres
 
 
 def mk_issue(number: int, status: str = "ready", worker: str | None = "backend", model: str | None = "claude-sonnet-5",
-             effort: str | None = "medium", size: str | None = "S", assignees: tuple[str, ...] = (),
+             effort: str | None = "medium", size: str | None = "S",
              claimed_by: str | None = None, extra_labels: tuple[str, ...] = (), state: str = "open",
              title: str | None = None, updated_at: str = "2026-09-03T10:00:00Z") -> Issue:
     labels = set(extra_labels)
@@ -43,7 +43,7 @@ def mk_issue(number: int, status: str = "ready", worker: str | None = "backend",
     if claimed_by is not None:
         labels.add(claim_label(claimed_by))
     return Issue(number=number, title=title or f"Issue {number}", body="", labels=frozenset(labels),
-                 assignees=tuple(assignees), state=state, milestone=3, created_at="2026-09-03T09:00:00Z",
+                 state=state, milestone=3, created_at="2026-09-03T09:00:00Z",
                  updated_at=updated_at)
 
 

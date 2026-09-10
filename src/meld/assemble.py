@@ -73,7 +73,7 @@ def issue_number_from_pr(body: str, head_ref: str) -> int | None:
 def _issue(raw: dict) -> Issue:
     return Issue(
         number=raw["number"], title=raw.get("title", ""), body=raw.get("body") or "", labels=_labels(raw),
-        assignees=tuple(a["login"] for a in raw.get("assignees", [])), state=raw.get("state", "open"),
+        state=raw.get("state", "open"),
         milestone=(raw.get("milestone") or {}).get("number"), created_at=raw.get("created_at", ""),
         updated_at=raw.get("updated_at", ""),
     )

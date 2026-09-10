@@ -50,7 +50,6 @@ class Issue:
     title: str
     body: str
     labels: frozenset[str]
-    assignees: tuple[str, ...]
     state: str
     milestone: int | None
     created_at: str = ""
@@ -223,7 +222,7 @@ class Lease:
     issue: int
     group: str
     until: str
-    comment_id: int = 0
+    comment_id: int = 0    # informational only; no decision path reads it
 
 
 @dataclass(frozen=True)

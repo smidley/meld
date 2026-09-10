@@ -159,7 +159,7 @@ def board_digest(board: Board) -> dict:
     return {
         "phase": board.phase,
         "halted": board.halted,
-        "issues": {str(n): {"status": i.status, "assignees": list(i.assignees), "labels": sorted(i.labels)}
+        "issues": {str(n): {"status": i.status, "claimants": list(i.claimants), "labels": sorted(i.labels)}
                    for n, i in sorted(board.issues.items())},
         "pulls": {str(n): {"head": p.head_sha, "approvals": sorted(p.approvals_on_head()),
                            "changes_requested": sorted(p.changes_requested_on_head()), "checks": p.checks, "state": p.state,
@@ -204,7 +204,7 @@ def diff_changes(old: dict | None, new: dict) -> list[Change]:
         elif a["status"] != b["status"]:
             out.append(Change("issue", ref, a["status"], b["status"], f"issue #{n}: {a['status']} -> {b['status']}"))
         elif a != b:
-            out.append(Change("issue", ref, a, b, f"issue #{n}: labels or assignees changed"))
+            out.append(Change("issue", ref, a, b, f"issue #{n}: labels or claim changed"))
     for n in sorted(set(old.get("pulls", {})) | set(new.get("pulls", {})), key=int):
         a, b = old.get("pulls", {}).get(n), new.get("pulls", {}).get(n)
         ref = f"pr #{n}"

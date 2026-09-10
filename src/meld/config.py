@@ -7,10 +7,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Mapping
 
-# A group name becomes a party label, so it must not collide with a reserved party and
-# must parse as one in a coordination header.
+# A group name becomes a party label (must not collide with a reserved party, and must parse as one in a
+# coordination header), a meld:claimed-by:<group> GitHub label (labels are case-insensitive for uniqueness, and
+# GitHub caps a label name at 50 characters -- the "meld:claimed-by:" prefix leaves 32), and a worktree path
+# component -- so it is lowercase, path-safe, and length-capped.
 RESERVED_PARTY_NAMES = ("human", "joint")
-GROUP_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+GROUP_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 
 
 class ConfigError(ValueError):
@@ -123,7 +125,8 @@ class Config:
             if name in RESERVED_PARTY_NAMES:
                 raise ConfigError(f"{path}: {name!r} is a reserved party name and cannot name a group")
             if not GROUP_NAME_RE.match(name):
-                raise ConfigError(f"{path}: group names must match {GROUP_NAME_RE.pattern}")
+                raise ConfigError(f"{path}: group names must match {GROUP_NAME_RE.pattern} -- lowercase, at most 32 "
+                                  "characters: a name becomes the meld:claimed-by:<group> label and a worktree path component")
             auth = str(g.get("auth", "pat"))
             if auth not in ("pat", "app"):
                 raise ConfigError(f"{path}.auth must be 'pat' or 'app', got {auth!r}")

@@ -53,7 +53,6 @@ def test_claim_adds_the_label_verifies_it_and_swaps_status_labels(tmp_path):
     assert mutations[:2] == [("POST", R + "labels"), ("POST", R + "issues/11/labels")]      # ensure, then claim
     assert [c.body["labels"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/11/labels"] == [[CLAIM], ["meld:in-progress"]]
     assert ("DELETE", label_ep(11, "meld:ready")) in mutations
-    assert not any("assignees" in c.endpoint for c in fake.calls)
     assert posted_headers(fake) == []
     # no stale own lease in the fixture, so a successful claim posts no EXPIRED comment
     assert not any(h.startswith("EXPIRED") for h in posted_headers(fake))
@@ -165,7 +164,6 @@ def test_release_removes_every_claim_label_and_reports_the_previous_claimants(tm
     assert out == {"released": 12, "previous_claimants": ["claude"]}
     mutations = [(c.method, c.endpoint) for c in fake.calls if c.method != "GET"]
     assert mutations[0] == ("DELETE", label_ep(12, CLAIM))
-    assert not any("assignees" in c.endpoint for c in fake.calls)
 
 
 def test_cli_claim_refusal_exit_code(tmp_path, monkeypatch):

@@ -61,7 +61,7 @@ def test_plan_issues_creates_planned_issues_once(tmp_path):
     # a second run skips items whose plan-item marker already exists on the board (still planning: planning_board
     # rebuilds #10 without meld:plan-approved every time, since a raw fixture() re-read would put it back)
     planning_board(fake, [{"number": 31, "title": "Login form", "body": "plan-item: login-form\nplan-ref: plan-3\n", "state": "open",
-                          "labels": [{"name": "meld:planned"}], "assignees": [], "milestone": {"number": 3}}])
+                          "labels": [{"name": "meld:planned"}], "milestone": {"number": 3}}])
     again = plan_issues(ctx, "plan-3")
     assert again["skipped"] == ["login-form"] and again["created"] == [31]
     # only the proposer (claude) may create the issues for plan-3: read the SAME board (same fake/repo) as a codex
@@ -106,7 +106,7 @@ def test_plan_issues_refuses_without_a_verified_joint_plan(tmp_path):
 def test_plan_approve_flips_planned_issues_to_ready(tmp_path):
     fake, human, repo, origin = make_product(tmp_path, group=None)
     planned = [{"number": n, "title": f"P{n}", "body": f"plan-item: p{n}\nplan-ref: plan-3\n", "state": "open",
-                "labels": [{"name": "meld:planned"}, {"name": "worker:backend"}], "assignees": [], "milestone": {"number": 3}} for n in (31, 32)]
+                "labels": [{"name": "meld:planned"}, {"name": "worker:backend"}], "milestone": {"number": 3}} for n in (31, 32)]
     planning_board(fake, planned)
     fake.route("GET", R + "issues/10/comments", fixture("comments_10.json") + PLAN_THREAD)
     for n in (10, 31, 32):
@@ -126,7 +126,7 @@ def test_plan_approve_adds_the_label_last_so_a_mid_flip_failure_can_be_retried(t
     # so it must be the LAST call -- a failure while flipping planned issues then leaves a retryable, still-planning board.
     fake, human, repo, origin = make_product(tmp_path, group=None)
     planned = [{"number": n, "title": f"P{n}", "body": f"plan-item: p{n}\nplan-ref: plan-3\n", "state": "open",
-                "labels": [{"name": "meld:planned"}, {"name": "worker:backend"}], "assignees": [], "milestone": {"number": 3}} for n in (31, 32)]
+                "labels": [{"name": "meld:planned"}, {"name": "worker:backend"}], "milestone": {"number": 3}} for n in (31, 32)]
     planning_board(fake, planned)
     fake.route("GET", R + "issues/10/comments", fixture("comments_10.json") + PLAN_THREAD)
     for n in (10, 31):
@@ -154,7 +154,7 @@ def test_plan_ack_posts_ack_and_readies_the_additions(tmp_path):
         {"id": 313, "user": {"login": "meld-codex-bot"}, "created_at": "2026-09-03T11:02:00Z", "body": "[joint] PLAN-ADD plan-add-1\n\n" + add_text}]
     fake.route("GET", R + "issues/10/comments", thread)
     issues = fixture("issues.json") + [{"number": 33, "title": "Audit log", "body": "plan-item: audit-log\nplan-ref: plan-add-1\n", "state": "open",
-                                        "labels": [{"name": "meld:planned"}], "assignees": [], "milestone": {"number": 3}}]
+                                        "labels": [{"name": "meld:planned"}], "milestone": {"number": 3}}]
     fake.route("GET", R + "issues", issues)
     fake.route("POST", R + "issues/33/labels", [])
     fake.route("DELETE", R + "issues/33/labels/meld%3Aplanned", [])
@@ -174,7 +174,7 @@ def test_plan_ack_is_idempotent_when_already_acked(tmp_path):
         {"id": 314, "user": {"login": "empowerScott"}, "created_at": "2026-09-03T11:03:00Z", "body": "[human] ACK plan-add-1\n\nplan-add-1 acknowledged; its issues are ready"}]
     fake.route("GET", R + "issues/10/comments", thread)
     issues = fixture("issues.json") + [{"number": 33, "title": "Audit log", "body": "plan-item: audit-log\nplan-ref: plan-add-1\n", "state": "open",
-                                        "labels": [{"name": "meld:planned"}], "assignees": [], "milestone": {"number": 3}}]
+                                        "labels": [{"name": "meld:planned"}], "milestone": {"number": 3}}]
     fake.route("GET", R + "issues", issues)
     fake.route("POST", R + "issues/33/labels", [])
     fake.route("DELETE", R + "issues/33/labels/meld%3Aplanned", [])

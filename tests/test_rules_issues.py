@@ -38,7 +38,7 @@ def test_claim_refusals_in_priority_order():
 
 
 def test_claim_respects_concurrency_cap():
-    busy = [mk_issue(n, status="in_progress", assignees=("meld-claude-bot",), claimed_by="claude") for n in range(100, 108)]
+    busy = [mk_issue(n, status="in_progress", claimed_by="claude") for n in range(100, 108)]
     fresh = mk_issue(11, model="gpt-test")  # known to codex, unknown to claude; the cap check comes before the model check
     b = mk_board(CFG2, issues=[*busy, fresh])
     assert rule(b, CLAUDE_PM, Verb.CLAIM, fresh) == "claude is at its concurrency cap (8/8)"
@@ -59,7 +59,7 @@ def test_claim_requires_known_model_and_budget():
 
 # ---- dispatch ----------------------------------------------------------------
 
-def test_dispatch_legal_for_assignee_pm():
+def test_dispatch_legal_for_the_claiming_pm():
     i = mk_issue(12, status="in_progress", claimed_by="claude", size="M")
     assert rule(mk_board(CFG2, issues=[i]), CLAUDE_PM, Verb.DISPATCH, i) is None
 
@@ -98,7 +98,7 @@ def test_dispatch_validates_model_effort_size():
 # ---- collect -----------------------------------------------------------------
 
 def test_collect_rules():
-    i = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",))
+    i = mk_issue(12, status="in_progress")
     none = mk_board(CFG2, issues=[i])
     assert rule(none, CLAUDE_PM, Verb.COLLECT, i) == "no run record for #12 in claude"
     alive = mk_board(CFG2, issues=[i], runs={"claude": {12: mk_run("claude", 12)}, "codex": {}})
@@ -207,12 +207,12 @@ def test_post_is_refusable_but_is_not_a_board_verb():
 
 def test_reap_legality_for_build_runs():
     rec = mk_run("claude", 11, alive=False, collected=True)
-    open_issue = mk_issue(11, status="in_progress", assignees=("meld-claude-bot",))
+    open_issue = mk_issue(11, status="in_progress")
     assert rule(mk_board(CFG2, issues=[open_issue], runs={"claude": {11: rec}}), CLAUDE_PM, Verb.REAP, open_issue) == \
         "issue is still open and its PR is not merged"
     merged = mk_pr(21, 11, committer="meld-claude-bot", state="closed", merged=True)
     assert rule(mk_board(CFG2, issues=[open_issue], pulls=[merged], runs={"claude": {11: rec}}), CLAUDE_PM, Verb.REAP, open_issue) is None
-    closed = mk_issue(11, state="closed", assignees=("meld-claude-bot",))
+    closed = mk_issue(11, state="closed")
     b = mk_board(CFG2, issues=[closed], runs={"claude": {11: rec}})
     assert rule(b, CLAUDE_PM, Verb.REAP, closed) is None
     assert rule(mk_board(CFG2, issues=[closed]), CLAUDE_PM, Verb.REAP, closed) == "no run record for #11 in claude"
@@ -232,13 +232,13 @@ def test_tag_legality():
     assert "tag" in legal_issue_verbs(b, CFG2, CLAUDE_ORCH, i, REG) and "tag" not in legal_issue_verbs(b, CFG2, CLAUDE_PM, i, REG)
 
 
-def test_claim_and_dispatch_follow_the_claim_label_not_the_assignee():
-    held_by_claude = mk_issue(12, status="in_progress", claimed_by="claude", assignees=("meld-codex-bot",))  # assignee lies; the label rules
+def test_claim_and_dispatch_follow_the_claim_label():
+    held_by_claude = mk_issue(12, status="in_progress", claimed_by="claude")
     board = mk_board(CFG2, issues=[held_by_claude])
     assert rule(board, CODEX_PM, Verb.DISPATCH, held_by_claude) == "issue is claimed by claude, not codex"
-    free_but_assigned = mk_issue(11, status="ready", assignees=("meld-claude-bot",), model="gpt-test")  # codex-known model: the model check is not what's under test
-    board = mk_board(CFG2, issues=[free_but_assigned])
-    assert rule(board, CODEX_PM, Verb.CLAIM, free_but_assigned) is None
+    free = mk_issue(11, status="ready", model="gpt-test")  # codex-known model: the model check is not what's under test
+    board = mk_board(CFG2, issues=[free])
+    assert rule(board, CODEX_PM, Verb.CLAIM, free) is None
     contested = mk_issue(13, status="in_progress", extra_labels=("meld:claimed-by:claude", "meld:claimed-by:codex"))
     board = mk_board(CFG2, issues=[contested])
     assert rule(board, CODEX_PM, Verb.DISPATCH, contested) == "issue is claimed by claude, codex, not codex"

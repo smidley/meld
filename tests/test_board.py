@@ -15,12 +15,17 @@ def test_issue_status_precedence_and_labels():
     i = mk_issue(1, status="ready")
     assert i.status == "ready"
     assert i.worker == "backend" and i.model == "claude-sonnet-5" and i.effort == "medium" and i.size == "S"
-    both = Issue(2, "t", "", frozenset({"meld:blocked", "meld:needs-human", "meld:in-progress"}), (), "open", 3)
+    both = Issue(2, "t", "", frozenset({"meld:blocked", "meld:needs-human", "meld:in-progress"}), "open", 3)
     assert both.status == "needs_human"
-    assert Issue(3, "t", "", frozenset(), (), "open", 3).status == "unlabeled"
-    assert Issue(4, "t", "", frozenset({"meld:ready"}), (), "closed", 3).status == "closed"
+    assert Issue(3, "t", "", frozenset(), "open", 3).status == "unlabeled"
+    assert Issue(4, "t", "", frozenset({"meld:ready"}), "closed", 3).status == "closed"
     assert mk_issue(5, extra_labels=("meld:challenged",)).challenged
     assert mk_issue(6, worker=None).worker is None
+
+
+def test_issue_has_no_assignees_field():
+    from dataclasses import fields
+    assert "assignees" not in {f.name for f in fields(Issue)}
 
 
 def test_pr_review_math_uses_latest_review_per_author_on_head():
@@ -54,8 +59,8 @@ def test_derive_open_challenges_closes_on_verdict_or_retract():
 
 def test_board_helpers():
     b = mk_board(CFG2,
-                 issues=[mk_issue(11), mk_issue(12, status="in_progress", assignees=("meld-claude-bot",), claimed_by="claude"),
-                         mk_issue(13, status="in_review", assignees=("meld-claude-bot",))],
+                 issues=[mk_issue(11), mk_issue(12, status="in_progress", claimed_by="claude"),
+                         mk_issue(13, status="in_review")],
                  pulls=[mk_pr(20, 13)],
                  runs={"claude": {12: mk_run("claude", 12)}, "codex": {}},
                  open_challenges=frozenset({"#12"}))
@@ -79,7 +84,7 @@ def test_parse_lease_until_and_derive_leases():
     leases = derive_leases(cs)
     assert leases == {12: Lease(12, "claude", "2026-09-03T13:30:00Z", 2)}
     assert len(utc_now_iso()) == 20 and utc_now_iso().endswith("Z")
-    b = mk_board(CFG2, issues=[mk_issue(12, status="in_progress", assignees=("meld-claude-bot",))],
+    b = mk_board(CFG2, issues=[mk_issue(12, status="in_progress")],
                  leases={12: mk_lease(12, until="2026-09-03T11:00:00Z")}, now="2026-09-03T12:00:00Z")
     assert b.lease_expired(12) and not b.lease_expired(99)
 
@@ -141,9 +146,9 @@ def test_released_ends_a_lease_and_a_reclaim_does_not_revive_it():
     assert derive_leases(comments) == {}
 
 
-def test_pr_for_issue_prefers_the_current_assignees_pr_among_open_ones():
+def test_pr_for_issue_prefers_the_current_holders_pr_among_open_ones():
     from tests.factories import mk_board, mk_issue, mk_pr
-    board = mk_board(issues={11: mk_issue(11, "in_progress", assignees=("meld-codex-bot",), claimed_by="codex")},
+    board = mk_board(issues={11: mk_issue(11, "in_progress", claimed_by="codex")},
                      pulls={30: mk_pr(30, 11, author="meld-claude-bot"), 31: mk_pr(31, 11, author="meld-codex-bot"), 32: mk_pr(32, 11, author="meld-claude-bot")})
     assert board.pr_for_issue(11).number == 31
 

@@ -579,6 +579,7 @@ From plan 5b's whole-branch review (2026-09-09), accepted as deferred rather tha
 
 18. **`neutralise_closers` does not neutralise a full-URL closer.** `_CLOSER_RE` matches `#5` and `owner/repo#5`, so `Fixes https://github.com/o/r/issues/5` in worker-authored text still closes that issue when it reaches a PR body — and now also when it reaches a squash commit message (section 13). Pre-existing; the fix is to extend the pattern to the issue-URL form.
 19. **Nothing reports a product skill dropped for colliding with a worker's name.** `roster()` drops a `.meld/skills/<name>/SKILL.md` whose frontmatter `name:` is already a builtin or product worker (section 10), which is the right call, but the author sees no trace of it in `meld roster` or `meld doctor` — the skill is simply absent. A `meld doctor` warning naming the collision would close that.
+20. **Logins are compared case-sensitively.** `notifier`'s nudger set, `config.is_human`, and the bot-login checks match `.meld.toml` entries against GitHub logins by exact string, while GitHub treats logins case-insensitively; an entry whose case differs from GitHub's canonical form silently never matches. Normalise both sides (`.lower()`) at the comparison points, with tests (from plan 5b's fix-wave re-review, 2026-09-09).
 
 ## 22. Glossary
 

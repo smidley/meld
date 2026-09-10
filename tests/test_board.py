@@ -318,3 +318,12 @@ def test_replace_section_ignores_headings_inside_fenced_code_like_body_section_d
     assert replace_section(quoted, "Scope", ["a"]) == quoted + "\n## Scope\n- a\n"       # only a quoted heading: append a real one
     fenced_end = "## Scope\n- a\n\n```\n## Notes\n```\n- still scope\n"
     assert replace_section(fenced_end, "Scope", []) == ""                                      # a fenced heading does not end the section
+
+
+def test_an_unterminated_fence_is_inert_so_declarations_never_vanish():
+    from meld.board import body_section, fenced_lines, replace_section
+    body = "Goal text\n\nRepro:\n\n```python\nprint(1)\n\n## Scope\n- src/meld/*.py\n\n## May delete\n- src/old.py\n"
+    assert body_section(body, "Scope") == ("src/meld/*.py",) and body_section(body, "May delete") == ("src/old.py",)
+    rewritten = replace_section(body, "Scope", ["src/meld/new.py"])
+    assert rewritten.count("## Scope") == 1 and body_section(rewritten, "Scope") == ("src/meld/new.py",)
+    assert fenced_lines(["```", "## Scope", "```", "x"]) == frozenset({0, 1, 2}) and fenced_lines(["```", "## Scope"]) == frozenset()

@@ -47,21 +47,34 @@ def held_label(category: str) -> str:
     return HELD_LABEL_PREFIX + category
 
 
+def fenced_lines(lines: Sequence[str]) -> frozenset[int]:
+    """Indices of the lines inside fenced code, fence lines included. A fence is a MATCHED pair of lines whose first
+    non-space characters are ```; an unterminated opener is inert. Both readers of an issue body use this one rule, so
+    what `replace_section` writes is always what `body_section` reads -- and a truncated paste or a code block a human
+    left open while editing can never swallow the declarations below it (a scope that vanished would fail OPEN:
+    `Board.scope_violations` refuses nothing when no scope is declared)."""
+    fences = [i for i, line in enumerate(lines) if line.lstrip().startswith("```")]
+    if len(fences) % 2:
+        fences = fences[:-1]
+    inside: set[int] = set()
+    for opener, closer in zip(fences[0::2], fences[1::2]):
+        inside.update(range(opener, closer + 1))
+    return frozenset(inside)
+
+
 def body_section(body: str, heading: str) -> tuple[str, ...]:
     """The `- ` bullets under `## <heading>` in an issue body, up to the next heading; backticks stripped. Declarations
     live in the body because only orchestrators and humans can write it (spec 6): `## Scope`, `## May delete`.
 
-    Fenced code is skipped: a line whose first non-space characters are ``` toggles a fence, and inside one nothing is
-    a heading or a bullet. Issue bodies quote diffs and sample bodies routinely, and a quoted `## Scope`/`- glob`
-    otherwise read as the real declaration -- widening a scope, or the deletion allowlist, by example."""
+    Fenced code is skipped (`fenced_lines`): issue bodies quote diffs and sample bodies routinely, and a quoted
+    `## Scope`/`- glob` would otherwise read as the real declaration -- widening a scope, or the deletion allowlist,
+    by example."""
     out: list[str] = []
     active = False
-    fenced = False
-    for line in (body or "").splitlines():
-        if line.lstrip().startswith("```"):
-            fenced = not fenced
-            continue
-        if fenced:
+    lines = (body or "").splitlines()
+    fenced = fenced_lines(lines)
+    for i, line in enumerate(lines):
+        if i in fenced:
             continue
         if line.startswith("## "):
             active = line[3:].strip().lower() == heading.lower()
@@ -76,14 +89,8 @@ def body_section(body: str, heading: str) -> tuple[str, ...]:
 def _section_headings(lines: Sequence[str]) -> list[int]:
     """Indices of the `## ` heading lines outside fenced code -- the same reading `body_section` applies, so the section
     `replace_section` rewrites is always the one the board will read, never a heading quoted inside a fence."""
-    out: list[int] = []
-    fenced = False
-    for i, line in enumerate(lines):
-        if line.lstrip().startswith("```"):
-            fenced = not fenced
-        elif not fenced and line.startswith("## "):
-            out.append(i)
-    return out
+    fenced = fenced_lines(lines)
+    return [i for i, line in enumerate(lines) if i not in fenced and line.startswith("## ")]
 
 
 def replace_section(body: str, heading: str, items: Sequence[str]) -> str:

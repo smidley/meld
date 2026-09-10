@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Sequence
 
 from meld.actions import refuse
-from meld.board import HELD_CATEGORIES, held_label, replace_section
+from meld.board import HELD_CATEGORIES, body_section, held_label, replace_section
 from meld.grammar import Header, compose
 from meld.models import SIZES
 from meld.rules import Refusal, Verb, issue_refusal
@@ -62,6 +62,22 @@ def tag(ctx, number: int, *, worker: str | None = None, model: str | None = None
             for name in skills:
                 if name not in allowed:
                     refuse(ctx, board, Refusal(Verb.TAG, target, f"skill '{name}' is not an installed or product skill for {group.name}"))
+    all_held = sorted(set(issue.held) | set(held or ()))
+    new_held = [c for c in dict.fromkeys(held or ()) if c not in issue.held]          # de-duplicated, order kept
+    if new_held:
+        # Only a category the issue does not carry yet re-gates dispatch (a newer NEEDS-HUMAN than the human's last answer),
+        # so re-tagging one it already has posts neither the labels again nor a duplicate ask.
+        #
+        # The ask is the FIRST write of the whole call and is posted for every actor, human included (the ordering
+        # `housekeeping.ci_red_sweep` uses). The labels are the gate and the ask is the stamp `Board.needs_human_answered`
+        # compares an answer against: labels without an ask are a hold nothing can lift on purpose and that any earlier
+        # answer lifts by accident, so a `GitHubError` here must leave nothing behind for the caller to retry past. A
+        # human's own `--held` posts `[human] NEEDS-HUMAN #N` -- the human is the authority, but the hold still has to
+        # be stamped, and it is how a human re-gates an issue they have already answered.
+        ctx.gh.create_comment(board.coordination_issue, compose(
+            Header(actor.party, "NEEDS-HUMAN", target, None),
+            f"Held categories on #{number}: {', '.join(all_held)}. A listed human authorizes the worker with `RESOLVED #{number}` "
+            f"(or `PROVIDED #{number}`); until then #{number} cannot be dispatched."))
     to_add = [f"{prefix}:{value}" for prefix, value in wanted.items() if value]
     to_add += [f"skill:{name}" for name in (skills or ())]
     for prefix, value in wanted.items():
@@ -77,23 +93,12 @@ def tag(ctx, number: int, *, worker: str | None = None, model: str | None = None
             body = replace_section(body, "Scope", scope)
         if may_delete is not None:
             body = replace_section(body, "May delete", may_delete)
+        # Belt and braces on the guardrail itself: what was written must read back as the declaration asked for.
+        for name, items in (("Scope", scope), ("May delete", may_delete)):
+            if items is not None and body_section(body, name) != tuple(i.strip().strip("`").strip() for i in items):
+                refuse(ctx, board, Refusal(Verb.TAG, target, f"the ## {name} declaration did not round-trip through the issue body; fix the body by hand"))
         ctx.gh.update_issue(number, body=body)
-    all_held = sorted(set(issue.held) | set(held or ()))
-    new_held = [c for c in dict.fromkeys(held or ()) if c not in issue.held]          # de-duplicated, order kept
     if new_held:
-        # Only a category the issue does not carry yet re-gates dispatch (a newer NEEDS-HUMAN than the human's last answer),
-        # so re-tagging one it already has posts neither the labels again nor a duplicate ask.
-        #
-        # The ask comes FIRST and for every actor, human included (the ordering `housekeeping.ci_red_sweep` uses).
-        # The labels are the gate and the ask is the stamp `Board.needs_human_answered` compares an answer against:
-        # labels without an ask are a hold nothing can lift on purpose and that any earlier answer lifts by accident,
-        # so a `GitHubError` here must leave no labels behind for the caller to retry past. A human's own `--held`
-        # posts `[human] NEEDS-HUMAN #N` -- the human is the authority, but the hold still has to be stamped, and
-        # it is how a human re-gates an issue they have already answered.
-        ctx.gh.create_comment(board.coordination_issue, compose(
-            Header(actor.party, "NEEDS-HUMAN", target, None),
-            f"Held categories on #{number}: {', '.join(all_held)}. A listed human authorizes the worker with `RESOLVED #{number}` "
-            f"(or `PROVIDED #{number}`); until then #{number} cannot be dispatched."))
         ctx.gh.add_labels(number, [held_label(c) for c in new_held] + [NEEDS_HUMAN])
     final = {prefix: (wanted[prefix] or getattr(issue, prefix)) for prefix in PREFIXES}
     final["skills"] = sorted(set(issue.skills) | set(skills or ()))

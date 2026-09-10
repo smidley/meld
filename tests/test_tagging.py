@@ -207,3 +207,12 @@ def test_tag_refuses_empty_or_multi_line_declaration_items(tmp_path):
         with pytest.raises(Refused, match="non-empty, single-line paths"):
             tag(ctx, 11, **bad)
     assert not [c for c in fake.calls if c.method == "PATCH" or (c.method == "POST" and c.endpoint == R + "issues/11/labels")]
+
+
+def test_tag_posts_the_held_ask_before_any_other_write(tmp_path):
+    fake, ctx = make(tmp_path, role="orchestrator")
+    fake.route("PATCH", R + "issues/11", {"number": 11})
+    tag(ctx, 11, held=["delete"], size="M", scope=["src/*.py"])
+    writes = [(c.method, c.endpoint) for c in fake.calls if c.method in ("POST", "DELETE", "PATCH")]
+    assert writes[0] == ("POST", R + "issues/10/comments")                      # the stamp lands before size, body, or held labels
+    assert writes[-1] == ("POST", R + "issues/11/labels") and fake.calls[-1].body == {"labels": ["meld:held:delete", "meld:needs-human"]}

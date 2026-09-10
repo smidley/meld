@@ -29,6 +29,18 @@ def test_parse_header_variants():
     assert parse_header("  [claude] DRIFT  ", CFG) == Header(Party("group", "claude"), "DRIFT", None, None)
 
 
+def test_a_human_may_post_needs_human():
+    # I4: a human's own `meld tag --held` stamps the hold with its own ask, and HANDOFF decision 11's "post a new
+    # NEEDS-HUMAN #N by hand" needs the verb to exist for the human party at all -- `parse_header` returns None for
+    # a verb outside the party's set, so before this the comment was unparseable and stamped nothing.
+    assert parse_header("[human] NEEDS-HUMAN #11", CFG) == Header(Party("human"), "NEEDS-HUMAN", "#11", None)
+    assert validate(Header(Party("human"), "NEEDS-HUMAN", None, None), "x") == ["NEEDS-HUMAN requires a ref"]
+    c = parse_comment({"id": 1, "user": {"login": "empowerScott"}, "body": "[human] NEEDS-HUMAN #11\n\nheld: delete"}, CFG)
+    assert c.ok and c.header.verb == "NEEDS-HUMAN"
+    stranger = parse_comment({"id": 2, "user": {"login": "passerby"}, "body": "[human] NEEDS-HUMAN #11\n\nheld: delete"}, CFG)
+    assert not stranger.ok
+
+
 def test_parse_header_rejects_garbage():
     assert parse_header("hello there", CFG) is None
     assert parse_header("[mystery] ROSTER", CFG) is None

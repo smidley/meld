@@ -152,13 +152,17 @@ def test_tag_held_labels_the_issue_needs_human_and_posts_the_ask(tmp_path):
         tag(ctx, 11, held=["nuke"])
 
 
-def test_tag_held_by_a_human_labels_without_an_ask_and_a_repeat_posts_nothing(tmp_path):
+def test_tag_held_by_a_human_posts_its_own_ask_and_a_repeat_posts_nothing(tmp_path):
+    # I4 (reversing the Task 3 ruling that a human's --held posts no ask): the ask is the gating stamp. Without one,
+    # `needs_human_answered` had nothing to compare against, so on an issue that had ever received a human
+    # RESOLVED/PROVIDED the hold was un-gated by the very next `tick` and `dispatch` was legal again.
     fake, human = make(tmp_path, group=None)
     out = tag(human, 11, held=["delete", "delete"])                                # a repeated flag adds the label once
     assert out["held"] == ["delete"]
     labels = [c.body["labels"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/11/labels"]
     assert labels == [["meld:held:delete", "meld:needs-human"]]
-    assert not [c for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/10/comments"]   # the human is the authority
+    (ask,) = [c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/10/comments"]
+    assert ask.startswith("[human] NEEDS-HUMAN #11\n") and "Held categories on #11: delete." in ask
     issues = fixture("issues.json")
     for i in issues:
         if i["number"] == 11:
@@ -178,10 +182,28 @@ def test_tag_held_by_a_human_labels_without_an_ask_and_a_repeat_posts_nothing(tm
     assert "Held categories on #11: cleanup, delete." in ask
 
 
-def test_tag_refuses_empty_declaration_items(tmp_path):
+def test_tag_held_posts_the_ask_before_the_labels_and_lands_neither_when_the_ask_fails(tmp_path):
+    """I4: the labels are the gate and the ask is what un-gates it, so the ask goes first (the ordering
+    `housekeeping.ci_red_sweep` uses). Labels first meant a `GitHubError` on the comment left a held issue with no
+    ask behind it -- a hold nothing could ever stamp, and one the next answered `tick` would lift."""
+    from meld.github import GitHubError
     fake, ctx = make(tmp_path, role="orchestrator")
-    with pytest.raises(Refused, match="non-empty paths"):
-        tag(ctx, 11, scope=["src/*.py", " "])
-    with pytest.raises(Refused, match="non-empty paths"):
-        tag(ctx, 11, may_delete=[""])
+    tag(ctx, 11, held=["delete"])
+    order = [c.endpoint for c in fake.calls if c.method == "POST" and c.endpoint in (R + "issues/10/comments", R + "issues/11/labels")]
+    assert order == [R + "issues/10/comments", R + "issues/11/labels"]
+    fake2, ctx2 = make(tmp_path / "again", role="orchestrator")
+    fake2.route("POST", R + "issues/10/comments", {"message": "boom"}, status=500)
+    with pytest.raises(GitHubError):
+        tag(ctx2, 11, held=["delete"])
+    assert not [c for c in fake2.calls if c.method == "POST" and c.endpoint == R + "issues/11/labels"]
+
+
+def test_tag_refuses_empty_or_multi_line_declaration_items(tmp_path):
+    # M9: an item carrying a newline would be written into the body as two lines, the second of which is not a `- `
+    # bullet at all -- a `## Scope` entry that `body_section` then reads back as something else entirely.
+    fake, ctx = make(tmp_path, role="orchestrator")
+    for bad in ({"scope": ["src/*.py", " "]}, {"may_delete": [""]},
+                {"scope": ["src/*.py\n- ../../etc/passwd"]}, {"may_delete": ["a.py\nb.py"]}, {"scope": ["a.py\r- b.py"]}):
+        with pytest.raises(Refused, match="non-empty, single-line paths"):
+            tag(ctx, 11, **bad)
     assert not [c for c in fake.calls if c.method == "PATCH" or (c.method == "POST" and c.endpoint == R + "issues/11/labels")]

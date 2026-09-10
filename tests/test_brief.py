@@ -148,14 +148,20 @@ def test_render_brief_carries_scope_and_authorized_categories(tmp_path: Path):
                         plan_text="", repo_root=tmp_path, worktree=tmp_path, base_branch="main")
     # Neither dynamic section is added (the contract's own fixed rule still names "## Authorized by a human"
     # generically, so the section's own heading/body text -- not that substring alone -- is what must be absent).
-    assert "## Scope" not in bare
+    assert not [l for l in bare.splitlines() if l.startswith("## Scope")]
     assert "A listed human has authorized these held categories" not in bare
+    # M7: the deletion gate is on whether or not a scope is declared, so an undeclared issue's brief still says so.
+    assert "No `## Scope` is declared; merge still refuses a deletion the issue does not list under `## May delete`." in bare
+    assert "No `## Scope` is declared" not in text
 
     reviewer = next(w for w in builtin_workers() if w.name == "reviewer")
     pr = mk_pr(20, 13, committer="meld-codex-bot")
     review_text = render_brief(role=reviewer, kind="review", group="claude", model="claude-opus-5", effort="high", issue=None, pr=pr,
                                plan_text="", repo_root=tmp_path, worktree=tmp_path, base_branch="main", scope=("src/meld/*.py",))
     assert "## Scope declared by the issue" in review_text
+    bare_review = render_brief(role=reviewer, kind="review", group="claude", model="claude-opus-5", effort="high", issue=None, pr=pr,
+                               plan_text="", repo_root=tmp_path, worktree=tmp_path, base_branch="main")
+    assert "No `## Scope` is declared" not in bare_review     # the line is the build brief's; a memory PR closes no issue
 
 
 def test_read_result_missing_valid_and_malformed(tmp_path: Path):

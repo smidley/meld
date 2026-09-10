@@ -318,6 +318,10 @@ def render_brief(*, role: WorkerType, kind: str, group: str, model: str, effort:
         parts += (["Files you may delete (merge refuses any other deletion):", ""] + [f"- `{p}`" for p in may_delete] + [""]
                   if may_delete else
                   ["No deletions are allowed: merge refuses a PR that deletes a file this issue does not list under `## May delete`.", ""])
+    elif issue is not None:
+        # The deletion gate is always on, scope or no scope, so every build brief has to state it. An issue that
+        # declares nothing at all otherwise reached its worker with no mention of the one refusal it cannot opt out of.
+        parts += ["No `## Scope` is declared; merge still refuses a deletion the issue does not list under `## May delete`.", ""]
     if authorized:
         parts += ["## Authorized by a human", "", "A listed human has authorized these held categories for this task and no others:", ""] + [f"- {c}" for c in authorized] + [""]
     decisions = decision_titles(repo_root)

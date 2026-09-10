@@ -35,8 +35,10 @@ def tag(ctx, number: int, *, worker: str | None = None, model: str | None = None
         refuse(ctx, board, Refusal(Verb.TAG, target, f"size '{size}' is not one of {', '.join(SIZES)}"))
     if skills is not None and any(not name for name in skills):
         refuse(ctx, board, Refusal(Verb.TAG, target, "--skill requires a non-empty name"))
-    if any(not item.strip() for item in (*(scope or ()), *(may_delete or ()))):
-        refuse(ctx, board, Refusal(Verb.TAG, target, "--scope and --may-delete require non-empty paths"))
+    # One declaration is one `- ` bullet. An item carrying a line break would be written into the body as a bullet
+    # plus a second line that is not one, so `body_section` reads back something other than what was declared.
+    if any(not item.strip() or "\n" in item or "\r" in item for item in (*(scope or ()), *(may_delete or ()))):
+        refuse(ctx, board, Refusal(Verb.TAG, target, "--scope and --may-delete require non-empty, single-line paths"))
     if held:
         for c in held:
             if c not in HELD_CATEGORIES:
@@ -81,12 +83,18 @@ def tag(ctx, number: int, *, worker: str | None = None, model: str | None = None
     if new_held:
         # Only a category the issue does not carry yet re-gates dispatch (a newer NEEDS-HUMAN than the human's last answer),
         # so re-tagging one it already has posts neither the labels again nor a duplicate ask.
+        #
+        # The ask comes FIRST and for every actor, human included (the ordering `housekeeping.ci_red_sweep` uses).
+        # The labels are the gate and the ask is the stamp `Board.needs_human_answered` compares an answer against:
+        # labels without an ask are a hold nothing can lift on purpose and that any earlier answer lifts by accident,
+        # so a `GitHubError` here must leave no labels behind for the caller to retry past. A human's own `--held`
+        # posts `[human] NEEDS-HUMAN #N` -- the human is the authority, but the hold still has to be stamped, and
+        # it is how a human re-gates an issue they have already answered.
+        ctx.gh.create_comment(board.coordination_issue, compose(
+            Header(actor.party, "NEEDS-HUMAN", target, None),
+            f"Held categories on #{number}: {', '.join(all_held)}. A listed human authorizes the worker with `RESOLVED #{number}` "
+            f"(or `PROVIDED #{number}`); until then #{number} cannot be dispatched."))
         ctx.gh.add_labels(number, [held_label(c) for c in new_held] + [NEEDS_HUMAN])
-        if not actor.is_human:
-            ctx.gh.create_comment(board.coordination_issue, compose(
-                Header(actor.party, "NEEDS-HUMAN", target, None),
-                f"Held categories on #{number}: {', '.join(all_held)}. A listed human authorizes the worker with `RESOLVED #{number}` "
-                f"(or `PROVIDED #{number}`); until then #{number} cannot be dispatched."))
     final = {prefix: (wanted[prefix] or getattr(issue, prefix)) for prefix in PREFIXES}
     final["skills"] = sorted(set(issue.skills) | set(skills or ()))
     return {"tagged": number, "labels": final,

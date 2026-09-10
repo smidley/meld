@@ -255,7 +255,13 @@ def test_needs_human_answered_needs_a_listed_humans_answer_after_the_ask():
     assert mk_board(issues={14: issue}, comments=[early, ask]).needs_human_answered(14) is False      # answered before the ask
     assert mk_board(issues={14: issue}, comments=[ask, answer, other]).needs_human_answered(14) is True
     assert mk_board(issues={14: issue}, comments=[ask, answer]).human_answer(14).id == 52
-    assert mk_board(issues={14: issue}, comments=[answer]).needs_human_answered(14) is True           # label without an ask: any answer counts
+    # I4: an ask must exist. A `meld:needs-human` label with nothing behind it never auto-unlocks -- otherwise an
+    # issue that had ever received a human PROVIDED/RESOLVED was un-gated the moment anyone re-held it.
+    assert mk_board(issues={14: issue}, comments=[answer]).needs_human_answered(14) is False
+    human_ask = mk_comment(54, "empowerScott", "[human] NEEDS-HUMAN #14\n\nheld: delete", "2026-09-05T10:20:00Z")
+    assert mk_board(issues={14: issue}, comments=[ask, answer, human_ask]).needs_human_answered(14) is False   # re-held by a human
+    later = mk_comment(55, "empowerScott", "[human] RESOLVED #14\n\nauthorized again", "2026-09-05T10:25:00Z")
+    assert mk_board(issues={14: issue}, comments=[ask, answer, human_ask, later]).needs_human_answered(14) is True
 
 
 def test_held_labels_and_section_headings_match_case_insensitively():
@@ -266,6 +272,21 @@ def test_held_labels_and_section_headings_match_case_insensitively():
     assert mk_issue(12, extra_labels=("Meld:Held:Delete", "meld:held:public-release")).held == ("delete", "public-release")
     body = "## SCOPE\n- src/meld/*.py\n"
     assert body_section(body, "Scope") == ("src/meld/*.py",) and body_section(body, "scope") == ("src/meld/*.py",)
+
+
+def test_body_section_ignores_headings_and_bullets_inside_fenced_code():
+    """M9: an issue body routinely quotes a diff or a sample body in a fence. Neither a `## ` line nor a `- ` bullet
+    inside one is a declaration -- reading them let a quoted example widen the real scope or the deletion allowlist."""
+    from meld.board import body_section
+    body = ("Reproduce with:\n\n```\n## Scope\n- everything/*\n```\n\n"
+            "## Scope\n- src/meld/*.py\n\n"
+            "Example of what NOT to write:\n\n```md\n## May delete\n- src/meld/rules.py\n```\n\n"
+            "## May delete\n- src/meld/legacy.py\n")
+    assert body_section(body, "Scope") == ("src/meld/*.py",)
+    assert body_section(body, "May delete") == ("src/meld/legacy.py",)
+    # A fence opened inside the section ends nothing: the bullets after it are still the section's own.
+    fenced_inside = "## Scope\n- a.py\n\n```\n- fake.py\n## May delete\n- b.py\n```\n\n- c.py\n"
+    assert body_section(fenced_inside, "Scope") == ("a.py", "c.py") and body_section(fenced_inside, "May delete") == ()
 
 
 def test_replace_section_rewrites_in_place_appends_when_absent_and_removes_tidily():

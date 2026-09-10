@@ -133,6 +133,81 @@ def test_tick_leaves_an_unanswered_needs_human_issue_alone(tmp_path):
     assert not [c for c in fake.calls if c.method != "GET" and "issues/14/labels" in c.endpoint]
 
 
+def test_tick_does_not_resume_a_needs_human_issue_that_carries_no_ask(tmp_path):
+    # I4: `needs_human_answered` is strict now -- an ask must exist for an answer to be newer than. A hand-added
+    # `meld:needs-human` label, or a hold whose ask never posted, is not lifted by an unrelated earlier answer.
+    fake, ctx, repo, origin = make_product(tmp_path)
+    comments = fixture("comments_10.json") + [
+        {"id": 151, "user": {"login": "empowerScott"}, "created_at": "2026-09-03T09:25:00Z",
+         "body": "[human] RESOLVED #14\n\nsomething else about this issue"},
+    ]
+    fake.route("GET", R + "issues/10/comments", comments)
+    out = tick(ctx, now=NOW, env={})
+    assert out["resumed"] == []
+    assert not [c for c in fake.calls if c.method != "GET" and "issues/14/labels" in c.endpoint]
+
+
+def needs_human_14_with_a_lapsed_lease(fake, *, in_progress=False):
+    """#14 is codex's needs-human claim in the fixture. Give it the lease its build left behind -- lapsed long before
+    the human answered, because the worker stopped on the needs-human and nobody posted a closer."""
+    if in_progress:
+        issues = fixture("issues.json")
+        for i in issues:
+            if i["number"] == 14:
+                i["labels"] = [l for l in i["labels"] if l["name"] != "meld:needs-human"] + [{"name": "meld:in-progress"}]
+        fake.route("GET", R + "issues", issues)
+    fake.route("GET", R + "issues/10/comments", fixture("comments_10.json") + [
+        {"id": 149, "user": {"login": "meld-codex-bot"}, "created_at": "2026-09-03T08:00:00Z",
+         "body": "[codex:pm] LEASE #14\n\nuntil: 2026-09-03T09:00:00Z\nrun: codex/#14\nkind: build"},
+        {"id": 150, "user": {"login": "meld-codex-bot"}, "created_at": "2026-09-03T09:20:00Z",
+         "body": "[codex] NEEDS-HUMAN #14\n\nStripe sandbox key required"},
+        {"id": 151, "user": {"login": "empowerScott"}, "created_at": "2026-09-03T09:25:00Z",
+         "body": "[human] RESOLVED #14\n\nkey is in STRIPE_KEY now"},
+    ])
+    fake.route("POST", R + "issues/14/labels", [])
+    fake.route("DELETE", R + "issues/14/labels/meld%3Aneeds-human", {})
+    fake.route("DELETE", R + "issues/14/labels/meld%3Aclaimed-by%3Acodex", {})
+    fake.route("DELETE", R + "issues/14/labels/meld%3Ain-progress", [])
+
+
+def test_a_lease_that_lapsed_before_the_human_answered_is_suspended_not_expired(tmp_path):
+    """I5: the blocked-collect path posts no lease closer, so a resumed needs-human issue carries its old, long-lapsed
+    `until`. A foreign PM's next tick used to read that as an expiry, post `EXPIRED`, and strip the holder's claim --
+    losing the claim of a group that was only ever waiting for a person."""
+    fake, claude, repo, origin = make_product(tmp_path, group="claude")     # #14 is codex's; claude is the foreign PM
+    needs_human_14_with_a_lapsed_lease(fake)
+    out = tick(claude, now=NOW, env={})
+    assert out["resumed"] == [14] and out["expired"] == []
+    assert not any("#14" in c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/10/comments")
+    assert not [c for c in fake.calls if c.method == "DELETE" and c.endpoint.endswith("meld%3Aclaimed-by%3Acodex")]
+    # The label swap has landed by the next tick, so the issue is in-progress with the same lapsed lease: still not expired.
+    fake2, claude2, repo2, origin2 = make_product(tmp_path / "second", group="claude")
+    needs_human_14_with_a_lapsed_lease(fake2, in_progress=True)
+    out2 = tick(claude2, now=NOW, env={})
+    assert out2["expired"] == [] and out2["resumed"] == []
+    assert not [c for c in fake2.calls if c.method == "DELETE" and c.endpoint.endswith("meld%3Aclaimed-by%3Acodex")]
+    assert not any(c.body["body"].startswith("[claude:pm] EXPIRED") for c in fake2.calls
+                   if c.method == "POST" and c.endpoint == R + "issues/10/comments")
+
+
+def test_a_just_resumed_issue_is_not_nudged_one_last_time(tmp_path):
+    # M11: `notify` reads the board built before the resume loop ran, where #14 is still needs_human. Without the
+    # skip, the tick that un-gates an issue also Slacks a human about it.
+    fake, ctx, repo, origin = make_product(tmp_path)
+    sent = []
+    fake.route("GET", R + "issues/10/comments", fixture("comments_10.json") + [
+        {"id": 150, "user": {"login": "meld-codex-bot"}, "created_at": "2026-09-03T09:20:00Z",
+         "body": "[codex] NEEDS-HUMAN #14\n\nStripe sandbox key required"},
+        {"id": 151, "user": {"login": "empowerScott"}, "created_at": "2026-09-03T09:25:00Z",
+         "body": "[human] RESOLVED #14\n\nkey is in STRIPE_KEY now"},
+    ])
+    fake.route("POST", R + "issues/14/labels", [])
+    fake.route("DELETE", R + "issues/14/labels/meld%3Aneeds-human", {})
+    out = tick(ctx, now=NOW, env={"MELD_SLACK_DM_WEBHOOK": "https://hooks.slack.test/abc"}, post=lambda u, p: sent.append(p))
+    assert out["resumed"] == [14] and out["notified"] == [] and sent == []
+    assert [c.body for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/14/labels"] == [{"labels": ["meld:in-progress"]}]
+
+
 def test_tick_resumes_an_unclaimed_needs_human_issue_to_ready(tmp_path):
     fake, ctx, repo, origin = make_product(tmp_path)
     issues = fixture("issues.json")

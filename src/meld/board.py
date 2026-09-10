@@ -49,10 +49,20 @@ def held_label(category: str) -> str:
 
 def body_section(body: str, heading: str) -> tuple[str, ...]:
     """The `- ` bullets under `## <heading>` in an issue body, up to the next heading; backticks stripped. Declarations
-    live in the body because only orchestrators and humans can write it (spec 6): `## Scope`, `## May delete`."""
+    live in the body because only orchestrators and humans can write it (spec 6): `## Scope`, `## May delete`.
+
+    Fenced code is skipped: a line whose first non-space characters are ``` toggles a fence, and inside one nothing is
+    a heading or a bullet. Issue bodies quote diffs and sample bodies routinely, and a quoted `## Scope`/`- glob`
+    otherwise read as the real declaration -- widening a scope, or the deletion allowlist, by example."""
     out: list[str] = []
     active = False
+    fenced = False
     for line in (body or "").splitlines():
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
         if line.startswith("## "):
             active = line[3:].strip().lower() == heading.lower()
             continue
@@ -416,13 +426,17 @@ class Board:
         return max(answers, key=lambda c: c.id) if answers else None
 
     def needs_human_answered(self, issue: int) -> bool:
-        """A listed human answered after the newest `NEEDS-HUMAN #issue` (or at all, when no ask was posted) -- the condition
-        that unlocks a needs-human or held issue (spec 8, 14)."""
+        """A listed human answered after the newest `NEEDS-HUMAN #issue` -- the condition that unlocks a needs-human or
+        held issue (spec 8, 14). An ask must exist: a `meld:needs-human` label with nothing behind it never
+        auto-unlocks. Answering "any answer counts when no ask was posted" instead meant that on an issue which had
+        ever received a human `PROVIDED`/`RESOLVED`, a hold added later (a hand-set label, or one whose ask failed to
+        post) read as already authorized -- `dispatch` was legal and the next `tick` swapped the label straight back.
+        A PM's, an orchestrator's, or a human's own `NEEDS-HUMAN #issue` is what stamps a hold."""
         answer = self.human_answer(issue)
         if answer is None:
             return False
         asks = [c.id for c in self.comments if c.ok and c.header is not None and c.header.verb == "NEEDS-HUMAN" and c.header.ref == f"#{issue}"]
-        return not asks or answer.id > max(asks)
+        return bool(asks) and answer.id > max(asks)
 
     def run_for(self, group: str, issue: int) -> RunRecord | None:
         return self.runs.get(group, {}).get(issue)

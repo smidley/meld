@@ -18,7 +18,10 @@ PM_VERBS = frozenset({
 })
 HUMAN_VERBS = frozenset({
     "ASK", "DIRECTIVE", "AMEND", "APPROVE", "ACK", "PROVIDED", "RESOLVED", "HALT", "RESUME", "REVERT",
-    "RELEASE", "CHALLENGE", "EVIDENCE", "RETRACT", "UPHELD", "DISMISSED",
+    # NEEDS-HUMAN: a human holding an issue for a human's decision. `meld tag --held` run by a human posts it, and
+    # it is the only way to re-gate an issue a human has already answered -- `Board.needs_human_answered` compares
+    # against the newest ask, and without the verb here `parse_header` returned None for a human's own.
+    "RELEASE", "CHALLENGE", "EVIDENCE", "RETRACT", "UPHELD", "DISMISSED", "NEEDS-HUMAN",
 })
 JOINT_VERBS = frozenset({"PLAN", "PLAN-ADD", "ANSWER", "DECISION", "WORKER"})
 AGREEMENT_VERBS = frozenset({"PROPOSE", "DRAFT", "AMEND", "AGREE", "DISSENT"})

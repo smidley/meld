@@ -128,7 +128,13 @@ MELD_SCRATCH_FILES = (".meld-brief.md", ".meld-result.json", ".meld-last-message
 
 
 def exclude_paths(path: Path, patterns: tuple[str, ...] = MELD_SCRATCH_FILES, run: RunFn = subprocess.run) -> None:
-    """Hide meld's scratch files from git in this worktree via its private info/exclude (never the shared .gitignore)."""
+    """Hide meld's own files from git via the clone's shared info/exclude (never the tracked .gitignore).
+
+    `git rev-parse --git-path info/exclude` resolves to the clone's single `.git/info/exclude` from a linked
+    worktree too, so every pattern written here applies to the PM's checkout and to every other worktree as
+    well. Pass exact paths, one per file or directory meld itself wrote -- never a directory-wide pattern,
+    which would also hide whatever the product later puts at that path. A line left behind after meld stops
+    writing that path is harmless: it only ever named a file meld had created."""
     exclude = Path(git(["rev-parse", "--git-path", "info/exclude"], path, run))
     if not exclude.is_absolute():
         exclude = path / exclude

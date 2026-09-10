@@ -353,7 +353,11 @@ def materialise_skills(worktree: Path, adapter: Adapter, skills: Sequence[Worker
         try:
             base.mkdir(parents=True, exist_ok=True)
             manifest_path.write_text(json.dumps(made_names))
-            exclude_paths(worktree, (f"{target_dir}/", f"{target_dir}/{MATERIALISED_MANIFEST}"))
+            # One line per path meld actually wrote, never `{target_dir}/` itself: `info/exclude` belongs to the
+            # whole clone (a linked worktree shares `.git/info/exclude`), so a directory-wide pattern would hide
+            # a worker's -- or the human's -- own new project skill from `git add -A` here and in every other
+            # checkout of this clone. A per-name line left behind after a skill is removed is harmless.
+            exclude_paths(worktree, (*(f"{target_dir}/{n}/" for n in made_names), f"{target_dir}/{MATERIALISED_MANIFEST}"))
         except OSError as e:
             skipped.append(f"{MATERIALISED_MANIFEST}: {type(e).__name__}")
     return {"made": made, "skipped": skipped}

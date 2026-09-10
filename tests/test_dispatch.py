@@ -427,11 +427,51 @@ def test_dispatch_materialises_product_skills_into_the_adapters_project_dir(tmp_
     assert (wt / ".fake" / "skills" / "deploy-checklist" / "SKILL.md").read_text().startswith("---")
     exclude = sh(["git", "rev-parse", "--git-path", "info/exclude"], wt)
     exclude_text = Path(exclude if exclude.startswith("/") else str(wt / exclude)).read_text()
-    assert ".fake/skills/" in exclude_text and ".fake/skills/.meld-materialised.json" in exclude_text
+    # Per materialised path, never the directory itself: info/exclude is shared with the whole clone (a linked
+    # worktree has no private one), so a `.fake/skills/` line would hide the directory in the PM's own checkout
+    # and in every other worktree -- including a worker's brand-new, deliberately-committed project skill.
+    lines = exclude_text.splitlines()
+    assert ".fake/skills/deploy-checklist/" in lines and ".fake/skills/.meld-materialised.json" in lines
+    assert ".fake/skills/" not in lines
     assert "deploy-checklist" in (wt / ".meld-brief.md").read_text()
     assert out["skills_materialised"] == {"made": [".fake/skills/deploy-checklist"], "skipped": []}
     manifest = json.loads((wt / ".fake" / "skills" / ".meld-materialised.json").read_text())
     assert manifest == ["deploy-checklist"]
+    wait_for_exit(out["pid"])
+
+
+def test_materialising_a_skill_does_not_hide_anything_else_under_the_project_skills_directory(tmp_path):
+    """Important 1: `info/exclude` belongs to the whole clone, not to one worktree (`git rev-parse --git-path
+    info/exclude` resolves to the shared `.git/info/exclude` from a linked worktree too). Excluding the skills
+    directory itself would therefore make a worker's own new project skill invisible to `git add -A`, in this
+    worktree and in the PM's checkout alike -- only the paths meld actually wrote may be excluded."""
+    fake, ctx, repo, origin = make_product(tmp_path)
+    d = repo / ".meld" / "skills" / "deploy-checklist"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text("---\nname: deploy-checklist\ndescription: Pre-deploy steps\n---\n# Deploy\n")
+    sh(["git", "add", "."], repo)
+    sh(["git", "commit", "-q", "-m", "skills"], repo)
+    sh(["git", "push", "-q", "origin", "main"], repo)
+    issues = claim_issue_11(fake)
+    for i in issues:
+        if i["number"] == 11:
+            i["labels"].append({"name": "skill:deploy-checklist"})
+    fake.route("GET", R + "issues", issues)
+    out = dispatch(ctx, 11, adapter=FakeAdapter())
+    wt = Path(out["worktree"])
+    # A skill the worker itself authors, right next to the materialised copy, is the product's file to commit.
+    new = wt / ".fake" / "skills" / "worker-authored"
+    new.mkdir(parents=True, exist_ok=True)
+    (new / "SKILL.md").write_text("---\nname: worker-authored\ndescription: Written by the worker\n---\n")
+    status = sh(["git", "status", "--porcelain", "-uall"], wt)     # -uall: per file, not the collapsed `?? .fake/`
+    assert ".fake/skills/worker-authored/SKILL.md" in status
+    assert ".fake/skills/deploy-checklist" not in status              # meld's own copy stays hidden
+    assert ".meld-materialised.json" not in status
+    # And the PM's own checkout, which shares that exclude file, is equally unaffected.
+    pm_side = repo / ".fake" / "skills" / "human-authored"
+    pm_side.mkdir(parents=True, exist_ok=True)
+    (pm_side / "SKILL.md").write_text("---\nname: human-authored\ndescription: Written by the human\n---\n")
+    assert ".fake/skills/human-authored/SKILL.md" in sh(["git", "status", "--porcelain", "-uall"], repo)
     wait_for_exit(out["pid"])
 
 

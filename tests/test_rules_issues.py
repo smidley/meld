@@ -291,3 +291,13 @@ def test_claim_and_dispatch_follow_the_claim_label():
     two_labels = mk_issue(16, status="ready", extra_labels=("meld:claimed-by:claude", "meld:claimed-by:codex"))
     board = mk_board(CFG2, issues=[two_labels])
     assert rule(board, CLAUDE_PM, Verb.CLAIM, two_labels) == "already claimed by claude, codex"
+
+
+def test_a_pm_may_release_a_ready_stale_claim_once_the_holders_lease_expired():
+    """Decision 11 reaches the ordinary lease rule too: a ready issue still carrying claude's label whose surviving lease
+    has expired is releasable by another PM, exactly as an in-progress one is; while the lease is live it is not."""
+    stale = mk_issue(12, status="ready", claimed_by="claude")
+    live = mk_board(CFG2, issues=[stale], leases={12: mk_lease(12, until="2026-09-03T13:00:00Z")}, now="2026-09-03T12:00:00Z")
+    assert rule(live, CODEX_PM, Verb.RELEASE, stale) == "issue is not claimed by codex"
+    expired = mk_board(CFG2, issues=[stale], leases={12: mk_lease(12, until="2026-09-03T11:00:00Z")}, now="2026-09-03T12:00:00Z")
+    assert rule(expired, CODEX_PM, Verb.RELEASE, stale) is None

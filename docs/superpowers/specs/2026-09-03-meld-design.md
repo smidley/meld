@@ -376,7 +376,7 @@ With two groups the effective quorum is one non-author approval, which is ordina
 
 ### Humans as participants
 
-A listed human is a third party in the rules. A human claims an issue with `meld claim`, which labels it `meld:claimed-by:human` (one label for every human; no group may dispatch a human-claimed issue); assigning oneself on GitHub holds nothing, because meld neither reads nor writes assignees. A human PR on a `meld/` branch is reviewed by every group, since none authored it. A human approval counts toward the quorum. Human-only powers: `APPROVE` the plan, `ACK` plan additions, `release --force`, `HALT` and `RESUME`, `REVERT #<pr>` (makes a revert PR the top priority), `PROVIDED` and `RESOLVED` for needs-human items, and the CODEOWNERS approval on worker-type PRs.
+A listed human is a third party in the rules. A human claims an issue with `meld claim`, which labels it `meld:claimed-by:human` (one label for every human; no group may dispatch a human-claimed issue); assigning oneself on GitHub holds nothing: meld never reads assignees as a claim (the off-protocol sweep in section 17 still reports assignment events by strangers). A human PR on a `meld/` branch is reviewed by every group, since none authored it. A human approval counts toward the quorum. Human-only powers: `APPROVE` the plan, `ACK` plan additions, `release --force`, `HALT` and `RESUME`, `REVERT #<pr>` (makes a revert PR the top priority), `PROVIDED` and `RESOLVED` for needs-human items, and the CODEOWNERS approval on worker-type PRs.
 
 ### Chat
 

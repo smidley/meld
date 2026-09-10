@@ -201,3 +201,10 @@ def test_in_progress_count_and_holder_login_use_the_claim_label():
     assert board.in_progress_count("claude") == 2 and board.in_progress_count("codex") == 1 and board.in_progress_count("human") == 0
     assert board.holder_login(12) == "meld-claude-bot" and board.holder_login(99) is None
     assert board.pr_for_issue(12).number == 21   # the holder's open PR beats a stale one from another group
+
+
+def test_claimants_dedupe_case_variants_of_one_group():
+    """claim_group lowercases, so `meld:claimed-by:Claude` and `meld:claimed-by:claude` are one claimant, not a contested pair."""
+    from tests.factories import mk_issue
+    issue = mk_issue(12, status="in_progress", extra_labels=("meld:claimed-by:Claude", "meld:claimed-by:claude"))
+    assert issue.claimants == ("claude",) and issue.claimed_by == "claude"

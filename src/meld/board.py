@@ -101,7 +101,9 @@ class Issue:
     @property
     def claimants(self) -> tuple[str, ...]:
         """Every party holding a claim label, sorted. One is the normal case; two or more is a contested issue."""
-        return tuple(sorted(g for g in (claim_group(l) for l in self.labels) if g))
+        # A set: GitHub label names are unique case-insensitively, but claim_group lowercases, so two case variants of
+        # one group's label (impossible through GitHub, possible in a hand-built board) must not read as contested.
+        return tuple(sorted({g for g in (claim_group(l) for l in self.labels) if g}))
 
     @property
     def claimed_by(self) -> str | None:

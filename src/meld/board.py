@@ -145,8 +145,11 @@ class Issue:
 
     @property
     def held(self) -> tuple[str, ...]:
-        """Held categories on this issue (spec 6): dispatch needs a listed human's answer while any is present."""
-        return tuple(sorted(l[len(HELD_LABEL_PREFIX):] for l in self.labels if l.startswith(HELD_LABEL_PREFIX) and len(l) > len(HELD_LABEL_PREFIX)))
+        """Held categories on this issue (spec 6): dispatch needs a listed human's answer while any is present. Matched
+        case-insensitively like claim labels: GitHub label names are unique case-insensitively, and a human may type
+        `Meld:Held:Delete` by hand -- it must still engage the gate."""
+        lowered = (l.lower() for l in self.labels)
+        return tuple(sorted(l[len(HELD_LABEL_PREFIX):] for l in lowered if l.startswith(HELD_LABEL_PREFIX) and len(l) > len(HELD_LABEL_PREFIX)))
 
 
 # The first line of the author group's COMMENT-review body (review.py), so assemble._pull can tell that review apart
@@ -361,16 +364,20 @@ class Board:
             candidates.sort(key=lambda p: (p.state != "open", p.author != holder, -p.number))
         return candidates[0] if candidates else None
 
+    def _issue_for(self, pr: PullRequest) -> Issue | None:
+        """The issue a PR closes, when it is on the board."""
+        return self.issues.get(pr.issue_number) if pr.issue_number is not None else None
+
     def scope_violations(self, pr: PullRequest) -> tuple[str, ...]:
         """Changed files outside the linked issue's declared `## Scope`; empty when no scope is declared or no issue is linked."""
-        issue = self.issues.get(pr.issue_number) if pr.issue_number is not None else None
+        issue = self._issue_for(pr)
         if issue is None or not issue.scope:
             return ()
         return tuple(f for f in pr.files if not any(fnmatch(f, g) for g in issue.scope))
 
     def blocked_deletions(self, pr: PullRequest) -> tuple[str, ...]:
         """Deleted files the linked issue's `## May delete` does not list; the gate is always on for a PR that closes an issue."""
-        issue = self.issues.get(pr.issue_number) if pr.issue_number is not None else None
+        issue = self._issue_for(pr)
         if issue is None:
             return ()
         return tuple(f for f in pr.removed if f not in issue.may_delete)

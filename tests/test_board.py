@@ -256,3 +256,13 @@ def test_needs_human_answered_needs_a_listed_humans_answer_after_the_ask():
     assert mk_board(issues={14: issue}, comments=[ask, answer, other]).needs_human_answered(14) is True
     assert mk_board(issues={14: issue}, comments=[ask, answer]).human_answer(14).id == 52
     assert mk_board(issues={14: issue}, comments=[answer]).needs_human_answered(14) is True           # label without an ask: any answer counts
+
+
+def test_held_labels_and_section_headings_match_case_insensitively():
+    """Task 1 review: a hand-typed `Meld:Held:Delete` must still engage the dispatch gate (GitHub label names are unique
+    case-insensitively), and `## SCOPE` is the same heading as `## Scope`."""
+    from meld.board import body_section
+    from tests.factories import mk_issue
+    assert mk_issue(12, extra_labels=("Meld:Held:Delete", "meld:held:public-release")).held == ("delete", "public-release")
+    body = "## SCOPE\n- src/meld/*.py\n"
+    assert body_section(body, "Scope") == ("src/meld/*.py",) and body_section(body, "scope") == ("src/meld/*.py",)

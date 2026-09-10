@@ -282,3 +282,5 @@ def test_replace_section_rewrites_in_place_appends_when_absent_and_removes_tidil
     assert replace_section("Goal text\n\n", "Scope", ["src/*.py"]) == "Goal text\n\n## Scope\n- src/*.py\n"
     assert replace_section("", "Scope", ["src/*.py"]) == "## Scope\n- src/*.py\n"
     assert replace_section(None, "Scope", []) == ""
+    # Blank lines before the rewritten section are outside it and stay; the ones after it belong to it and become one.
+    assert replace_section("Goal\n\n\n## Scope\n- a\n\n\n## Notes\n- n\n", "Scope", ["b"]) == "Goal\n\n\n## Scope\n- b\n\n## Notes\n- n\n"

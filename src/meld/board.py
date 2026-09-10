@@ -67,7 +67,8 @@ def replace_section(body: str, heading: str, items: Sequence[str]) -> str:
     """Return `body` with its `## <heading>` section written as `- ` bullets of `items`: rewritten in place when the
     section exists (everything before and after it is kept byte for byte), appended when it does not, removed when
     `items` is empty. A section runs from its heading to the next `## ` heading, including the blank lines that
-    separate them, so removing the last section leaves no trailing blank; the result ends in exactly one newline."""
+    separate them (a rewrite leaves exactly one; a removal of the last section leaves no trailing blank). A non-empty
+    result ends in exactly one newline; a body emptied by a removal is `""`."""
     lines = (body or "").rstrip("\n").splitlines()
     block = [f"## {heading}"] + [f"- {item}" for item in items] if items else []
     start = next((i for i, l in enumerate(lines) if l.startswith("## ") and l[3:].strip().lower() == heading.lower()), None)

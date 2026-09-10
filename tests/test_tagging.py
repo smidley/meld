@@ -154,7 +154,7 @@ def test_tag_held_labels_the_issue_needs_human_and_posts_the_ask(tmp_path):
 
 def test_tag_held_by_a_human_labels_without_an_ask_and_a_repeat_posts_nothing(tmp_path):
     fake, human = make(tmp_path, group=None)
-    out = tag(human, 11, held=["delete"])
+    out = tag(human, 11, held=["delete", "delete"])                                # a repeated flag adds the label once
     assert out["held"] == ["delete"]
     labels = [c.body["labels"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/11/labels"]
     assert labels == [["meld:held:delete", "meld:needs-human"]]

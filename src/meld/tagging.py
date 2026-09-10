@@ -77,7 +77,7 @@ def tag(ctx, number: int, *, worker: str | None = None, model: str | None = None
             body = replace_section(body, "May delete", may_delete)
         ctx.gh.update_issue(number, body=body)
     all_held = sorted(set(issue.held) | set(held or ()))
-    new_held = [c for c in (held or ()) if c not in issue.held]
+    new_held = [c for c in dict.fromkeys(held or ()) if c not in issue.held]          # de-duplicated, order kept
     if new_held:
         # Only a category the issue does not carry yet re-gates dispatch (a newer NEEDS-HUMAN than the human's last answer),
         # so re-tagging one it already has posts neither the labels again nor a duplicate ask.

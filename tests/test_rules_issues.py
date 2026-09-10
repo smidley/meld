@@ -121,7 +121,7 @@ def test_release_rules():
     assert rule(b, HUMAN, Verb.RELEASE, mine) is None
     ready = mk_issue(13)
     assert rule(mk_board(CFG2, issues=[ready]), HUMAN, Verb.RELEASE, ready) == \
-        "issue is ready; release is only legal from in-progress or blocked"
+        "issue is ready; release is only legal from in-progress or blocked, or from ready with a stale claim label"
     blocked = mk_issue(14, status="blocked", claimed_by="claude")
     assert rule(mk_board(CFG2, issues=[blocked]), CLAUDE_PM, Verb.RELEASE, blocked) is None
 
@@ -135,6 +135,45 @@ def test_any_pm_may_release_an_expired_lease():
     assert rule(expired, CLAUDE_ORCH, Verb.RELEASE, claimed) is None  # the owner may always release its own
     codex_orch = Actor(Party("group", "codex"), "meld-codex-bot", ROSTER)
     assert rule(expired, codex_orch, Verb.RELEASE, claimed) == "issue is not claimed by codex"
+
+
+def test_release_reaches_a_ready_issue_that_carries_a_stale_claim_label():
+    """Decision 11: a PM killed between claim's label add and its status swap leaves meld:ready plus its own claim
+    label. Release is legal there for a claimant and for a human, so the orphan is recoverable through meld."""
+    stale = mk_issue(11, status="ready", claimed_by="claude")
+    b = mk_board(CFG2, issues=[stale])
+    assert rule(b, CLAUDE_PM, Verb.RELEASE, stale) is None
+    assert rule(b, CLAUDE_ORCH, Verb.RELEASE, stale) is None
+    assert rule(b, HUMAN, Verb.RELEASE, stale) is None
+    # no lease exists (nothing was dispatched), so another group is still refused by the ownership clause
+    assert rule(b, CODEX_PM, Verb.RELEASE, stale) == "issue is not claimed by codex"
+    # a contested ready issue is releasable by either claimant, which sheds both labels
+    contested = mk_issue(12, status="ready", extra_labels=("meld:claimed-by:claude", "meld:claimed-by:codex"))
+    cb = mk_board(CFG2, issues=[contested])
+    assert rule(cb, CLAUDE_PM, Verb.RELEASE, contested) is None
+    assert rule(cb, CODEX_PM, Verb.RELEASE, contested) is None
+    # an unclaimed issue in any other status still refuses, and the refusal names the stale-label case
+    for status in ("ready", "in_review", "planned"):
+        free = mk_issue(13, status=status)
+        assert rule(mk_board(CFG2, issues=[free]), HUMAN, Verb.RELEASE, free) == \
+            f"issue is {status}; release is only legal from in-progress or blocked, or from ready with a stale claim label"
+
+
+def test_a_group_re_claims_past_its_own_stale_claim_label():
+    """Decision 11: the group's own stale label is not another party's, so its next loop self-heals the issue."""
+    own = mk_issue(11, status="ready", claimed_by="claude")
+    b = mk_board(CFG2, issues=[own])
+    assert rule(b, CLAUDE_PM, Verb.CLAIM, own) is None
+    assert rule(b, CODEX_PM, Verb.CLAIM, own) == "already claimed by claude"
+    human_held = mk_issue(12, status="ready", claimed_by="human")
+    hb = mk_board(CFG2, issues=[human_held])
+    assert rule(hb, HUMAN, Verb.CLAIM, human_held) is None          # one shared human label: a human re-claims past it
+    assert rule(hb, CLAUDE_PM, Verb.CLAIM, human_held) == "already claimed by human"
+    assert rule(b, HUMAN, Verb.CLAIM, own) == "already claimed by claude"
+    contested = mk_issue(13, status="ready", extra_labels=("meld:claimed-by:claude", "meld:claimed-by:codex"))
+    cb = mk_board(CFG2, issues=[contested])
+    assert rule(cb, CLAUDE_PM, Verb.CLAIM, contested) == "already claimed by claude, codex"
+    assert rule(cb, CODEX_PM, Verb.CLAIM, contested) == "already claimed by claude, codex"
 
 
 # ---- reopen ------------------------------------------------------------------

@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from meld.board import Board, Issue, PullRequest
+from meld.board import HUMAN_CLAIMANT, Board, Issue, PullRequest
 from meld.config import Config, Party
 from meld.grammar import agreement_for
 from meld.models import SIZES, ModelRegistry, size_fits
@@ -90,7 +90,11 @@ def _claim(board: Board, cfg: Config, actor: Actor, issue: Issue, models: ModelR
         return "only a PM or a human may claim"
     if issue.status != "ready":
         return f"issue is {issue.status}, not ready"
-    if issue.claimants:
+    # Decision 11: the caller's own stale claim label does not block its re-claim. A PM killed between claim's label
+    # add and its status swap leaves meld:ready plus its own label; on the next loop the add is a no-op, the re-read
+    # shows exactly its own label, and the swap proceeds, so the crashed PM self-heals. Any other party's label refuses.
+    own = HUMAN_CLAIMANT if actor.is_human else actor.group
+    if any(g != own for g in issue.claimants):
         return f"already claimed by {', '.join(issue.claimants)}"
     if actor.is_human:
         return None
@@ -167,8 +171,12 @@ def lease_rule(board: Board, issue: Issue) -> str | None:
 
 
 def _release(board: Board, cfg: Config, actor: Actor, issue: Issue) -> str | None:
-    if issue.status not in ("in_progress", "blocked"):
-        return f"issue is {issue.status}; release is only legal from in-progress or blocked"
+    # Decision 11: a `ready` issue carrying a claim label is an orphan claim that never reached in-progress (a crash
+    # between claim's label add and its status swap). Release reaches it so it is recoverable through meld: `actions.
+    # release` sheds every claim label, re-adds meld:ready as a no-op, and finds no in-progress/blocked label to remove.
+    stale = issue.status == "ready" and bool(issue.claimants)
+    if issue.status not in ("in_progress", "blocked") and not stale:
+        return f"issue is {issue.status}; release is only legal from in-progress or blocked, or from ready with a stale claim label"
     if actor.is_human:
         return None
     group = cfg.groups[actor.group]  # type: ignore[index]

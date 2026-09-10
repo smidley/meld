@@ -242,6 +242,55 @@ def test_human_claim_posts_no_expired_comment(tmp_path):
     assert not any(c.method == "POST" and c.endpoint == R + "issues/10/comments" for c in fake.calls)
 
 
+def stale_claim_board(fake, number: int = 11, label: str = CLAIM) -> None:
+    """Re-route the issue list so `number` is `meld:ready` *and* carries `label`: the orphan state a PM killed
+    between claim's label add and its status swap leaves behind (decision 11)."""
+    issues = json.loads((FIXTURES / "board1" / "issues.json").read_text())
+    for i in issues:
+        if i["number"] == number:
+            i["labels"] = i["labels"] + [{"name": label}]
+    fake.route("GET", R + "issues", issues)
+
+
+def test_release_clears_a_stale_claim_label_on_a_ready_issue(tmp_path):
+    fake, ctx = make(tmp_path)
+    stale_claim_board(fake)
+    fake.route("DELETE", label_ep(11, CLAIM), {}, status=200)
+    fake.route("POST", R + "issues/11/labels", [{"name": "meld:ready"}])
+    fake.route("POST", R + "issues/10/comments", {"id": 901})
+    assert release(ctx, 11) == {"released": 11, "previous_claimants": ["claude"]}
+    mutations = [(c.method, c.endpoint) for c in fake.calls if c.method != "GET"]
+    # the claim label goes, meld:ready is re-added as a no-op, and no in-progress/blocked label exists to remove
+    assert mutations == [("DELETE", label_ep(11, CLAIM)), ("POST", R + "issues/11/labels"),
+                         ("POST", R + "issues/10/comments")]
+    assert posted_headers(fake) == ["[claude:pm] RELEASED #11"]
+
+
+def test_claim_proceeds_past_its_own_stale_claim_label_on_a_ready_issue(tmp_path):
+    fake, ctx = make(tmp_path)
+    stale_claim_board(fake)
+    fake.route("POST", R + "labels", {}, status=422)                                    # the label already exists
+    fake.route("POST", R + "issues/11/labels", [])
+    fake.route("GET", R + "issues/11", {**fixture_issue(11), "labels": fixture_issue(11)["labels"] + [{"name": CLAIM}]})
+    fake.route("DELETE", label_ep(11, "meld:ready"), {}, status=200)
+    assert claim(ctx, 11) == {"claimed": 11, "claimed_by": "claude"}
+    # the add is a no-op, the re-read shows exactly its own label, and the status swap completes: self-healed
+    assert [c.body["labels"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/11/labels"] == \
+        [[CLAIM], ["meld:in-progress"]]
+    assert ("DELETE", label_ep(11, "meld:ready")) in [(c.method, c.endpoint) for c in fake.calls]
+    assert posted_headers(fake) == []
+
+
+def test_another_groups_stale_claim_label_still_refuses_a_claim(tmp_path):
+    fake, ctx = make(tmp_path)
+    stale_claim_board(fake, label="meld:claimed-by:codex")
+    fake.route("POST", R + "issues/10/comments", {"id": 902})
+    with pytest.raises(Refused) as ei:
+        claim(ctx, 11)
+    assert ei.value.refusal.rule == "already claimed by codex"
+    assert not any(c.endpoint.endswith("issues/11/labels") for c in fake.calls)
+
+
 def test_a_human_claims_with_the_shared_human_label(tmp_path):
     fake, human = make(tmp_path, group=None)
     fake.route("POST", R + "labels", {}, status=422)

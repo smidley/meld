@@ -305,3 +305,16 @@ def test_replace_section_rewrites_in_place_appends_when_absent_and_removes_tidil
     assert replace_section(None, "Scope", []) == ""
     # Blank lines before the rewritten section are outside it and stay; the ones after it belong to it and become one.
     assert replace_section("Goal\n\n\n## Scope\n- a\n\n\n## Notes\n- n\n", "Scope", ["b"]) == "Goal\n\n\n## Scope\n- b\n\n## Notes\n- n\n"
+
+
+def test_replace_section_ignores_headings_inside_fenced_code_like_body_section_does():
+    from meld.board import body_section, replace_section
+    quoted = "Goal\n\n```\n## Scope\n- quoted/*.py\n```\n"
+    body = quoted + "\n## Scope\n- real/*.py\n\n## Notes\n- n\n"
+    rewritten = replace_section(body, "Scope", ["new/*.py"])
+    assert rewritten == quoted + "\n## Scope\n- new/*.py\n\n## Notes\n- n\n"           # the fence is untouched
+    assert body_section(rewritten, "Scope") == ("new/*.py",)
+    assert replace_section(body, "Scope", []) == quoted + "\n## Notes\n- n\n"
+    assert replace_section(quoted, "Scope", ["a"]) == quoted + "\n## Scope\n- a\n"       # only a quoted heading: append a real one
+    fenced_end = "## Scope\n- a\n\n```\n## Notes\n```\n- still scope\n"
+    assert replace_section(fenced_end, "Scope", []) == ""                                      # a fenced heading does not end the section

@@ -73,17 +73,32 @@ def body_section(body: str, heading: str) -> tuple[str, ...]:
     return tuple(out)
 
 
+def _section_headings(lines: Sequence[str]) -> list[int]:
+    """Indices of the `## ` heading lines outside fenced code -- the same reading `body_section` applies, so the section
+    `replace_section` rewrites is always the one the board will read, never a heading quoted inside a fence."""
+    out: list[int] = []
+    fenced = False
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+        elif not fenced and line.startswith("## "):
+            out.append(i)
+    return out
+
+
 def replace_section(body: str, heading: str, items: Sequence[str]) -> str:
     """Return `body` with its `## <heading>` section written as `- ` bullets of `items`: rewritten in place when the
     section exists (everything before and after it is kept byte for byte), appended when it does not, removed when
     `items` is empty. A section runs from its heading to the next `## ` heading, including the blank lines that
     separate them (a rewrite leaves exactly one; a removal of the last section leaves no trailing blank). A non-empty
-    result ends in exactly one newline; a body emptied by a removal is `""`."""
+    result ends in exactly one newline; a body emptied by a removal is `""`. Headings inside fenced code are neither
+    found nor treated as section ends, exactly as `body_section` skips them."""
     lines = (body or "").rstrip("\n").splitlines()
     block = [f"## {heading}"] + [f"- {item}" for item in items] if items else []
-    start = next((i for i, l in enumerate(lines) if l.startswith("## ") and l[3:].strip().lower() == heading.lower()), None)
+    headings = _section_headings(lines)
+    start = next((i for i in headings if lines[i][3:].strip().lower() == heading.lower()), None)
     if start is not None:
-        end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+        end = next((i for i in headings if i > start), len(lines))
         if block:
             block[0] = lines[start]          # keep the heading exactly as the body spells it
         lines[start:end] = block + [""] if block and end < len(lines) else block

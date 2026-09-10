@@ -9,7 +9,8 @@ from typing import Any, Literal, Mapping
 
 # A group name becomes a party label (must not collide with a reserved party, and must parse as one in a
 # coordination header), a meld:claimed-by:<group> GitHub label (labels are case-insensitive for uniqueness, and
-# GitHub caps a label name at 50 characters -- the "meld:claimed-by:" prefix leaves 32), and a worktree path
+# GitHub caps a label name at 50 characters, and the 16-character "meld:claimed-by:" prefix leaves 34 of them, so the
+# 32 the rule below allows is comfortably inside that limit), and a worktree path
 # component -- so it is lowercase, path-safe, and length-capped.
 RESERVED_PARTY_NAMES = ("human", "joint")
 GROUP_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")

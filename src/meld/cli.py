@@ -16,6 +16,7 @@ from meld.adapters import UnknownAdapter, get_adapter
 from meld.appauth import AppAuthError
 from meld.assemble import BoardError
 from meld.audit import audit as do_audit, reopen as do_reopen
+from meld.board import HELD_CATEGORIES
 from meld.challenge import challenge as do_challenge
 from meld.chat import inbox as build_inbox, run_chat
 from meld.config import ConfigError, load_config
@@ -309,30 +310,38 @@ def roster(ctx: click.Context) -> None:
 @click.option("--effort", default=None)
 @click.option("--size", default=None, type=click.Choice(["S", "M", "L"]))
 @click.option("--skill", "skills", multiple=True, help="Pin a skill onto this issue's brief; repeatable.")
+@click.option("--scope", "scope", multiple=True, help="Glob the task may change; repeatable; replaces the issue's ## Scope.")
+@click.option("--may-delete", "may_delete", multiple=True, help="Exact path the task may delete; repeatable.")
+@click.option("--held", "held", multiple=True, type=click.Choice(HELD_CATEGORIES),
+              help="Held category needing a human's RESOLVED before dispatch; repeatable.")
 @click.pass_context
-def tag(ctx: click.Context, number: int, worker: str | None, model: str | None, effort: str | None, size: str | None, skills: tuple[str, ...]) -> None:
-    """Set the worker, model, effort, size, and skill labels on an issue (orchestrator or human)."""
+def tag(ctx: click.Context, number: int, worker: str | None, model: str | None, effort: str | None, size: str | None, skills: tuple[str, ...],
+        scope: tuple[str, ...], may_delete: tuple[str, ...], held: tuple[str, ...]) -> None:
+    """Set the worker, model, effort, size, skill, scope, deletion, and held declarations on an issue (orchestrator or human)."""
     c = _load(ctx)
-    _run_action(ctx, lambda: do_tag(c, number, worker=worker, model=model, effort=effort, size=size, skills=skills))
+    _run_action(ctx, lambda: do_tag(c, number, worker=worker, model=model, effort=effort, size=size, skills=skills,
+                                     scope=scope or None, may_delete=may_delete or None, held=held))
 
 
 @main.command()
 @click.argument("ref")
+@click.option("--supersedes", default=None, help="Decision file this one supersedes, e.g. 0007-old.md")
 @click.pass_context
-def decide(ctx: click.Context, ref: str) -> None:
+def decide(ctx: click.Context, ref: str, supersedes: str | None) -> None:
     """Record a verified [joint] DECISION as .meld/decisions/NNNN-<slug>.md through a memory PR."""
     c = _load(ctx)
-    _run_action(ctx, lambda: do_decide(c, ref))
+    _run_action(ctx, lambda: do_decide(c, ref, supersedes=supersedes))
 
 
 @main.command()
 @click.argument("ref")
 @click.option("-m", "--message", "message", required=True, help="What went wrong, what fixed it, what to check next time.")
+@click.option("--supersedes", default=None, help="Heading of the lesson this one supersedes, e.g. '2026-09-01 — #9 (codex)'")
 @click.pass_context
-def remember(ctx: click.Context, ref: str, message: str) -> None:
+def remember(ctx: click.Context, ref: str, message: str, supersedes: str | None) -> None:
     """Append a lesson about a resolved issue or PR to .meld/memory/lessons.md through a memory PR."""
     c = _load(ctx)
-    _run_action(ctx, lambda: do_remember(c, ref, message))
+    _run_action(ctx, lambda: do_remember(c, ref, message, supersedes=supersedes))
 
 
 @main.command()

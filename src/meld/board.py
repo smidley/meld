@@ -39,6 +39,85 @@ def claim_group(label: str) -> str | None:
     return label[len(CLAIM_LABEL_PREFIX):] or None if label.startswith(CLAIM_LABEL_PREFIX) else None
 
 
+HELD_LABEL_PREFIX = "meld:held:"
+HELD_CATEGORIES = ("cleanup", "credential-change", "delete", "live-outreach", "paid-media", "production-mutation", "public-release")
+
+
+def held_label(category: str) -> str:
+    return HELD_LABEL_PREFIX + category
+
+
+def fenced_lines(lines: Sequence[str]) -> frozenset[int]:
+    """Indices of the lines inside fenced code, fence lines included. A fence is a MATCHED pair of lines whose first
+    non-space characters are ```; an unterminated opener is inert. Both readers of an issue body use this one rule, so
+    what `replace_section` writes is always what `body_section` reads -- and a truncated paste or a code block a human
+    left open while editing can never swallow the declarations below it (a scope that vanished would fail OPEN:
+    `Board.scope_violations` refuses nothing when no scope is declared)."""
+    fences = [i for i, line in enumerate(lines) if line.lstrip().startswith("```")]
+    if len(fences) % 2:
+        fences = fences[:-1]
+    inside: set[int] = set()
+    for opener, closer in zip(fences[0::2], fences[1::2]):
+        inside.update(range(opener, closer + 1))
+    return frozenset(inside)
+
+
+def body_section(body: str, heading: str) -> tuple[str, ...]:
+    """The `- ` bullets under `## <heading>` in an issue body, up to the next heading; backticks stripped. Declarations
+    live in the body because only orchestrators and humans can write it (spec 6): `## Scope`, `## May delete`.
+
+    Fenced code is skipped (`fenced_lines`): issue bodies quote diffs and sample bodies routinely, and a quoted
+    `## Scope`/`- glob` would otherwise read as the real declaration -- widening a scope, or the deletion allowlist,
+    by example."""
+    out: list[str] = []
+    active = False
+    lines = (body or "").splitlines()
+    fenced = fenced_lines(lines)
+    for i, line in enumerate(lines):
+        if i in fenced:
+            continue
+        if line.startswith("## "):
+            active = line[3:].strip().lower() == heading.lower()
+            continue
+        if active and line.lstrip().startswith("- "):
+            item = line.lstrip()[2:].strip().strip("`").strip()
+            if item:
+                out.append(item)
+    return tuple(out)
+
+
+def _section_headings(lines: Sequence[str]) -> list[int]:
+    """Indices of the `## ` heading lines outside fenced code -- the same reading `body_section` applies, so the section
+    `replace_section` rewrites is always the one the board will read, never a heading quoted inside a fence."""
+    fenced = fenced_lines(lines)
+    return [i for i, line in enumerate(lines) if i not in fenced and line.startswith("## ")]
+
+
+def replace_section(body: str, heading: str, items: Sequence[str]) -> str:
+    """Return `body` with its `## <heading>` section written as `- ` bullets of `items`: rewritten in place when the
+    section exists (everything before and after it is kept byte for byte), appended when it does not, removed when
+    `items` is empty. A section runs from its heading to the next `## ` heading, including the blank lines that
+    separate them (a rewrite leaves exactly one; a removal of the last section leaves no trailing blank). A non-empty
+    result ends in exactly one newline; a body emptied by a removal is `""`. Headings inside fenced code are neither
+    found nor treated as section ends, exactly as `body_section` skips them."""
+    lines = (body or "").rstrip("\n").splitlines()
+    block = [f"## {heading}"] + [f"- {item}" for item in items] if items else []
+    headings = _section_headings(lines)
+    start = next((i for i in headings if lines[i][3:].strip().lower() == heading.lower()), None)
+    if start is not None:
+        end = next((i for i in headings if i > start), len(lines))
+        if block:
+            block[0] = lines[start]          # keep the heading exactly as the body spells it
+        lines[start:end] = block + [""] if block and end < len(lines) else block
+        while lines and lines[-1] == "":
+            lines.pop()
+    elif block:
+        if lines and lines[-1] != "":
+            lines.append("")
+        lines += block
+    return "\n".join(lines) + "\n" if lines else ""
+
+
 # Branches `meld decide`/`meld remember` push to. collect's build branches are `meld/<issue>-<slug>` (gitops.branch_name), so
 # the two namespaces never overlap; memory.py imports this rather than redefining it (board.py is the leaf both can reach).
 MEMORY_BRANCH_PREFIX = "meld/memory-"
@@ -111,6 +190,22 @@ class Issue:
         c = self.claimants
         return c[0] if len(c) == 1 else None
 
+    @property
+    def scope(self) -> tuple[str, ...]:
+        return body_section(self.body, "Scope")
+
+    @property
+    def may_delete(self) -> tuple[str, ...]:
+        return body_section(self.body, "May delete")
+
+    @property
+    def held(self) -> tuple[str, ...]:
+        """Held categories on this issue (spec 6): dispatch needs a listed human's answer while any is present. Matched
+        case-insensitively like claim labels: GitHub label names are unique case-insensitively, and a human may type
+        `Meld:Held:Delete` by hand -- it must still engage the gate."""
+        lowered = (l.lower() for l in self.labels)
+        return tuple(sorted(l[len(HELD_LABEL_PREFIX):] for l in lowered if l.startswith(HELD_LABEL_PREFIX) and len(l) > len(HELD_LABEL_PREFIX)))
+
 
 # The first line of the author group's COMMENT-review body (review.py), so assemble._pull can tell that review apart
 # from an ordinary comment: GitHub refuses an APPROVE/REQUEST_CHANGES from the PR's own author, so that group's verdict
@@ -145,6 +240,7 @@ class PullRequest:
     state: str
     merged: bool
     files: tuple[str, ...] = ()
+    removed: tuple[str, ...] = ()   # files the PR deletes (GitHub status "removed"; a rename is not a deletion)
     merge_commit_sha: str | None = None
     merged_at: str = ""
     statuses: dict[str, str] = field(default_factory=dict)   # commit-status context -> state, on the head
@@ -322,6 +418,47 @@ class Board:
         else:
             candidates.sort(key=lambda p: (p.state != "open", p.author != holder, -p.number))
         return candidates[0] if candidates else None
+
+    def _issue_for(self, pr: PullRequest) -> Issue | None:
+        """The issue a PR closes, when it is on the board."""
+        return self.issues.get(pr.issue_number) if pr.issue_number is not None else None
+
+    def scope_violations(self, pr: PullRequest) -> tuple[str, ...]:
+        """Changed files outside the linked issue's declared `## Scope`; empty when no scope is declared or no issue is linked."""
+        issue = self._issue_for(pr)
+        if issue is None or not issue.scope:
+            return ()
+        return tuple(f for f in pr.files if not any(fnmatch(f, g) for g in issue.scope))
+
+    def blocked_deletions(self, pr: PullRequest) -> tuple[str, ...]:
+        """Deleted files the linked issue's `## May delete` does not list; the gate is always on for a PR that closes an issue."""
+        issue = self._issue_for(pr)
+        if issue is None:
+            return ()
+        return tuple(f for f in pr.removed if f not in issue.may_delete)
+
+    def human_answer(self, issue: int) -> ParsedComment | None:
+        """The newest `PROVIDED #issue` / `RESOLVED #issue` from a listed human. A stranger's `[human]` comment still
+        parses with party kind "human" (the bracket names no login, see config.Party.parse), but grammar.is_authorized
+        checks `cfg.is_human(author)` at parse time, so an impostor's comment already carries `ok=False` -- the `c.ok`
+        filter below is enough on its own and no separate humans list is needed on the board (see assemble.build_board,
+        which parses every coordination comment with the real cfg before Board ever sees it)."""
+        answers = [c for c in self.comments if c.ok and c.header is not None and c.header.party.kind == "human"
+                   and c.header.verb in ("PROVIDED", "RESOLVED") and c.header.ref == f"#{issue}"]
+        return max(answers, key=lambda c: c.id) if answers else None
+
+    def needs_human_answered(self, issue: int) -> bool:
+        """A listed human answered after the newest `NEEDS-HUMAN #issue` -- the condition that unlocks a needs-human or
+        held issue (spec 8, 14). An ask must exist: a `meld:needs-human` label with nothing behind it never
+        auto-unlocks. Answering "any answer counts when no ask was posted" instead meant that on an issue which had
+        ever received a human `PROVIDED`/`RESOLVED`, a hold added later (a hand-set label, or one whose ask failed to
+        post) read as already authorized -- `dispatch` was legal and the next `tick` swapped the label straight back.
+        A PM's, an orchestrator's, or a human's own `NEEDS-HUMAN #issue` is what stamps a hold."""
+        answer = self.human_answer(issue)
+        if answer is None:
+            return False
+        asks = [c.id for c in self.comments if c.ok and c.header is not None and c.header.verb == "NEEDS-HUMAN" and c.header.ref == f"#{issue}"]
+        return bool(asks) and answer.id > max(asks)
 
     def run_for(self, group: str, issue: int) -> RunRecord | None:
         return self.runs.get(group, {}).get(issue)

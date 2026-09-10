@@ -105,6 +105,19 @@ def test_merge_blockers_and_stale_approvals():
     assert "0/1 approvals" in rule(mk_board(CFG2, pulls=[stale]), CFG2, CLAUDE_PM, Verb.MERGE, stale)
 
 
+def test_merge_refuses_out_of_scope_changes_and_unlisted_deletions():
+    from tests.factories import mk_board, mk_issue, mk_pr
+    body = "## Scope\n- src/meld/*.py\n\n## May delete\n- src/meld/legacy.py\n"
+    issue = mk_issue(12, status="in_review", claimed_by="claude", body=body)
+    ok = mk_pr(20, 12, files=("src/meld/board.py",), approvals=("meld-codex-bot",))          # whatever the file's mergeable arrangement is
+    out = mk_pr(21, 12, files=("src/meld/board.py", "README.md"), approvals=("meld-codex-bot",))
+    dele = mk_pr(22, 12, files=("src/meld/board.py", "src/meld/legacy.py", "src/meld/old.py"), removed=("src/meld/legacy.py", "src/meld/old.py"), approvals=("meld-codex-bot",))
+    board = mk_board(CFG2, issues=[issue], pulls=[ok, out, dele], phase="executing")
+    assert rule(board, CFG2, CLAUDE_PM, Verb.MERGE, ok) is None
+    assert rule(board, CFG2, CLAUDE_PM, Verb.MERGE, out) == "PR changes files outside #12's declared scope: README.md"
+    assert rule(board, CFG2, CLAUDE_PM, Verb.MERGE, dele) == "PR deletes files not listed under '## May delete' in #12: src/meld/old.py"
+
+
 def test_pingpong_and_legal_pr_verbs():
     pr = mk_pr(20, 13, committer="meld-codex-bot", approvals=("meld-claude-bot",), extra_changes_requested_history=3)
     assert pingpong_exceeded(CFG2, pr)

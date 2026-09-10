@@ -208,3 +208,122 @@ def test_claimants_dedupe_case_variants_of_one_group():
     from tests.factories import mk_issue
     issue = mk_issue(12, status="in_progress", extra_labels=("meld:claimed-by:Claude", "meld:claimed-by:claude"))
     assert issue.claimants == ("claude",) and issue.claimed_by == "claude"
+
+
+def test_issue_declarations_come_from_body_sections_and_held_labels():
+    from meld.board import HELD_CATEGORIES, HELD_LABEL_PREFIX, body_section, held_label
+    from tests.factories import mk_issue
+    body = ("plan-item: p1\n\n## Acceptance criteria\n- works\n\n## Scope\n- src/meld/board.py\n- `tests/test_board*.py`\n\n"
+            "## May delete\n- src/meld/legacy.py\n\n## Notes\n- not a scope line\n")
+    assert body_section(body, "Scope") == ("src/meld/board.py", "tests/test_board*.py")
+    assert body_section(body, "May delete") == ("src/meld/legacy.py",)
+    assert body_section(body, "Missing") == () and body_section("", "Scope") == ()
+    issue = mk_issue(12, status="in_progress", claimed_by="claude", body=body, extra_labels=("meld:held:delete", "meld:held:public-release"))
+    assert issue.scope == ("src/meld/board.py", "tests/test_board*.py") and issue.may_delete == ("src/meld/legacy.py",)
+    assert issue.held == ("delete", "public-release")
+    assert held_label("delete") == HELD_LABEL_PREFIX + "delete" and "credential-change" in HELD_CATEGORIES and len(HELD_CATEGORIES) == 7
+    assert mk_issue(13).scope == () and mk_issue(13).held == ()
+
+
+def test_board_reports_scope_violations_and_blocked_deletions():
+    from tests.factories import mk_board, mk_issue, mk_pr
+    body = "## Scope\n- src/meld/*.py\n- tests/**\n\n## May delete\n- src/meld/legacy.py\n"
+    scoped = mk_issue(12, status="in_review", claimed_by="claude", body=body)
+    free = mk_issue(13, status="in_review", claimed_by="codex")
+    pr_ok = mk_pr(20, 12, files=("src/meld/board.py", "tests/test_board.py"))
+    pr_out = mk_pr(21, 12, files=("src/meld/board.py", "README.md", "docs/x.md"))
+    pr_del = mk_pr(22, 12, files=("src/meld/board.py", "src/meld/legacy.py", "src/meld/old.py"), removed=("src/meld/legacy.py", "src/meld/old.py"))
+    pr_free = mk_pr(23, 13, files=("anything/at/all.py", "gone.py"), removed=("gone.py",))
+    board = mk_board(issues={12: scoped, 13: free}, pulls={20: pr_ok, 21: pr_out, 22: pr_del, 23: pr_free})
+    assert board.scope_violations(pr_ok) == () and board.blocked_deletions(pr_ok) == ()
+    assert board.scope_violations(pr_out) == ("README.md", "docs/x.md")
+    assert board.blocked_deletions(pr_del) == ("src/meld/old.py",)          # legacy.py is listed, old.py is not
+    assert board.scope_violations(pr_free) == ()                              # no scope declared: no scope check
+    assert board.blocked_deletions(pr_free) == ("gone.py",)                   # the deletion gate is always on
+
+
+def test_needs_human_answered_needs_a_listed_humans_answer_after_the_ask():
+    from tests.factories import mk_board, mk_comment, mk_issue
+    issue = mk_issue(14, status="needs_human", claimed_by="codex")
+    ask = mk_comment(50, "meld-codex-bot", "[codex] NEEDS-HUMAN #14\n\nheld: delete", "2026-09-05T10:00:00Z")
+    stranger = mk_comment(51, "someone", "[human] RESOLVED #14\n\ndone", "2026-09-05T10:05:00Z")
+    early = mk_comment(49, "empowerScott", "[human] RESOLVED #14\n\nold answer", "2026-09-05T09:00:00Z")
+    answer = mk_comment(52, "empowerScott", "[human] PROVIDED #14\n\nauthorized", "2026-09-05T10:10:00Z")
+    other = mk_comment(53, "empowerScott", "[human] RESOLVED #15\n\nwrong issue", "2026-09-05T10:11:00Z")
+    assert mk_board(issues={14: issue}, comments=[ask]).needs_human_answered(14) is False
+    assert mk_board(issues={14: issue}, comments=[ask, stranger]).needs_human_answered(14) is False   # not a listed human
+    assert mk_board(issues={14: issue}, comments=[early, ask]).needs_human_answered(14) is False      # answered before the ask
+    assert mk_board(issues={14: issue}, comments=[ask, answer, other]).needs_human_answered(14) is True
+    assert mk_board(issues={14: issue}, comments=[ask, answer]).human_answer(14).id == 52
+    # I4: an ask must exist. A `meld:needs-human` label with nothing behind it never auto-unlocks -- otherwise an
+    # issue that had ever received a human PROVIDED/RESOLVED was un-gated the moment anyone re-held it.
+    assert mk_board(issues={14: issue}, comments=[answer]).needs_human_answered(14) is False
+    human_ask = mk_comment(54, "empowerScott", "[human] NEEDS-HUMAN #14\n\nheld: delete", "2026-09-05T10:20:00Z")
+    assert mk_board(issues={14: issue}, comments=[ask, answer, human_ask]).needs_human_answered(14) is False   # re-held by a human
+    later = mk_comment(55, "empowerScott", "[human] RESOLVED #14\n\nauthorized again", "2026-09-05T10:25:00Z")
+    assert mk_board(issues={14: issue}, comments=[ask, answer, human_ask, later]).needs_human_answered(14) is True
+
+
+def test_held_labels_and_section_headings_match_case_insensitively():
+    """Task 1 review: a hand-typed `Meld:Held:Delete` must still engage the dispatch gate (GitHub label names are unique
+    case-insensitively), and `## SCOPE` is the same heading as `## Scope`."""
+    from meld.board import body_section
+    from tests.factories import mk_issue
+    assert mk_issue(12, extra_labels=("Meld:Held:Delete", "meld:held:public-release")).held == ("delete", "public-release")
+    body = "## SCOPE\n- src/meld/*.py\n"
+    assert body_section(body, "Scope") == ("src/meld/*.py",) and body_section(body, "scope") == ("src/meld/*.py",)
+
+
+def test_body_section_ignores_headings_and_bullets_inside_fenced_code():
+    """M9: an issue body routinely quotes a diff or a sample body in a fence. Neither a `## ` line nor a `- ` bullet
+    inside one is a declaration -- reading them let a quoted example widen the real scope or the deletion allowlist."""
+    from meld.board import body_section
+    body = ("Reproduce with:\n\n```\n## Scope\n- everything/*\n```\n\n"
+            "## Scope\n- src/meld/*.py\n\n"
+            "Example of what NOT to write:\n\n```md\n## May delete\n- src/meld/rules.py\n```\n\n"
+            "## May delete\n- src/meld/legacy.py\n")
+    assert body_section(body, "Scope") == ("src/meld/*.py",)
+    assert body_section(body, "May delete") == ("src/meld/legacy.py",)
+    # A fence opened inside the section ends nothing: the bullets after it are still the section's own.
+    fenced_inside = "## Scope\n- a.py\n\n```\n- fake.py\n## May delete\n- b.py\n```\n\n- c.py\n"
+    assert body_section(fenced_inside, "Scope") == ("a.py", "c.py") and body_section(fenced_inside, "May delete") == ()
+
+
+def test_replace_section_rewrites_in_place_appends_when_absent_and_removes_tidily():
+    from meld.board import body_section, replace_section
+    body = "Goal text\n\n## Scope\n- src/a.py\n\n## May delete\n- src/old.py\n\n## Notes\n- keep me\n"
+    rewritten = replace_section(body, "scope", ["docs/**", "`src/b.py`"])
+    assert rewritten == "Goal text\n\n## Scope\n- docs/**\n- `src/b.py`\n\n## May delete\n- src/old.py\n\n## Notes\n- keep me\n"
+    assert body_section(rewritten, "Scope") == ("docs/**", "src/b.py")                    # round-trips through the reader
+    assert replace_section(body, "May delete", []) == "Goal text\n\n## Scope\n- src/a.py\n\n## Notes\n- keep me\n"   # a middle section
+    assert replace_section(body, "Notes", []) == "Goal text\n\n## Scope\n- src/a.py\n\n## May delete\n- src/old.py\n"  # the last: no stray blank
+    assert replace_section("## Scope\n- src/a.py\n", "Scope", []) == ""                     # the only section
+    assert replace_section(body, "Missing", []) == body                                       # nothing to remove, nothing changes
+    assert replace_section("Goal text", "Scope", ["src/*.py"]) == "Goal text\n\n## Scope\n- src/*.py\n"   # appended, one blank between
+    assert replace_section("Goal text\n\n", "Scope", ["src/*.py"]) == "Goal text\n\n## Scope\n- src/*.py\n"
+    assert replace_section("", "Scope", ["src/*.py"]) == "## Scope\n- src/*.py\n"
+    assert replace_section(None, "Scope", []) == ""
+    # Blank lines before the rewritten section are outside it and stay; the ones after it belong to it and become one.
+    assert replace_section("Goal\n\n\n## Scope\n- a\n\n\n## Notes\n- n\n", "Scope", ["b"]) == "Goal\n\n\n## Scope\n- b\n\n## Notes\n- n\n"
+
+
+def test_replace_section_ignores_headings_inside_fenced_code_like_body_section_does():
+    from meld.board import body_section, replace_section
+    quoted = "Goal\n\n```\n## Scope\n- quoted/*.py\n```\n"
+    body = quoted + "\n## Scope\n- real/*.py\n\n## Notes\n- n\n"
+    rewritten = replace_section(body, "Scope", ["new/*.py"])
+    assert rewritten == quoted + "\n## Scope\n- new/*.py\n\n## Notes\n- n\n"           # the fence is untouched
+    assert body_section(rewritten, "Scope") == ("new/*.py",)
+    assert replace_section(body, "Scope", []) == quoted + "\n## Notes\n- n\n"
+    assert replace_section(quoted, "Scope", ["a"]) == quoted + "\n## Scope\n- a\n"       # only a quoted heading: append a real one
+    fenced_end = "## Scope\n- a\n\n```\n## Notes\n```\n- still scope\n"
+    assert replace_section(fenced_end, "Scope", []) == ""                                      # a fenced heading does not end the section
+
+
+def test_an_unterminated_fence_is_inert_so_declarations_never_vanish():
+    from meld.board import body_section, fenced_lines, replace_section
+    body = "Goal text\n\nRepro:\n\n```python\nprint(1)\n\n## Scope\n- src/meld/*.py\n\n## May delete\n- src/old.py\n"
+    assert body_section(body, "Scope") == ("src/meld/*.py",) and body_section(body, "May delete") == ("src/old.py",)
+    rewritten = replace_section(body, "Scope", ["src/meld/new.py"])
+    assert rewritten.count("## Scope") == 1 and body_section(rewritten, "Scope") == ("src/meld/new.py",)
+    assert fenced_lines(["```", "## Scope", "```", "x"]) == frozenset({0, 1, 2}) and fenced_lines(["```", "## Scope"]) == frozenset()

@@ -242,8 +242,10 @@ class GitHub:
     def get_pull(self, number: int, fresh: bool = False) -> dict:
         return self.get(self._r(f"pulls/{number}"), use_cache=not fresh)
 
-    def pull_files(self, number: int) -> list[str]:
-        return [f["filename"] for f in self.get_paginated(self._r(f"pulls/{number}/files"))]
+    def pull_files(self, number: int) -> list[dict]:
+        """Each changed file as {"filename", "status", "previous_filename"}; status is GitHub's (added, modified, removed, renamed...)."""
+        return [{"filename": f["filename"], "status": f.get("status", ""), "previous_filename": f.get("previous_filename")}
+                for f in self.get_paginated(self._r(f"pulls/{number}/files"))]
 
     def create_review(self, number: int, event: Literal["APPROVE", "REQUEST_CHANGES", "COMMENT"], body: str, commit_id: str,
                       comments: list[dict] | None = None) -> dict:

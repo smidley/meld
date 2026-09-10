@@ -129,6 +129,8 @@ def _dispatch(board: Board, cfg: Config, actor: Actor, issue: Issue, models: Mod
     if issue.claimed_by != group.name:
         return (f"issue is claimed by {', '.join(issue.claimants)}, not {group.name}" if issue.claimants
                 else f"issue is not claimed by {group.name}")
+    if issue.held and not board.needs_human_answered(issue.number):
+        return f"held ({', '.join(issue.held)}): a listed human must post RESOLVED #{issue.number} (or PROVIDED #{issue.number}) first"
     run = board.run_for(group.name, issue.number)
     if run is not None and (run.alive or not run.collected):
         return "a worker run already exists for this issue (running or uncollected)"
@@ -339,6 +341,12 @@ def _merge(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | No
     need = cfg.effective_quorum
     if len(have) < need:
         return f"{len(have)}/{need} approvals from non-committer parties (have: {sorted(have)})"
+    outside = board.scope_violations(pr)
+    if outside:
+        return f"PR changes files outside #{pr.issue_number}'s declared scope: {', '.join(outside[:5])}"
+    blocked = board.blocked_deletions(pr)
+    if blocked:
+        return f"PR deletes files not listed under '## May delete' in #{pr.issue_number}: {', '.join(blocked[:5])}"
     return None
 
 

@@ -38,6 +38,11 @@ def test_inbox_collects_what_needs_a_person():
                            mk_comment(CFG2, 12, "empowerScott", "[human] DIRECTIVE dir-1\n\nuse A")]
     box2 = inbox(mk_board(CFG2, issues=[mk_issue(14, status="needs_human")], comments=resolved), CFG2, NOW)
     assert box2["needs_human"] == [] and box2["plan_add"] == [] and box2["budget"] == [] and box2["disagree"] == [{"ref": "ans-1", "verb": "ANSWER", "comment_id": 5}]
+    # I4: a human's own `meld tag --held` posts `[human] NEEDS-HUMAN #14`. The item is on the inbox because the issue
+    # is needs_human, exactly as before -- the human's ask adds no item, it just says what the hold is waiting for.
+    reheld = resolved + [mk_comment(CFG2, 13, "empowerScott", "[human] NEEDS-HUMAN #14\n\nheld: delete -- decide before the worker runs")]
+    box3 = inbox(mk_board(CFG2, issues=[mk_issue(14, status="needs_human")], comments=reheld), CFG2, NOW)
+    assert [i["issue"] for i in box3["needs_human"]] == [14] and "held: delete" in box3["needs_human"][0]["ask"]
 
 
 def test_run_chat_posts_asks_and_human_verbs(tmp_path):

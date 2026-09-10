@@ -7,12 +7,13 @@ from pathlib import Path
 
 from meld.actions import BLOCKED, IN_PROGRESS, refuse
 from meld.board import AUTHOR_VERDICT_MARKER
+from meld.brief import STATUS_RE
 from meld.config import Party
 from meld.dispatch import IN_REVIEW, DispatchError, _iso, _now, _swap_labels, neutralise_closers
 from meld.github import GitHubError
 from meld.gitops import commits_ahead, head_sha, push_branch
 from meld.grammar import Header, agreement_for, compose, verified_joint
-from meld.memory import DECISIONS_DIR, LESSONS_FILE, LESSONS_HEADER, comment_url, content_hash, render_decision
+from meld.memory import DECISIONS_DIR, LESSONS_FILE, LESSONS_HEADER, comment_url, content_hash, render_decision, superseded_trailer
 from meld.results import cap_body, format_findings, load_result, mark_submitted, store_result, update_result
 from meld.rules import VERB_FOR, Refusal, Verb, approving_parties, author_party, memory_review_rule, pr_refusal, review_verdict_rule, status_context
 from meld.status import build_status
@@ -26,6 +27,23 @@ EVENTS = {"approve": "APPROVE", "request-changes": "REQUEST_CHANGES", "push-fix"
 STATUS_STATE = {"approve": "success", "request-changes": "failure", "push-fix": "pending"}
 _AUTHOR_VERB = {"approve": "approving", "request-changes": "requesting changes on"}
 _DATE_LINE_RE = re.compile(r"^- Date: (\d{4}-\d{2}-\d{2})$", re.MULTILINE)
+# The decision-file form of a supersession link (memory.SUPERSEDES_RE is the lessons.md form, without the bullet).
+# `(.+)` rather than `(\S+)`: the file being superseded may be hand-authored and its name may hold a space, and the
+# captured name is checked twice anyway -- fed straight back into render_decision (so a line anywhere but the
+# header fails the byte-equality check) and compared against the path the PR actually changes.
+_SUPERSEDES_LINE_RE = re.compile(r"^- Supersedes: (.+)$", re.MULTILINE)
+_DECISION_BODY_HEADING = "\n## Decision\n"
+
+
+def _decision_header(text: str) -> str:
+    """The decision file's header region: everything above its `## Decision` heading, which is how `render_decision`
+    lays the file out (`# Decision <ref>`, `- Date:`, `- Agreed by:`, `- Source:`, optionally `- Supersedes:`, then
+    the agreed text under `## Decision`). The supersession link is read from here and nowhere else. Under the heading
+    is the groups' own agreed prose, which may contain any line at all -- including a `- Supersedes: ...` bullet; read
+    from the whole file, such a bullet made the verifier re-render the file WITH a header line it does not have and
+    refuse it "byte for byte", and since `decide` opens the PR before anyone verifies it, that agreed decision could
+    then never be recorded. A file with no `## Decision` heading is all header, and fails the byte check anyway."""
+    return text.split(_DECISION_BODY_HEADING, 1)[0]
 
 
 def _decision_date(text: str) -> str | None:
@@ -39,6 +57,27 @@ def _decision_date(text: str) -> str | None:
     except ValueError:
         return None
     return m.group(1)
+
+
+def _flat_decision_path(p: str) -> bool:
+    """A decision file lives directly in `.meld/decisions/` and ends `.md`: no subdirectory, no other tree. BOTH the
+    new file and the file it supersedes are held to it -- the superseded path is built from the new file's own
+    `- Supersedes:` value, which may contain a `/`, so without this a PR could write `- Supersedes: sub/x.md` and
+    change `.meld/decisions/sub/x.md` (a file no `meld decide` ever wrote) while still verifying byte for byte."""
+    return p.startswith(f"{DECISIONS_DIR}/") and p.endswith(".md") and "/" not in p[len(DECISIONS_DIR) + 1:]
+
+
+def _supersession_pair(paths: list[str], texts: dict[str, str], digest: str) -> tuple[str, str] | None:
+    """`(the new decision, the file it supersedes)` for a two-file memory PR, or None when the pair cannot be read
+    (the caller owns the refusal text). Which of the two is the new decision is settled by the marker digest and
+    nothing else: GitHub lists a PR's changed files alphabetically, so the older `0001-...md` arrives ahead of the
+    `0002-...md` that supersedes it and `paths[0]` is exactly the wrong guess. Anything but one match -- none, or the
+    two that a PR listing the same path twice would produce -- is a refusal rather than a guess."""
+    partner = {paths[0]: paths[1], paths[1]: paths[0]}
+    candidates = [p for p in paths if content_hash(texts[p]) == digest]
+    if len(candidates) != 1:
+        return None
+    return candidates[0], partner[candidates[0]]
 
 
 def submit_review(gh, number: int, event: str, body: str, commit_id: str, comments: list[dict]) -> dict:
@@ -61,16 +100,39 @@ def _no_action(ctx, group, number: int, verdict, reason: str, outcome: str, when
 def verify_memory_pr(ctx, board, pr) -> tuple[bool, str]:
     kind, ref, digest = pr.memory  # type: ignore[misc]
     paths = list(pr.files)
-    if len(paths) != 1:
-        return False, f"a memory PR changes exactly one file, this one changes {len(paths)}"
-    if ".." in paths[0] or paths[0].startswith("/"):
-        return False, f"{paths[0]} is not a valid memory-PR path"
-    text = ctx.gh.get_contents(paths[0], pr.head_sha)
-    if text is None:
-        return False, f"{paths[0]} is missing at {pr.head_sha[:7]}"
+    if not 1 <= len(paths) <= 2:
+        return False, f"a memory PR changes one file, or two for a supersession; this one changes {len(paths)}"
+    if len(paths) == 2 and kind != "decision":
+        return False, f"a {kind} PR changes exactly one file, this one changes 2"
+    for p in paths:
+        if ".." in p or p.startswith("/"):
+            return False, f"{p} is not a valid memory-PR path"
+    texts: dict[str, str] = {}
+    for p in paths:
+        at_head = ctx.gh.get_contents(p, pr.head_sha)
+        if at_head is None:
+            return False, f"{p} is missing at {pr.head_sha[:7]}"
+        texts[p] = at_head
+    new_path = paths[0]
+    old_path: str | None = None
+    if len(paths) == 2:
+        pair = _supersession_pair(paths, texts, digest)
+        if pair is None:
+            return False, ("a two-file memory PR is one new decision naming the file it supersedes, plus that file; "
+                           f"neither {paths[0]} nor {paths[1]} matches the meld-memory marker")
+        new_path, old_path = pair
+    text = texts[new_path]
     if kind == "decision":
-        if not (paths[0].startswith(f"{DECISIONS_DIR}/") and paths[0].endswith(".md") and "/" not in paths[0][len(DECISIONS_DIR) + 1:]):
-            return False, f"a decision PR changes one file under {DECISIONS_DIR}, not {paths[0]}"
+        new_name = Path(new_path).name
+        if not _flat_decision_path(new_path):
+            return False, f"a decision PR changes one file under {DECISIONS_DIR}, not {new_path}"
+        if old_path is not None and not _flat_decision_path(old_path):
+            return False, f"a decision PR supersedes one file directly under {DECISIONS_DIR}, not {old_path}"
+        # A decision file is written once and afterwards only ever gains a supersession trailer. Everything else here
+        # verifies the file's CONTENT, so a PR opened by hand could render decision B perfectly and land it at
+        # decision A's path -- destroying A with a change that verifies byte for byte. The path itself is the check.
+        if ctx.gh.get_contents(new_path, ctx.cfg.default_branch) is not None:
+            return False, f"{new_path} already exists on {ctx.cfg.default_branch}; a decision file is never rewritten"
         if content_hash(text) != digest:
             return False, "file hash does not match the meld-memory marker"
         agreement = agreement_for(board.comments, ref, ctx.cfg)
@@ -84,14 +146,37 @@ def verify_memory_pr(ctx, board, pr) -> tuple[bool, str]:
         joint = verified_joint(board.comments, ref, ctx.cfg)
         if joint is None:   # unreachable once joint_verified held above; kept so the link can never come from an unverified comment
             return False, f"no verified [joint] DECISION {ref}"
+        m = _SUPERSEDES_LINE_RE.search(_decision_header(text))
+        supersedes = m.group(1) if m else None
         # Byte equality with `meld decide`'s own rendering: the header lines (date, agreeing groups, the verified
-        # joint comment's URL) and the text under `## Decision` are all checked at once, and nothing else -- no
-        # preamble, note, or trailing addition -- can ride into the repo (and into every brief's `## Relevant memory`).
-        if text != render_decision(ref, agreement, comment_url(board, joint.id), date):
+        # joint comment's URL, the superseded file when there is one) and the text under `## Decision` are all
+        # checked at once, and nothing else -- no preamble, note, or trailing addition -- can ride into the repo
+        # (and into every brief's `## Relevant memory`). Feeding `supersedes` back in is what pins that line's
+        # position, immediately after `- Source:`.
+        if text != render_decision(ref, agreement, comment_url(board, joint.id), date, supersedes):
             return False, "the decision file does not match meld decide's rendering of the agreed [joint] DECISION byte for byte"
+        if supersedes is None:
+            if old_path is not None:
+                return False, f"{old_path} also changed, but {new_name} carries no `- Supersedes:` line"
+        elif old_path is None:
+            return False, f"{new_name} supersedes {supersedes}, which this PR does not change"
+        elif old_path != f"{DECISIONS_DIR}/{supersedes}":
+            return False, f"{new_name} supersedes {supersedes}, but this PR also changes {old_path}"
+        else:
+            # Superseded, never edited: the old file at the head must be origin's byte for byte plus that one
+            # trailer, so a supersession can neither rewrite the decision it replaces nor point it somewhere else.
+            at_base = ctx.gh.get_contents(old_path, ctx.cfg.default_branch)
+            # A file that already carries a trailer would pass the concatenation below (base + one more trailer is
+            # still base + trailer), leaving two trailers claiming the same predecessor. `decide` refuses a second
+            # supersession; so does the verifier, which is what a PR opened by hand has to get past.
+            if at_base is not None and STATUS_RE.search(at_base):
+                return False, f"{old_path} is already superseded; supersede its successor instead"
+            if at_base is None or texts[old_path] != at_base + superseded_trailer(new_name, date):
+                return False, (f"{old_path} must be the {ctx.cfg.default_branch} file plus exactly the superseded "
+                               f"trailer naming {new_name}")
         return True, "hash and agreed text verified"
-    if paths[0] != LESSONS_FILE:
-        return False, f"a lesson PR changes {LESSONS_FILE}, not {paths[0]}"
+    if new_path != LESSONS_FILE:
+        return False, f"a lesson PR changes {LESSONS_FILE}, not {new_path}"
     last = text.rfind("\n## ")
     entry = text[last:] if last >= 0 else ""
     if content_hash(entry) != digest:

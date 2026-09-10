@@ -13,7 +13,7 @@ from typing import Callable
 
 from meld.adapters import ADAPTER_NAMES, get_adapter
 from meld.atomic import write_atomic
-from meld.board import CHALLENGED_LABEL, COORDINATION_LABEL, NUDGED_LABEL, PLAN_APPROVED_LABEL, STATUS_LABELS
+from meld.board import CHALLENGED_LABEL, COORDINATION_LABEL, HELD_CATEGORIES, NUDGED_LABEL, PLAN_APPROVED_LABEL, STATUS_LABELS, held_label
 from meld.brief import DEFAULT_STANDARDS
 from meld.github import GitHub, GitHubError
 from meld.gitops import git
@@ -36,6 +36,7 @@ LABELS: dict[str, tuple[str, str]] = {
     "meld:needs-human": ("d93f0b", "A person must do something before work continues"),
     CHALLENGED_LABEL: ("e99695", "A CHALLENGE is open against this item"),
     NUDGED_LABEL: ("ededed", "The human was nudged about this needs-human item"),
+    **{held_label(c): ("f9d0c4", f"Held: {c} — a listed human must answer RESOLVED before dispatch") for c in HELD_CATEGORIES},
 }
 assert set(STATUS_LABELS) <= set(LABELS)
 

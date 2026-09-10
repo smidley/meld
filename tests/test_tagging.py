@@ -43,10 +43,15 @@ def make_untagged(tmp_path, group="claude", role="orchestrator"):
     return fake, ctx
 
 
+def fixture_issue(n):
+    return next(i for i in fixture("issues.json") if i["number"] == n)
+
+
 def test_tag_replaces_labels_and_validates(tmp_path):
     fake, ctx = make(tmp_path)
     out = tag(ctx, 11, model="claude-opus-5", effort="high", size="M")
-    assert out == {"tagged": 11, "labels": {"worker": "backend", "model": "claude-opus-5", "effort": "high", "size": "M", "skills": []}}
+    assert out == {"tagged": 11, "labels": {"worker": "backend", "model": "claude-opus-5", "effort": "high", "size": "M", "skills": []},
+                   "scope": [], "may_delete": [], "held": []}
     calls = label_calls(fake)
     assert ("POST", "", {"labels": ["model:claude-opus-5", "effort:high", "size:M"]}) in calls
     assert ("DELETE", "/model%3Aclaude-sonnet-5", None) in calls and ("DELETE", "/effort%3Amedium", None) in calls and ("DELETE", "/size%3AS", None) in calls
@@ -92,7 +97,8 @@ def test_tag_refuses_an_effort_it_cannot_validate_without_a_model(tmp_path):
     with pytest.raises(Refused, match="without a model"):
         tag(ctx, 11, effort="high")
     out = tag(ctx, 11, worker="backend", model="claude-opus-5", effort="high", size="S")
-    assert out == {"tagged": 11, "labels": {"worker": "backend", "model": "claude-opus-5", "effort": "high", "size": "S", "skills": []}}
+    assert out == {"tagged": 11, "labels": {"worker": "backend", "model": "claude-opus-5", "effort": "high", "size": "S", "skills": []},
+                   "scope": [], "may_delete": [], "held": []}
     assert label_calls(fake) == [("POST", "", {"labels": ["worker:backend", "model:claude-opus-5", "effort:high", "size:S"]})]
     with pytest.raises(Refused, match="not valid"):
         tag(ctx, 11, model="claude-opus-5", effort="turbo")
@@ -116,3 +122,97 @@ def test_tag_skill_adds_labels_from_the_roster(tmp_path):
     with pytest.raises(Refused, match="skill 'nope'"):
         tag(ctx, 11, skills=["nope"])
 
+
+def test_tag_writes_scope_and_may_delete_sections_into_the_body(tmp_path):
+    fake, ctx = make(tmp_path, role="orchestrator")
+    fake.route("PATCH", R + "issues/11", {"number": 11})
+    out = tag(ctx, 11, scope=["src/meld/*.py", "tests/test_x.py"], may_delete=["src/meld/legacy.py"])
+    patch = [c for c in fake.calls if c.method == "PATCH" and c.endpoint == R + "issues/11"][0]
+    body = patch.body["body"]
+    assert "## Scope\n- src/meld/*.py\n- tests/test_x.py\n" in body and "## May delete\n- src/meld/legacy.py\n" in body
+    assert body.startswith(fixture_issue(11)["body"].rstrip("\n"))                 # the existing body text is kept
+    assert out["scope"] == ["src/meld/*.py", "tests/test_x.py"] and out["may_delete"] == ["src/meld/legacy.py"]
+    fake.route("GET", R + "issues", [{**i, "body": body} if i["number"] == 11 else i for i in fixture("issues.json")])
+    out2 = tag(ctx, 11, scope=["docs/**"])                                         # a second call replaces the section, keeps the other
+    body2 = [c for c in fake.calls if c.method == "PATCH"][-1].body["body"]
+    assert "## Scope\n- docs/**\n" in body2 and "src/meld/*.py" not in body2 and "## May delete\n- src/meld/legacy.py\n" in body2
+
+
+def test_tag_held_labels_the_issue_needs_human_and_posts_the_ask(tmp_path):
+    fake, ctx = make(tmp_path, role="orchestrator")
+    fake.route("POST", R + "issues/11/labels", [])
+    fake.route("POST", R + "issues/10/comments", {"id": 900})
+    out = tag(ctx, 11, held=["delete", "public-release"])
+    labels = [c.body["labels"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/11/labels"]
+    assert labels == [["meld:held:delete", "meld:held:public-release", "meld:needs-human"]]
+    (ask,) = [c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/10/comments"]
+    assert ask.startswith("[claude] NEEDS-HUMAN #11") and "delete, public-release" in ask and "RESOLVED #11" in ask
+    assert out["held"] == ["delete", "public-release"]
+    with pytest.raises(Refused, match="held category"):
+        tag(ctx, 11, held=["nuke"])
+
+
+def test_tag_held_by_a_human_posts_its_own_ask_and_a_repeat_posts_nothing(tmp_path):
+    # I4 (reversing the Task 3 ruling that a human's --held posts no ask): the ask is the gating stamp. Without one,
+    # `needs_human_answered` had nothing to compare against, so on an issue that had ever received a human
+    # RESOLVED/PROVIDED the hold was un-gated by the very next `tick` and `dispatch` was legal again.
+    fake, human = make(tmp_path, group=None)
+    out = tag(human, 11, held=["delete", "delete"])                                # a repeated flag adds the label once
+    assert out["held"] == ["delete"]
+    labels = [c.body["labels"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/11/labels"]
+    assert labels == [["meld:held:delete", "meld:needs-human"]]
+    (ask,) = [c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/10/comments"]
+    assert ask.startswith("[human] NEEDS-HUMAN #11\n") and "Held categories on #11: delete." in ask
+    issues = fixture("issues.json")
+    for i in issues:
+        if i["number"] == 11:
+            i["labels"] = i["labels"] + [{"name": "meld:held:delete"}]
+    fake.route("GET", R + "issues", issues)
+    fake2, ctx = make(tmp_path / "orch", role="orchestrator")
+    fake2.route("GET", R + "issues", issues)
+    out = tag(ctx, 11, held=["delete"], size="M")                              # already held: no label POST for it, no ask
+    assert out["held"] == ["delete"]
+    posts = [c for c in fake2.calls if c.method == "POST"]
+    assert [c.body for c in posts if c.endpoint == R + "issues/11/labels"] == [{"labels": ["size:M"]}]
+    assert not [c for c in posts if c.endpoint == R + "issues/10/comments"]
+    out = tag(ctx, 11, held=["delete", "cleanup"])                              # one new category: labels and an ask naming both
+    assert out["held"] == ["cleanup", "delete"]
+    assert [c.body for c in fake2.calls if c.method == "POST" and c.endpoint == R + "issues/11/labels"][-1] == {"labels": ["meld:held:cleanup", "meld:needs-human"]}
+    (ask,) = [c.body["body"] for c in fake2.calls if c.method == "POST" and c.endpoint == R + "issues/10/comments"]
+    assert "Held categories on #11: cleanup, delete." in ask
+
+
+def test_tag_held_posts_the_ask_before_the_labels_and_lands_neither_when_the_ask_fails(tmp_path):
+    """I4: the labels are the gate and the ask is what un-gates it, so the ask goes first (the ordering
+    `housekeeping.ci_red_sweep` uses). Labels first meant a `GitHubError` on the comment left a held issue with no
+    ask behind it -- a hold nothing could ever stamp, and one the next answered `tick` would lift."""
+    from meld.github import GitHubError
+    fake, ctx = make(tmp_path, role="orchestrator")
+    tag(ctx, 11, held=["delete"])
+    order = [c.endpoint for c in fake.calls if c.method == "POST" and c.endpoint in (R + "issues/10/comments", R + "issues/11/labels")]
+    assert order == [R + "issues/10/comments", R + "issues/11/labels"]
+    fake2, ctx2 = make(tmp_path / "again", role="orchestrator")
+    fake2.route("POST", R + "issues/10/comments", {"message": "boom"}, status=500)
+    with pytest.raises(GitHubError):
+        tag(ctx2, 11, held=["delete"])
+    assert not [c for c in fake2.calls if c.method == "POST" and c.endpoint == R + "issues/11/labels"]
+
+
+def test_tag_refuses_empty_or_multi_line_declaration_items(tmp_path):
+    # M9: an item carrying a newline would be written into the body as two lines, the second of which is not a `- `
+    # bullet at all -- a `## Scope` entry that `body_section` then reads back as something else entirely.
+    fake, ctx = make(tmp_path, role="orchestrator")
+    for bad in ({"scope": ["src/*.py", " "]}, {"may_delete": [""]},
+                {"scope": ["src/*.py\n- ../../etc/passwd"]}, {"may_delete": ["a.py\nb.py"]}, {"scope": ["a.py\r- b.py"]}):
+        with pytest.raises(Refused, match="non-empty, single-line paths"):
+            tag(ctx, 11, **bad)
+    assert not [c for c in fake.calls if c.method == "PATCH" or (c.method == "POST" and c.endpoint == R + "issues/11/labels")]
+
+
+def test_tag_posts_the_held_ask_before_any_other_write(tmp_path):
+    fake, ctx = make(tmp_path, role="orchestrator")
+    fake.route("PATCH", R + "issues/11", {"number": 11})
+    tag(ctx, 11, held=["delete"], size="M", scope=["src/*.py"])
+    writes = [(c.method, c.endpoint) for c in fake.calls if c.method in ("POST", "DELETE", "PATCH")]
+    assert writes[0] == ("POST", R + "issues/10/comments")                      # the stamp lands before size, body, or held labels
+    assert writes[-1] == ("POST", R + "issues/11/labels") and fake.calls[-1].body == {"labels": ["meld:held:delete", "meld:needs-human"]}

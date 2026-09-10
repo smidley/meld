@@ -9,6 +9,7 @@ from meld.brief import (
     DEFAULT_STANDARDS,
     RESULT_FILE,
     ResultError,
+    STATUS_RE,
     WorkerResult,
     agent_instruction_files,
     decision_titles,
@@ -69,6 +70,51 @@ def test_repo_local_context_files(tmp_path: Path):
     assert agent_instruction_files(tmp_path) == ["CLAUDE.md", ".github/copilot-instructions.md"]
 
 
+def test_status_re_reads_a_superseded_by_name_that_contains_spaces():
+    # A `(\S+)` capture would stop at the first space and match nothing at all, so a hand-authored decision file
+    # with a space in its name would read as `active` after supersession -- and could then be superseded twice.
+    from meld.memory import superseded_trailer
+    assert STATUS_RE.search("# Decision x\n" + superseded_trailer("0002 dec 1.md", "2026-09-05")).group(1) == "0002 dec 1.md"
+
+
+QUOTING_DECISION = ("# Decision dec-9\n\n- Date: 2026-09-05\n- Agreed by: claude, codex\n- Source: https://x/1\n\n## Decision\n\n"
+                    "Cache reads in Redis. The note it replaces was retired by hand with the line\n\n"
+                    "Status: superseded by 0001-old.md on 2026-01-01\n\nwhich this decision records properly instead.\n")
+
+
+def test_status_re_matches_only_the_trailer_at_the_end_of_the_file(tmp_path: Path):
+    """I2: an unanchored `Status: superseded by ...` match made a decision that quotes the line read as superseded at
+    birth -- dropped from `## Decisions in force` and from `## Relevant memory`, and refused as a supersession target."""
+    from meld.brief import _decision_hit
+    from meld.memory import superseded_trailer
+    assert STATUS_RE.search(QUOTING_DECISION) is None
+    hit = _decision_hit(".meld/decisions/0009-dec-9.md", QUOTING_DECISION, ["redis"])
+    assert hit["status"] == "active" and hit["superseded_by"] is None
+    real = QUOTING_DECISION + superseded_trailer("0010-dec-10.md", "2026-09-06")
+    superseded = _decision_hit(".meld/decisions/0009-dec-9.md", real, ["redis"])
+    assert superseded["status"] == "superseded" and superseded["superseded_by"] == "0010-dec-10.md"
+    d = tmp_path / ".meld" / "decisions"
+    d.mkdir(parents=True)
+    (d / "0009-dec-9.md").write_text(QUOTING_DECISION)
+    (d / "0010-dec-10.md").write_text(real.replace("# Decision dec-9", "# Decision dec-10"))
+    assert decision_titles(tmp_path) == ["Decision dec-9"]     # only the file that really carries the trailer is dropped
+
+
+def test_lesson_supersession_is_keyed_by_index_not_by_heading_text():
+    """I6: two entries can share a heading (same day, same ref, same group). Keying the superseder map by heading text
+    retired both when a later entry named one of them; the link belongs to the entry the name resolves to."""
+    from meld.brief import _lesson_hits
+    same = "## 2026-09-01 — #9 (codex)"
+    text = ("# Lessons\n"
+            f"\n{same}\n\nthe first widgets lesson\n"
+            f"\n{same}\n\nthe second widgets lesson\n"
+            "\n## 2026-09-03 — #13 (claude)\n\nSupersedes: 2026-09-01 — #9 (codex)\n\nthe widgets replacement\n")
+    hits = _lesson_hits(".meld/memory/lessons.md", text, ["widgets"])
+    assert [(h["status"], h["superseded_by"]) for h in hits] == [
+        ("superseded", "2026-09-03 — #13 (claude)"), ("active", None), ("active", None)]
+    assert [h["snippet"].splitlines()[-1] for h in hits] == ["the first widgets lesson", "the second widgets lesson", "the widgets replacement"]
+
+
 def test_render_brief_for_a_builder_and_a_reviewer(tmp_path: Path):
     (tmp_path / ".meld" / "decisions").mkdir(parents=True)
     (tmp_path / ".meld" / "decisions" / "0001-db.md").write_text("# 0001 Use SQLite for v1\n")
@@ -87,6 +133,35 @@ def test_render_brief_for_a_builder_and_a_reviewer(tmp_path: Path):
     text = render_brief(role=reviewer, kind="review", group="claude", model="claude-opus-5", effort="high", issue=None, pr=pr,
                         plan_text=PLAN, repo_root=tmp_path, worktree=tmp_path, base_branch="main")
     assert text.startswith("# Meld brief: reviewer for PR #20") and "codex" in text and "verdict" in text
+
+
+def test_render_brief_carries_scope_and_authorized_categories(tmp_path: Path):
+    backend = next(w for w in builtin_workers() if w.name == "backend")
+    issue = mk_issue(11, title="Add health endpoint", size="S")
+    text = render_brief(role=backend, kind="build", group="claude", model="claude-sonnet-5", effort="medium", issue=issue, pr=None,
+                        plan_text="", repo_root=tmp_path, worktree=tmp_path, base_branch="main",
+                        scope=("src/meld/*.py",), may_delete=("src/meld/legacy.py",), authorized=("delete",))
+    assert "## Scope" in text and "src/meld/*.py" in text and "src/meld/legacy.py" in text
+    assert "merge will refuse changes to any other file" in text
+    assert "## Authorized by a human" in text and "delete" in text
+    bare = render_brief(role=backend, kind="build", group="claude", model="claude-sonnet-5", effort="medium", issue=issue, pr=None,
+                        plan_text="", repo_root=tmp_path, worktree=tmp_path, base_branch="main")
+    # Neither dynamic section is added (the contract's own fixed rule still names "## Authorized by a human"
+    # generically, so the section's own heading/body text -- not that substring alone -- is what must be absent).
+    assert not [l for l in bare.splitlines() if l.startswith("## Scope")]
+    assert "A listed human has authorized these held categories" not in bare
+    # M7: the deletion gate is on whether or not a scope is declared, so an undeclared issue's brief still says so.
+    assert "No `## Scope` is declared; merge still refuses a deletion the issue does not list under `## May delete`." in bare
+    assert "No `## Scope` is declared" not in text
+
+    reviewer = next(w for w in builtin_workers() if w.name == "reviewer")
+    pr = mk_pr(20, 13, committer="meld-codex-bot")
+    review_text = render_brief(role=reviewer, kind="review", group="claude", model="claude-opus-5", effort="high", issue=None, pr=pr,
+                               plan_text="", repo_root=tmp_path, worktree=tmp_path, base_branch="main", scope=("src/meld/*.py",))
+    assert "## Scope declared by the issue" in review_text
+    bare_review = render_brief(role=reviewer, kind="review", group="claude", model="claude-opus-5", effort="high", issue=None, pr=pr,
+                               plan_text="", repo_root=tmp_path, worktree=tmp_path, base_branch="main")
+    assert "No `## Scope` is declared" not in bare_review     # the line is the build brief's; a memory PR closes no issue
 
 
 def test_read_result_missing_valid_and_malformed(tmp_path: Path):

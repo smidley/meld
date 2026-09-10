@@ -58,6 +58,7 @@ def render_status(board: Board, cfg: Config, actor: Actor, models: ModelRegistry
          "checks": p.checks, "pingpong_exceeded": pingpong_exceeded(cfg, p),
          "merged": p.merged, "merged_at": p.merged_at, "files": len(p.files),
          "touches_security_paths": p.touches(cfg.security_paths), "audited_by": dict(board.audits.get(p.number, {})),
+         "scope_violations": list(board.scope_violations(p)), "blocked_deletions": list(board.blocked_deletions(p)),
          "legal": legal_pr_verbs(board, cfg, actor, p)}
         for p in sorted(board.pulls.values(), key=lambda p: p.number)
     ]

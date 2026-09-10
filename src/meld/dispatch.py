@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from meld.actions import BLOCKED, IN_PROGRESS, refuse, release
+from meld.actions import BLOCKED, IN_PROGRESS, READY, refuse, release
 from meld.adapters import Adapter, LaunchSpec, scrub_env
 from meld.adapters.base import SKILL_NAME_RE
 from meld.board import Board, RunRecord
@@ -421,7 +421,8 @@ def _dispatch_build(ctx, board: Board, actor: Actor, number: int, adapter: Adapt
                          pr=None, plan_text=board.plan_text, repo_root=ctx.repo_root, worktree=wt, base_branch=ctx.cfg.default_branch,
                          skills=select_skills(f"{issue.title}\n{issue.body}",
                                               [w for w in ctx.roster_entries() if w.source in ("skill", "product-skill")], pinned=issue.skills),
-                         recall=recall_hits, project_skills_dir=adp.project_skills_dir())
+                         recall=recall_hits, project_skills_dir=adp.project_skills_dir(),
+                         scope=issue.scope, may_delete=issue.may_delete, authorized=issue.held)
     timeout = ctx.cfg.timeout_seconds(issue.size or "M")
     deadline = when + timedelta(seconds=timeout)
     pid, log_path = _launch(ctx, group, adp, worktree=wt, brief=brief, model=issue.model or "", effort=issue.effort or "",
@@ -475,11 +476,13 @@ def _dispatch_pr(ctx, board: Board, actor: Actor, number: int, kind: str, adapte
     model, effort = group.orchestrator.model, group.orchestrator.effort
     concern = review_concern(ctx.cfg, pr, group.name) if kind == "review" and role_name == "reviewer" else None
     recall_hits, recall_note = _recall_for_brief(ctx, pr.title)
+    linked = board._issue_for(pr)
     brief = render_brief(role=worker, kind=kind, group=group.name, model=model, effort=effort, issue=None, pr=pr,
                          plan_text=board.plan_text, repo_root=ctx.repo_root, worktree=wt, base_branch=ctx.cfg.default_branch, concern=concern,
                          skills=select_skills(f"{pr.title}\n{pr.body}",
                                               [w for w in ctx.roster_entries() if w.source in ("skill", "product-skill")]),
-                         recall=recall_hits, project_skills_dir=adp.project_skills_dir())
+                         recall=recall_hits, project_skills_dir=adp.project_skills_dir(),
+                         scope=linked.scope if linked else (), may_delete=linked.may_delete if linked else ())
     timeout = ctx.cfg.timeout_seconds("M")
     deadline = when + timedelta(seconds=timeout)
     pid, log_path = _launch(ctx, group, adp, worktree=wt, brief=brief, model=model, effort=effort, timeout=timeout, kind=kind,
@@ -529,6 +532,17 @@ def tick(ctx, *, now: datetime | None = None, sleep=time.sleep, env: Mapping[str
         issue = board.issues.get(n)
         if lease.group == group.name or issue is None or issue.status != "in_progress" or not (board.now and lease.until < now_iso):
             continue
+        answer = board.human_answer(n)
+        if answer is not None and answer.created_at > lease.until:
+            # Suspended, not expired. A build that stopped on a needs-human leaves no lease closer behind (the
+            # blocked path posts NEEDS-HUMAN, not RELEASED), so once the human answers and any PM's resume below
+            # flips the issue back to in-progress, the holder still carries the lease its dead worker was given --
+            # long lapsed. Expiring it here would strip the claim of a group that was only ever waiting for a
+            # person. The worker is known to have stopped, so the lease governs nothing until the holder's next
+            # dispatch posts a fresh one, which then does. No RESUMED note: that verb is a liveness notice for a
+            # restarted orchestrator or PM. The cost, recorded: a holder that never re-dispatches keeps the claim
+            # until a human runs `meld release`.
+            continue
         # release() itself would also post a framework RELEASED note; announce=False suppresses that so this one
         # event (an expired lease reclaimed by tick) writes exactly one framework comment -- the EXPIRED one below,
         # which names the lease that expired (derive_leases treats both verbs as closers, so nothing is lost).
@@ -536,7 +550,17 @@ def tick(ctx, *, now: datetime | None = None, sleep=time.sleep, env: Mapping[str
         ctx.gh.create_comment(board.coordination_issue, compose(Header(Party("pm", group.name), "EXPIRED", f"#{n}", None),
                                                                 f"Released #{n}: lease by {lease.group} expired at {lease.until} (now {now_iso})."))
         out["expired"].append(n)
-    notified = notify(ctx, board, when, post=post, env=env)
+    out["resumed"] = []
+    for issue in sorted(board.issues.values(), key=lambda i: i.number):
+        if issue.status != "needs_human" or not board.needs_human_answered(issue.number):
+            continue
+        # Spec 14: the human's PROVIDED/RESOLVED is the record; the label just has to follow it. Any PM's tick does this,
+        # idempotently (the second one finds no label), and posts nothing.
+        _swap_labels(ctx, issue.number, IN_PROGRESS if issue.claimed_by else READY, (NEEDS_HUMAN,))
+        out["resumed"].append(issue.number)
+    # `board` was built before the resume loop ran, so every issue just resumed still reads as needs_human in it;
+    # without `skip` the same tick that un-gates an issue also nudges a human about it one last time.
+    notified = notify(ctx, board, when, post=post, env=env, skip=out["resumed"])
     out["notified"] = notified["notified"]
     out["notify_errors"] = notified.get("errors", [])   # a failed Slack post or state write is reported here, never raised
     out["ci_red"] = ci_red_sweep(ctx, board, group)

@@ -12,7 +12,7 @@ import json
 import os
 import urllib.request
 from datetime import datetime, timezone
-from typing import Callable, Mapping
+from typing import Callable, Collection, Mapping
 
 from meld.board import Board, NUDGED_LABEL
 from meld.github import GitHubError
@@ -81,13 +81,16 @@ def _result(due: list[int], notified: list[int], skipped: str | None, text: str 
 
 
 def notify(ctx, board: Board, now: datetime, *, post: Callable[[str, dict], None] | None = None, env: Mapping[str, str] | None = None,
-           dry_run: bool = False, events: Callable[[int], list[dict]] | None = None) -> dict:
+           dry_run: bool = False, events: Callable[[int], list[dict]] | None = None, skip: Collection[int] = ()) -> dict:
+    """`skip`: issues the caller has already acted on since `board` was built, so they are not nudged from a stale
+    view. `dispatch.tick` passes the issues its resume loop just un-gated -- in `board` they still read needs_human,
+    and the tick that lifts a hold must not also Slack a human about it."""
     env = os.environ if env is None else env
     events_fn = events or ctx.gh.issue_events
     nudgers = {g.bot for g in ctx.cfg.groups.values()} | set(ctx.cfg.humans)
     offset = _stagger_offset(ctx)
     items = sorted(({"issue": i.number, "title": i.title, "age_minutes": _age_minutes(i.updated_at, now)}
-                    for i in board.issues.values() if i.status == "needs_human"), key=lambda d: d["issue"])
+                    for i in board.issues.values() if i.status == "needs_human" and i.number not in skip), key=lambda d: d["issue"])
     errors: list[str] = []
     due = []
     for item in items:

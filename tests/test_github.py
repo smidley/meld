@@ -209,7 +209,7 @@ def test_review_merge_status_and_issue_endpoints(board1_gh):
     fake.route("POST", "repos/acme/widgets/statuses/abc123", {"id": 77})
     fake.route("PATCH", "repos/acme/widgets/issues/13", {"number": 13, "state": "open"})
     fake.route("GET", "repos/acme/widgets/pulls/20", {"number": 20, "merge_commit_sha": "mmm"})
-    assert gh.pull_files(20) == ["ci.yml", ".github/workflows/ci.yml"]
+    assert [f["filename"] for f in gh.pull_files(20)] == ["ci.yml", ".github/workflows/ci.yml"]
     assert gh.create_review(20, "APPROVE", "looks right\n\nverified-by: pytest", "abc123",
                             [{"path": "README.md", "line": 1, "body": "nit"}])["id"] == 501
     assert gh.merge_pull(20, "abc123", "CI pipeline")["sha"] == "m123"

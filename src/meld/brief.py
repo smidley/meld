@@ -19,6 +19,22 @@ VERDICTS = ("approve", "request-changes", "push-fix", "pass", "fail")
 _AGENT_FILES = ("CLAUDE.md", "AGENTS.md", ".github/copilot-instructions.md")
 _PATH_TOKEN_RE = re.compile(r"`([A-Za-z0-9_./-]+\.[A-Za-z0-9]+)`")
 _FILES_HEADING_RE = re.compile(r"^\s*(?:#+\s*)?files:?\s*$", re.IGNORECASE)
+# How memory records that it has been overtaken. A superseded decision file carries the status trailer
+# `meld decide --supersedes` appended to it; a superseded lesson is named by the FIRST BODY LINE of the later entry
+# that replaced it (lessons.md is append-only, so the newer entry is the only place the link can be written).
+# Both live here rather than in memory.py, which imports this module: `_decision_hit`, `_lesson_hits` and
+# `decision_titles` are what read them, and memory.py re-exports both names for its own callers.
+# `(.+?)` rather than `(\S+)`: a hand-authored decision file may have a space in its name, and a capture that
+# stopped at the first space would not match the trailer at all -- the file would read as `active` after being
+# superseded (and could be superseded a second time), which is the one direction this must never fail in.
+# The pattern is the WHOLE of `memory.superseded_trailer`, anchored at end of file (`\Z`, and no `re.M`): a decision
+# whose own agreed prose quotes a status line -- explaining what it replaces, say -- otherwise read as superseded at
+# birth, dropped from `## Decisions in force` and `## Relevant memory` and refused as a `--supersedes` target.
+# `\s*\Z` rather than `\n\Z` for the one reader that does not see the file's own bytes: `_local_hits` reads a decision
+# at `origin/<default>` through `gitops.git`, which strips its subprocess output, so the trailing newline is gone by
+# the time this runs. Trailing whitespace is all that may follow the line -- any other content still means "quoted".
+STATUS_RE = re.compile(r"\n---\nStatus: superseded by (.+?) on (\d{4}-\d{2}-\d{2})\s*\Z")
+SUPERSEDES_RE = re.compile(r"^Supersedes: (.+)$", re.M)
 STANDARDS_FILE = ".meld/STANDARDS.md"
 MAX_SKILLS = 30
 MAX_SKILLS_USED = 30
@@ -83,11 +99,16 @@ def file_hints(issue_body: str) -> list[str]:
 
 
 def decision_titles(repo_root: Path) -> list[str]:
-    d = repo_root / ".meld" / "decisions"
     titles: list[str] = []
+    d = repo_root / ".meld" / "decisions"
     if d.is_dir():
         for f in sorted(d.glob("*.md")):
-            for line in f.read_text().splitlines():
+            text = f.read_text()
+            if STATUS_RE.search(text):
+                # Superseded, and memory is superseded rather than edited, so the file is still there: only decisions
+                # in force belong under a brief's "## Decisions in force", or a worker is bound by two contradictory ones.
+                continue
+            for line in text.splitlines():
                 if line.startswith("# "):
                     titles.append(line[2:].strip())
                     break
@@ -135,17 +156,40 @@ def _decision_hit(path: str, text: str, terms: list[str]) -> dict | None:
     if not score:
         return None
     title = next((l[2:].strip() for l in text.splitlines() if l.startswith("# ")), Path(path).stem)
-    return {"kind": "decision", "path": path, "title": title, "score": score, "snippet": text.strip()[:300]}
+    m = STATUS_RE.search(text)
+    return {"kind": "decision", "path": path, "title": title, "score": score, "snippet": text.strip()[:300],
+            "status": "superseded" if m else "active", "superseded_by": m.group(1) if m else None}
+
+
+def _first_body_line(block: str) -> str:
+    """The first non-blank line of a lessons entry after its `## ` heading -- where a supersession is recorded."""
+    return next((l.strip() for l in block.splitlines()[1:] if l.strip()), "")
 
 
 def _lesson_hits(path: str, text: str, terms: list[str]) -> list[dict]:
+    blocks = [b for b in re.split(r"\n(?=## )", text) if b.startswith("## ")]
+    headings = [b.splitlines()[0][3:].strip() for b in blocks]
+    # A lesson is superseded by a LATER entry whose first body line names its heading; an earlier entry can never
+    # supersede a later one, the first later superseder wins, and the relation is read from the whole file rather
+    # than only from the entries that scored. One forward pass: `first_index` (built in reverse, so the first
+    # occurrence of a repeated heading wins) says where the named entry is, and `replaced` keeps the first claim --
+    # keyed by that ENTRY'S INDEX, not by its heading text, because two entries can share a heading (same day, same
+    # ref, same group) and only the one the name resolves to is retired.
+    first_index = {heading: i for i, heading in reversed(list(enumerate(headings)))}
+    replaced: dict[int, str] = {}
+    for j, block in enumerate(blocks):
+        m = SUPERSEDES_RE.match(_first_body_line(block))
+        if m:
+            named = first_index.get(m.group(1).strip())
+            if named is not None and named < j and named not in replaced:
+                replaced[named] = headings[j]
     hits: list[dict] = []
-    for block in re.split(r"\n(?=## )", text):
-        if not block.startswith("## "):
-            continue
+    for i, (block, heading) in enumerate(zip(blocks, headings)):
         score = sum(1 for t in terms if t in block.lower())
         if score:
-            hits.append({"kind": "lesson", "path": path, "title": block.splitlines()[0][3:].strip(), "score": score, "snippet": block.strip()[:300]})
+            replaced_by = replaced.get(i)
+            hits.append({"kind": "lesson", "path": path, "title": heading, "score": score, "snippet": block.strip()[:300],
+                         "status": "superseded" if replaced_by else "active", "superseded_by": replaced_by})
     return hits
 
 
@@ -208,8 +252,11 @@ def _local_hits(repo_root: Path, terms: list[str], ref: str | None = None) -> li
 
 
 def recall_snippets(repo_root: Path, text: str, limit: int = 3, ref: str | None = None) -> list[str]:
-    """The local (non-GitHub) part of `memory.recall`, without a coordination-issue search: used by briefs."""
-    hits = sorted(_local_hits(repo_root, _terms(text), ref=ref), key=lambda h: (-h["score"], h["title"]))
+    """The local (non-GitHub) part of `memory.recall`, without a coordination-issue search: used by briefs.
+    Superseded notes are dropped BEFORE the limit applies, so an overtaken decision or lesson can never crowd the
+    one that replaced it out of a brief's `## Relevant memory`."""
+    hits = [h for h in _local_hits(repo_root, _terms(text), ref=ref) if h.get("status") != "superseded"]
+    hits.sort(key=lambda h: (-h["score"], h["title"]))
     return [h["snippet"] for h in hits[:limit]]
 
 
@@ -229,7 +276,8 @@ def _skill_path(skill: WorkerType, worktree: Path, project_skills_dir: str | Non
 
 def render_brief(*, role: WorkerType, kind: str, group: str, model: str, effort: str, issue: Issue | None, pr: PullRequest | None,
                  plan_text: str, repo_root: Path, worktree: Path, base_branch: str, concern: str | None = None,
-                 skills: Sequence[WorkerType] = (), recall: Sequence[str] = (), project_skills_dir: str | None = None) -> str:
+                 skills: Sequence[WorkerType] = (), recall: Sequence[str] = (), project_skills_dir: str | None = None,
+                 scope: Sequence[str] = (), may_delete: Sequence[str] = (), authorized: Sequence[str] = ()) -> str:
     if issue is not None:
         title = f"# Meld brief: {role.name} for #{issue.number}"
         task = f"## Your task\n\n**#{issue.number}: {issue.title}**\n\n{issue.body.strip() or '(no description)'}\n"
@@ -262,6 +310,20 @@ def render_brief(*, role: WorkerType, kind: str, group: str, model: str, effort:
         parts += ["## Plan excerpt", "", excerpt, ""]
     if hints:
         parts += ["## Files to start from", ""] + [f"- `{h}`" for h in hints] + [""]
+    if scope or may_delete:
+        heading = "## Scope" if issue is not None else "## Scope declared by the issue"
+        parts += [heading, ""]
+        if scope:
+            parts += ["You may change only files matching these globs; merge will refuse changes to any other file:", ""] + [f"- `{g}`" for g in scope] + [""]
+        parts += (["Files you may delete (merge refuses any other deletion):", ""] + [f"- `{p}`" for p in may_delete] + [""]
+                  if may_delete else
+                  ["No deletions are allowed: merge refuses a PR that deletes a file this issue does not list under `## May delete`.", ""])
+    elif issue is not None:
+        # The deletion gate is always on, scope or no scope, so every build brief has to state it. An issue that
+        # declares nothing at all otherwise reached its worker with no mention of the one refusal it cannot opt out of.
+        parts += ["No `## Scope` is declared; merge still refuses a deletion the issue does not list under `## May delete`.", ""]
+    if authorized:
+        parts += ["## Authorized by a human", "", "A listed human has authorized these held categories for this task and no others:", ""] + [f"- {c}" for c in authorized] + [""]
     decisions = decision_titles(repo_root)
     if decisions:
         parts += ["## Decisions in force", ""] + [f"- {t}" for t in decisions] + ["", "Read the matching file under `.meld/decisions/` before departing from any of them.", ""]

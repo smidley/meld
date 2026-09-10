@@ -41,7 +41,7 @@ def test_audit_posts_the_verdict_and_reopen_returns_the_issue_to_ready(tmp_path)
     routes_for_labels(fake, 13)
     fake.route("DELETE", R + "issues/13/labels/meld%3Ain-review", [])
     fake.route("PATCH", R + "issues/13", {"number": 13, "state": "open"})
-    fake.route("DELETE", R + "issues/13/assignees", {})
+    fake.route("DELETE", R + "issues/13/labels/meld%3Aclaimed-by%3Acodex", {})
     out = dispatch(ctx, 20, kind="audit", adapter=FakeAdapter(script=AUDIT_FAIL_SCRIPT), now=NOW)
     wait_for_exit(out["pid"])
     collect(ctx, 20, now=NOW)
@@ -61,7 +61,7 @@ def test_audit_posts_the_verdict_and_reopen_returns_the_issue_to_ready(tmp_path)
     assert reopen(ctx, 13) == {"reopened": 13, "by": "claude"}
     assert [c.body for c in fake.calls if c.method == "PATCH" and c.endpoint == R + "issues/13"] == [{"state": "open"}]
     assert {"labels": ["meld:ready"]} in [c.body for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/13/labels"]
-    assert any(c.method == "DELETE" and c.endpoint == R + "issues/13/assignees" for c in fake.calls)
+    assert any(c.method == "DELETE" and c.endpoint == R + "issues/13/labels/meld%3Aclaimed-by%3Acodex" for c in fake.calls)
     assert any("reopened by `claude` after a failed audit" in c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/13/comments")
     assert any("no cache step, criterion 2 unmet" in c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/13/comments")
 
@@ -149,7 +149,7 @@ def test_reopen_opens_the_issue_last_so_a_failed_step_leaves_a_legal_retry(tmp_p
     routes_for_labels(fake, 13)
     fake.route("DELETE", R + "issues/13/labels/meld%3Ain-review", [])
     fake.route("PATCH", R + "issues/13", {"number": 13, "state": "open"})
-    fake.route("DELETE", R + "issues/13/assignees", {})
+    fake.route("DELETE", R + "issues/13/labels/meld%3Aclaimed-by%3Acodex", {})
     fake.route("GET", R + "issues/10/comments", fixture("comments_10.json") + [AUDIT_FAIL_COMMENT])
     issues = fixture("issues.json")
     for i in issues:
@@ -166,6 +166,6 @@ def test_reopen_opens_the_issue_last_so_a_failed_step_leaves_a_legal_retry(tmp_p
     writes = [(c.method, c.endpoint) for c in fake.calls if c.method != "GET"]
     patch = writes.index(("PATCH", R + "issues/13"))
     assert writes.count(("PATCH", R + "issues/13")) == 1
-    assert all(i < patch for i, w in enumerate(writes) if w in (("POST", R + "issues/13/labels"), ("DELETE", R + "issues/13/assignees"),
+    assert all(i < patch for i, w in enumerate(writes) if w in (("POST", R + "issues/13/labels"), ("DELETE", R + "issues/13/labels/meld%3Aclaimed-by%3Acodex"),
                                                                  ("POST", R + "issues/13/comments")))
     assert any("no cache step, criterion 2 unmet" in c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/13/comments")

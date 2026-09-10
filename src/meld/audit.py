@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from meld.actions import BLOCKED, IN_PROGRESS, READY, refuse
+from meld.board import claim_label
 from meld.config import Party
 from meld.dispatch import IN_REVIEW, DispatchError, _iso, _now, neutralise_closers
 from meld.grammar import Header, compose
@@ -69,14 +70,14 @@ def reopen(ctx, number: int) -> dict:
              and c.header.qualifier == "FAIL" and (actor.group is None or c.header.party.group == actor.group)]
     findings = fails[-1].text if fails else "(see the coordination issue)"
     # Reopening the issue is the LAST call: `reopen` is only legal on a closed issue, so as long as the issue stays
-    # closed, a failure in any earlier step (labels, assignees, the findings comment) leaves `meld reopen` legal and
-    # the retry simply redoes the idempotent steps. Opening first would leave an open, assigned, in-review issue with
-    # no legal verb to finish the job.
+    # closed, a failure in any earlier step (labels, the claim label, the findings comment) leaves `meld reopen` legal
+    # and the retry simply redoes the idempotent steps. Opening first would leave an open, claimed, in-review issue
+    # with no legal verb to finish the job.
     ctx.gh.add_labels(number, [READY])
     for label in (IN_REVIEW, IN_PROGRESS, BLOCKED):
         ctx.gh.remove_label(number, label)
-    if issue.assignees:
-        ctx.gh.remove_assignees(number, list(issue.assignees))
+    for g in issue.claimants:
+        ctx.gh.remove_label(number, claim_label(g))
     ctx.gh.create_comment(number, f"Meld: reopened by `{actor.name}` after a failed audit.\n\n{findings}")
     ctx.gh.update_issue(number, state="open")
     return {"reopened": number, "by": actor.name}

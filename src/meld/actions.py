@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import NoReturn
 
-from meld.board import Board, derive_leases
+from meld.board import HUMAN_CLAIMANT, Board, claim_group, claim_label, derive_leases
 from meld.config import Party
 from meld.github import GitHubError
 from meld.grammar import Header, compose
@@ -11,6 +11,7 @@ from meld.rules import Refusal, Verb, issue_refusal
 from meld.status import build_status
 
 READY, IN_PROGRESS, BLOCKED, PLANNED = "meld:ready", "meld:in-progress", "meld:blocked", "meld:planned"
+CLAIM_LABEL_COLOR = "c5def5"
 
 
 class Refused(Exception):
@@ -20,7 +21,7 @@ class Refused(Exception):
         self.post_error = post_error
         # True: a PROTOCOL-VIOLATION comment was posted. False: posting it was attempted
         # and failed. None: no post was attempted (a human refusal, or a lost claim race,
-        # which is the designed outcome of first-assignment-wins rather than an illegal call).
+        # which is the designed outcome of first-label-wins rather than an illegal call).
         self.violation_posted = violation_posted
 
 
@@ -46,6 +47,12 @@ def _issue_or_refuse(ctx, board: Board, verb: Verb, number: int):
     return issue
 
 
+def _claim_labels_of(raw_issue: dict) -> tuple[str, ...]:
+    """Claimants named by a raw GitHub issue payload (the fresh re-read in `claim`), sorted like Issue.claimants."""
+    names = ((l.get("name", "") if isinstance(l, dict) else str(l)) for l in raw_issue.get("labels", []))
+    return tuple(sorted(g for g in (claim_group(n) for n in names) if g))
+
+
 def claim(ctx, number: int) -> dict:
     _, board = build_status(ctx)
     issue = _issue_or_refuse(ctx, board, Verb.CLAIM, number)
@@ -53,22 +60,23 @@ def claim(ctx, number: int) -> dict:
     refusal = issue_refusal(board, ctx.cfg, actor, Verb.CLAIM, issue, ctx.models)
     if refusal:
         refuse(ctx, board, refusal)
-    ctx.gh.add_assignees(number, [actor.login])
+    holder = HUMAN_CLAIMANT if actor.is_human else actor.group
+    own = claim_label(holder)   # type: ignore[arg-type]
+    ctx.gh.ensure_label(own, CLAIM_LABEL_COLOR, f"Claimed by {holder}")
+    ctx.gh.add_labels(number, [own])
     try:
-        fresh = ctx.gh.get_issue(number, fresh=True)
-        assignees = [a["login"] for a in fresh.get("assignees", [])]
-        if set(assignees) != {actor.login}:
-            ctx.gh.remove_assignees(number, [actor.login])
-            others = [a for a in assignees if a != actor.login]
-            # Losing the race is the designed outcome of first-assignment-wins, not an
-            # illegal call, so it is refused without posting a PROTOCOL-VIOLATION.
+        claimants = _claim_labels_of(ctx.gh.get_issue(number, fresh=True))
+        if claimants != (holder,):
+            ctx.gh.remove_label(number, own)
+            others = [g for g in claimants if g != holder]
+            # Losing the race is the designed outcome of first-label-wins (spec 6), not an illegal call, so it is
+            # refused without posting a PROTOCOL-VIOLATION. Both racers can lose and both retry; none can both win.
             raise Refused(Refusal(Verb.CLAIM, f"#{number}", f"lost the claim race to {', '.join(others) or 'unknown'}"))
         ctx.gh.add_labels(number, [IN_PROGRESS])
         ctx.gh.remove_label(number, READY)
     except GitHubError:
         # Undo both halves of the claim, each best-effort, then surface the original error.
-        for undo in (lambda: ctx.gh.remove_assignees(number, [actor.login]),
-                     lambda: ctx.gh.remove_label(number, IN_PROGRESS)):
+        for undo in (lambda: ctx.gh.remove_label(number, own), lambda: ctx.gh.remove_label(number, IN_PROGRESS)):
             try:
                 undo()
             except GitHubError:
@@ -84,7 +92,7 @@ def claim(ctx, number: int) -> dict:
             ctx.gh.create_comment(board.coordination_issue, compose(
                 Header(Party("pm", actor.group), "EXPIRED", f"#{number}", None),
                 f"stale lease superseded by a new claim; the next `meld dispatch {number}` posts a fresh LEASE"))
-    return {"claimed": number, "assignee": actor.login}
+    return {"claimed": number, "claimed_by": holder}
 
 
 def release(ctx, number: int, force: bool = False, announce: bool = True) -> dict:
@@ -96,8 +104,8 @@ def release(ctx, number: int, force: bool = False, announce: bool = True) -> dic
     refusal = issue_refusal(board, ctx.cfg, actor, Verb.RELEASE, issue, ctx.models)
     if refusal:
         refuse(ctx, board, refusal)
-    if issue.assignees:
-        ctx.gh.remove_assignees(number, list(issue.assignees))
+    for g in issue.claimants:
+        ctx.gh.remove_label(number, claim_label(g))
     ctx.gh.add_labels(number, [READY])
     for label in (IN_PROGRESS, BLOCKED):
         if label in issue.labels:
@@ -112,6 +120,6 @@ def release(ctx, number: int, force: bool = False, announce: bool = True) -> dic
         ctx.gh.create_comment(board.coordination_issue, note)
     if force:
         note = compose(Header(Party("human"), "RELEASE", f"#{number}", None),
-                       f"Force-released #{number} from {', '.join(issue.assignees) or 'nobody'}.")
+                       f"Force-released #{number} from {', '.join(issue.claimants) or 'nobody'}.")
         ctx.gh.create_comment(board.coordination_issue, note)
-    return {"released": number, "previous_assignees": list(issue.assignees)}
+    return {"released": number, "previous_claimants": list(issue.claimants)}

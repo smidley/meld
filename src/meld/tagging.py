@@ -35,6 +35,8 @@ def tag(ctx, number: int, *, worker: str | None = None, model: str | None = None
         refuse(ctx, board, Refusal(Verb.TAG, target, f"size '{size}' is not one of {', '.join(SIZES)}"))
     if skills is not None and any(not name for name in skills):
         refuse(ctx, board, Refusal(Verb.TAG, target, "--skill requires a non-empty name"))
+    if any(not item.strip() for item in (*(scope or ()), *(may_delete or ()))):
+        refuse(ctx, board, Refusal(Verb.TAG, target, "--scope and --may-delete require non-empty paths"))
     if held:
         for c in held:
             if c not in HELD_CATEGORIES:
@@ -74,16 +76,20 @@ def tag(ctx, number: int, *, worker: str | None = None, model: str | None = None
         if may_delete is not None:
             body = replace_section(body, "May delete", may_delete)
         ctx.gh.update_issue(number, body=body)
-    if held:
-        ctx.gh.add_labels(number, [held_label(c) for c in held] + [NEEDS_HUMAN])
+    all_held = sorted(set(issue.held) | set(held or ()))
+    new_held = [c for c in (held or ()) if c not in issue.held]
+    if new_held:
+        # Only a category the issue does not carry yet re-gates dispatch (a newer NEEDS-HUMAN than the human's last answer),
+        # so re-tagging one it already has posts neither the labels again nor a duplicate ask.
+        ctx.gh.add_labels(number, [held_label(c) for c in new_held] + [NEEDS_HUMAN])
         if not actor.is_human:
             ctx.gh.create_comment(board.coordination_issue, compose(
                 Header(actor.party, "NEEDS-HUMAN", target, None),
-                f"Held categories on #{number}: {', '.join(held)}. A listed human authorizes the worker with `RESOLVED #{number}` "
+                f"Held categories on #{number}: {', '.join(all_held)}. A listed human authorizes the worker with `RESOLVED #{number}` "
                 f"(or `PROVIDED #{number}`); until then #{number} cannot be dispatched."))
     final = {prefix: (wanted[prefix] or getattr(issue, prefix)) for prefix in PREFIXES}
     final["skills"] = sorted(set(issue.skills) | set(skills or ()))
     return {"tagged": number, "labels": final,
             "scope": list(scope) if scope is not None else list(issue.scope),
             "may_delete": list(may_delete) if may_delete is not None else list(issue.may_delete),
-            "held": sorted(set(issue.held) | set(held or ()))}
+            "held": all_held}

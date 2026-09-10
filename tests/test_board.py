@@ -266,3 +266,19 @@ def test_held_labels_and_section_headings_match_case_insensitively():
     assert mk_issue(12, extra_labels=("Meld:Held:Delete", "meld:held:public-release")).held == ("delete", "public-release")
     body = "## SCOPE\n- src/meld/*.py\n"
     assert body_section(body, "Scope") == ("src/meld/*.py",) and body_section(body, "scope") == ("src/meld/*.py",)
+
+
+def test_replace_section_rewrites_in_place_appends_when_absent_and_removes_tidily():
+    from meld.board import body_section, replace_section
+    body = "Goal text\n\n## Scope\n- src/a.py\n\n## May delete\n- src/old.py\n\n## Notes\n- keep me\n"
+    rewritten = replace_section(body, "scope", ["docs/**", "`src/b.py`"])
+    assert rewritten == "Goal text\n\n## Scope\n- docs/**\n- `src/b.py`\n\n## May delete\n- src/old.py\n\n## Notes\n- keep me\n"
+    assert body_section(rewritten, "Scope") == ("docs/**", "src/b.py")                    # round-trips through the reader
+    assert replace_section(body, "May delete", []) == "Goal text\n\n## Scope\n- src/a.py\n\n## Notes\n- keep me\n"   # a middle section
+    assert replace_section(body, "Notes", []) == "Goal text\n\n## Scope\n- src/a.py\n\n## May delete\n- src/old.py\n"  # the last: no stray blank
+    assert replace_section("## Scope\n- src/a.py\n", "Scope", []) == ""                     # the only section
+    assert replace_section(body, "Missing", []) == body                                       # nothing to remove, nothing changes
+    assert replace_section("Goal text", "Scope", ["src/*.py"]) == "Goal text\n\n## Scope\n- src/*.py\n"   # appended, one blank between
+    assert replace_section("Goal text\n\n", "Scope", ["src/*.py"]) == "Goal text\n\n## Scope\n- src/*.py\n"
+    assert replace_section("", "Scope", ["src/*.py"]) == "## Scope\n- src/*.py\n"
+    assert replace_section(None, "Scope", []) == ""

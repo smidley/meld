@@ -151,3 +151,37 @@ def test_tag_held_labels_the_issue_needs_human_and_posts_the_ask(tmp_path):
     with pytest.raises(Refused, match="held category"):
         tag(ctx, 11, held=["nuke"])
 
+
+def test_tag_held_by_a_human_labels_without_an_ask_and_a_repeat_posts_nothing(tmp_path):
+    fake, human = make(tmp_path, group=None)
+    out = tag(human, 11, held=["delete"])
+    assert out["held"] == ["delete"]
+    labels = [c.body["labels"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/11/labels"]
+    assert labels == [["meld:held:delete", "meld:needs-human"]]
+    assert not [c for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/10/comments"]   # the human is the authority
+    issues = fixture("issues.json")
+    for i in issues:
+        if i["number"] == 11:
+            i["labels"] = i["labels"] + [{"name": "meld:held:delete"}]
+    fake.route("GET", R + "issues", issues)
+    fake2, ctx = make(tmp_path / "orch", role="orchestrator")
+    fake2.route("GET", R + "issues", issues)
+    out = tag(ctx, 11, held=["delete"], size="M")                              # already held: no label POST for it, no ask
+    assert out["held"] == ["delete"]
+    posts = [c for c in fake2.calls if c.method == "POST"]
+    assert [c.body for c in posts if c.endpoint == R + "issues/11/labels"] == [{"labels": ["size:M"]}]
+    assert not [c for c in posts if c.endpoint == R + "issues/10/comments"]
+    out = tag(ctx, 11, held=["delete", "cleanup"])                              # one new category: labels and an ask naming both
+    assert out["held"] == ["cleanup", "delete"]
+    assert [c.body for c in fake2.calls if c.method == "POST" and c.endpoint == R + "issues/11/labels"][-1] == {"labels": ["meld:held:cleanup", "meld:needs-human"]}
+    (ask,) = [c.body["body"] for c in fake2.calls if c.method == "POST" and c.endpoint == R + "issues/10/comments"]
+    assert "Held categories on #11: cleanup, delete." in ask
+
+
+def test_tag_refuses_empty_declaration_items(tmp_path):
+    fake, ctx = make(tmp_path, role="orchestrator")
+    with pytest.raises(Refused, match="non-empty paths"):
+        tag(ctx, 11, scope=["src/*.py", " "])
+    with pytest.raises(Refused, match="non-empty paths"):
+        tag(ctx, 11, may_delete=[""])
+    assert not [c for c in fake.calls if c.method == "PATCH" or (c.method == "POST" and c.endpoint == R + "issues/11/labels")]

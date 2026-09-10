@@ -64,20 +64,25 @@ def body_section(body: str, heading: str) -> tuple[str, ...]:
 
 
 def replace_section(body: str, heading: str, items: Sequence[str]) -> str:
-    """Return `body` with its `## <heading>` section replaced by `items` as `- ` bullets (appended at the end when absent;
-    removed when `items` is empty). Everything else in the body is kept byte for byte."""
+    """Return `body` with its `## <heading>` section written as `- ` bullets of `items`: rewritten in place when the
+    section exists (everything before and after it is kept byte for byte), appended when it does not, removed when
+    `items` is empty. A section runs from its heading to the next `## ` heading, including the blank lines that
+    separate them, so removing the last section leaves no trailing blank; the result ends in exactly one newline."""
     lines = (body or "").rstrip("\n").splitlines()
+    block = [f"## {heading}"] + [f"- {item}" for item in items] if items else []
     start = next((i for i, l in enumerate(lines) if l.startswith("## ") and l[3:].strip().lower() == heading.lower()), None)
     if start is not None:
         end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
-        del lines[start:end]
-        while lines and start < len(lines) and lines[start:start + 1] == [""] and (start == 0 or lines[start - 1] == ""):
-            del lines[start]
-    if items:
+        if block:
+            block[0] = lines[start]          # keep the heading exactly as the body spells it
+        lines[start:end] = block + [""] if block and end < len(lines) else block
+        while lines and lines[-1] == "":
+            lines.pop()
+    elif block:
         if lines and lines[-1] != "":
             lines.append("")
-        lines += [f"## {heading}"] + [f"- {i}" for i in items]
-    return "\n".join(lines) + "\n"
+        lines += block
+    return "\n".join(lines) + "\n" if lines else ""
 
 
 # Branches `meld decide`/`meld remember` push to. collect's build branches are `meld/<issue>-<slug>` (gitops.branch_name), so

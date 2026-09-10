@@ -99,7 +99,7 @@ def _claim(board: Board, cfg: Config, actor: Actor, issue: Issue, models: ModelR
         return "issue has no worker: label"
     if issue.worker not in actor.roster:
         return f"worker type '{issue.worker}' is not in {group.name}'s roster"
-    n = board.in_progress_count(group.bot)
+    n = board.in_progress_count(group.name)
     if n >= group.concurrency:
         return f"{group.name} is at its concurrency cap ({n}/{group.concurrency})"
     if issue.model is None:

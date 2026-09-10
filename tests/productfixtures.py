@@ -48,6 +48,7 @@ def claim_issue_11(fake: FakeGh, size: str = "S") -> list[dict]:
             i["labels"] = [l for l in i["labels"] if not l["name"].startswith(("meld:ready", "size:"))]
             i["labels"] += [{"name": "meld:in-progress"}, {"name": f"size:{size}"}]
             i["assignees"] = [{"login": "meld-claude-bot"}]
+            i["labels"].append({"name": "meld:claimed-by:claude"})
     fake.route("GET", R + "issues", issues)
     return issues
 

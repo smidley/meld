@@ -38,7 +38,7 @@ def test_claim_refusals_in_priority_order():
 
 
 def test_claim_respects_concurrency_cap():
-    busy = [mk_issue(n, status="in_progress", assignees=("meld-claude-bot",)) for n in range(100, 108)]
+    busy = [mk_issue(n, status="in_progress", assignees=("meld-claude-bot",), claimed_by="claude") for n in range(100, 108)]
     fresh = mk_issue(11, model="gpt-test")  # known to codex, unknown to claude; the cap check comes before the model check
     b = mk_board(CFG2, issues=[*busy, fresh])
     assert rule(b, CLAUDE_PM, Verb.CLAIM, fresh) == "claude is at its concurrency cap (8/8)"

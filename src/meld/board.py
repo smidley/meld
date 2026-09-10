@@ -22,6 +22,20 @@ CHALLENGED_LABEL = "meld:challenged"
 COORDINATION_LABEL = "meld:coordination"
 PLAN_APPROVED_LABEL = "meld:plan-approved"
 NUDGED_LABEL = "meld:nudged"
+CLAIM_LABEL_PREFIX = "meld:claimed-by:"
+HUMAN_CLAIMANT = "human"   # the one claimant name every human shares; a reserved group name (config.GROUP_NAME_RE)
+
+
+def claim_label(group: str) -> str:
+    """The label that is a group's claim on an issue (spec 6): one per claiming party, PAT or App alike."""
+    return CLAIM_LABEL_PREFIX + group
+
+
+def claim_group(label: str) -> str | None:
+    """The claiming party a label names, or None for any other label (the bare prefix names nobody)."""
+    return label[len(CLAIM_LABEL_PREFIX):] or None if label.startswith(CLAIM_LABEL_PREFIX) else None
+
+
 # Branches `meld decide`/`meld remember` push to. collect's build branches are `meld/<issue>-<slug>` (gitops.branch_name), so
 # the two namespaces never overlap; memory.py imports this rather than redefining it (board.py is the leaf both can reach).
 MEMORY_BRANCH_PREFIX = "meld/memory-"
@@ -81,6 +95,17 @@ class Issue:
     @property
     def challenged(self) -> bool:
         return CHALLENGED_LABEL in self.labels
+
+    @property
+    def claimants(self) -> tuple[str, ...]:
+        """Every party holding a claim label, sorted. One is the normal case; two or more is a contested issue."""
+        return tuple(sorted(g for g in (claim_group(l) for l in self.labels) if g))
+
+    @property
+    def claimed_by(self) -> str | None:
+        """The single claim holder, or None when the issue is free or contested."""
+        c = self.claimants
+        return c[0] if len(c) == 1 else None
 
 
 # The first line of the author group's COMMENT-review body (review.py), so assemble._pull can tell that review apart
@@ -198,7 +223,7 @@ class Lease:
     issue: int
     group: str
     until: str
-    comment_id: int
+    comment_id: int = 0
 
 
 @dataclass(frozen=True)
@@ -219,7 +244,7 @@ def parse_lease_until(text: str) -> str | None:
 
 
 def derive_leases(comments: Sequence[ParsedComment]) -> dict[int, Lease]:
-    """The lease each LEASE comment still asserts, before `assigned_leases` checks it against the board."""
+    """The lease each LEASE comment still asserts, before `held_leases` checks it against the board."""
     leases: dict[int, Lease] = {}
     for c in _ordered(comments):
         if not c.ok or c.header is None or not c.header.ref or not c.header.ref.startswith("#") or not c.header.ref[1:].isdigit():
@@ -235,26 +260,17 @@ def derive_leases(comments: Sequence[ParsedComment]) -> dict[int, Lease]:
     return leases
 
 
-# A lease is valid only while the leasing group's bot is assigned to the issue. The LEASE
-# comment can outlive the claim it describes: a group's or PM's own `meld release` posts a
-# framework RELEASED note, and a human's `--force` a `[human] RELEASE`, both of which
-# `derive_leases` above drops the lease on (plan-5 decision 2) -- but a human's plain release
-# posts nothing, and a claim can end without any comment at all (an assignee removed on
-# GitHub). So once the leasing group lets go and another group claims the issue, an old LEASE
-# comment could still read as a lease on the new claim, and once its `until` passed any PM
-# could release the new owner (a LEASE forged by hand would do the same on purpose).
-# Assignment, not the thread, is the claim lock (spec section 6), so it decides validity too.
-# The check lives here, next to the derivation, but is applied by the board assembler, which
-# knows each group's bot; Board itself stays free of Config.
-def assigned_leases(leases: Mapping[int, Lease], issues: Mapping[int, Issue], bot_of_group: Mapping[str, str]) -> dict[int, Lease]:
-    """Keep only the leases whose group's bot is currently assigned to the leased issue."""
-    out: dict[int, Lease] = {}
-    for n, lease in leases.items():
-        issue = issues.get(n)
-        bot = bot_of_group.get(lease.group)
-        if issue is not None and bot is not None and bot in issue.assignees:
-            out[n] = lease
-    return out
+# A lease is valid only while the leasing group holds the issue's claim label. The LEASE comment can outlive the
+# claim it describes: a group's or PM's own `meld release` posts a framework RELEASED note and a human's `--force` a
+# `[human] RELEASE`, both of which `derive_leases` drops the lease on (plan-5 decision 2) -- but a human's plain
+# release posts nothing, and a claim can end without any comment at all (a label removed on GitHub). So once the
+# leasing group lets go and another group claims the issue, an old LEASE could still read as a lease on the new
+# claim, and once its `until` passed any PM could release the new owner (a LEASE forged by hand would do the same on
+# purpose). The label, not the thread, is the claim lock (spec section 6), so it decides validity too.
+def held_leases(leases: Mapping[int, Lease], issues: Mapping[int, Issue]) -> dict[int, Lease]:
+    """Keep only the leases whose group currently holds a claim label on the leased issue. `claimants`, not `claimed_by`:
+    on a contested issue (two labels) each claimant's lease stays valid, so the ordinary expiry path can clear it."""
+    return {n: lease for n, lease in leases.items() if (issue := issues.get(n)) is not None and lease.group in issue.claimants}
 
 
 @dataclass(frozen=True)
@@ -276,25 +292,31 @@ class Board:
     now: str = ""
     challenges: dict[str, Challenge] = field(default_factory=dict)
     audits: dict[int, dict[str, str]] = field(default_factory=dict)   # PR number -> group -> "pass" | "fail"
+    bots: dict[str, str] = field(default_factory=dict)   # group -> bot login, from the config (assemble)
 
     def lease_expired(self, issue: int) -> bool:
         lease = self.leases.get(issue)
         return bool(lease and self.now and lease.until < self.now)
 
-    def in_progress_count(self, bot: str) -> int:
-        return sum(1 for i in self.issues.values() if i.status == "in_progress" and bot in i.assignees)
+    def holder_login(self, issue: int) -> str | None:
+        """The bot login of the group holding `issue`'s claim, or None (free, contested, human-held, unknown group)."""
+        iss = self.issues.get(issue)
+        return self.bots.get(iss.claimed_by) if iss is not None and iss.claimed_by else None
+
+    def in_progress_count(self, group: str) -> int:
+        return sum(1 for i in self.issues.values() if i.status == "in_progress" and i.claimed_by == group)
 
     def pr_for_issue(self, issue: int) -> PullRequest | None:
         candidates = [p for p in self.pulls.values() if p.issue_number == issue]
         iss = self.issues.get(issue)
         issue_closed = iss is not None and iss.state == "closed"
-        assignees = set(iss.assignees) if iss is not None else set()
-        # Open issue: the open PR is live, preferring one authored by a current assignee (a stale PR from an earlier
-        # claimant loses); closed issue: the PR that merged is the record.
+        holder = self.holder_login(issue)
+        # Open issue: the open PR is live, preferring one authored by the current holder's bot (a stale PR from an
+        # earlier claimant loses); closed issue: the PR that merged is the record.
         if issue_closed:
             candidates.sort(key=lambda p: (not p.merged, p.state != "open", -p.number))
         else:
-            candidates.sort(key=lambda p: (p.state != "open", p.author not in assignees, -p.number))
+            candidates.sort(key=lambda p: (p.state != "open", p.author != holder, -p.number))
         return candidates[0] if candidates else None
 
     def run_for(self, group: str, issue: int) -> RunRecord | None:

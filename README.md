@@ -1,6 +1,6 @@
 # Meld
 
-Multi-AI coordination: N independent AI coding systems (Claude Code, Codex CLI, ...) work on one GitHub repo as separate groups, negotiate on a coordination issue, claim work via issue assignment, review and modify each other's PRs, and answer to one human.
+Multi-AI coordination: N independent AI coding systems (Claude Code, Codex CLI, ...) work on one GitHub repo as separate groups, negotiate on a coordination issue, claim work with a `meld:claimed-by:<group>` label, review and modify each other's PRs, and answer to one human.
 
 Design: `docs/superpowers/specs/2026-09-03-meld-design.md`. Plans: `docs/superpowers/plans/`.
 
@@ -16,8 +16,8 @@ Design: `docs/superpowers/specs/2026-09-03-meld-design.md`. Plans: `docs/superpo
 |---|---|
 | `meld status` | Board as JSON plus the legal actions for the calling party |
 | `meld wait [--timeout S] [--interval S] [--filter KINDS]` | Block until the board changes, then print status with a `changes` list; `--filter` limits which change kinds count |
-| `meld claim N` | Assign this party to a ready issue (first assignment wins) |
-| `meld release N [--force]` | Return an issue to ready; `--force` is human-only |
+| `meld claim N` | Claim a ready issue by labelling it `meld:claimed-by:<group>` (a human claims as `meld:claimed-by:human`); the first label wins, and a lost race removes only its own label |
+| `meld release N [--force]` | Return an issue to ready, removing every `meld:claimed-by:*` label on it; `--force` is human-only |
 | `meld post VERB [REF] [-m TEXT] [--joint]` | Post a coordination comment in the header grammar |
 | `meld challenge <open|evidence|retract|uphold|dismiss> REF -m TEXT` | Open, answer, or close a `CHALLENGE`; applies or clears `meld:challenged` under the closer rules; `meld post` refuses these verbs |
 | `meld models [--adapter X]` | Models and efforts an adapter accepts |
@@ -74,9 +74,9 @@ At dispatch, the product's skills are copied into the worktree under the directo
 
     uv run meld doctor        # or: task doctor
 
-Run it from a product clone. It checks that each configured CLI is installed and answers `--version`; that each group's credentials resolve to the bot named in `.meld.toml` (a PAT's own login, or an App's slug plus a freshly minted installation token whose permissions and repository coverage it prints); that every bot login is one the repo will accept as an assignee; that a git identity exists per bot; that every model named in `.meld.toml` exists in `models.toml` for that group's adapter; that each adapter's command-timeout ceiling exceeds `polling.wait_timeout_seconds`; that a PAT group can read issues, pull requests, and commit statuses; that `gh`'s own login is a listed human; and that `openssl` is on `PATH` (an App group needs it to sign its JWT). Exit code 1 when a check fails.
+Run it from a product clone. It checks that each configured CLI is installed and answers `--version`; that each group's credentials resolve to the bot named in `.meld.toml` (a PAT's own login, or an App's slug plus a freshly minted installation token whose permissions and repository coverage it prints); that a git identity exists per bot; that every model named in `.meld.toml` exists in `models.toml` for that group's adapter; that each adapter's command-timeout ceiling exceeds `polling.wait_timeout_seconds`; that a PAT group can read issues, pull requests, and commit statuses; that `gh`'s own login is a listed human; and that `openssl` is on `PATH` (an App group needs it to sign its JWT). Exit code 1 when a check fails.
 
-Warnings do not fail the run: a `settings.json` `env` block that would hand a worker a token or a party identity, hidden `.pth` files (below), a memory store past 2 MB, a configured-but-unset Slack webhook, a non-HTTPS `origin`, an App group missing the Checks permission — and `assignable:<group>` for an App group, which is the claim-lock limitation in the Quick start, not something you can fix.
+Warnings do not fail the run: a `settings.json` `env` block that would hand a worker a token or a party identity, hidden `.pth` files (below), a memory store past 2 MB, a configured-but-unset Slack webhook, a non-HTTPS `origin`, an App group missing the Checks permission. Nothing in `meld doctor` depends on issue assignability any more, so a correctly configured App group has no warning it cannot fix.
 
 `--probe-status` also proves **write** access to commit statuses, by posting one `meld/doctor` status on the default-branch head. It is opt-in because it leaves that mark.
 
@@ -89,7 +89,7 @@ Warnings do not fail the run: a `settings.json` `env` block that would hand a wo
     {"refused": "claim #12 refused: issue is in_progress, not ready", "verb": "claim", "target": "#12",
      "rule": "issue is in_progress, not ready", "violation_posted": true}
 
-`violation_posted` is `true` when the refusal was announced on the coordination issue as `PROTOCOL-VIOLATION`, `false` when that post was attempted and failed, and `null` when none was attempted — a human's refusal, or a lost claim race, which is first-assignment-wins working as designed rather than an illegal call.
+`violation_posted` is `true` when the refusal was announced on the coordination issue as `PROTOCOL-VIOLATION`, `false` when that post was attempted and failed, and `null` when none was attempted — a human's refusal, or a lost claim race, which is first-label-wins working as designed rather than an illegal call.
 
 The calling party comes from `MELD_GROUP` and `MELD_ROLE` (`orchestrator` or `pm`); unset means human, authenticated as `gh`'s current user. Group tokens come from the `token_env` named in `.meld.toml`; they are fine-grained PATs scoped to the product repo with Contents, Issues, Pull requests, and Commit statuses (read and write). Local state lives under `MELD_HOME` (default `~/.meld`) and can be deleted at any time.
 
@@ -98,10 +98,10 @@ The calling party comes from `MELD_GROUP` and `MELD_ROLE` (`orchestrator` or `pm
 Bootstrapping a fresh product repo, start to finish:
 
 1. `uv sync`.
-2. Create one GitHub machine account per group and mint a fine-grained token for each (spec 18: Contents, Issues, Pull requests, Commit statuses — read and write); export `MELD_TOKEN_<GROUP>` (e.g. `MELD_TOKEN_CLAUDE`), injected from 1Password via `op run` rather than left in plaintext. Or, to avoid extra GitHub accounts, add `--app` to step 3's `meld setup owner/name --goal "..."` and follow its printed steps to create one GitHub App per group (App names are global on GitHub, so `meld-<group>` may be taken; `meld doctor` prints the bot login the App actually got). One limitation today: an App group can review, audit and merge but cannot claim and build, because GitHub does not let an App's bot user be an issue assignee (probe 2026-09-09) and the claim lock is the assignee — `meld doctor`'s `assignable:<group>` check reports it for every group (as a warning for an App group), and spec section 21 ("Carried into plan 6") records the planned fix, an App-compatible claim lock.
+2. Create one GitHub machine account per group and mint a fine-grained token for each (spec 18: Contents, Issues, Pull requests, Commit statuses — read and write); export `MELD_TOKEN_<GROUP>` (e.g. `MELD_TOKEN_CLAUDE`), injected from 1Password via `op run` rather than left in plaintext. Or, to avoid extra GitHub accounts, add `--app` to step 3's `meld setup owner/name --goal "..."` and follow its printed steps to create one GitHub App per group (App names are global on GitHub, so `meld-<group>` may be taken; `meld doctor` prints the bot login the App actually got). An App group claims and builds exactly like a PAT group: the claim lock is the `meld:claimed-by:<group>` label, not the issue assignee, so any bot user can hold it.
 3. `cd <product clone> && meld setup owner/name --goal "..." --pr` — writes labels, the milestone, the coordination issue, `.github/CODEOWNERS`, branch protection, and a starter `.meld.toml`, then commits `.github/CODEOWNERS`, `.meld/STANDARDS.md`, and `.meld.toml` on a PR (labels, milestone, coordination issue, and branch protection are applied directly, not through the PR).
-4. Merge the setup PR, then uncomment or adjust the `[groups.*]` blocks it wrote (bot name, models, efforts) for the CLIs you're running.
-5. `meld doctor` until it reports green (an App group keeps one warning, `assignable:<group>`, for the claim-lock limitation in step 2).
+4. Merge the setup PR, then uncomment or adjust the `[groups.*]` blocks it wrote (bot name, models, efforts) for the CLIs you're running. A group's name becomes its claim label and a worktree directory, so it must match `[a-z0-9][a-z0-9_-]{0,31}` — lowercase, at most 32 characters — and cannot be `human` or `joint`.
+5. `meld doctor` until it reports green.
 6. `task run GROUP=claude` and `task run GROUP=codex`, one per group.
 7. `meld chat`; when the plan appears, approve it with `/approve` (or `uv run meld plan approve`) — that adds `meld:plan-approved` *and* flips every planned issue to ready. Adding the label by hand does neither for the issues.
 

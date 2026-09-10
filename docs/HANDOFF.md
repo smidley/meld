@@ -2,7 +2,7 @@
 
 This file is rewritten at every milestone that ends in a pull request, so that any AI coding agent (or person) can pick the project up cold. Read it first, then `AGENTS.md`, then the spec.
 
-**Milestone:** branch `plan-5-setup-doctor-skills` carries the second half of plan 5 — tasks 8–13 (the fuller skills story, the memory and housekeeping sweep, and this documentation reconciliation) — on top of a merge of `origin/main`, which already contains plan 5's first half (tasks 1–7, `meld setup` and `meld doctor`, merged as PR #7) and all of plan 6a (GitHub App identities per group, merged as PR #8). Plans 1–4 are merged. `uv run pytest -q` → **564 passed**, no warnings. The branch sits directly on top of `origin/main` (`0646db5`) and has not been opened as a pull request yet.
+**Milestone:** branch `plan-5-setup-doctor-skills` carries the second half of plan 5 — tasks 8–13 (the fuller skills story, the memory and housekeeping sweep, and this documentation reconciliation) — on top of a merge of `origin/main`, which already contains plan 5's first half (tasks 1–7, `meld setup` and `meld doctor`, merged as PR #7) and all of plan 6a (GitHub App identities per group, merged as PR #8). Plans 1–4 are merged. `uv run pytest -q` → **565 passed**, no warnings. The branch sits directly on top of `origin/main` (`0646db5`) and has not been opened as a pull request yet.
 
 **The one capability gap to know about before anything else:** an App group can review, audit and merge, but it cannot claim and build. GitHub does not let an App's bot user be an issue assignee, and the claim lock *is* the assignee (`rules.py` requires the group's bot among `issue.assignees` to dispatch). Probe, 2026-09-09, read-only, `gh api -i repos/smidley/meld/assignees/<login>`: `smidley` → 204; `github-actions[bot]`, `dependabot[bot]`, `copilot-swe-agent[bot]` → 404 each. `meld doctor`'s `assignable:<group>` check reports this for every group, PAT and App alike (a warning for an App group, a failure for a PAT group whose machine user is not a collaborator). The fix is a spec decision before it is code — see "What is next".
 
@@ -43,7 +43,7 @@ Meld lets N independent AI coding systems ("groups", each with a long-lived orch
 - `prompts.py` + `prompts/*.md` — role and worker prompts. `_worker_contract.md` item 10 covers materialised skills; `pm.md` covers `BUDGET budget-<n>`.
 - `cli.py` — the 27 commands; `data/models.toml` is the packaged model catalog.
 
-`tests/` — 564 hermetic tests: real git repos and real subprocesses, GitHub through `tests/fakegh.py` (routes can match on query parameters, so `contents/<path>` serves a different text per `ref`), fixtures under `tests/fixtures/board1/`, helpers in `conftest.py` (autouse fixtures scrub the host gitconfig, the CLI's adapter scan, and the operator's `MELD_SLACK_DM_WEBHOOK` and every `MELD_TOKEN_*`/`MELD_APP_KEY_*`; a session-scoped `keypair_pem` fixture generates a throwaway RSA key with `openssl genrsa`). Plan 5b added no new test files — it extended `test_roster.py`, `test_brief.py`, `test_tagging.py`, `test_dispatch.py`, `test_adapters.py`, `test_memory.py`, `test_github.py`, `test_notifier.py`, `test_housekeeping.py`, `test_chat.py`, `test_status.py`, `test_merge.py`, `test_review.py`, `test_tick.py`, `test_state.py`, `test_doctor.py`, and `tests/fakeadapter.py`. `tests/smoke/` runs the real CLIs and is opt-in.
+`tests/` — 565 hermetic tests: real git repos and real subprocesses, GitHub through `tests/fakegh.py` (routes can match on query parameters, so `contents/<path>` serves a different text per `ref`), fixtures under `tests/fixtures/board1/`, helpers in `conftest.py` (autouse fixtures scrub the host gitconfig, the CLI's adapter scan, and the operator's `MELD_SLACK_DM_WEBHOOK` and every `MELD_TOKEN_*`/`MELD_APP_KEY_*`; a session-scoped `keypair_pem` fixture generates a throwaway RSA key with `openssl genrsa`). Plan 5b added no new test files — it extended `test_roster.py`, `test_brief.py`, `test_tagging.py`, `test_dispatch.py`, `test_adapters.py`, `test_memory.py`, `test_github.py`, `test_notifier.py`, `test_housekeeping.py`, `test_chat.py`, `test_status.py`, `test_merge.py`, `test_review.py`, `test_tick.py`, `test_state.py`, `test_doctor.py`, and `tests/fakeadapter.py`. `tests/smoke/` runs the real CLIs and is opt-in.
 
 `Taskfile.yml` — `task test`, `task test:smoke`, `task status`, `task run GROUP=…`, `task doctor` (`CLI_ARGS=--probe-status`), `task setup REPO=owner/name GOAL="…"` (`CLI_ARGS=--pr`). Every other verb is invoked directly as `uv run meld …`, or by a running orchestrator/PM.
 
@@ -51,7 +51,7 @@ Meld lets N independent AI coding systems ("groups", each with a long-lived orch
 
 ```bash
 uv sync
-uv run pytest -q          # 564 passed, no warnings
+uv run pytest -q          # 565 passed, no warnings
 uv run pytest tests/smoke -q -rs   # 2 skipped unless MELD_SMOKE=1
 ```
 

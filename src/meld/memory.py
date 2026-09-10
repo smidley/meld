@@ -67,6 +67,16 @@ def escape_headings(text: str) -> str:
     return "\n".join(("\\" + line) if line.startswith("#") else line for line in text.splitlines())
 
 
+def escape_supersedes(text: str) -> str:
+    """The sibling of `escape_headings` for the OTHER marker a lesson entry carries meaning in: `Supersedes: <heading>`
+    on the first body line retires the entry it names. Only the `--supersedes` flag may do that, so any such line in
+    the worker's own text is prefixed with a backslash before `render_lesson` writes the flag's line above it --
+    otherwise a worker could make another group's lesson vanish from `meld recall` and from every brief by typing one
+    line. The comparison is against the STRIPPED line, exactly as `brief._first_body_line` reads it back, so an
+    indented `  Supersedes: ...` cannot slip through the escape and still be read as a supersession."""
+    return "\n".join(("\\" + line) if SUPERSEDES_RE.match(line.strip()) else line for line in text.splitlines())
+
+
 def render_lesson(ref: str, text: str, group: str, date: str, supersedes: str | None = None) -> str:
     """`supersedes` is the heading of the entry this one replaces, and it goes on the entry's first body line:
     lessons.md is append-only, so the newer entry is the only place the link can be recorded."""
@@ -206,9 +216,11 @@ def remember(ctx, ref: str, text: str, *, now: datetime | None = None, supersede
         refuse(ctx, board, Refusal(Verb.REMEMBER, ref, rule))
     group = ctx.cfg.groups[actor.group]  # type: ignore[index]
     when = _now(now)
-    # `supersedes` comes from the flag, never from the lesson text, so it is rendered as the entry's own first body
-    # line while the worker-authored text stays neutralised and escaped -- a `Supersedes:` line inside `text` is text.
-    entry = render_lesson(ref, escape_headings(neutralise_closers(text)), group.name, when.strftime("%Y-%m-%d"), supersedes)
+    # `supersedes` comes from the flag, never from the lesson text: it is rendered as the entry's own first body line
+    # AFTER the text has been neutralised and both markers escaped, so it is the only unescaped `Supersedes:` line an
+    # entry can ever carry -- a `Supersedes:` line inside `text` is text, and retires nothing.
+    entry = render_lesson(ref, escape_supersedes(escape_headings(neutralise_closers(text))), group.name,
+                          when.strftime("%Y-%m-%d"), supersedes)
     digest = content_hash(entry)
     stamp = when.strftime("%Y%m%dT%H%M%SZ")
     body = f"Records a lesson from {ref}.\n\nmeld-memory: lesson {ref} {digest}\nverified-by: {ref} resolved on the board at {_iso(when)}"

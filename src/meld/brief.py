@@ -24,7 +24,10 @@ _FILES_HEADING_RE = re.compile(r"^\s*(?:#+\s*)?files:?\s*$", re.IGNORECASE)
 # that replaced it (lessons.md is append-only, so the newer entry is the only place the link can be written).
 # Both live here rather than in memory.py, which imports this module: `_decision_hit`, `_lesson_hits` and
 # `decision_titles` are what read them, and memory.py re-exports both names for its own callers.
-STATUS_RE = re.compile(r"^Status: superseded by (\S+) on (\d{4}-\d{2}-\d{2})$", re.M)
+# `(.+?)` rather than `(\S+)`: a hand-authored decision file may have a space in its name, and a capture that
+# stopped at the first space would not match the trailer at all -- the file would read as `active` after being
+# superseded (and could be superseded a second time), which is the one direction this must never fail in.
+STATUS_RE = re.compile(r"^Status: superseded by (.+?) on (\d{4}-\d{2}-\d{2})$", re.M)
 SUPERSEDES_RE = re.compile(r"^Supersedes: (.+)$", re.M)
 STANDARDS_FILE = ".meld/STANDARDS.md"
 MAX_SKILLS = 30
@@ -160,14 +163,23 @@ def _first_body_line(block: str) -> str:
 def _lesson_hits(path: str, text: str, terms: list[str]) -> list[dict]:
     blocks = [b for b in re.split(r"\n(?=## )", text) if b.startswith("## ")]
     headings = [b.splitlines()[0][3:].strip() for b in blocks]
+    # A lesson is superseded by a LATER entry whose first body line names its heading; an earlier entry can never
+    # supersede a later one, the first later superseder wins, and the relation is read from the whole file rather
+    # than only from the entries that scored. One forward pass: `first_index` (built in reverse, so the first
+    # occurrence of a repeated heading wins) says where the named entry is, and `replaced` keeps the first claim.
+    first_index = {heading: i for i, heading in reversed(list(enumerate(headings)))}
+    replaced: dict[str, str] = {}
+    for j, block in enumerate(blocks):
+        m = SUPERSEDES_RE.match(_first_body_line(block))
+        if m:
+            named = m.group(1).strip()
+            if first_index.get(named, j) < j and named not in replaced:
+                replaced[named] = headings[j]
     hits: list[dict] = []
-    for i, (block, heading) in enumerate(zip(blocks, headings)):
-        # A lesson is superseded by a LATER entry whose first body line names its heading; earlier entries can never
-        # supersede a later one, and the relation is read from the whole file, not only from the entries that scored.
-        replaced_by = next((headings[j] for j in range(i + 1, len(blocks))
-                            if (m := SUPERSEDES_RE.match(_first_body_line(blocks[j]))) and m.group(1).strip() == heading), None)
+    for block, heading in zip(blocks, headings):
         score = sum(1 for t in terms if t in block.lower())
         if score:
+            replaced_by = replaced.get(heading)
             hits.append({"kind": "lesson", "path": path, "title": heading, "score": score, "snippet": block.strip()[:300],
                          "status": "superseded" if replaced_by else "active", "superseded_by": replaced_by})
     return hits

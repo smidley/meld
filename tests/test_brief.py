@@ -9,6 +9,7 @@ from meld.brief import (
     DEFAULT_STANDARDS,
     RESULT_FILE,
     ResultError,
+    STATUS_RE,
     WorkerResult,
     agent_instruction_files,
     decision_titles,
@@ -67,6 +68,12 @@ def test_repo_local_context_files(tmp_path: Path):
     assert decision_titles(tmp_path) == ["0001 Use SQLite for v1"]
     assert review_bar(tmp_path).startswith("Behavior claims")
     assert agent_instruction_files(tmp_path) == ["CLAUDE.md", ".github/copilot-instructions.md"]
+
+
+def test_status_re_reads_a_superseded_by_name_that_contains_spaces():
+    # A `(\S+)` capture would stop at the first space and match nothing at all, so a hand-authored decision file
+    # with a space in its name would read as `active` after supersession -- and could then be superseded twice.
+    assert STATUS_RE.search("Status: superseded by 0002 dec 1.md on 2026-09-05").group(1) == "0002 dec 1.md"
 
 
 def test_render_brief_for_a_builder_and_a_reviewer(tmp_path: Path):

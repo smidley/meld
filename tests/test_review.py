@@ -381,7 +381,7 @@ def test_submit_review_folds_findings_into_the_body_on_422():
     assert stub.calls[1]["comments"] is None
 
 
-from meld.memory import LESSONS_FILE, content_hash, decide
+from meld.memory import DECISIONS_DIR, LESSONS_FILE, content_hash, decide
 from tests.test_memory import DECISION_THREAD, DISAGREE_THREAD, with_thread
 
 
@@ -481,13 +481,14 @@ OLD_DECISION = "# Decision dec-0\n\n- Date: 2026-09-01\n- Agreed by: claude, cod
 OLD_DECISION_PATH = ".meld/decisions/0001-dec-0.md"
 
 
-def supersession_pr(fake, ctx, repo, *, head="mem0001", supersedes="0001-dec-0.md", old_head=None, old_base=OLD_DECISION, third=None):
+def supersession_pr(fake, ctx, repo, *, head="mem0001", supersedes="0001-dec-0.md", old_path=OLD_DECISION_PATH,
+                    old_head=None, old_base=OLD_DECISION, third=None):
     """The two-file memory PR `meld decide dec-1 --supersedes 0001-dec-0.md` opens: the new decision naming the file
     it replaces, plus that file with exactly one appended status trailer."""
     from meld.memory import render_decision, superseded_trailer
     text = render_decision("dec-1", genuine_agreement(ctx), "https://github.com/acme/widgets/issues/10#issuecomment-203", "2026-09-03", supersedes)
     at_head = OLD_DECISION + superseded_trailer("0002-dec-1.md", "2026-09-03") if old_head is None else old_head
-    extra = {OLD_DECISION_PATH: (at_head, old_base)}
+    extra = {old_path: (at_head, old_base)}
     if third is not None:
         extra[third] = ("anything at all\n", None)
     memory_pr_on_board(fake, repo, ".meld/decisions/0002-dec-1.md", text, head=head, extra=extra)
@@ -532,6 +533,21 @@ def test_review_rejects_a_tampered_supersession_pr(tmp_path):
     supersession_pr(fake, ctx, repo, head="mem0007", old_base=None)
     out = review(ctx, 40, now=NOW)
     assert out["event"] == "REQUEST_CHANGES" and OLD_DECISION_PATH in out["reason"]
+    # the trailer names the right new file but a different day than the new decision's own `- Date:` line
+    supersession_pr(fake, ctx, repo, head="mem0008", old_head=OLD_DECISION + superseded_trailer("0002-dec-1.md", "2026-09-09"))
+    out = review(ctx, 40, now=NOW)
+    assert out["event"] == "REQUEST_CHANGES" and OLD_DECISION_PATH in out["reason"] and "trailer" in out["reason"]
+    # the superseded name is a path, not a flat decision filename: `- Supersedes: sub/x.md` reaches outside the directory
+    nested = f"{DECISIONS_DIR}/sub/x.md"
+    supersession_pr(fake, ctx, repo, head="mem0010", supersedes="sub/x.md", old_path=nested)
+    out = review(ctx, 40, now=NOW)
+    assert out["event"] == "REQUEST_CHANGES" and nested in out["reason"]
+    # the file being superseded is already superseded: `decide` refuses this, and so must the verifier
+    already = OLD_DECISION + superseded_trailer("0009-earlier.md", "2026-09-02")
+    supersession_pr(fake, ctx, repo, head="mem0011", old_base=already,
+                    old_head=already + superseded_trailer("0002-dec-1.md", "2026-09-03"))
+    out = review(ctx, 40, now=NOW)
+    assert out["event"] == "REQUEST_CHANGES" and OLD_DECISION_PATH in out["reason"] and "already superseded" in out["reason"]
 
 
 def test_review_approves_exactly_what_decide_wrote(tmp_path):

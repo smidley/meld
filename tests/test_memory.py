@@ -20,6 +20,16 @@ DECISION_THREAD = [
      "body": "[joint] DECISION dec-1\n\nUse PostgreSQL for the ledger.\n\nverified-by: read docs/adr/0001.md"},
 ]
 
+# An agreed decision whose own prose carries a `- Supersedes: ...` bullet. Nothing about it is a supersession: the
+# groups simply wrote that line, as they may write any line, and only `meld decide --supersedes` records a real one.
+SUPERSEDES_PROSE = "Cache reads in Redis.\n\n- Supersedes: the earlier informal ADR on caching\n\nverified-by: read docs/adr/0002.md"
+SUPERSEDES_PROSE_THREAD = [
+    {"id": 211, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T10:20:00Z", "body": f"[claude] PROPOSE dec-3\n\n{SUPERSEDES_PROSE}"},
+    {"id": 212, "user": {"login": "meld-codex-bot"}, "created_at": "2026-09-03T10:21:00Z", "body": "[codex] AGREE dec-3\n\nfine"},
+    {"id": 213, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T10:22:00Z", "html_url": "https://github.com/acme/widgets/issues/10#issuecomment-213",
+     "body": f"[joint] DECISION dec-3\n\n{SUPERSEDES_PROSE}"},
+]
+
 DISAGREE_THREAD = [
     {"id": 201, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T10:10:00Z", "body": "[claude] PROPOSE dec-2\n\nUse PostgreSQL for the ledger.\n\nverified-by: read docs/adr/0001.md"},
     {"id": 202, "user": {"login": "meld-codex-bot"}, "created_at": "2026-09-03T10:11:00Z", "body": "[codex] DISSENT dec-2\n\nSQLite is enough."},
@@ -266,6 +276,38 @@ def test_decide_supersedes_writes_the_new_file_and_one_trailer_on_the_old(tmp_pa
     assert sorted(changed) == [f"{DECISIONS_DIR}/0001-dec-0.md", f"{DECISIONS_DIR}/0002-dec-1.md"]
     pull = [c for c in fake.calls if c.method == "POST" and c.endpoint == R + "pulls"][0].body
     assert MARKER_RE.search(pull["body"]).group(3) == out["hash"] and "supersedes: 0001-dec-0.md" in pull["body"]
+
+
+def test_decide_records_a_decision_whose_agreed_text_quotes_a_supersedes_bullet(tmp_path):
+    """C1: `- Supersedes:` is a header line, and the header is everything above `## Decision`. The agreed text is the
+    groups' own prose and may contain that bullet; reading the whole file for it made `decide`'s own rendering
+    disagree with itself, so an agreed decision could be opened as a PR and then never verified or recorded."""
+    fake, ctx, repo, origin = make_product(tmp_path, role="orchestrator")
+    with_thread(fake, SUPERSEDES_PROSE_THREAD)
+    fake.route("POST", R + "pulls", {"number": 42, "html_url": "https://github.com/acme/widgets/pull/42"})
+    out = decide(ctx, "dec-3", now=NOW)
+    assert out["supersedes"] is None and out["path"] == f"{DECISIONS_DIR}/0001-dec-3.md"
+    text = sh(["git", "show", f"origin/meld/memory-dec-3:{out['path']}"], repo) + "\n"
+    assert content_hash(text) == out["hash"]
+    header, sep, body = text.partition("\n## Decision\n")
+    assert sep and "- Supersedes:" not in header
+    assert "- Supersedes: the earlier informal ADR on caching" in body
+
+
+def test_a_status_line_in_a_decision_s_prose_does_not_supersede_it(tmp_path):
+    """I2: the status marker is the trailer `superseded_trailer` appends at end of file, not any line that reads like
+    it. An unanchored match made a decision that quotes one superseded at birth -- dropped from every brief and
+    refused as a `--supersedes` target."""
+    fake, ctx, repo, origin = make_product(tmp_path, role="orchestrator")
+    with_thread(fake, DECISION_THREAD)
+    fake.route("POST", R + "pulls", {"number": 40, "html_url": "https://github.com/acme/widgets/pull/40"})
+    quoting = (ORIGINAL_0001.rstrip("\n") + "\n\nThe note we replaced read `Status: superseded by 0000-old.md on 2026-01-01`,\n"
+               "which was wrong:\n\nStatus: superseded by 0000-old.md on 2026-01-01\n")
+    seed_origin_decision(fake, repo, "0001-dec-0.md", quoting)
+    out = decide(ctx, "dec-1", now=NOW, supersedes="0001-dec-0.md")     # not already superseded: it only quotes the line
+    old_text = sh(["git", "show", f"origin/meld/memory-dec-1:{DECISIONS_DIR}/0001-dec-0.md"], repo) + "\n"
+    assert old_text == quoting + "\n---\nStatus: superseded by 0002-dec-1.md on 2026-09-03\n"
+    assert out["supersedes"] == "0001-dec-0.md"
 
 
 def test_decide_refuses_to_supersede_a_decision_that_is_already_superseded(tmp_path):

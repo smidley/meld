@@ -382,7 +382,7 @@ def test_submit_review_folds_findings_into_the_body_on_422():
 
 
 from meld.memory import DECISIONS_DIR, LESSONS_FILE, content_hash, decide
-from tests.test_memory import DECISION_THREAD, DISAGREE_THREAD, with_thread
+from tests.test_memory import DECISION_THREAD, DISAGREE_THREAD, SUPERSEDES_PROSE_THREAD, with_thread
 
 
 def _contents(text):
@@ -607,6 +607,34 @@ def test_review_rejects_a_lesson_pr_that_rewrites_an_earlier_lesson(tmp_path):
     # exactly one entry: appending two at once is refused (the marker names one hash; the head must be base + that entry)
     lesson_pr(fake, repo, OLD_LESSONS + "\n## 2026-09-02 — #9 (codex)\n\nSmuggled.\n" + NEW_ENTRY, "mem0005", OLD_LESSONS)
     assert review(ctx, 41, now=NOW)["event"] == "REQUEST_CHANGES"
+
+
+def test_review_approves_a_decision_whose_agreed_text_quotes_a_supersedes_bullet(tmp_path):
+    """C1: the `- Supersedes:` link is a header line, so the verifier reads it from the header region only. Searching
+    the whole file found the bullet inside the agreed prose, re-rendered the file with a header line it does not have,
+    and refused it "byte for byte" -- and `decide` had already opened the PR, so that decision could never be recorded."""
+    from meld.review import _decision_header
+    fake, ctx, repo, origin = make_product(tmp_path, group="codex")
+    with_thread(fake, SUPERSEDES_PROSE_THREAD)
+    from meld.grammar import agreement_for, parse_comment
+    from meld.memory import render_decision
+    parsed = [parse_comment(c, ctx.cfg) for c in fixture("comments_10.json") + SUPERSEDES_PROSE_THREAD]
+    text = render_decision("dec-3", agreement_for(parsed, "dec-3", ctx.cfg),
+                           "https://github.com/acme/widgets/issues/10#issuecomment-213", "2026-09-03")
+    assert "\n- Supersedes: the earlier informal ADR on caching" in text and "- Supersedes:" not in _decision_header(text)
+    memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-3.md", text, ref="dec-3")
+    assert review(ctx, 40, now=NOW) == {"reviewed": 40, "memory": "decision", "event": "APPROVE", "review_id": 601}
+
+
+def test_review_refuses_a_decision_pr_that_would_overwrite_an_existing_decision_file(tmp_path):
+    """I3: a hand-opened memory PR can render decision B perfectly and write it at decision A's path, destroying A.
+    Nothing else in the verifier looks at the new file's path on the default branch."""
+    fake, ctx, repo, origin = make_product(tmp_path, group="codex")
+    with_thread(fake, DECISION_THREAD)
+    memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", genuine_decision(ctx), base=OLD_DECISION)
+    out = review(ctx, 40, now=NOW)
+    assert out["event"] == "REQUEST_CHANGES"
+    assert out["reason"] == ".meld/decisions/0001-dec-1.md already exists on main; a decision file is never rewritten"
 
 
 def test_review_rejects_a_decision_pr_whose_file_is_outside_the_decisions_dir(tmp_path):

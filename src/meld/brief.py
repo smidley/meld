@@ -27,7 +27,13 @@ _FILES_HEADING_RE = re.compile(r"^\s*(?:#+\s*)?files:?\s*$", re.IGNORECASE)
 # `(.+?)` rather than `(\S+)`: a hand-authored decision file may have a space in its name, and a capture that
 # stopped at the first space would not match the trailer at all -- the file would read as `active` after being
 # superseded (and could be superseded a second time), which is the one direction this must never fail in.
-STATUS_RE = re.compile(r"^Status: superseded by (.+?) on (\d{4}-\d{2}-\d{2})$", re.M)
+# The pattern is the WHOLE of `memory.superseded_trailer`, anchored at end of file (`\Z`, and no `re.M`): a decision
+# whose own agreed prose quotes a status line -- explaining what it replaces, say -- otherwise read as superseded at
+# birth, dropped from `## Decisions in force` and `## Relevant memory` and refused as a `--supersedes` target.
+# `\s*\Z` rather than `\n\Z` for the one reader that does not see the file's own bytes: `_local_hits` reads a decision
+# at `origin/<default>` through `gitops.git`, which strips its subprocess output, so the trailing newline is gone by
+# the time this runs. Trailing whitespace is all that may follow the line -- any other content still means "quoted".
+STATUS_RE = re.compile(r"\n---\nStatus: superseded by (.+?) on (\d{4}-\d{2}-\d{2})\s*\Z")
 SUPERSEDES_RE = re.compile(r"^Supersedes: (.+)$", re.M)
 STANDARDS_FILE = ".meld/STANDARDS.md"
 MAX_SKILLS = 30
@@ -166,20 +172,22 @@ def _lesson_hits(path: str, text: str, terms: list[str]) -> list[dict]:
     # A lesson is superseded by a LATER entry whose first body line names its heading; an earlier entry can never
     # supersede a later one, the first later superseder wins, and the relation is read from the whole file rather
     # than only from the entries that scored. One forward pass: `first_index` (built in reverse, so the first
-    # occurrence of a repeated heading wins) says where the named entry is, and `replaced` keeps the first claim.
+    # occurrence of a repeated heading wins) says where the named entry is, and `replaced` keeps the first claim --
+    # keyed by that ENTRY'S INDEX, not by its heading text, because two entries can share a heading (same day, same
+    # ref, same group) and only the one the name resolves to is retired.
     first_index = {heading: i for i, heading in reversed(list(enumerate(headings)))}
-    replaced: dict[str, str] = {}
+    replaced: dict[int, str] = {}
     for j, block in enumerate(blocks):
         m = SUPERSEDES_RE.match(_first_body_line(block))
         if m:
-            named = m.group(1).strip()
-            if first_index.get(named, j) < j and named not in replaced:
+            named = first_index.get(m.group(1).strip())
+            if named is not None and named < j and named not in replaced:
                 replaced[named] = headings[j]
     hits: list[dict] = []
-    for block, heading in zip(blocks, headings):
+    for i, (block, heading) in enumerate(zip(blocks, headings)):
         score = sum(1 for t in terms if t in block.lower())
         if score:
-            replaced_by = replaced.get(heading)
+            replaced_by = replaced.get(i)
             hits.append({"kind": "lesson", "path": path, "title": heading, "score": score, "snippet": block.strip()[:300],
                          "status": "superseded" if replaced_by else "active", "superseded_by": replaced_by})
     return hits

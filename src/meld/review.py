@@ -32,6 +32,18 @@ _DATE_LINE_RE = re.compile(r"^- Date: (\d{4}-\d{2}-\d{2})$", re.MULTILINE)
 # captured name is checked twice anyway -- fed straight back into render_decision (so a line anywhere but the
 # header fails the byte-equality check) and compared against the path the PR actually changes.
 _SUPERSEDES_LINE_RE = re.compile(r"^- Supersedes: (.+)$", re.MULTILINE)
+_DECISION_BODY_HEADING = "\n## Decision\n"
+
+
+def _decision_header(text: str) -> str:
+    """The decision file's header region: everything above its `## Decision` heading, which is how `render_decision`
+    lays the file out (`# Decision <ref>`, `- Date:`, `- Agreed by:`, `- Source:`, optionally `- Supersedes:`, then
+    the agreed text under `## Decision`). The supersession link is read from here and nowhere else. Under the heading
+    is the groups' own agreed prose, which may contain any line at all -- including a `- Supersedes: ...` bullet; read
+    from the whole file, such a bullet made the verifier re-render the file WITH a header line it does not have and
+    refuse it "byte for byte", and since `decide` opens the PR before anyone verifies it, that agreed decision could
+    then never be recorded. A file with no `## Decision` heading is all header, and fails the byte check anyway."""
+    return text.split(_DECISION_BODY_HEADING, 1)[0]
 
 
 def _decision_date(text: str) -> str | None:
@@ -116,6 +128,11 @@ def verify_memory_pr(ctx, board, pr) -> tuple[bool, str]:
             return False, f"a decision PR changes one file under {DECISIONS_DIR}, not {new_path}"
         if old_path is not None and not _flat_decision_path(old_path):
             return False, f"a decision PR supersedes one file directly under {DECISIONS_DIR}, not {old_path}"
+        # A decision file is written once and afterwards only ever gains a supersession trailer. Everything else here
+        # verifies the file's CONTENT, so a PR opened by hand could render decision B perfectly and land it at
+        # decision A's path -- destroying A with a change that verifies byte for byte. The path itself is the check.
+        if ctx.gh.get_contents(new_path, ctx.cfg.default_branch) is not None:
+            return False, f"{new_path} already exists on {ctx.cfg.default_branch}; a decision file is never rewritten"
         if content_hash(text) != digest:
             return False, "file hash does not match the meld-memory marker"
         agreement = agreement_for(board.comments, ref, ctx.cfg)
@@ -129,7 +146,7 @@ def verify_memory_pr(ctx, board, pr) -> tuple[bool, str]:
         joint = verified_joint(board.comments, ref, ctx.cfg)
         if joint is None:   # unreachable once joint_verified held above; kept so the link can never come from an unverified comment
             return False, f"no verified [joint] DECISION {ref}"
-        m = _SUPERSEDES_LINE_RE.search(text)
+        m = _SUPERSEDES_LINE_RE.search(_decision_header(text))
         supersedes = m.group(1) if m else None
         # Byte equality with `meld decide`'s own rendering: the header lines (date, agreeing groups, the verified
         # joint comment's URL, the superseded file when there is one) and the text under `## Decision` are all

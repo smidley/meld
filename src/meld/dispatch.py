@@ -274,8 +274,9 @@ def _drop_symlinks(directory: str, names: list[str]) -> set[str]:
 
 def materialise_skills(worktree: Path, adapter: Adapter, skills: Sequence[WorkerType]) -> dict:
     """Copy the product's roster-listed product skills into the worktree under the adapter's project skill
-    directory, so the CLI discovers them natively (decision 14). Worktree-local and excluded from git via
-    info/exclude: nothing is written under the host's home, and a worker cannot accidentally commit the copies.
+    directory, so the CLI discovers them natively (decision 14). Worktree-local, and each copy excluded from git
+    by its own exact path through the clone's shared info/exclude (see that call below): nothing is written under
+    the host's home, and a worker cannot accidentally commit the copies.
 
     Idempotent across a reused worktree via a manifest of the names copied last time
     (`<target_dir>/.meld-materialised.json`): a since-deleted product skill's stale copy is pruned on the next

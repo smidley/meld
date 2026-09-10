@@ -87,6 +87,20 @@ def test_scan_skills_skips_a_symlinked_skill_file(tmp_path: Path):
     assert [s.name for s in scan_skills([skills])] == ["real"]
 
 
+def test_scan_skills_skips_a_symlinked_skill_directory(tmp_path: Path):
+    """Final-review follow-up: a skill *directory* that is a symlink is skipped like a symlinked SKILL.md -- otherwise
+    every file under the link's target would be read into the roster and copied into worktrees by materialise_skills."""
+    outside = tmp_path / "outside-skill"
+    outside.mkdir()
+    (outside / "SKILL.md").write_text("---\nname: borrowed\ndescription: Somewhere else entirely.\n---\n")
+    skills = tmp_path / "skills"
+    skills.mkdir()
+    (skills / "borrowed").symlink_to(outside, target_is_directory=True)
+    (skills / "real").mkdir()
+    (skills / "real" / "SKILL.md").write_text("---\nname: real\ndescription: An actual directory.\n---\n")
+    assert [s.name for s in scan_skills([skills])] == ["real"]
+
+
 def test_parse_frontmatter_requires_a_closing_fence():
     assert parse_frontmatter("---\nname: brand\ndescription: never closed\nbody text") == {}
 

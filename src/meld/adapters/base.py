@@ -74,7 +74,9 @@ def scan_skills(dirs: Iterable[Path], source: str = "skill") -> list[WorkerType]
     for d in dirs:
         if not d.is_dir():
             continue
-        for skill_dir in sorted(p for p in d.iterdir() if p.is_dir() and not p.name.startswith(".")):
+        # A symlinked skill directory is skipped for the same reason a symlinked SKILL.md is (below): it points
+        # wherever its author aimed it, and everything under it would be read, briefed, and copied into worktrees.
+        for skill_dir in sorted(p for p in d.iterdir() if p.is_dir() and not p.is_symlink() and not p.name.startswith(".")):
             f = skill_dir / "SKILL.md"
             # is_symlink before is_file: a link points wherever its author aimed it, and reading it would put a
             # file from outside the skills tree into the roster, a brief, and (via materialise_skills) a worktree.

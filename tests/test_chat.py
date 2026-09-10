@@ -26,7 +26,7 @@ def test_inbox_collects_what_needs_a_person():
         mk_comment(CFG2, 8, "empowerScott", "[human] ASK ask-2\n\nstatus?"),
         mk_comment(CFG2, 9, "meld-claude-bot", "[joint] ANSWER ask-2\n\nall good\n\nverified-by: meld status"),
     ]
-    board = mk_board(CFG2, issues=[mk_issue(14, status="needs_human", assignees=("meld-codex-bot",))], comments=comments)
+    board = mk_board(CFG2, issues=[mk_issue(14, status="needs_human")], comments=comments)
     box = inbox(board, CFG2, NOW)
     assert box["needs_human"][0]["issue"] == 14 and "Stripe sandbox key" in box["needs_human"][0]["ask"]
     assert box["budget"][0]["group"] == "claude" and box["disagree"] == [{"ref": "ans-1", "verb": "ANSWER", "comment_id": 5}]

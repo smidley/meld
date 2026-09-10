@@ -1,7 +1,6 @@
 from meld.board import (
     Issue,
     Lease,
-    assigned_leases,
     derive_halted,
     derive_leases,
     derive_open_challenges,
@@ -16,12 +15,17 @@ def test_issue_status_precedence_and_labels():
     i = mk_issue(1, status="ready")
     assert i.status == "ready"
     assert i.worker == "backend" and i.model == "claude-sonnet-5" and i.effort == "medium" and i.size == "S"
-    both = Issue(2, "t", "", frozenset({"meld:blocked", "meld:needs-human", "meld:in-progress"}), (), "open", 3)
+    both = Issue(2, "t", "", frozenset({"meld:blocked", "meld:needs-human", "meld:in-progress"}), "open", 3)
     assert both.status == "needs_human"
-    assert Issue(3, "t", "", frozenset(), (), "open", 3).status == "unlabeled"
-    assert Issue(4, "t", "", frozenset({"meld:ready"}), (), "closed", 3).status == "closed"
+    assert Issue(3, "t", "", frozenset(), "open", 3).status == "unlabeled"
+    assert Issue(4, "t", "", frozenset({"meld:ready"}), "closed", 3).status == "closed"
     assert mk_issue(5, extra_labels=("meld:challenged",)).challenged
     assert mk_issue(6, worker=None).worker is None
+
+
+def test_issue_has_no_assignees_field():
+    from dataclasses import fields
+    assert "assignees" not in {f.name for f in fields(Issue)}
 
 
 def test_pr_review_math_uses_latest_review_per_author_on_head():
@@ -55,12 +59,12 @@ def test_derive_open_challenges_closes_on_verdict_or_retract():
 
 def test_board_helpers():
     b = mk_board(CFG2,
-                 issues=[mk_issue(11), mk_issue(12, status="in_progress", assignees=("meld-claude-bot",)),
-                         mk_issue(13, status="in_review", assignees=("meld-claude-bot",))],
+                 issues=[mk_issue(11), mk_issue(12, status="in_progress", claimed_by="claude"),
+                         mk_issue(13, status="in_review")],
                  pulls=[mk_pr(20, 13)],
                  runs={"claude": {12: mk_run("claude", 12)}, "codex": {}},
                  open_challenges=frozenset({"#12"}))
-    assert b.in_progress_count("meld-claude-bot") == 1
+    assert b.in_progress_count("claude") == 1
     assert b.pr_for_issue(13).number == 20 and b.pr_for_issue(11) is None
     assert b.run_for("claude", 12).alive and b.run_for("codex", 12) is None
     assert b.is_challenged("#12") and not b.is_challenged("#11")
@@ -80,7 +84,7 @@ def test_parse_lease_until_and_derive_leases():
     leases = derive_leases(cs)
     assert leases == {12: Lease(12, "claude", "2026-09-03T13:30:00Z", 2)}
     assert len(utc_now_iso()) == 20 and utc_now_iso().endswith("Z")
-    b = mk_board(CFG2, issues=[mk_issue(12, status="in_progress", assignees=("meld-claude-bot",))],
+    b = mk_board(CFG2, issues=[mk_issue(12, status="in_progress")],
                  leases={12: mk_lease(12, until="2026-09-03T11:00:00Z")}, now="2026-09-03T12:00:00Z")
     assert b.lease_expired(12) and not b.lease_expired(99)
 
@@ -91,19 +95,6 @@ def test_malformed_lease_until_is_dropped():
     assert parse_lease_until("until: 2026-09-03T13:00:00Z") == "2026-09-03T13:00:00Z"
     cs = [mk_comment(CFG2, 1, "meld-claude-bot", "[claude:pm] LEASE #12\n\nuntil: soon")]
     assert derive_leases(cs) == {}
-
-
-def test_assigned_leases_keeps_only_leases_whose_bot_still_holds_the_issue():
-    bots = {"claude": "meld-claude-bot", "codex": "meld-codex-bot"}
-    issues = {i.number: i for i in (
-        mk_issue(12, status="in_progress", assignees=("meld-claude-bot",)),   # claude holds it: lease stands
-        mk_issue(13, status="in_progress", assignees=("meld-codex-bot",)),    # codex re-claimed it: claude's stale lease is void
-        mk_issue(14, status="ready"),                                         # released: nobody holds it
-    )}
-    leases = {12: mk_lease(12, "claude"), 13: mk_lease(13, "claude"), 14: mk_lease(14, "claude"), 15: mk_lease(15, "claude"),
-              16: mk_lease(16, "gemini")}
-    assert assigned_leases(leases, issues, bots) == {12: leases[12]}
-    assert assigned_leases({13: mk_lease(13, "codex")}, issues, bots) == {13: mk_lease(13, "codex")}
 
 
 from dataclasses import replace
@@ -155,8 +146,65 @@ def test_released_ends_a_lease_and_a_reclaim_does_not_revive_it():
     assert derive_leases(comments) == {}
 
 
-def test_pr_for_issue_prefers_the_current_assignees_pr_among_open_ones():
+def test_pr_for_issue_prefers_the_current_holders_pr_among_open_ones():
     from tests.factories import mk_board, mk_issue, mk_pr
-    board = mk_board(issues={11: mk_issue(11, "in_progress", assignees=("meld-codex-bot",))},
+    board = mk_board(issues={11: mk_issue(11, "in_progress", claimed_by="codex")},
                      pulls={30: mk_pr(30, 11, author="meld-claude-bot"), 31: mk_pr(31, 11, author="meld-codex-bot"), 32: mk_pr(32, 11, author="meld-claude-bot")})
     assert board.pr_for_issue(11).number == 31
+
+
+def test_issue_derives_its_claim_from_the_claimed_by_labels():
+    from meld.board import CLAIM_LABEL_PREFIX, claim_group, claim_label
+    from tests.factories import mk_issue
+    assert claim_label("codex") == "meld:claimed-by:codex" and CLAIM_LABEL_PREFIX == "meld:claimed-by:"
+    assert claim_group("meld:claimed-by:codex") == "codex" and claim_group("meld:in-progress") is None and claim_group("meld:claimed-by:") is None
+    free = mk_issue(11)
+    assert free.claimants == () and free.claimed_by is None
+    held = mk_issue(12, status="in_progress", claimed_by="claude")
+    assert held.claimants == ("claude",) and held.claimed_by == "claude"
+    contested = mk_issue(13, status="in_progress", extra_labels=("meld:claimed-by:codex", "meld:claimed-by:claude"))
+    assert contested.claimants == ("claude", "codex") and contested.claimed_by is None
+
+
+def test_claim_labels_are_read_case_insensitively():
+    """GitHub label names are case-insensitive for uniqueness, so a hand-made `Meld:Claimed-By:Claude` is the same
+    label as ours. Group names are lowercase by rule (config.GROUP_NAME_RE), so the group it names is lowercased too."""
+    from meld.board import claim_group
+    from tests.factories import mk_issue
+    assert claim_group("MELD:CLAIMED-BY:Claude") == "claude"
+    assert claim_group("Meld:Claimed-By:CODEX") == "codex"
+    assert claim_group("MELD:CLAIMED-BY:") is None and claim_group("MELD:IN-PROGRESS") is None
+    odd = mk_issue(11, status="in_progress", extra_labels=("meld:Claimed-by:Claude",))
+    assert odd.claimants == ("claude",) and odd.claimed_by == "claude"
+
+
+def test_held_leases_keep_only_the_lease_whose_group_holds_the_label():
+    from meld.board import Lease, held_leases
+    from tests.factories import mk_issue
+    issues = {12: mk_issue(12, status="in_progress", claimed_by="claude"),
+              13: mk_issue(13, status="in_progress", claimed_by="codex"),
+              14: mk_issue(14, status="in_progress"),
+              15: mk_issue(15, status="in_progress", extra_labels=("meld:claimed-by:claude", "meld:claimed-by:codex"))}
+    leases = {12: Lease(12, "claude", "2026-09-03T12:00:00Z"), 13: Lease(13, "claude", "2026-09-03T12:00:00Z"),
+              14: Lease(14, "codex", "2026-09-03T12:00:00Z"), 15: Lease(15, "codex", "2026-09-03T12:00:00Z"),
+              99: Lease(99, "codex", "2026-09-03T12:00:00Z")}
+    # 13: codex holds, lease says claude; 14: nobody holds; 15: contested, codex is a claimant so its lease survives; 99: no such issue
+    assert set(held_leases(leases, issues)) == {12, 15}
+
+
+def test_in_progress_count_and_holder_login_use_the_claim_label():
+    from tests.factories import CFG2, mk_board, mk_issue, mk_pr
+    board = mk_board(issues={12: mk_issue(12, status="in_progress", claimed_by="claude"),
+                             13: mk_issue(13, status="in_progress", claimed_by="claude"),
+                             14: mk_issue(14, status="in_progress", claimed_by="codex")},
+                     pulls={20: mk_pr(20, 12, author="meld-codex-bot"), 21: mk_pr(21, 12, author="meld-claude-bot")})
+    assert board.in_progress_count("claude") == 2 and board.in_progress_count("codex") == 1 and board.in_progress_count("human") == 0
+    assert board.holder_login(12) == "meld-claude-bot" and board.holder_login(99) is None
+    assert board.pr_for_issue(12).number == 21   # the holder's open PR beats a stale one from another group
+
+
+def test_claimants_dedupe_case_variants_of_one_group():
+    """claim_group lowercases, so `meld:claimed-by:Claude` and `meld:claimed-by:claude` are one claimant, not a contested pair."""
+    from tests.factories import mk_issue
+    issue = mk_issue(12, status="in_progress", extra_labels=("meld:claimed-by:Claude", "meld:claimed-by:claude"))
+    assert issue.claimants == ("claude",) and issue.claimed_by == "claude"

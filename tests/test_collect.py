@@ -250,11 +250,11 @@ def test_collect_is_superseded_when_another_group_now_holds_the_issue(tmp_path):
     calls_before = len(fake.calls)
     for i in issues:  # our lease expired and codex re-claimed #11 while the worker ran
         if i["number"] == 11:
-            i["assignees"] = [{"login": "meld-codex-bot"}]
+            i["labels"] = [l for l in i["labels"] if not l["name"].startswith("meld:claimed-by:")] + [{"name": "meld:claimed-by:codex"}]
     fake.route("GET", R + "issues", issues)
     result = collect(ctx, 11, now=NOW)
     assert result == {"collected": 11, "outcome": "superseded",
-                      "reason": "issue is in_progress and assigned to meld-codex-bot; claude no longer holds it"}
+                      "reason": "issue is in_progress and claimed by codex; claude no longer holds it"}
     assert [c for c in fake.calls[calls_before:] if c.method != "GET"] == []      # no push, PR, labels, or comments
     assert not remote_branch_exists(repo, "meld/11-add-health-endpoint")
     assert worktree_exists(repo, Path(out["worktree"]))                          # kept for inspection

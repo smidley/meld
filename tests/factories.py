@@ -1,7 +1,7 @@
 """Builders for pure board objects used across rules/status tests."""
 from __future__ import annotations
 
-from meld.board import Board, Issue, Lease, PullRequest, Review, RunRecord
+from meld.board import Board, Issue, Lease, PullRequest, Review, RunRecord, claim_label
 from meld.config import Config
 from meld.grammar import ParsedComment, parse_comment
 from meld.models import ModelRegistry, ModelSpec
@@ -31,17 +31,19 @@ STATUS_TO_LABEL = {"planned": "meld:planned", "ready": "meld:ready", "in_progres
 
 
 def mk_issue(number: int, status: str = "ready", worker: str | None = "backend", model: str | None = "claude-sonnet-5",
-             effort: str | None = "medium", size: str | None = "S", assignees: tuple[str, ...] = (),
-             extra_labels: tuple[str, ...] = (), state: str = "open", title: str | None = None,
-             updated_at: str = "2026-09-03T10:00:00Z") -> Issue:
+             effort: str | None = "medium", size: str | None = "S",
+             claimed_by: str | None = None, extra_labels: tuple[str, ...] = (), state: str = "open",
+             title: str | None = None, updated_at: str = "2026-09-03T10:00:00Z") -> Issue:
     labels = set(extra_labels)
     if status in STATUS_TO_LABEL:
         labels.add(STATUS_TO_LABEL[status])
     for prefix, val in (("worker:", worker), ("model:", model), ("effort:", effort), ("size:", size)):
         if val is not None:
             labels.add(prefix + val)
+    if claimed_by is not None:
+        labels.add(claim_label(claimed_by))
     return Issue(number=number, title=title or f"Issue {number}", body="", labels=frozenset(labels),
-                 assignees=tuple(assignees), state=state, milestone=3, created_at="2026-09-03T09:00:00Z",
+                 state=state, milestone=3, created_at="2026-09-03T09:00:00Z",
                  updated_at=updated_at)
 
 
@@ -108,7 +110,8 @@ def mk_board(cfg: Config = CFG2, issues=(), pulls=(), comments=(), phase: str = 
                  issues=_keyed_by_number(issues), pulls=_keyed_by_number(pulls), comments=tuple(comments),
                  runs=runs or {g: {} for g in cfg.group_names}, spend=spend or {g: {} for g in cfg.group_names},
                  open_challenges=open_challenges, ignored_comments=0,
-                 leases=leases or {}, plan_text=plan_text, now=now)
+                 leases=leases or {}, plan_text=plan_text, now=now,
+                 bots={g.name: g.bot for g in cfg.groups.values()})
 
 
 def mk_lease(issue: int, group: str = "claude", until: str = "2026-09-03T13:00:00Z", comment_id: int = 900) -> Lease:

@@ -27,7 +27,7 @@ def test_build_board_end_to_end(board1_gh):
     b = build_board(gh, CFG2, runs, spend)
     assert (b.milestone, b.coordination_issue, b.phase, b.halted) == (3, 10, "executing", False)
     assert sorted(b.issues) == [11, 12, 13, 14]          # coordination issue and PR entry excluded
-    assert b.issues[11].status == "ready" and b.issues[12].assignees == ("meld-claude-bot",)
+    assert b.issues[11].status == "ready" and b.issues[12].claimed_by == "claude"
     assert b.issues[14].status == "needs_human"
     assert sorted(b.pulls) == [19, 20]                    # non-meld branch excluded
     pr = b.pulls[20]
@@ -141,3 +141,12 @@ def test_missing_commit_statuses_permission_degrades_to_an_empty_status_map(boar
     fake.rate_limit_next = True                            # a rate limit is not a permissions problem and still propagates
     with pytest.raises(RateLimited):
         build_board(gh, CFG2, {}, {}, errors=errors)
+
+
+def test_build_board_fills_the_bot_logins_and_reads_claims_from_labels(tmp_path):
+    from tests.productfixtures import make_product
+    from meld.status import build_status
+    fake, ctx, repo, origin = make_product(tmp_path)
+    _, board = build_status(ctx)
+    assert board.bots == {"claude": "meld-claude-bot", "codex": "meld-codex-bot"}
+    assert board.issues[12].claimed_by == "claude" and board.issues[13].claimed_by == "codex" and board.issues[11].claimed_by is None

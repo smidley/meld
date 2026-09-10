@@ -188,9 +188,6 @@ def setup(gh: GitHub, *, repo: str, goal: str, milestone_title: str, human: str,
             f"or set private_key_file = \"<path>\" in {config_path.name} instead of private_key_env",
             "run `meld doctor` to verify: it prints the App's bot login to put in [groups.<g>].bot if it differs",
             "run `meld run <group>` for each group, then `meld chat`",
-            "known limitation: GitHub does not let an App's bot user be an issue assignee, and the claim lock is the assignee -- "
-            "an App group can review, audit and merge, but cannot claim and build until plan 6b's App-compatible claim lock "
-            "(spec 21, Carried into plan 6); `meld doctor`'s assignable:<group> check reports this",
         ]
     else:
         next_steps = [f"create one GitHub machine account per group named in {config_path.name} and add each as a collaborator on {repo}",

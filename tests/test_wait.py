@@ -45,8 +45,7 @@ def test_returns_when_board_changes(tmp_path):
     issues = json.loads((__import__("pathlib").Path(__file__).parent / "fixtures/board1/issues.json").read_text())
     for i in issues:
         if i["number"] == 11:
-            i["labels"] = [l for l in i["labels"] if l["name"] != "meld:ready"] + [{"name": "meld:in-progress"}]
-            i["assignees"] = [{"login": "meld-codex-bot"}]
+            i["labels"] = [l for l in i["labels"] if l["name"] != "meld:ready"] + [{"name": "meld:in-progress"}, {"name": "meld:claimed-by:codex"}]
 
     def sleep_then_mutate(s):
         clock.sleep(s)
@@ -137,8 +136,7 @@ def test_filter_ignores_other_kinds_but_still_saves_snapshot(tmp_path):
     issues = _fixture("issues.json")
     for i in issues:
         if i["number"] == 11:
-            i["labels"] = [l for l in i["labels"] if l["name"] != "meld:ready"] + [{"name": "meld:in-progress"}]
-            i["assignees"] = [{"login": "meld-codex-bot"}]
+            i["labels"] = [l for l in i["labels"] if l["name"] != "meld:ready"] + [{"name": "meld:in-progress"}, {"name": "meld:claimed-by:codex"}]
 
     def sleep_then_mutate(s):
         clock.sleep(s)

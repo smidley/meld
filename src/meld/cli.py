@@ -145,7 +145,7 @@ def _run_action(ctx: click.Context, fn) -> None:
 @click.argument("number", type=int)
 @click.pass_context
 def claim(ctx: click.Context, number: int) -> None:
-    """Claim a ready issue by assigning this party (first assignment wins)."""
+    """Claim a ready issue by labelling it meld:claimed-by:<group> (first label wins)."""
     c = _load(ctx)
     _run_action(ctx, lambda: do_claim(c, number))
 

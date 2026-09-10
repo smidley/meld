@@ -63,13 +63,13 @@ def test_tick_releases_another_groups_expired_lease(tmp_path):
     comments = fixture("comments_10.json") + [{"id": 120, "user": {"login": "meld-codex-bot"}, "created_at": "2026-09-03T09:30:00Z",
                                                "body": "[codex:pm] LEASE #13\n\nuntil: 2026-09-03T11:00:00Z\nrun: codex/#13"}]
     fake.route("GET", R + "issues/10/comments", comments)
-    fake.route("DELETE", R + "issues/13/assignees", {})
+    fake.route("DELETE", R + "issues/13/labels/meld%3Aclaimed-by%3Acodex", {})
     fake.route("POST", R + "issues/13/labels", [])
     fake.route("DELETE", R + "issues/13/labels/meld%3Ain-progress", [])
     result = tick(ctx, now=NOW, env={})
     assert result["expired"] == [13]
     mutations = [(c.method, c.endpoint) for c in fake.calls if c.method != "GET" and "issues/13" in c.endpoint]
-    assert ("DELETE", R + "issues/13/assignees") in mutations and ("POST", R + "issues/13/labels") in mutations
+    assert ("DELETE", R + "issues/13/labels/meld%3Aclaimed-by%3Acodex") in mutations and ("POST", R + "issues/13/labels") in mutations
     # Housekeeping's own sweeps (Task 8) may post again afterward (e.g. IGNORED-COMMENT on the fixture's
     # ever-unauthorized comment 103), so the EXPIRED post is no longer necessarily the last one -- find it directly.
     expired_post = next(c for c in coordination_posts(fake) if c.startswith("[claude:pm] EXPIRED"))
@@ -93,7 +93,7 @@ def test_tick_posts_exactly_one_framework_comment_when_it_reclaims_an_expired_le
     comments = fixture("comments_10.json") + [{"id": 120, "user": {"login": "meld-codex-bot"}, "created_at": "2026-09-03T09:30:00Z",
                                                "body": "[codex:pm] LEASE #13\n\nuntil: 2026-09-03T11:00:00Z\nrun: codex/#13"}]
     fake.route("GET", R + "issues/10/comments", comments)
-    fake.route("DELETE", R + "issues/13/assignees", {})
+    fake.route("DELETE", R + "issues/13/labels/meld%3Aclaimed-by%3Acodex", {})
     fake.route("POST", R + "issues/13/labels", [])
     fake.route("DELETE", R + "issues/13/labels/meld%3Ain-progress", [])
     assert tick(ctx, now=NOW, env={})["expired"] == [13]
@@ -119,16 +119,16 @@ def test_a_stale_lease_cannot_release_another_groups_fresh_claim(tmp_path):
     comments = fixture("comments_10.json") + [{"id": 120, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T09:30:00Z",
                                                "body": "[claude:pm] LEASE #13\n\nuntil: 2026-09-03T11:00:00Z\nrun: claude/#13"}]
     fake.route("GET", R + "issues/10/comments", comments)
-    fake.route("DELETE", R + "issues/13/assignees", {})
+    fake.route("DELETE", R + "issues/13/labels/meld%3Aclaimed-by%3Acodex", {})
     fake.route("POST", R + "issues/13/labels", [])
     fake.route("DELETE", R + "issues/13/labels/meld%3Ain-progress", [])
     assert tick(codex, now=NOW, env={})["expired"] == []                       # codex's own claim is not "expired"
     _, board = build_status(claude)
     assert board.leases == {} and issue_refusal(board, claude.cfg, claude.actor(), Verb.RELEASE, board.issues[13], claude.models).rule == \
-        "issue is not assigned to meld-claude-bot"
-    with pytest.raises(Refused, match="not assigned to meld-claude-bot"):
+        "issue is not claimed by claude"
+    with pytest.raises(Refused, match="not claimed by claude"):
         release(claude, 13)                                             # claude cannot cite its own dead lease
-    assert not [c for c in fake.calls if c.method == "DELETE" and c.endpoint == R + "issues/13/assignees"]
+    assert not [c for c in fake.calls if c.method == "DELETE" and c.endpoint == R + "issues/13/labels/meld%3Aclaimed-by%3Acodex"]
 
 
 def test_tick_notifies_needs_human_items_when_a_webhook_is_configured(tmp_path):

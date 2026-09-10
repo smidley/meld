@@ -133,6 +133,16 @@ def test_reserved_and_malformed_group_names_are_rejected(tmp_path):
                                           .replace("[groups.codex.", '[groups."my group".')))
 
 
+@pytest.mark.parametrize("name", ["Claude", "my group", "a/b", "x" * 33, "-lead"])
+def test_group_names_must_be_lowercase_label_and_path_safe(name, tmp_path):
+    """A group name becomes a meld:claimed-by:<group> GitHub label (case-insensitive for uniqueness) and a worktree
+    path component, so it must be lowercase, path-safe, and short enough that the label prefix plus the name still
+    fits GitHub's 50-character label limit."""
+    with pytest.raises(ConfigError, match="group names must match"):
+        load_config(write(tmp_path, MINIMAL.replace("[groups.codex]", f'[groups."{name}"]')
+                                          .replace("[groups.codex.", f'[groups."{name}".')))
+
+
 def test_git_identity_and_worker_lease_settings(tmp_path):
     text = (MINIMAL + """
 [worker]

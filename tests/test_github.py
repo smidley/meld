@@ -61,18 +61,12 @@ def test_list_comments_passes_since(tmp_path):
 
 def test_mutations_send_json_bodies(tmp_path):
     fake, gh = make(tmp_path)
-    fake.route("POST", "repos/acme/widgets/issues/7/assignees", {"assignees": [{"login": "b"}]})
-    fake.route("DELETE", "repos/acme/widgets/issues/7/assignees", {"assignees": []})
     fake.route("POST", "repos/acme/widgets/issues/7/labels", [{"name": "meld:ready"}])
     fake.route("POST", "repos/acme/widgets/issues/7/comments", {"id": 99, "html_url": "u"})
-    gh.add_assignees(7, ["b"])
-    gh.remove_assignees(7, ["b"])
     gh.add_labels(7, ["meld:ready"])
     assert gh.create_comment(7, "hi")["id"] == 99
-    assert fake.calls[0].body == {"assignees": ["b"]}
-    assert fake.calls[1].method == "DELETE"
-    assert fake.calls[2].body == {"labels": ["meld:ready"]}
-    assert fake.calls[3].body == {"body": "hi"}
+    assert fake.calls[0].body == {"labels": ["meld:ready"]}
+    assert fake.calls[1].body == {"body": "hi"}
 
 
 def test_remove_label_ignores_404(tmp_path):
@@ -315,6 +309,17 @@ def test_create_label_normalises_color(board1_gh):
     assert result["color"] == "cccccc"
     body = [c for c in fake.calls if c.method == "POST" and "labels" in c.endpoint][-1].body
     assert body == {"name": "meld:planned", "color": "cccccc", "description": ""}
+
+
+def test_ensure_label_creates_once_and_treats_422_as_existing(board1_gh):
+    fake, gh = board1_gh
+    fake.route("POST", "repos/acme/widgets/labels", {"name": "meld:claimed-by:claude"}, status=201)
+    assert gh.ensure_label("meld:claimed-by:claude", "c5def5", "Claimed by claude") is True
+    fake.route("POST", "repos/acme/widgets/labels", {"message": "Validation Failed"}, status=422)
+    assert gh.ensure_label("meld:claimed-by:claude", "c5def5", "Claimed by claude") is False
+    fake.route("POST", "repos/acme/widgets/labels", {"message": "boom"}, status=500)
+    with pytest.raises(GitHubError):
+        gh.ensure_label("meld:claimed-by:claude", "c5def5")
 
 
 def test_get_contents_falls_back_to_the_blob_endpoint_for_large_files(board1_gh):

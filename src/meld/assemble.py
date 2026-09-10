@@ -11,12 +11,12 @@ from meld.board import (
     PullRequest,
     Review,
     RunRecord,
-    assigned_leases,
     derive_audits,
     derive_challenges,
     derive_halted,
     derive_leases,
     derive_phase,
+    held_leases,
     utc_now_iso,
 )
 from meld.config import Config
@@ -73,7 +73,7 @@ def issue_number_from_pr(body: str, head_ref: str) -> int | None:
 def _issue(raw: dict) -> Issue:
     return Issue(
         number=raw["number"], title=raw.get("title", ""), body=raw.get("body") or "", labels=_labels(raw),
-        assignees=tuple(a["login"] for a in raw.get("assignees", [])), state=raw.get("state", "open"),
+        state=raw.get("state", "open"),
         milestone=(raw.get("milestone") or {}).get("number"), created_at=raw.get("created_at", ""),
         updated_at=raw.get("updated_at", ""),
     )
@@ -176,7 +176,8 @@ def build_board(gh: GitHub, cfg: Config, runs: dict[str, dict[int, RunRecord]], 
         repo=gh.repo, milestone=milestone, coordination_issue=coordination, phase=derive_phase(_labels(coord_raw)),
         halted=derive_halted(comments), issues=issues, pulls=pulls, comments=comments, runs=runs, spend=spend,
         open_challenges=frozenset(challenges), ignored_comments=ignored,
-        leases=assigned_leases(derive_leases(comments), issues, {g.name: g.bot for g in cfg.groups.values()}),
+        leases=held_leases(derive_leases(comments), issues),
         plan_text=description, now=now or utc_now_iso(),
         challenges=challenges, audits=derive_audits(comments),
+        bots={g.name: g.bot for g in cfg.groups.values()},
     )

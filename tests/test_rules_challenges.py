@@ -20,11 +20,11 @@ def with_challenge(board, ch=OPEN):
 
 def test_challenged_party_resolution():
     pr = mk_pr(20, 13, committer="meld-codex-bot", author="meld-claude-bot")
-    issue = mk_issue(12, status="in_progress", assignees=("meld-claude-bot",))
+    issue = mk_issue(12, status="in_progress", claimed_by="claude")
     proposal = mk_comment(CFG2, 1, "meld-codex-bot", "[codex] PROPOSE plan-1\n\nsplit the work")
     b = mk_board(CFG2, issues=[issue], pulls=[pr], comments=[proposal])
     assert challenged_party(b, CFG2, "#20") == "codex"       # the head committer's party answers for a PR
-    assert challenged_party(b, CFG2, "#12") == "claude"      # the assignee's group answers for an issue
+    assert challenged_party(b, CFG2, "#12") == "claude"      # the claim holder's group answers for an issue
     assert challenged_party(b, CFG2, "plan-1") == "codex"    # the proposer answers for an agreement ref
     assert challenged_party(b, CFG2, "ask-9") is None
     unknown = mk_pr(21, 14, committer=None, author="meld-claude-bot")
@@ -56,3 +56,12 @@ def test_challenge_closers_are_restricted():
     assert challenge_rule(b3, CFG3, GEMINI_ORCH, "dismiss", "#20") is None                    # a third group may decide
     assert challenge_rule(b3, CFG3, GEMINI_ORCH, "retract", "#20") == "only the challenger (claude) or the challenged party (codex) or a human may RETRACT"
     assert challenge_rule(b, CFG2, HUMAN, "uphold", "#21") == "#21 has no open CHALLENGE"
+
+
+def test_challenged_party_of_an_issue_is_its_claim_holder():
+    board = mk_board(CFG2, issues=[mk_issue(12, status="in_progress", claimed_by="codex"),
+                                    mk_issue(13, status="in_progress", claimed_by="human"),
+                                    mk_issue(14, status="in_progress", extra_labels=("meld:claimed-by:claude", "meld:claimed-by:codex"))])
+    assert challenged_party(board, CFG2, "#12") == "codex"
+    assert challenged_party(board, CFG2, "#13") is None      # a human holder is not a group
+    assert challenged_party(board, CFG2, "#14") is None      # contested: nobody owns it

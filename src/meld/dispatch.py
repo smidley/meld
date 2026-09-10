@@ -594,18 +594,18 @@ def _read_outcome(rec: RunRecord) -> tuple[WorkerResult | None, str | None]:
 
 def _collect_build(ctx, board: Board, group: GroupConfig, rec: RunRecord, issue) -> dict:
     number = rec.issue
-    if issue.status != "in_progress" or group.bot not in issue.assignees:
+    if issue.status != "in_progress" or issue.claimed_by != group.name:
         # The claim moved on while the worker ran (our lease expired and another group re-claimed, a human
-        # released or re-labelled): the run is over, but nothing of it may reach GitHub. The worktree stays
-        # for inspection, detached so the branch name is free for whoever now holds the issue (git refuses
-        # to check out a branch that another worktree of the same clone has checked out).
-        holder = ", ".join(issue.assignees) or "nobody"
+        # released or re-labelled, or the issue is contested): the run is over, but nothing of it may reach GitHub.
+        # The worktree stays for inspection, detached so the branch name is free for whoever now holds the issue
+        # (git refuses to check out a branch that another worktree of the same clone has checked out).
+        holder = ", ".join(issue.claimants) or "nobody"
         wt = Path(rec.worktree)
         if wt.is_dir():
             detach_head(wt)
         ctx.store.write_run(replace(rec, collected=True))
         return {"collected": number, "outcome": "superseded",
-                "reason": f"issue is {issue.status} and assigned to {holder}; {group.name} no longer holds it"}
+                "reason": f"issue is {issue.status} and claimed by {holder}; {group.name} no longer holds it"}
     wt = Path(rec.worktree)
     result, reason = _read_outcome(rec)
     tail = tail_lines(Path(rec.log_path), ctx.cfg.worker_log_tail_lines)

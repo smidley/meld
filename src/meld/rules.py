@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from meld.board import Board, Issue, PullRequest
+from meld.board import HUMAN_CLAIMANT, Board, Issue, PullRequest
 from meld.config import Config, Party
 from meld.grammar import agreement_for
 from meld.models import SIZES, ModelRegistry, size_fits
@@ -90,8 +90,12 @@ def _claim(board: Board, cfg: Config, actor: Actor, issue: Issue, models: ModelR
         return "only a PM or a human may claim"
     if issue.status != "ready":
         return f"issue is {issue.status}, not ready"
-    if issue.assignees:
-        return f"already claimed by {', '.join(issue.assignees)}"
+    # Decision 11: the caller's own stale claim label does not block its re-claim. A PM killed between claim's label
+    # add and its status swap leaves meld:ready plus its own label; on the next loop the add is a no-op, the re-read
+    # shows exactly its own label, and the swap proceeds, so the crashed PM self-heals. Any other party's label refuses.
+    own = HUMAN_CLAIMANT if actor.is_human else actor.group
+    if any(g != own for g in issue.claimants):
+        return f"already claimed by {', '.join(issue.claimants)}"
     if actor.is_human:
         return None
     group = cfg.groups[actor.group]  # type: ignore[index]
@@ -99,7 +103,7 @@ def _claim(board: Board, cfg: Config, actor: Actor, issue: Issue, models: ModelR
         return "issue has no worker: label"
     if issue.worker not in actor.roster:
         return f"worker type '{issue.worker}' is not in {group.name}'s roster"
-    n = board.in_progress_count(group.bot)
+    n = board.in_progress_count(group.name)
     if n >= group.concurrency:
         return f"{group.name} is at its concurrency cap ({n}/{group.concurrency})"
     if issue.model is None:
@@ -122,8 +126,9 @@ def _dispatch(board: Board, cfg: Config, actor: Actor, issue: Issue, models: Mod
     group = cfg.groups[actor.group]  # type: ignore[index]
     if issue.status != "in_progress":
         return f"issue is {issue.status}, not in-progress"
-    if group.bot not in issue.assignees:
-        return f"issue is not assigned to {group.bot}"
+    if issue.claimed_by != group.name:
+        return (f"issue is claimed by {', '.join(issue.claimants)}, not {group.name}" if issue.claimants
+                else f"issue is not claimed by {group.name}")
     run = board.run_for(group.name, issue.number)
     if run is not None and (run.alive or not run.collected):
         return "a worker run already exists for this issue (running or uncollected)"
@@ -166,16 +171,20 @@ def lease_rule(board: Board, issue: Issue) -> str | None:
 
 
 def _release(board: Board, cfg: Config, actor: Actor, issue: Issue) -> str | None:
-    if issue.status not in ("in_progress", "blocked"):
-        return f"issue is {issue.status}; release is only legal from in-progress or blocked"
+    # Decision 11: a `ready` issue carrying a claim label is an orphan claim that never reached in-progress (a crash
+    # between claim's label add and its status swap). Release reaches it so it is recoverable through meld: `actions.
+    # release` sheds every claim label, re-adds meld:ready as a no-op, and finds no in-progress/blocked label to remove.
+    stale = issue.status == "ready" and bool(issue.claimants)
+    if issue.status not in ("in_progress", "blocked") and not stale:
+        return f"issue is {issue.status}; release is only legal from in-progress or blocked, or from ready with a stale claim label"
     if actor.is_human:
         return None
     group = cfg.groups[actor.group]  # type: ignore[index]
-    if group.bot in issue.assignees:
+    if group.name in issue.claimants:
         return None
     if actor.is_pm and lease_rule(board, issue):
         return None
-    return f"issue is not assigned to {group.bot}"
+    return f"issue is not claimed by {group.name}"
 
 
 def _reopen(board: Board, cfg: Config, actor: Actor, issue: Issue) -> str | None:
@@ -466,19 +475,17 @@ CHALLENGE_ACTIONS = ("open", "evidence", "retract", "uphold", "dismiss")
 
 
 def challenged_party(board: Board, cfg: Config, ref: str) -> str | None:
-    """Who must answer a challenge on `ref`: a PR's head committer's party (else its author's), an issue's first
-    configured assignee's party, or an agreement ref's proposer. None when nobody owns the claim."""
+    """Who must answer a challenge on `ref`: a PR's head committer's party (else its author's), an issue's
+    claim holder's group (never a human holder or a contested issue), or an agreement ref's proposer. None
+    when nobody owns the claim."""
     if ref.startswith("#") and ref[1:].isdigit():
         n = int(ref[1:])
         if n in board.pulls:
             pr = board.pulls[n]
             return committer_party(cfg, pr) or party_of_login(cfg, pr.author)
         if n in board.issues:
-            for login in board.issues[n].assignees:
-                party = party_of_login(cfg, login)
-                if party:
-                    return party
-            return None
+            holder = board.issues[n].claimed_by
+            return holder if holder in cfg.groups else None
     return agreement_for(board.comments, ref, cfg).proposer
 
 

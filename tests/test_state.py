@@ -48,7 +48,7 @@ def test_snapshot_round_trip(tmp_path):
 
 def test_digest_and_diff_name_what_changed():
     b1 = mk_board(CFG2, issues=[mk_issue(11)], pulls=[mk_pr(20, 13)], runs={"claude": {12: mk_run("claude", 12)}, "codex": {}})
-    b2 = mk_board(CFG2, issues=[mk_issue(11, status="in_progress", assignees=("meld-claude-bot",))],
+    b2 = mk_board(CFG2, issues=[mk_issue(11, status="in_progress")],
                   pulls=[mk_pr(20, 13, approvals=("meld-codex-bot",))],
                   runs={"claude": {12: mk_run("claude", 12, alive=False)}, "codex": {}}, halted=True)
     d1, d2 = board_digest(b1), board_digest(b2)
@@ -174,7 +174,7 @@ def test_run_record_extensions_round_trip(tmp_path):
 
 def test_diff_changes_are_structured_and_filterable():
     b1 = mk_board(CFG2, issues=[mk_issue(11)], pulls=[mk_pr(20, 13)])
-    b2 = mk_board(CFG2, issues=[mk_issue(11, status="in_progress", assignees=("meld-claude-bot",))],
+    b2 = mk_board(CFG2, issues=[mk_issue(11, status="in_progress")],
                   pulls=[mk_pr(20, 13, approvals=("meld-codex-bot",))], halted=True)
     d1, d2 = board_digest(b1), board_digest(b2)
     changes = diff_changes(d1, d2)
@@ -187,6 +187,21 @@ def test_diff_changes_are_structured_and_filterable():
     initial = diff_changes(None, d2)
     assert [c.kind for c in initial] == ["snapshot"] and initial[0].text == "initial snapshot"
     assert filter_changes(initial, {"comments"}) == initial
+
+
+def test_a_claim_move_at_the_same_status_is_reported_as_a_change():
+    """The claim can move without the status moving (a lost race undone, a re-claim after a release inside one
+    poll interval), so `board_digest` snapshots `claimants` and `diff_changes` falls through to its labels branch."""
+    b1 = mk_board(CFG2, issues=[mk_issue(12, status="in_progress", claimed_by="claude")])
+    b2 = mk_board(CFG2, issues=[mk_issue(12, status="in_progress", claimed_by="codex")])
+    d1, d2 = board_digest(b1), board_digest(b2)
+    assert d1["issues"]["12"]["claimants"] == ["claude"] and d2["issues"]["12"]["claimants"] == ["codex"]
+    changes = diff_changes(d1, d2)
+    assert [c.kind for c in changes] == ["issue"]
+    assert changes[0].ref == "#12" and changes[0].text == "issue #12: labels or claim changed"
+    assert changes[0].before["claimants"] == ["claude"] and changes[0].after["claimants"] == ["codex"]
+    assert diff_digest(d1, d2) == ["issue #12: labels or claim changed"]
+    assert diff_changes(d1, d1) == []
 
 
 def test_write_run_archives_a_collected_record_before_a_new_run_and_spend_counts_both(tmp_path):

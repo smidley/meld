@@ -210,12 +210,6 @@ class GitHub:
         resp = self.get(self._r(f"commits/{sha}/status"), {"per_page": 100})
         return {s["context"]: s["state"] for s in (resp or {}).get("statuses", [])}
 
-    def add_assignees(self, number: int, logins: list[str]) -> dict:
-        return self.post(self._r(f"issues/{number}/assignees"), {"assignees": logins})
-
-    def remove_assignees(self, number: int, logins: list[str]) -> dict:
-        return self.delete(self._r(f"issues/{number}/assignees"), {"assignees": logins})
-
     def add_labels(self, number: int, labels: list[str]) -> list:
         return self.post(self._r(f"issues/{number}/labels"), {"labels": labels})
 
@@ -319,6 +313,17 @@ class GitHub:
 
     def create_label(self, name: str, color: str, description: str = "") -> dict:
         return self.post(self._r("labels"), {"name": name, "color": color.lstrip("#"), "description": description})
+
+    def ensure_label(self, name: str, color: str, description: str = "") -> bool:
+        """Create `name` if the repository lacks it; True when created. GitHub answers 422 when it already exists, which is
+        success here, so callers need no read first (one call per claim, idempotent)."""
+        try:
+            self.create_label(name, color, description)
+        except GitHubError as e:
+            if e.status == 422:
+                return False
+            raise
+        return True
 
     def search_issues(self, query: str) -> list[dict]:
         resp = self.get("search/issues", {"q": query}, use_cache=False)

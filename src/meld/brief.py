@@ -19,6 +19,13 @@ VERDICTS = ("approve", "request-changes", "push-fix", "pass", "fail")
 _AGENT_FILES = ("CLAUDE.md", "AGENTS.md", ".github/copilot-instructions.md")
 _PATH_TOKEN_RE = re.compile(r"`([A-Za-z0-9_./-]+\.[A-Za-z0-9]+)`")
 _FILES_HEADING_RE = re.compile(r"^\s*(?:#+\s*)?files:?\s*$", re.IGNORECASE)
+# How memory records that it has been overtaken. A superseded decision file carries the status trailer
+# `meld decide --supersedes` appended to it; a superseded lesson is named by the FIRST BODY LINE of the later entry
+# that replaced it (lessons.md is append-only, so the newer entry is the only place the link can be written).
+# Both live here rather than in memory.py, which imports this module: `_decision_hit`, `_lesson_hits` and
+# `decision_titles` are what read them, and memory.py re-exports both names for its own callers.
+STATUS_RE = re.compile(r"^Status: superseded by (\S+) on (\d{4}-\d{2}-\d{2})$", re.M)
+SUPERSEDES_RE = re.compile(r"^Supersedes: (.+)$", re.M)
 STANDARDS_FILE = ".meld/STANDARDS.md"
 MAX_SKILLS = 30
 MAX_SKILLS_USED = 30
@@ -83,11 +90,16 @@ def file_hints(issue_body: str) -> list[str]:
 
 
 def decision_titles(repo_root: Path) -> list[str]:
-    d = repo_root / ".meld" / "decisions"
     titles: list[str] = []
+    d = repo_root / ".meld" / "decisions"
     if d.is_dir():
         for f in sorted(d.glob("*.md")):
-            for line in f.read_text().splitlines():
+            text = f.read_text()
+            if STATUS_RE.search(text):
+                # Superseded, and memory is superseded rather than edited, so the file is still there: only decisions
+                # in force belong under a brief's "## Decisions in force", or a worker is bound by two contradictory ones.
+                continue
+            for line in text.splitlines():
                 if line.startswith("# "):
                     titles.append(line[2:].strip())
                     break
@@ -135,17 +147,29 @@ def _decision_hit(path: str, text: str, terms: list[str]) -> dict | None:
     if not score:
         return None
     title = next((l[2:].strip() for l in text.splitlines() if l.startswith("# ")), Path(path).stem)
-    return {"kind": "decision", "path": path, "title": title, "score": score, "snippet": text.strip()[:300]}
+    m = STATUS_RE.search(text)
+    return {"kind": "decision", "path": path, "title": title, "score": score, "snippet": text.strip()[:300],
+            "status": "superseded" if m else "active", "superseded_by": m.group(1) if m else None}
+
+
+def _first_body_line(block: str) -> str:
+    """The first non-blank line of a lessons entry after its `## ` heading -- where a supersession is recorded."""
+    return next((l.strip() for l in block.splitlines()[1:] if l.strip()), "")
 
 
 def _lesson_hits(path: str, text: str, terms: list[str]) -> list[dict]:
+    blocks = [b for b in re.split(r"\n(?=## )", text) if b.startswith("## ")]
+    headings = [b.splitlines()[0][3:].strip() for b in blocks]
     hits: list[dict] = []
-    for block in re.split(r"\n(?=## )", text):
-        if not block.startswith("## "):
-            continue
+    for i, (block, heading) in enumerate(zip(blocks, headings)):
+        # A lesson is superseded by a LATER entry whose first body line names its heading; earlier entries can never
+        # supersede a later one, and the relation is read from the whole file, not only from the entries that scored.
+        replaced_by = next((headings[j] for j in range(i + 1, len(blocks))
+                            if (m := SUPERSEDES_RE.match(_first_body_line(blocks[j]))) and m.group(1).strip() == heading), None)
         score = sum(1 for t in terms if t in block.lower())
         if score:
-            hits.append({"kind": "lesson", "path": path, "title": block.splitlines()[0][3:].strip(), "score": score, "snippet": block.strip()[:300]})
+            hits.append({"kind": "lesson", "path": path, "title": heading, "score": score, "snippet": block.strip()[:300],
+                         "status": "superseded" if replaced_by else "active", "superseded_by": replaced_by})
     return hits
 
 
@@ -208,8 +232,11 @@ def _local_hits(repo_root: Path, terms: list[str], ref: str | None = None) -> li
 
 
 def recall_snippets(repo_root: Path, text: str, limit: int = 3, ref: str | None = None) -> list[str]:
-    """The local (non-GitHub) part of `memory.recall`, without a coordination-issue search: used by briefs."""
-    hits = sorted(_local_hits(repo_root, _terms(text), ref=ref), key=lambda h: (-h["score"], h["title"]))
+    """The local (non-GitHub) part of `memory.recall`, without a coordination-issue search: used by briefs.
+    Superseded notes are dropped BEFORE the limit applies, so an overtaken decision or lesson can never crowd the
+    one that replaced it out of a brief's `## Relevant memory`."""
+    hits = [h for h in _local_hits(repo_root, _terms(text), ref=ref) if h.get("status") != "superseded"]
+    hits.sort(key=lambda h: (-h["score"], h["title"]))
     return [h["snippet"] for h in hits[:limit]]
 
 

@@ -325,21 +325,23 @@ def tag(ctx: click.Context, number: int, worker: str | None, model: str | None, 
 
 @main.command()
 @click.argument("ref")
+@click.option("--supersedes", default=None, help="Decision file this one supersedes, e.g. 0007-old.md")
 @click.pass_context
-def decide(ctx: click.Context, ref: str) -> None:
+def decide(ctx: click.Context, ref: str, supersedes: str | None) -> None:
     """Record a verified [joint] DECISION as .meld/decisions/NNNN-<slug>.md through a memory PR."""
     c = _load(ctx)
-    _run_action(ctx, lambda: do_decide(c, ref))
+    _run_action(ctx, lambda: do_decide(c, ref, supersedes=supersedes))
 
 
 @main.command()
 @click.argument("ref")
 @click.option("-m", "--message", "message", required=True, help="What went wrong, what fixed it, what to check next time.")
+@click.option("--supersedes", default=None, help="Heading of the lesson this one supersedes, e.g. '2026-09-01 — #9 (codex)'")
 @click.pass_context
-def remember(ctx: click.Context, ref: str, message: str) -> None:
+def remember(ctx: click.Context, ref: str, message: str, supersedes: str | None) -> None:
     """Append a lesson about a resolved issue or PR to .meld/memory/lessons.md through a memory PR."""
     c = _load(ctx)
-    _run_action(ctx, lambda: do_remember(c, ref, message))
+    _run_action(ctx, lambda: do_remember(c, ref, message, supersedes=supersedes))
 
 
 @main.command()

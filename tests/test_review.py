@@ -390,24 +390,30 @@ def _contents(text):
     return {"encoding": "base64", "content": base64.b64encode(text.encode()).decode()}
 
 
-def memory_pr_on_board(fake, repo, path, text, number=40, head="mem0001", kind="decision", ref="dec-1", digest=None, base=None):
+def memory_pr_on_board(fake, repo, path, text, number=40, head="mem0001", kind="decision", ref="dec-1", digest=None, base=None, extra=None):
     """A memory PR whose changed file reads `text` at `head`; on the default branch the same path reads `base` (absent
     when None). Contents are routed per `ref` query parameter, never by path alone, so a verifier that fetched the
-    wrong ref could not be served the right text by accident."""
+    wrong ref could not be served the right text by accident.
+
+    `extra` adds further changed files as `{path: (head_text, base_text)}` -- a supersession PR carries the file it
+    replaces alongside the new decision. The routed `files` list is sorted by filename, exactly as GitHub lists a
+    PR's changed files, so the older `0001-...md` arrives ahead of the `0002-...md` that supersedes it and a
+    verifier that assumed `files[0]` was the new decision would be caught."""
     pulls = fixture("pulls.json") + [{"number": number, "title": f"Decision {ref}", "state": "open", "merged_at": None,
                                       "user": {"login": "meld-claude-bot"}, "head": {"ref": f"meld/memory-{ref}", "sha": head}, "labels": [],
                                       "body": f"Records.\n\nmeld-memory: {kind} {ref} {digest or content_hash(text)}\nverified-by: x"}]
     fake.route("GET", R + "pulls", pulls)
     fake.route("GET", R + f"pulls/{number}/reviews", [])
     fake.route("GET", R + f"pulls/{number}/commits", [{"sha": head, "author": {"login": "meld-claude-bot"}, "committer": {"login": "meld-claude-bot"}}])
-    fake.route("GET", R + f"pulls/{number}/files", [{"filename": path}])
+    fake.route("GET", R + f"pulls/{number}/files", [{"filename": f} for f in sorted([path, *(extra or {})])])
     fake.route("GET", R + f"commits/{head}/check-runs", fixture("checkruns_abc123.json"))
     fake.route("GET", R + f"commits/{head}/status", {"state": "pending", "statuses": []})
-    fake.route("GET", R + f"contents/{path}", _contents(text), query={"ref": head})
-    if base is None:
-        fake.route("GET", R + f"contents/{path}", {"message": "Not Found"}, status=404, query={"ref": "main"})
-    else:
-        fake.route("GET", R + f"contents/{path}", _contents(base), query={"ref": "main"})
+    for p, (at_head, at_base) in {path: (text, base), **(extra or {})}.items():
+        fake.route("GET", R + f"contents/{p}", _contents(at_head), query={"ref": head})
+        if at_base is None:
+            fake.route("GET", R + f"contents/{p}", {"message": "Not Found"}, status=404, query={"ref": "main"})
+        else:
+            fake.route("GET", R + f"contents/{p}", _contents(at_base), query={"ref": "main"})
     fake.route("POST", R + f"pulls/{number}/reviews", {"id": 601, "html_url": "r601"})
     fake.route("POST", R + f"statuses/{head}", {"id": 79})
 
@@ -440,11 +446,14 @@ def test_review_requests_changes_on_a_tampered_memory_pr(tmp_path):
     assert "hash" in review(ctx, 40, now=NOW)["reason"]
 
 
-def genuine_decision(ctx):
+def genuine_agreement(ctx):
     from meld.grammar import agreement_for, parse_comment
+    return agreement_for([parse_comment(c, ctx.cfg) for c in fixture("comments_10.json") + DECISION_THREAD], "dec-1", ctx.cfg)
+
+
+def genuine_decision(ctx):
     from meld.memory import render_decision
-    parsed = [parse_comment(c, ctx.cfg) for c in fixture("comments_10.json") + DECISION_THREAD]
-    return render_decision("dec-1", agreement_for(parsed, "dec-1", ctx.cfg), "https://github.com/acme/widgets/issues/10#issuecomment-203", "2026-09-03")
+    return render_decision("dec-1", genuine_agreement(ctx), "https://github.com/acme/widgets/issues/10#issuecomment-203", "2026-09-03")
 
 
 def test_review_rejects_a_decision_file_that_is_not_the_rendering_byte_for_byte(tmp_path):
@@ -466,6 +475,63 @@ def test_review_rejects_a_decision_file_that_is_not_the_rendering_byte_for_byte(
         assert "- Date:" in review(ctx, 40, now=NOW)["reason"], bad
     memory_pr_on_board(fake, repo, ".meld/decisions/0001-dec-1.md", genuine.replace("- Date: 2026-09-03\n", ""), head="mem0009")
     assert "- Date:" in review(ctx, 40, now=NOW)["reason"]
+
+
+OLD_DECISION = "# Decision dec-0\n\n- Date: 2026-09-01\n- Agreed by: claude, codex\n- Source: https://x/1\n\n## Decision\n\nUse SQLite.\n"
+OLD_DECISION_PATH = ".meld/decisions/0001-dec-0.md"
+
+
+def supersession_pr(fake, ctx, repo, *, head="mem0001", supersedes="0001-dec-0.md", old_head=None, old_base=OLD_DECISION, third=None):
+    """The two-file memory PR `meld decide dec-1 --supersedes 0001-dec-0.md` opens: the new decision naming the file
+    it replaces, plus that file with exactly one appended status trailer."""
+    from meld.memory import render_decision, superseded_trailer
+    text = render_decision("dec-1", genuine_agreement(ctx), "https://github.com/acme/widgets/issues/10#issuecomment-203", "2026-09-03", supersedes)
+    at_head = OLD_DECISION + superseded_trailer("0002-dec-1.md", "2026-09-03") if old_head is None else old_head
+    extra = {OLD_DECISION_PATH: (at_head, old_base)}
+    if third is not None:
+        extra[third] = ("anything at all\n", None)
+    memory_pr_on_board(fake, repo, ".meld/decisions/0002-dec-1.md", text, head=head, extra=extra)
+
+
+def test_review_auto_approves_a_two_file_supersession_pr(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, group="codex")
+    with_thread(fake, DECISION_THREAD)
+    supersession_pr(fake, ctx, repo)
+    listed = [f["filename"] for f in fake.routes[("GET", R + "pulls/40/files")][1]]
+    assert listed == [OLD_DECISION_PATH, ".meld/decisions/0002-dec-1.md"]      # the new decision is NOT files[0]
+    out = review(ctx, 40, now=NOW)
+    assert out["event"] == "APPROVE" and out["memory"] == "decision"
+
+
+def test_review_rejects_a_tampered_supersession_pr(tmp_path):
+    from meld.memory import superseded_trailer
+    fake, ctx, repo, origin = make_product(tmp_path, group="codex")
+    with_thread(fake, DECISION_THREAD)
+    # the old file changed anywhere beyond the appended trailer
+    supersession_pr(fake, ctx, repo, head="mem0002",
+                    old_head=OLD_DECISION.replace("Use SQLite.", "Use MySQL.") + superseded_trailer("0002-dec-1.md", "2026-09-03"))
+    out = review(ctx, 40, now=NOW)
+    assert out["event"] == "REQUEST_CHANGES" and OLD_DECISION_PATH in out["reason"] and "trailer" in out["reason"]
+    # a trailer that names some other new file
+    supersession_pr(fake, ctx, repo, head="mem0003", old_head=OLD_DECISION + superseded_trailer("0009-elsewhere.md", "2026-09-03"))
+    out = review(ctx, 40, now=NOW)
+    assert out["event"] == "REQUEST_CHANGES" and OLD_DECISION_PATH in out["reason"]
+    # a third file riding along under the same marker
+    supersession_pr(fake, ctx, repo, head="mem0004", third="src/meld/rules.py")
+    out = review(ctx, 40, now=NOW)
+    assert out["event"] == "REQUEST_CHANGES" and "changes 3" in out["reason"]
+    # two files, but the new decision claims to supersede nothing
+    supersession_pr(fake, ctx, repo, head="mem0005", supersedes=None)
+    out = review(ctx, 40, now=NOW)
+    assert out["event"] == "REQUEST_CHANGES" and OLD_DECISION_PATH in out["reason"] and "Supersedes" in out["reason"]
+    # the named file is not the one the PR also changes
+    supersession_pr(fake, ctx, repo, head="mem0006", supersedes="0009-elsewhere.md")
+    out = review(ctx, 40, now=NOW)
+    assert out["event"] == "REQUEST_CHANGES" and OLD_DECISION_PATH in out["reason"]
+    # the old file is not on the default branch at all
+    supersession_pr(fake, ctx, repo, head="mem0007", old_base=None)
+    out = review(ctx, 40, now=NOW)
+    assert out["event"] == "REQUEST_CHANGES" and OLD_DECISION_PATH in out["reason"]
 
 
 def test_review_approves_exactly_what_decide_wrote(tmp_path):

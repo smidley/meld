@@ -225,6 +225,105 @@ def test_remember_appends_a_lesson_and_refuses_unresolved_items(tmp_path):
     assert text.startswith("# Lessons\n") and "pin the action version" in text
 
 
+ORIGINAL_0001 = ("# Decision dec-0\n\n- Date: 2026-09-01\n- Agreed by: claude, codex\n"
+                 "- Source: https://github.com/acme/widgets/issues/10#issuecomment-101\n\n## Decision\n\nUse SQLite for the ledger.\n")
+
+
+def seed_origin_decision(fake, repo, name, text):
+    """Put a decision file on origin's default branch and route its contents there: `decide --supersedes` reads the
+    file it is about to supersede through `ctx.gh.get_contents(path, default_branch)`, exactly as the verifier does."""
+    from tests.test_review import _contents
+    d = repo / ".meld" / "decisions"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / name).write_text(text)
+    sh(["git", "add", f"{DECISIONS_DIR}/{name}"], repo)
+    sh(["git", "commit", "-q", "-m", f"seed {name}"], repo)
+    sh(["git", "push", "-q", "origin", "main"], repo)
+    fake.route("GET", R + f"contents/{DECISIONS_DIR}/{name}", _contents(text), query={"ref": "main"})
+
+
+def test_decide_supersedes_writes_the_new_file_and_one_trailer_on_the_old(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, role="orchestrator")
+    with_thread(fake, DECISION_THREAD)
+    fake.route("POST", R + "pulls", {"number": 40, "html_url": "https://github.com/acme/widgets/pull/40"})
+    seed_origin_decision(fake, repo, "0001-dec-0.md", ORIGINAL_0001)
+    # The bad-`--supersedes` refusals run on dec-1 before its happy path: dec-2's own round ended in DISAGREE, so
+    # decide_rule refuses it long before any supersedes check could be reached.
+    with pytest.raises(Refused, match="not a decision file on main"):
+        decide(ctx, "dec-1", now=NOW, supersedes="0099-missing.md")
+    with pytest.raises(Refused, match="not a decision file on main"):
+        decide(ctx, "dec-1", now=NOW, supersedes="../../../etc/passwd")
+    assert not [c for c in fake.calls if c.method == "POST" and c.endpoint == R + "pulls"]
+    out = decide(ctx, "dec-1", now=NOW, supersedes="0001-dec-0.md")
+    assert out["supersedes"] == "0001-dec-0.md" and out["path"] == f"{DECISIONS_DIR}/0002-dec-1.md"
+    new_text = sh(["git", "show", f"origin/meld/memory-dec-1:{DECISIONS_DIR}/0002-dec-1.md"], repo) + "\n"
+    assert "- Supersedes: 0001-dec-0.md\n" in new_text and new_text.index("- Supersedes:") > new_text.index("- Source:")
+    assert content_hash(new_text) == out["hash"]
+    old_text = sh(["git", "show", f"origin/meld/memory-dec-1:{DECISIONS_DIR}/0001-dec-0.md"], repo) + "\n"
+    assert old_text == ORIGINAL_0001 + "\n---\nStatus: superseded by 0002-dec-1.md on 2026-09-03\n"
+    # both writes in one commit, and nothing else
+    changed = sh(["git", "show", "--name-only", "--format=", "origin/meld/memory-dec-1"], repo).split()
+    assert sorted(changed) == [f"{DECISIONS_DIR}/0001-dec-0.md", f"{DECISIONS_DIR}/0002-dec-1.md"]
+    pull = [c for c in fake.calls if c.method == "POST" and c.endpoint == R + "pulls"][0].body
+    assert MARKER_RE.search(pull["body"]).group(3) == out["hash"] and "supersedes: 0001-dec-0.md" in pull["body"]
+
+
+def test_decide_refuses_to_supersede_a_decision_that_is_already_superseded(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, role="orchestrator")
+    with_thread(fake, DECISION_THREAD)
+    fake.route("POST", R + "pulls", {"number": 40, "html_url": "https://github.com/acme/widgets/pull/40"})
+    seed_origin_decision(fake, repo, "0001-dec-0.md", ORIGINAL_0001 + "\n---\nStatus: superseded by 0002-other.md on 2026-09-02\n")
+    with pytest.raises(Refused, match="already superseded by 0002-other.md on 2026-09-02"):
+        decide(ctx, "dec-1", now=NOW, supersedes="0001-dec-0.md")
+    assert not [c for c in fake.calls if c.method == "POST" and c.endpoint == R + "pulls"]
+
+
+def test_remember_supersedes_names_the_older_entry_first(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path, role="orchestrator")
+    fake.route("POST", R + "pulls", {"number": 41, "html_url": "https://github.com/acme/widgets/pull/41"})
+    out = remember(ctx, "#13", "the new lesson", now=NOW, supersedes="2026-09-01 — #9 (codex)")
+    assert out["supersedes"] == "2026-09-01 — #9 (codex)"
+    pull = [c for c in fake.calls if c.method == "POST" and c.endpoint == R + "pulls"][0].body
+    text = sh(["git", "show", f"origin/{pull['head']}:{LESSONS_FILE}"], repo) + "\n"
+    entry = text[text.index("\n## "):]
+    assert entry == "\n## 2026-09-03 — #13 (claude)\n\nSupersedes: 2026-09-01 — #9 (codex)\n\nthe new lesson\n"
+    assert content_hash(entry) == out["hash"]
+
+
+def test_recall_marks_superseded_notes_and_briefs_skip_them(tmp_path):
+    from meld.brief import decision_titles
+    fake, ctx, repo, origin = make_product(tmp_path)
+    d = repo / ".meld" / "decisions"
+    d.mkdir(parents=True)
+    (d / "0001-dec-0.md").write_text("# Decision dec-0\n\n## Decision\n\nUse SQLite for the widgets ledger.\n"
+                                     "\n---\nStatus: superseded by 0002-dec-1.md on 2026-09-03\n")
+    (d / "0002-dec-1.md").write_text("# Decision dec-1\n\n- Supersedes: 0001-dec-0.md\n\n## Decision\n\n"
+                                     "Use PostgreSQL for the widgets ledger.\n")
+    (repo / ".meld" / "memory").mkdir()
+    (repo / ".meld" / "memory" / "lessons.md").write_text(
+        "# Lessons\n"
+        "\n## 2026-09-01 — #9 (codex)\n\nwidgets migrations need a lock timeout.\n"
+        "\n## 2026-09-03 — #13 (claude)\n\nSupersedes: 2026-09-01 — #9 (codex)\n\nwidgets migrations need a statement timeout too.\n")
+    sh(["git", "add", ".meld"], repo)
+    sh(["git", "commit", "-q", "-m", "seed memory"], repo)
+    sh(["git", "push", "-q", "origin", "main"], repo)
+    fake.route("GET", "search/issues", {"items": []})
+    hits = recall(ctx, "widgets")
+    by_title = {h["title"]: h for h in hits if h["kind"] in ("decision", "lesson")}
+    assert by_title["Decision dec-0"]["status"] == "superseded" and by_title["Decision dec-0"]["superseded_by"] == "0002-dec-1.md"
+    assert by_title["Decision dec-1"]["status"] == "active" and by_title["Decision dec-1"]["superseded_by"] is None
+    assert by_title["2026-09-01 — #9 (codex)"]["status"] == "superseded"
+    assert by_title["2026-09-01 — #9 (codex)"]["superseded_by"] == "2026-09-03 — #13 (claude)"
+    assert by_title["2026-09-03 — #13 (claude)"]["status"] == "active" and by_title["2026-09-03 — #13 (claude)"]["superseded_by"] is None
+    assert "dec-0" not in " ".join(decision_titles(ctx.repo_root)) and "dec-1" in " ".join(decision_titles(ctx.repo_root))
+    # Briefs get only what is still in force -- neither superseded note's own text, though the note that replaced
+    # the decision still says which file it replaced, which is the point of superseding rather than editing.
+    snippets = recall_snippets(ctx.repo_root, "widgets")
+    assert len(snippets) == 2
+    assert all("Decision dec-0" not in s and "SQLite" not in s and "lock timeout" not in s for s in snippets)
+    assert any("- Supersedes: 0001-dec-0.md" in s for s in snippets)
+
+
 def test_recall_ranks_local_files_and_coordination_issues(tmp_path):
     # recall() reads origin's default branch (F3-style), not ctx.repo_root's own working copy, so the seeded
     # files are committed and pushed here; recall_snippets(repo, ...) below (no ref=) still reads the working

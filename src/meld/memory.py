@@ -9,7 +9,7 @@ from pathlib import Path
 
 from meld.actions import refuse
 from meld.board import MEMORY_BRANCH_PREFIX, MEMORY_MARKER_RE as MARKER_RE
-from meld.brief import FETCH_FAILED_NOTE, _local_hits, _terms, recall_snippets
+from meld.brief import FETCH_FAILED_NOTE, STATUS_RE, SUPERSEDES_RE, _local_hits, _terms, recall_snippets
 from meld.config import Party
 from meld.dispatch import DispatchError, _iso, _now, git_identity, neutralise_closers
 from meld.gitops import GitError, create_worktree, git, push_branch, remove_worktree, slugify
@@ -17,10 +17,19 @@ from meld.grammar import Agreement, Header, agreement_for, compose, verified_joi
 from meld.rules import Refusal, Verb, decide_rule, remember_rule
 from meld.status import build_status
 
+# STATUS_RE / SUPERSEDES_RE are imported above rather than defined here: brief.py is what reads them back out of
+# the files (and it cannot import this module -- memory.py imports it), while re-exporting them keeps
+# `memory.STATUS_RE` available where a reader of the memory verbs would look for it.
 DECISIONS_DIR = ".meld/decisions"
 LESSONS_FILE = ".meld/memory/lessons.md"
 LESSONS_HEADER = "# Lessons\n"     # what a fresh lessons.md starts with; the verifier assumes the same when the default branch has none
 _NUMBER_RE = re.compile(r"^(\d{4})-")
+
+
+def superseded_trailer(new_file: str, date: str) -> str:
+    """The one thing `meld decide --supersedes` appends to the decision it replaces. Memory is superseded, never
+    edited: the old file keeps every byte it had and gains exactly this, which is what the other groups' PMs verify."""
+    return f"\n---\nStatus: superseded by {new_file} on {date}\n"
 
 
 def content_hash(text: str) -> str:
@@ -45,9 +54,10 @@ def next_decision_number(ctx) -> int:
     return max(numbers, default=0) + 1
 
 
-def render_decision(ref: str, agreement: Agreement, url: str, date: str) -> str:
+def render_decision(ref: str, agreement: Agreement, url: str, date: str, supersedes: str | None = None) -> str:
     agreed = ", ".join(sorted(agreement.agreed))
-    return f"# Decision {ref}\n\n- Date: {date}\n- Agreed by: {agreed}\n- Source: {url}\n\n## Decision\n\n{(agreement.text or '').strip()}\n"
+    sup = f"- Supersedes: {supersedes}\n" if supersedes else ""
+    return f"# Decision {ref}\n\n- Date: {date}\n- Agreed by: {agreed}\n- Source: {url}\n{sup}\n## Decision\n\n{(agreement.text or '').strip()}\n"
 
 
 def escape_headings(text: str) -> str:
@@ -57,8 +67,11 @@ def escape_headings(text: str) -> str:
     return "\n".join(("\\" + line) if line.startswith("#") else line for line in text.splitlines())
 
 
-def render_lesson(ref: str, text: str, group: str, date: str) -> str:
-    return f"\n## {date} — {ref} ({group})\n\n{text.strip()}\n"
+def render_lesson(ref: str, text: str, group: str, date: str, supersedes: str | None = None) -> str:
+    """`supersedes` is the heading of the entry this one replaces, and it goes on the entry's first body line:
+    lessons.md is append-only, so the newer entry is the only place the link can be recorded."""
+    sup = f"Supersedes: {supersedes}\n\n" if supersedes else ""
+    return f"\n## {date} — {ref} ({group})\n\n{sup}{text.strip()}\n"
 
 
 def comment_url(board, comment_id: int) -> str:
@@ -66,8 +79,10 @@ def comment_url(board, comment_id: int) -> str:
     return f"https://github.com/{board.repo}/issues/{board.coordination_issue}#issuecomment-{comment_id}"
 
 
-def _open_memory_pr(ctx, board, group, *, branch: str, path: str, text: str, mode: str, title: str, body: str) -> tuple[int, str]:
-    """Write `text` at `path` (mode 'w' or 'a') on a fresh branch from the default branch, commit as the bot, push, open the PR.
+def _open_memory_pr(ctx, board, group, *, branch: str, writes: list[tuple[str, str, str]], title: str, body: str) -> tuple[int, str]:
+    """Apply `writes` -- `(path, text, mode)` triples, mode 'w' or 'a' -- on a fresh branch from the default branch as
+    ONE commit by the bot, push, open the PR. A supersession writes two files (the new decision and the file it
+    replaces) and they must land together, or a reviewer would see a decision naming a file that nothing marked.
     Everything from here through `create_pull` runs inside `try`/`finally`: the worktree is scratch space only, so
     any failure (a rejected push, a GitHub 5xx on create_pull) still removes it before the exception propagates --
     the tuple is returned only once every step has actually succeeded."""
@@ -76,14 +91,15 @@ def _open_memory_pr(ctx, board, group, *, branch: str, path: str, text: str, mod
         remove_worktree(ctx.repo_root, wt)
     create_worktree(ctx.repo_root, wt, branch, ctx.cfg.default_branch)
     try:
-        target = wt / path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if mode == "a" and target.exists():
-            target.write_text(target.read_text() + text)
-        elif mode == "a":
-            target.write_text(LESSONS_HEADER + text)
-        else:
-            target.write_text(text)
+        for path, text, mode in writes:
+            target = wt / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if mode == "a" and target.exists():
+                target.write_text(target.read_text() + text)
+            elif mode == "a":
+                target.write_text(LESSONS_HEADER + text)
+            else:
+                target.write_text(text)
         name, email = git_identity(ctx, group)
         # Overlay the bot identity onto the inherited environment (never replace it outright): this worktree's
         # commit must keep PATH/HOME and the process's git hermeticity guards (GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM)
@@ -91,7 +107,7 @@ def _open_memory_pr(ctx, board, group, *, branch: str, path: str, text: str, mod
         # additionally overrides this one commit regardless of what a human's own global gitconfig says, so a PM's
         # memory commit can never hang or fail on a machine where `commit.gpgsign = true` is set but no key is loaded.
         env = {**os.environ, "GIT_AUTHOR_NAME": name, "GIT_AUTHOR_EMAIL": email, "GIT_COMMITTER_NAME": name, "GIT_COMMITTER_EMAIL": email}
-        git(["add", path], wt)
+        git(["add", *[path for path, _, _ in writes]], wt)
         git(["-c", "commit.gpgsign=false", "commit", "-q", "-m",
             title.lower().replace("decision ", "docs: record decision ").replace("lesson from ", "docs: record lesson from ")], wt, env=env)
         push_branch(wt, branch, ctx.gh.token)
@@ -112,7 +128,23 @@ def _request_review(ctx, board, group, pr_number: int, what: str) -> None:
                                                             f"{what}; run `meld review {pr_number}` (memory PR: hash-verified, no worker needed)."))
 
 
-def decide(ctx, ref: str, *, now: datetime | None = None) -> dict:
+def _superseded_file(ctx, board, ref: str, supersedes: str) -> tuple[str, str]:
+    """Validate `--supersedes` and return `(path, the file's text on the default branch)`. Argument validation, not
+    legality (rules.decide_rule already said who may decide `ref`): the named file must be a bare decision filename
+    that actually landed on the default branch, and must not already be superseded -- a chain records one step at a
+    time, so a second supersession of the same file would leave two trailers claiming the same predecessor."""
+    old_path = f"{DECISIONS_DIR}/{supersedes}"
+    bare = "/" not in supersedes and supersedes.endswith(".md")
+    old = ctx.gh.get_contents(old_path, ctx.cfg.default_branch) if bare and old_path in _default_branch_files(ctx, DECISIONS_DIR) else None
+    if old is None:
+        refuse(ctx, board, Refusal(Verb.DECIDE, ref, f"{supersedes} is not a decision file on {ctx.cfg.default_branch}"))
+    m = STATUS_RE.search(old)
+    if m:
+        refuse(ctx, board, Refusal(Verb.DECIDE, ref, f"{supersedes} is already superseded by {m.group(1)} on {m.group(2)}"))
+    return old_path, old
+
+
+def decide(ctx, ref: str, *, now: datetime | None = None, supersedes: str | None = None) -> dict:
     _, board = build_status(ctx)
     actor = ctx.actor()
     rule = decide_rule(board, ctx.cfg, actor, ref)
@@ -141,18 +173,27 @@ def decide(ctx, ref: str, *, now: datetime | None = None) -> dict:
         refuse(ctx, board, Refusal(Verb.DECIDE, ref, f"{ref} is already recorded or has an open memory PR"))
     group = ctx.cfg.groups[actor.group]  # type: ignore[index]
     when = _now(now)
+    date = when.strftime("%Y-%m-%d")
     url = comment_url(board, joint.id)
-    text = render_decision(ref, agreement, url, when.strftime("%Y-%m-%d"))
+    old_path, old_text = _superseded_file(ctx, board, ref, supersedes) if supersedes else (None, "")
+    text = render_decision(ref, agreement, url, date, supersedes)
     digest = content_hash(text)
-    path = f"{DECISIONS_DIR}/{next_decision_number(ctx):04d}-{slug}.md"
+    name = f"{next_decision_number(ctx):04d}-{slug}.md"
+    path = f"{DECISIONS_DIR}/{name}"
     body = f"Records the agreed decision `{ref}`.\n\nmeld-memory: decision {ref} {digest}\nverified-by: [joint] DECISION {ref} ({url})"
-    pr_number, _ = _open_memory_pr(ctx, board, group, branch=f"{MEMORY_BRANCH_PREFIX}{slug}", path=path, text=text, mode="w",
+    writes = [(path, text, "w")]
+    if old_path is not None:
+        # The old file gains the status trailer and nothing else, in the same commit: superseded, never edited.
+        # Its base text comes from GitHub at the default branch, which is exactly what the verifier compares against.
+        writes.append((old_path, old_text + superseded_trailer(name, date), "w"))
+        body += f"\nsupersedes: {supersedes}"
+    pr_number, _ = _open_memory_pr(ctx, board, group, branch=f"{MEMORY_BRANCH_PREFIX}{slug}", writes=writes,
                                    title=f"Decision {ref}", body=body)
     _request_review(ctx, board, group, pr_number, f"Decision {ref} recorded as {path}")
-    return {"decided": ref, "path": path, "pr": pr_number, "hash": digest}
+    return {"decided": ref, "path": path, "pr": pr_number, "hash": digest, "supersedes": supersedes}
 
 
-def remember(ctx, ref: str, text: str, *, now: datetime | None = None) -> dict:
+def remember(ctx, ref: str, text: str, *, now: datetime | None = None, supersedes: str | None = None) -> dict:
     if not text.strip():
         raise DispatchError("a lesson needs text: what went wrong, what fixed it, what to check next time")
     _, board = build_status(ctx)
@@ -165,14 +206,16 @@ def remember(ctx, ref: str, text: str, *, now: datetime | None = None) -> dict:
         refuse(ctx, board, Refusal(Verb.REMEMBER, ref, rule))
     group = ctx.cfg.groups[actor.group]  # type: ignore[index]
     when = _now(now)
-    entry = render_lesson(ref, escape_headings(neutralise_closers(text)), group.name, when.strftime("%Y-%m-%d"))
+    # `supersedes` comes from the flag, never from the lesson text, so it is rendered as the entry's own first body
+    # line while the worker-authored text stays neutralised and escaped -- a `Supersedes:` line inside `text` is text.
+    entry = render_lesson(ref, escape_headings(neutralise_closers(text)), group.name, when.strftime("%Y-%m-%d"), supersedes)
     digest = content_hash(entry)
     stamp = when.strftime("%Y%m%dT%H%M%SZ")
     body = f"Records a lesson from {ref}.\n\nmeld-memory: lesson {ref} {digest}\nverified-by: {ref} resolved on the board at {_iso(when)}"
-    pr_number, _ = _open_memory_pr(ctx, board, group, branch=f"{MEMORY_BRANCH_PREFIX}lesson-{n}-{stamp}", path=LESSONS_FILE, text=entry, mode="a",
-                                   title=f"Lesson from {ref}", body=body)
+    pr_number, _ = _open_memory_pr(ctx, board, group, branch=f"{MEMORY_BRANCH_PREFIX}lesson-{n}-{stamp}",
+                                   writes=[(LESSONS_FILE, entry, "a")], title=f"Lesson from {ref}", body=body)
     _request_review(ctx, board, group, pr_number, f"Lesson from {ref} appended to {LESSONS_FILE}")
-    return {"remembered": ref, "pr": pr_number, "hash": digest}
+    return {"remembered": ref, "pr": pr_number, "hash": digest, "supersedes": supersedes}
 
 
 def recall(ctx, query: str, *, limit: int = 10) -> list[dict]:

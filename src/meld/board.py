@@ -63,6 +63,23 @@ def body_section(body: str, heading: str) -> tuple[str, ...]:
     return tuple(out)
 
 
+def replace_section(body: str, heading: str, items: Sequence[str]) -> str:
+    """Return `body` with its `## <heading>` section replaced by `items` as `- ` bullets (appended at the end when absent;
+    removed when `items` is empty). Everything else in the body is kept byte for byte."""
+    lines = (body or "").rstrip("\n").splitlines()
+    start = next((i for i, l in enumerate(lines) if l.startswith("## ") and l[3:].strip().lower() == heading.lower()), None)
+    if start is not None:
+        end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+        del lines[start:end]
+        while lines and start < len(lines) and lines[start:start + 1] == [""] and (start == 0 or lines[start - 1] == ""):
+            del lines[start]
+    if items:
+        if lines and lines[-1] != "":
+            lines.append("")
+        lines += [f"## {heading}"] + [f"- {i}" for i in items]
+    return "\n".join(lines) + "\n"
+
+
 # Branches `meld decide`/`meld remember` push to. collect's build branches are `meld/<issue>-<slug>` (gitops.branch_name), so
 # the two namespaces never overlap; memory.py imports this rather than redefining it (board.py is the leaf both can reach).
 MEMORY_BRANCH_PREFIX = "meld/memory-"

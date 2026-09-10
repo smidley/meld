@@ -5,6 +5,7 @@ import pytest
 from click.testing import CliRunner
 
 import meld.cli as cli
+from meld.board import HELD_CATEGORIES
 from meld.github import GitHub
 from meld.models import ModelRegistry
 from meld.setup import LABELS, SetupError, ensure_coordination_issue, ensure_labels, ensure_milestone, installed_adapters, setup, starter_toml
@@ -30,6 +31,7 @@ def test_ensure_labels_creates_only_the_missing_ones():
     posted = [c.body["name"] for c in fake.calls if c.method == "POST" and c.endpoint.endswith("labels")]
     assert "meld:ready" not in posted and set(posted) == set(LABELS) - {"meld:ready"}
     assert out == {"created": sorted(set(LABELS) - {"meld:ready"}), "existing": ["meld:ready"]}
+    assert all(f"meld:held:{c}" in posted for c in HELD_CATEGORIES)
 
 
 def test_ensure_milestone_and_coordination_issue_are_idempotent():

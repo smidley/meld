@@ -43,10 +43,15 @@ def make_untagged(tmp_path, group="claude", role="orchestrator"):
     return fake, ctx
 
 
+def fixture_issue(n):
+    return next(i for i in fixture("issues.json") if i["number"] == n)
+
+
 def test_tag_replaces_labels_and_validates(tmp_path):
     fake, ctx = make(tmp_path)
     out = tag(ctx, 11, model="claude-opus-5", effort="high", size="M")
-    assert out == {"tagged": 11, "labels": {"worker": "backend", "model": "claude-opus-5", "effort": "high", "size": "M", "skills": []}}
+    assert out == {"tagged": 11, "labels": {"worker": "backend", "model": "claude-opus-5", "effort": "high", "size": "M", "skills": []},
+                   "scope": [], "may_delete": [], "held": []}
     calls = label_calls(fake)
     assert ("POST", "", {"labels": ["model:claude-opus-5", "effort:high", "size:M"]}) in calls
     assert ("DELETE", "/model%3Aclaude-sonnet-5", None) in calls and ("DELETE", "/effort%3Amedium", None) in calls and ("DELETE", "/size%3AS", None) in calls
@@ -92,7 +97,8 @@ def test_tag_refuses_an_effort_it_cannot_validate_without_a_model(tmp_path):
     with pytest.raises(Refused, match="without a model"):
         tag(ctx, 11, effort="high")
     out = tag(ctx, 11, worker="backend", model="claude-opus-5", effort="high", size="S")
-    assert out == {"tagged": 11, "labels": {"worker": "backend", "model": "claude-opus-5", "effort": "high", "size": "S", "skills": []}}
+    assert out == {"tagged": 11, "labels": {"worker": "backend", "model": "claude-opus-5", "effort": "high", "size": "S", "skills": []},
+                   "scope": [], "may_delete": [], "held": []}
     assert label_calls(fake) == [("POST", "", {"labels": ["worker:backend", "model:claude-opus-5", "effort:high", "size:S"]})]
     with pytest.raises(Refused, match="not valid"):
         tag(ctx, 11, model="claude-opus-5", effort="turbo")
@@ -115,4 +121,33 @@ def test_tag_skill_adds_labels_from_the_roster(tmp_path):
     from meld.actions import Refused
     with pytest.raises(Refused, match="skill 'nope'"):
         tag(ctx, 11, skills=["nope"])
+
+
+def test_tag_writes_scope_and_may_delete_sections_into_the_body(tmp_path):
+    fake, ctx = make(tmp_path, role="orchestrator")
+    fake.route("PATCH", R + "issues/11", {"number": 11})
+    out = tag(ctx, 11, scope=["src/meld/*.py", "tests/test_x.py"], may_delete=["src/meld/legacy.py"])
+    patch = [c for c in fake.calls if c.method == "PATCH" and c.endpoint == R + "issues/11"][0]
+    body = patch.body["body"]
+    assert "## Scope\n- src/meld/*.py\n- tests/test_x.py\n" in body and "## May delete\n- src/meld/legacy.py\n" in body
+    assert body.startswith(fixture_issue(11)["body"].rstrip("\n"))                 # the existing body text is kept
+    assert out["scope"] == ["src/meld/*.py", "tests/test_x.py"] and out["may_delete"] == ["src/meld/legacy.py"]
+    fake.route("GET", R + "issues", [{**i, "body": body} if i["number"] == 11 else i for i in fixture("issues.json")])
+    out2 = tag(ctx, 11, scope=["docs/**"])                                         # a second call replaces the section, keeps the other
+    body2 = [c for c in fake.calls if c.method == "PATCH"][-1].body["body"]
+    assert "## Scope\n- docs/**\n" in body2 and "src/meld/*.py" not in body2 and "## May delete\n- src/meld/legacy.py\n" in body2
+
+
+def test_tag_held_labels_the_issue_needs_human_and_posts_the_ask(tmp_path):
+    fake, ctx = make(tmp_path, role="orchestrator")
+    fake.route("POST", R + "issues/11/labels", [])
+    fake.route("POST", R + "issues/10/comments", {"id": 900})
+    out = tag(ctx, 11, held=["delete", "public-release"])
+    labels = [c.body["labels"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/11/labels"]
+    assert labels == [["meld:held:delete", "meld:held:public-release", "meld:needs-human"]]
+    (ask,) = [c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/10/comments"]
+    assert ask.startswith("[claude] NEEDS-HUMAN #11") and "delete, public-release" in ask and "RESOLVED #11" in ask
+    assert out["held"] == ["delete", "public-release"]
+    with pytest.raises(Refused, match="held category"):
+        tag(ctx, 11, held=["nuke"])
 

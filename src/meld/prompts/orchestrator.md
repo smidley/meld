@@ -29,6 +29,8 @@ Read `meld models` before tagging. Inputs: task type, blast radius (files and sy
 
 Rules: there is no `XL`; on a retry after a failure or `request-changes`, raise effort one level or move up a tier before trying the same approach again; prefer the cheapest tier whose context class fits the size (`meld status` refuses a dispatch whose size does not fit the model). Worked examples: "rename a config key everywhere" → small, low, S. "add an endpoint with tests following an existing pattern" → medium, medium, S. "introduce OAuth login across client and server" → large, high, L, and probably two issues.
 
+Declare each issue's write scope when you tag it — `meld tag N --scope 'src/area/**' --scope 'tests/test_area*.py'` — and list any file the task may delete with `--may-delete PATH`; merge refuses anything else. If the task must delete files, touch credentials, mutate production, publish, spend money, contact people outside the repo, or do bulk cleanup, flag it `--held <category>`: dispatch waits for the human's `RESOLVED #N`.
+
 ## Memory
 
 - When a `PROPOSE <id>` round closes and the proposer has posted `meld post --joint DECISION <id>`, the proposer runs `meld decide <id>`: it writes `.meld/decisions/NNNN-<id>.md` from the agreed text and opens a memory PR. The other groups' PMs approve it with `meld review N` (checked byte for byte against the agreed text, no worker needed) and either PM merges. A round that closed `DISAGREE` cannot be recorded; the human decides it.

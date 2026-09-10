@@ -285,3 +285,9 @@ def test_claim_and_dispatch_follow_the_claim_label():
     ready_claimed = mk_issue(14, status="ready", claimed_by="claude")
     board = mk_board(CFG2, issues=[ready_claimed])
     assert rule(board, CODEX_PM, Verb.CLAIM, ready_claimed) == "already claimed by claude"
+    unclaimed = mk_issue(15, status="in_progress")            # a release that died after shedding the label
+    board = mk_board(CFG2, issues=[unclaimed])
+    assert rule(board, CLAUDE_PM, Verb.DISPATCH, unclaimed) == "issue is not claimed by claude"
+    two_labels = mk_issue(16, status="ready", extra_labels=("meld:claimed-by:claude", "meld:claimed-by:codex"))
+    board = mk_board(CFG2, issues=[two_labels])
+    assert rule(board, CLAUDE_PM, Verb.CLAIM, two_labels) == "already claimed by claude, codex"

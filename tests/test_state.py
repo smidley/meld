@@ -189,6 +189,21 @@ def test_diff_changes_are_structured_and_filterable():
     assert filter_changes(initial, {"comments"}) == initial
 
 
+def test_a_claim_move_at_the_same_status_is_reported_as_a_change():
+    """The claim can move without the status moving (a lost race undone, a re-claim after a release inside one
+    poll interval), so `board_digest` snapshots `claimants` and `diff_changes` falls through to its labels branch."""
+    b1 = mk_board(CFG2, issues=[mk_issue(12, status="in_progress", claimed_by="claude")])
+    b2 = mk_board(CFG2, issues=[mk_issue(12, status="in_progress", claimed_by="codex")])
+    d1, d2 = board_digest(b1), board_digest(b2)
+    assert d1["issues"]["12"]["claimants"] == ["claude"] and d2["issues"]["12"]["claimants"] == ["codex"]
+    changes = diff_changes(d1, d2)
+    assert [c.kind for c in changes] == ["issue"]
+    assert changes[0].ref == "#12" and changes[0].text == "issue #12: labels or claim changed"
+    assert changes[0].before["claimants"] == ["claude"] and changes[0].after["claimants"] == ["codex"]
+    assert diff_digest(d1, d2) == ["issue #12: labels or claim changed"]
+    assert diff_changes(d1, d1) == []
+
+
 def test_write_run_archives_a_collected_record_before_a_new_run_and_spend_counts_both(tmp_path):
     from dataclasses import replace
     store = StateStore(tmp_path, "claude")

@@ -80,6 +80,10 @@ def test_claim_loses_the_race_when_another_claim_label_is_present_after_the_re_r
     # first-label-wins working as designed is not an illegal call: no violation comment
     assert posted_headers(fake) == []
     assert ei.value.violation_posted is None
+    # and the loser never moved the issue's status: the swap comes after the re-read, so meld:in-progress
+    # was never added and the winner's issue is untouched by us
+    assert ["meld:in-progress"] not in [c.body.get("labels") for c in fake.calls
+                                        if c.method == "POST" and c.endpoint == R + "issues/11/labels"]
 
 
 def test_claim_refusal_posts_protocol_violation_for_groups_only(tmp_path):

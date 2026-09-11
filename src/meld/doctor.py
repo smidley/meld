@@ -14,9 +14,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import stat
-import re
 import subprocess
 import time
 from dataclasses import asdict, dataclass
@@ -67,6 +67,8 @@ def _help_text(argv: list[str], run=subprocess.run) -> str | None:
     try:
         proc = run(argv, capture_output=True, text=True, timeout=20)
     except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
         return None
     return (proc.stdout or "") + "\n" + (proc.stderr or "")
 

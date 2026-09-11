@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Mapping
 
 from meld.adapters.base import SCRUBBED_EXACT, LaunchSpec, open_log, popen_detached, scan_skills
 from meld.roster import WorkerType
@@ -16,15 +17,24 @@ from meld.roster import WorkerType
 # .meld.toml), so a settings file naming one is a `meld doctor` warning (plan 4).
 _SETTINGS_BASE = {"disableAllHooks": True, "autoMemoryEnabled": False}
 _IDENTITY = ("MELD_GROUP", "MELD_ROLE")
+TRUSTED_ROLES = ("orchestrator", "pm")
 
 
-def settings_for(role: str) -> dict:
-    blank = SCRUBBED_EXACT if role == "worker" else tuple(name for name in SCRUBBED_EXACT if name not in _IDENTITY)
-    return {**_SETTINGS_BASE, "env": {name: "" for name in blank}}
+def settings_for(role: str, env: Mapping[str, str]) -> dict:
+    """The `--settings` document for one launch. Credentials are blanked for every launch. For an orchestrator or PM the
+    party identity is PINNED to the value runners.role_env set (a settings.json `env` map is applied to the session and
+    `--settings` is merged last, so pinning -- not omitting -- is what stops a user or product settings file from
+    re-pointing a credentialed session at another group); any other role is treated as a worker and the identity is
+    blanked. Unknown roles fail closed."""
+    blanks = {name: "" for name in SCRUBBED_EXACT}
+    if role in TRUSTED_ROLES:
+        blanks.update({name: env.get(name, "") for name in _IDENTITY})
+    return {**_SETTINGS_BASE, "env": blanks}
 
 
-# The long flags below that `claude --help` lists; `meld doctor` checks each is still known to the installed CLI.
-REQUIRED_FLAGS = ("--model", "--output-format", "--permission-mode", "--strict-mcp-config", "--mcp-config", "--settings", "--setting-sources")
+# The flags below that `claude --help` lists; `meld doctor` checks each is still known to the installed CLI. `--max-turns`
+# is passed too but is undocumented in `--help` (it works; anthropics/claude-code#16963), so it cannot be verified this way.
+REQUIRED_FLAGS = ("-p", "--model", "--output-format", "--permission-mode", "--strict-mcp-config", "--mcp-config", "--settings", "--setting-sources")
 _MCP_CONFIG = {"mcpServers": {}}
 _DROP_ENV = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
 BASH_TOOL_CEILING_SECONDS = 600  # Claude Code's Bash tool caps one command at 10 minutes
@@ -44,7 +54,7 @@ class ClaudeAdapter:
             "--output-format", "json",
             "--permission-mode", "bypassPermissions",
             "--strict-mcp-config", "--mcp-config", json.dumps(_MCP_CONFIG),
-            "--settings", json.dumps(settings_for(spec.role)),
+            "--settings", json.dumps(settings_for(spec.role, spec.env)),
             # user: installed skills (~/.claude/skills, plugin caches) load; hooks stay disabled and MCP stays empty via _SETTINGS/_MCP_CONFIG
             "--setting-sources", "user,project",
             "--max-turns", str(spec.max_turns),

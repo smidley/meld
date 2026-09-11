@@ -92,8 +92,8 @@ def _review(r: dict) -> Review:
     commit_id = r.get("commit_id", "")
     submitted_at = r.get("submitted_at", "")
     if state == "COMMENTED" and first_line == f"{AUTHOR_VERDICT_MARKER} request-changes":
-        return Review(author=author, state="CHANGES_REQUESTED", commit_id=commit_id, submitted_at=submitted_at, as_author=True)
-    return Review(author=author, state=state, commit_id=commit_id, submitted_at=submitted_at)
+        return Review(author=author, state="CHANGES_REQUESTED", commit_id=commit_id, submitted_at=submitted_at, as_author=True, body=body)
+    return Review(author=author, state=state, commit_id=commit_id, submitted_at=submitted_at, body=body)
 
 
 def _pull(gh: GitHub, raw: dict, errors: list[str] | None = None) -> PullRequest:

@@ -368,3 +368,23 @@ def test_brief_lists_only_selected_skills(tmp_path):
                         repo_root=tmp_path, worktree=tmp_path, base_branch="main",
                         skills=[WorkerType("pdf", "Read and write PDF files", "skill", None)])
     assert "`pdf`" in text and "## Skills available" in text
+
+
+def test_build_brief_for_a_retry_quotes_the_reviewers_request_changes(tmp_path: Path):
+    from dataclasses import replace
+    from meld.board import Review
+    from meld.brief import review_feedback
+    from tests.factories import mk_issue, mk_pr
+    issue = mk_issue(6, status="in_progress", claimed_by="claude")
+    pr = replace(mk_pr(11, 6, head_sha="06aa7ff0", changes_requested=("meld-codex-bot",)),
+                 reviews=(Review("meld-codex-bot", "CHANGES_REQUESTED", "06aa7ff0", "2026-09-11T17:06:38Z", body="Roll back partial tokens on a read error."),))
+    role = next(w for w in builtin_workers() if w.name == "backend")
+    text = render_brief(role=role, kind="build", group="claude", model="m", effort="high", issue=issue, pr=pr, plan_text="", repo_root=tmp_path,
+                        worktree=tmp_path, base_branch="main")
+    assert "## Review feedback to address" in text and "PR #11 (branch `" in text and "head `06aa7ff`" in text
+    assert "### meld-codex-bot requested changes on `06aa7ff`" in text and "Roll back partial tokens on a read error." in text
+    assert "A result that adds no commit is rejected" in text
+    fresh = render_brief(role=role, kind="build", group="claude", model="m", effort="high", issue=issue, pr=None, plan_text="", repo_root=tmp_path,
+                         worktree=tmp_path, base_branch="main")
+    assert "## Review feedback to address" not in fresh
+    assert "No reviewer has requested changes yet" in review_feedback(mk_pr(11, 6))

@@ -404,3 +404,31 @@ def test_cli_doctor_sweep_tolerates_an_app_auth_failure_while_building_board_sta
     result = CliRunner().invoke(cli.main, ["--config", str(tmp_path / ".meld.toml"), "doctor", "--sweep", "--dry-run"])
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["dry_run"] is True
+
+
+def test_doctor_flags_check_names_the_flags_the_cli_no_longer_lists(tmp_path):
+    """The first live run crash-looped on `codex exec -a`: a flag the adapter passed that the installed CLI had dropped.
+    Doctor now reads the CLI's own --help and names every adapter flag it does not list."""
+    class HelpAdapter(FakeAdapter):
+        def help_argv(self):
+            return [sys.executable, "-c", "print('Usage: x exec [OPTIONS]\\n  -m, --model <MODEL>\\n  -s, --sandbox <MODE>\\n      --json')"]
+
+        def required_flags(self):
+            return ("-m", "-s", "--json", "-a", "--ephemeral")
+
+    class QuietAdapter(HelpAdapter):
+        def required_flags(self):
+            return ("-m", "-s", "--json")
+
+    adapters = {"claude": QuietAdapter(ceiling=600, name="claude"), "codex": HelpAdapter(ceiling=600, name="codex")}
+    checks = by_name(run(tmp_path, fakes(), adapters=adapters))
+    assert checks["cli-flags:claude"].ok is True and "all 3 flags" in checks["cli-flags:claude"].detail
+    assert checks["cli-flags:codex"].ok is False and "-a, --ephemeral" in checks["cli-flags:codex"].detail
+    assert "cli-flags:codex" in [c.name for c in run(tmp_path, fakes(), adapters=adapters) if not c.ok]
+
+
+def test_missing_flags_matches_whole_tokens_only():
+    from meld.doctor import missing_flags
+    text = "  -s, --sandbox <MODE>\n      --settings <JSON>\n      --json"
+    assert missing_flags(text, ["-s", "--settings", "--json"]) == []
+    assert missing_flags(text, ["-a", "--set", "-json"]) == ["-a", "--set", "-json"]

@@ -16,11 +16,12 @@ import json
 import os
 import shutil
 import stat
+import re
 import subprocess
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Sequence, Callable, Mapping
 
 from meld.adapters import UnknownAdapter
 from meld.adapters.base import SCRUBBED_EXACT, SCRUBBED_PREFIXES
@@ -60,6 +61,19 @@ def _version(argv: list[str], run=subprocess.run) -> str | None:
     if proc.returncode != 0:
         return None
     return (proc.stdout or proc.stderr or "").strip().splitlines()[0] if (proc.stdout or proc.stderr) else "ok"
+
+
+def _help_text(argv: list[str], run=subprocess.run) -> str | None:
+    try:
+        proc = run(argv, capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return (proc.stdout or "") + "\n" + (proc.stderr or "")
+
+
+def missing_flags(help_text: str, flags: Sequence[str]) -> list[str]:
+    """The flags not mentioned in `help_text` as whole tokens (`-s` matches `-s, --sandbox`, not `--settings`)."""
+    return [f for f in flags if not re.search(r"(?<![\w-])" + re.escape(f) + r"(?![\w-])", help_text)]
 
 
 def _settings_env_names(paths: list[Path]) -> dict[str, list[str]]:
@@ -137,6 +151,20 @@ def run_checks(cfg: Config, repo_root: Path, *, env: Mapping[str, str], gh_facto
                 detail = f"{binary}: not found on PATH"
             checks.append(Check(f"cli:{group.name}", bool(found and version), detail,
                                 "" if found and version else f"install the {group.cli} CLI and log in"))
+            # 2b. the flags the adapter passes are still known to the installed CLI: a renamed or removed flag makes every
+            # launch exit at once and the supervisor relaunch it forever (the first live run hit `codex exec -a`)
+            help_argv, flags = adapter.help_argv(), list(adapter.required_flags())
+            if found and version and help_argv and flags:
+                text = _help_text(help_argv, run)
+                if text is None:
+                    checks.append(Check(f"cli-flags:{group.name}", False, f"{binary}: {' '.join(help_argv[1:])} failed",
+                                        f"run `{' '.join(help_argv)}` by hand"))
+                else:
+                    missing = missing_flags(text, flags)
+                    checks.append(Check(f"cli-flags:{group.name}", not missing,
+                                        f"{binary}: all {len(flags)} flags Meld passes are listed by {' '.join(help_argv[1:])}" if not missing
+                                        else f"{binary} no longer lists {', '.join(missing)}; every launch would fail at once",
+                                        "" if not missing else f"upgrade Meld's {group.cli} adapter (or pin the CLI version it was written for)"))
         # 3. token present and owned by the configured bot (PAT groups); key/JWT/slug and installation token (App groups)
         if group.is_app:
             login = None

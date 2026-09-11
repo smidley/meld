@@ -93,7 +93,9 @@ def audit_summary(board: Board, cfg: Config, actor: Actor, now: datetime) -> dic
     batch is due (audit.batch_merges pending, the oldest pending merge older than audit.batch_hours, or the milestone is
     complete -- no open non-coordination issue left, so there will be no later, bigger batch to fold this one into)
     (spec 21 item 10)."""
-    complete = all(i.state == "closed" for i in board.issues.values())   # the coordination issue is not in board.issues
+    # The coordination issue is not in board.issues. A milestone with no issues yet (planning) is not complete: the
+    # vacuous truth read as "milestone 1 is already complete" to the first live run's PM.
+    complete = bool(board.issues) and all(i.state == "closed" for i in board.issues.values())
     if actor.group is None:
         return {"pending": [], "merges_pending": 0, "oldest_pending_hours": None, "due": False, "milestone_complete": complete}
     pending = sorted((p for p in board.pulls.values()

@@ -205,3 +205,23 @@ def test_every_required_flag_is_one_the_adapter_actually_passes(tmp_path: Path):
         passed = set(adapter.argv(_spec("pm", tmp_path))) | set(adapter.argv(_spec("worker", tmp_path)))
         assert set(adapter.required_flags()) <= passed, adapter.name
         assert adapter.help_argv()[0] == adapter.version_argv()[0]
+
+
+def test_codex_worker_sandbox_admits_its_git_dirs_and_the_uv_cache(tmp_path: Path):
+    from meld.adapters.codex import CodexAdapter, git_dirs
+    main_git = tmp_path / "main" / ".git" / "worktrees" / "7-cli"
+    main_git.mkdir(parents=True)
+    wt = tmp_path / "wt"; wt.mkdir()
+    (wt / ".git").write_text(f"gitdir: {main_git}\n")
+    home = tmp_path / "home"
+    adapter = CodexAdapter(binary="codex", home=home)
+    spec = LaunchSpec(role="worker", model="m", effort="high", cwd=wt, prompt="p", log_path=tmp_path / "log", timeout_seconds=60,
+                      env={"PATH": "/bin"}, max_turns=5)
+    argv = adapter.argv(spec)
+    added = [argv[i + 1] for i, a in enumerate(argv) if a == "--add-dir"]
+    assert added == [str(main_git), str(tmp_path / "main" / ".git"), str(home / ".cache" / "uv")]
+    assert git_dirs(tmp_path / "main") == []                                            # a plain clone (.git is a directory) adds nothing
+    with_env = LaunchSpec(**{**spec.__dict__, "env": {"UV_CACHE_DIR": str(tmp_path / "uvc")}})
+    assert adapter.argv(with_env)[-3:-1] != ["--add-dir", str(home / ".cache" / "uv")] and str(tmp_path / "uvc") in adapter.argv(with_env)
+    role = LaunchSpec(**{**spec.__dict__, "role": "pm"})
+    assert "--add-dir" not in adapter.argv(role)                                         # full access needs no grants

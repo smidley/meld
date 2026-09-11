@@ -15,10 +15,13 @@ COMMAND_CEILING_SECONDS = 600  # conservative; the exact Codex shell-command cei
 REQUIRED_FLAGS = ("-m", "-c", "-s", "-C", "--json", "-o", "--ignore-user-config", "--ephemeral")
 
 
+TRUSTED_ROLES = ("orchestrator", "pm")
+
+
 def sandbox_args(role: str) -> list[str]:
-    if role == "worker":
-        return ["-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true"]
-    return ["-s", "danger-full-access"]
+    if role in TRUSTED_ROLES:
+        return ["-s", "danger-full-access"]
+    return ["-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true"]   # workers, and anything unknown
 
 
 class CodexAdapter:

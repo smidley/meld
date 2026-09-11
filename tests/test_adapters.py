@@ -177,8 +177,10 @@ def test_claude_settings_blank_the_party_identity_for_workers_only(tmp_path: Pat
     for role in ("orchestrator", "pm"):
         argv = adapter.argv(_spec(role, tmp_path))
         env = json.loads(argv[argv.index("--settings") + 1])["env"]
-        assert "MELD_GROUP" not in env and "MELD_ROLE" not in env, role      # the session IS its party
-        assert env["GH_TOKEN"] == "" and env["MELD_PUSH_TOKEN"] == ""           # credentials stay blanked
+        assert env["MELD_GROUP"] == "claude" and env["MELD_ROLE"] == role, role   # the session IS its party: pinned, so no settings file can re-point it
+        assert env["GH_TOKEN"] == "" and env["MELD_PUSH_TOKEN"] == ""              # credentials stay blanked
+    odd = json.loads(adapter.argv(_spec("auditor", tmp_path))[adapter.argv(_spec("auditor", tmp_path)).index("--settings") + 1])["env"]
+    assert odd["MELD_GROUP"] == "" and odd["MELD_ROLE"] == ""                      # an unknown role fails closed
     worker = json.loads(adapter.argv(_spec("worker", tmp_path))[adapter.argv(_spec("worker", tmp_path)).index("--settings") + 1])["env"]
     assert worker["MELD_GROUP"] == "" and worker["MELD_ROLE"] == "" and worker["GH_TOKEN"] == ""
 
@@ -190,6 +192,8 @@ def test_codex_exec_passes_no_approval_flag_and_sandboxes_by_role(tmp_path: Path
     worker_argv = adapter.argv(_spec("worker", tmp_path))
     assert "-a" not in role_argv and "-a" not in worker_argv
     assert role_argv[role_argv.index("-s") + 1] == "danger-full-access"
+    odd_argv = adapter.argv(_spec("auditor", tmp_path))
+    assert odd_argv[odd_argv.index("-s") + 1] == "workspace-write"                # an unknown role is sandboxed like a worker
     assert worker_argv[worker_argv.index("-s") + 1] == "workspace-write" and "sandbox_workspace_write.network_access=true" in worker_argv
     assert role_argv[:2] == ["codex", "exec"] and role_argv[-1] == "do it"
 

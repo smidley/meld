@@ -389,6 +389,11 @@ def _audit(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | No
         return "memory PR: verified against the board at review, never audited"
     if party_of_login(cfg, pr.author) == actor.group:
         return "cannot audit a PR authored by own group"
+    if cfg.group_for_bot(pr.author) is None:
+        # A human's PR (setup, configuration, a budget change) is the operator acting on their own repository: it is not
+        # worker output, no group is accountable for it, and the first live run spent large-tier lines auditing seven of
+        # them -- once each per group -- and reopened nothing useful. An unknown login is not a group's output either.
+        return "PR was not authored by a group; audits cover worker output"
     if actor.group in board.audits.get(pr.number, {}):
         return f"{actor.group} already audited #{pr.number}"
     return _run_slot(board, cfg, actor, pr.number)

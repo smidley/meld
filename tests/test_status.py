@@ -309,3 +309,17 @@ def test_milestone_complete_needs_at_least_one_issue_and_all_of_them_closed():
     closed = mk_issue(11, status="ready", state="closed")
     assert audit_summary(mk_board(CFG2, issues=[closed]), CFG2, CLAUDE_PM, now)["milestone_complete"] is True
     assert audit_summary(mk_board(CFG2, issues=[closed, mk_issue(12)]), CFG2, CLAUDE_PM, now)["milestone_complete"] is False
+
+
+def test_audits_skip_pull_requests_authored_by_a_human():
+    """The first live run audited the operator's own setup and budget PRs seven times over: a human's PR is not worker
+    output and no group is accountable for it, so it is neither pending nor legal to audit."""
+    from meld.rules import Verb, pr_refusal
+    from meld.status import audit_summary
+    human_pr = replace(mk_pr(30, 0, committer="empowerScott", author="empowerScott", state="closed", merged=True), merged_at="2026-09-03T06:00:00Z")
+    bot_pr = replace(mk_pr(31, 9, committer="meld-claude-bot", state="closed", merged=True), merged_at="2026-09-03T06:00:00Z")
+    board = mk_board(CFG2, pulls=[human_pr, bot_pr])
+    now = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
+    assert audit_summary(board, CFG2, CODEX_PM, now)["pending"] == [31]
+    refusal = pr_refusal(board, CFG2, CODEX_PM, Verb.AUDIT, human_pr)
+    assert refusal is not None and "not authored by a group" in refusal.rule

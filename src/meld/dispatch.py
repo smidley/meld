@@ -417,8 +417,9 @@ def _dispatch_build(ctx, board: Board, actor: Actor, number: int, adapter: Adapt
     exclude_paths(wt)
     skills_result = materialise_skills(wt, adp, [w for w in ctx.roster_entries() if w.source == "product-skill"])
     recall_hits, recall_note = _recall_for_brief(ctx, f"{issue.title}\n{issue.body}")
+    open_pr = board.pr_for_issue(number)
     brief = render_brief(role=worker, kind="build", group=group.name, model=issue.model or "", effort=issue.effort or "", issue=issue,
-                         pr=None, plan_text=board.plan_text, repo_root=ctx.repo_root, worktree=wt, base_branch=ctx.cfg.default_branch,
+                         pr=open_pr if open_pr is not None and open_pr.state == "open" else None, plan_text=board.plan_text, repo_root=ctx.repo_root, worktree=wt, base_branch=ctx.cfg.default_branch,
                          skills=select_skills(f"{issue.title}\n{issue.body}",
                                               [w for w in ctx.roster_entries() if w.source in ("skill", "product-skill")], pinned=issue.skills),
                          recall=recall_hits, project_skills_dir=adp.project_skills_dir(),
@@ -654,10 +655,19 @@ def _collect_build(ctx, board: Board, group: GroupConfig, rec: RunRecord, issue)
         ctx.store.write_run(replace(rec, collected=True))
         return {"collected": number, "outcome": "failed", "reason": reason}
     assert result is not None
+    existing = board.pr_for_issue(number)
+    if existing is not None and existing.state == "open" and head_sha(wt) == existing.head_sha:
+        # A retry that pushed nothing new: the reviewer's request stands and there is nothing to re-review. The issue
+        # stays in progress so the PM can dispatch a real retry (the brief now quotes the review); moving it to
+        # in-review here stranded the first live run's engine issue -- no verb leads back without a new head.
+        ctx.gh.create_comment(number, cap_body(f"Meld: `{group.name}` worker reported done but pushed nothing new since PR #{existing.number}'s "
+                                               f"head {existing.head_sha[:7]}; #{number} stays in progress for a retry that addresses the review.\n\n"
+                                               f"Worker summary: {_pr_body_text(result.summary)}"))
+        ctx.store.write_run(replace(rec, collected=True))
+        return {"collected": number, "outcome": "no_change", "pr": existing.number}
     push_branch(wt, rec.branch, ctx.gh.token)
     # Worker text enters the PR body: strip its power to close arbitrary issues (only our Closes line may).
     body = f"Closes #{number}\n\n{_pr_body_text(result.summary)}\n\nverified-by: {_pr_body_text(result.verified_by)}"
-    existing = board.pr_for_issue(number)
     if existing is not None and existing.state == "open":
         ctx.gh.update_pull(existing.number, body)
         pr_number = existing.number

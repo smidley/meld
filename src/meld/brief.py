@@ -274,6 +274,22 @@ def _skill_path(skill: WorkerType, worktree: Path, project_skills_dir: str | Non
     return skill.path
 
 
+def review_feedback(pr: PullRequest) -> str:
+    """The `## Review feedback to address` section of a retry's build brief: the open PR for the issue and every reviewer's
+    latest CHANGES_REQUESTED text. Without it the first live run's retry worker re-ran the tests, changed nothing, and
+    reported done -- it had never been told what the reviewer asked for."""
+    requested = [r for r in pr.latest_reviews().values() if r.state == "CHANGES_REQUESTED"]
+    out = [f"\n## Review feedback to address\n",
+           f"PR #{pr.number} (branch `{pr.head_ref}`, head `{pr.head_sha[:7]}`) is already open for this issue. Work on that branch: "
+           "address every point below, push new commits, and re-run the verification. A result that adds no commit is rejected; "
+           "if you disagree with a point, say so in your summary with evidence rather than ignoring it.\n"]
+    for r in sorted(requested, key=lambda r: r.author):
+        out.append(f"### {r.author} requested changes on `{r.commit_id[:7]}`\n\n{(r.body or '(no text)').strip()}\n")
+    if not requested:
+        out.append("No reviewer has requested changes yet; the PR is being re-dispatched for another reason -- read its comments.\n")
+    return "\n".join(out)
+
+
 def render_brief(*, role: WorkerType, kind: str, group: str, model: str, effort: str, issue: Issue | None, pr: PullRequest | None,
                  plan_text: str, repo_root: Path, worktree: Path, base_branch: str, concern: str | None = None,
                  skills: Sequence[WorkerType] = (), recall: Sequence[str] = (), project_skills_dir: str | None = None,
@@ -282,6 +298,8 @@ def render_brief(*, role: WorkerType, kind: str, group: str, model: str, effort:
         title = f"# Meld brief: {role.name} for #{issue.number}"
         task = f"## Your task\n\n**#{issue.number}: {issue.title}**\n\n{issue.body.strip() or '(no description)'}\n"
         task += f"\nYou are on branch `{branch_name(issue.number, issue.title)}`, created from `{base_branch}`.\n"
+        if pr is not None:
+            task += review_feedback(pr)
         excerpt = plan_excerpt(plan_text, issue.number)
         hints = file_hints(issue.body)
     else:

@@ -221,7 +221,8 @@ class Review:
     state: str
     commit_id: str
     submitted_at: str = ""
-    as_author: bool = False   # True when this is the PR author group's verdict, posted as a COMMENT review (see AUTHOR_VERDICT_MARKER)
+    as_author: bool = False
+    body: str = ""            # the review text: a retry's build brief quotes CHANGES_REQUESTED bodies so the worker can address them   # True when this is the PR author group's verdict, posted as a COMMENT review (see AUTHOR_VERDICT_MARKER)
 
 
 @dataclass(frozen=True)

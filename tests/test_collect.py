@@ -327,3 +327,33 @@ def test_collect_caps_an_oversized_finish_comment(tmp_path):
     collect(ctx, 11, now=NOW)
     finish = issue_posts(fake, 11)[-1]
     assert finish.endswith(TRUNCATED) and len(finish) == BODY_LIMIT + len(TRUNCATED)
+
+
+def test_collect_treats_an_unchanged_pr_head_as_no_change_and_keeps_the_issue_in_progress(tmp_path):
+    """The first live run's retry re-ran the tests, changed nothing, and reported done; collecting it moved the issue to
+    in-review and no verb led back. Now a head equal to the open PR's head is `no_change`: nothing pushed, labels untouched."""
+    from tests.productfixtures import fixture
+    fake, ctx, repo, origin = make_product(tmp_path)
+    claim_issue_11(fake)
+    routes_for_labels(fake, 11)
+    out = dispatch(ctx, 11, adapter=FakeAdapter(script=DONE_SCRIPT), now=NOW)
+    wait_for_exit(out["pid"])
+    rec = json.loads((tmp_path / "home" / "runs" / "claude" / "11.json").read_text())
+    head = sh(["git", "rev-parse", "HEAD"], Path(rec["worktree"]))
+    pr = {"number": 21, "title": "Add health endpoint", "state": "open", "merged_at": None, "user": {"login": "meld-claude-bot"},
+          "head": {"ref": "meld/11-add-health-endpoint", "sha": head}, "labels": [], "body": "Closes #11\n\nfirst attempt"}
+    fake.route("GET", R + "pulls", fixture("pulls.json") + [pr])
+    fake.route("GET", R + "pulls/21/reviews", [{"user": {"login": "meld-codex-bot"}, "state": "CHANGES_REQUESTED", "commit_id": head,
+                                                 "submitted_at": "2026-09-03T11:00:00Z", "body": "fix the rollback"}])
+    fake.route("GET", R + "pulls/21/commits", [{"sha": head, "author": {"login": "meld-claude-bot"}, "committer": {"login": "meld-claude-bot"}}])
+    fake.route("GET", R + "pulls/21/files", [{"filename": "health.py", "status": "added"}])
+    fake.route("GET", R + f"commits/{head}/check-runs", fixture("checkruns_abc123.json"))
+    fake.route("GET", R + f"commits/{head}/status", {"state": "pending", "statuses": []})
+    result = collect(ctx, 11, now=NOW)
+    assert result == {"collected": 11, "outcome": "no_change", "pr": 21}
+    assert not [c for c in fake.calls if c.method == "POST" and c.endpoint == R + "pulls"]                 # nothing opened
+    assert not [c for c in fake.calls if c.method == "PATCH" and c.endpoint == R + "pulls/21"]              # nothing updated
+    assert ("POST", "", {"labels": ["meld:in-review"]}) not in label_calls(fake, 11)                          # still in progress
+    note = issue_posts(fake, 11)[-1]
+    assert note.startswith("Meld: `claude` worker reported done but pushed nothing new since PR #21's head") and "stays in progress" in note
+    assert json.loads((tmp_path / "home" / "runs" / "claude" / "11.json").read_text())["collected"] is True

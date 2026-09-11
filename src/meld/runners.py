@@ -17,8 +17,11 @@ ROLE_MAX_TURNS = 10000
 _MAX_BACKOFF = 300.0
 # A `claude -p` / `codex exec` session ends whenever the model returns its final message, so a role
 # exiting 0 after a real stretch of work is the steady state, not a failure: it relaunches at once and
-# the backoff counter resets. Anything else -- a non-zero exit, or a 0 within a minute of starting,
-# which is a session that never got going -- backs off exponentially, as before.
+# the backoff counter resets. A non-zero exit is a crash: exponential backoff, and the role is told so
+# (it posts RESUMED). A 0 within a minute of starting is throttled with the same backoff -- a session
+# that never got going must not hot-loop -- but it is still an exit, not a crash: the first live run's
+# codex PM finished honest 50-second turns (`meld wait` returning early on board activity) and, told
+# "crash" each time, posted RESUMED on every relaunch.
 CLEAN_EXIT_SECONDS = 60.0
 
 
@@ -127,7 +130,7 @@ def run_group(ctx, *, adapter: Adapter | None = None, once: bool = False, cycles
                     if code == 0 and clock() - rp.started >= CLEAN_EXIT_SECONDS:
                         restarts, reason = 0, "exit"
                     else:
-                        restarts, reason = rp.restarts + 1, "crash"
+                        restarts, reason = rp.restarts + 1, ("exit" if code == 0 else "crash")
                         _pause(min(5.0 * (2 ** rp.restarts), _MAX_BACKOFF))
                     fresh = launch_role(ctx, group, adp, role, base_env=base_env, clock=clock, launch_no=rp.launches + 1, reason=reason)
                     fresh.restarts, fresh.last_exit = restarts, code

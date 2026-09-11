@@ -45,6 +45,10 @@ class Adapter(Protocol):
 
     def version_argv(self) -> list[str]: ...
 
+    def help_argv(self) -> list[str]: ...          # the command whose --help lists the flags `argv` passes
+
+    def required_flags(self) -> tuple[str, ...]: ...  # flags `meld doctor` checks against that help text
+
 
 def scrub_env(env: Mapping[str, str]) -> dict[str, str]:
     """Environment for a worker: no GitHub tokens or App private keys, no party identity, a marker that it is a worker."""

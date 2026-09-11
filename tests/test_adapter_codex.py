@@ -17,7 +17,9 @@ def test_argv_is_the_documented_unattended_shape(tmp_path: Path):
     assert argv[:2] == ["codex", "exec"]
     assert argv[argv.index("-m") + 1] == "gpt-5.6-terra"
     assert argv[argv.index("-c") + 1] == 'model_reasoning_effort="high"'
-    assert argv[argv.index("-s") + 1] == "workspace-write" and argv[argv.index("-a") + 1] == "never"
+    role = spec(tmp_path).role
+    assert argv[argv.index("-s") + 1] == ("workspace-write" if role == "worker" else "danger-full-access") and "-a" not in argv
+    assert ("sandbox_workspace_write.network_access=true" in argv) == (role == "worker")   # exec never prompts; the sandbox is per role
     assert argv[argv.index("-C") + 1] == str(tmp_path)
     assert "--json" in argv and "--ignore-user-config" in argv and "--ephemeral" in argv
     assert argv[argv.index("-o") + 1] == str(tmp_path / ".meld-last-message.txt")

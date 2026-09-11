@@ -35,6 +35,12 @@ class FakeAdapter:
     def supports_effort(self) -> bool:
         return True
 
+    def help_argv(self) -> list[str]:
+        return []
+
+    def required_flags(self) -> tuple[str, ...]:
+        return ()
+
     def version_argv(self) -> list[str]:
         return [sys.executable, "--version"]
 

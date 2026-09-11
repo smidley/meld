@@ -163,3 +163,41 @@ def test_popen_detached_never_warns_when_collected_before_the_child_exits(tmp_pa
     # observe the exit; waitpid is what meld's state.pid_alive uses too, and it leaves no zombie under pytest.
     _, status = os.waitpid(pid, 0)
     assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
+
+
+def _spec(role: str, tmp_path: Path) -> LaunchSpec:
+    return LaunchSpec(role=role, model="m", effort="high", cwd=tmp_path, prompt="do it", log_path=tmp_path / "log", timeout_seconds=60,
+                      env={"PATH": "/bin", "MELD_GROUP": "claude", "MELD_ROLE": role}, max_turns=5)
+
+
+def test_claude_settings_blank_the_party_identity_for_workers_only(tmp_path: Path):
+    import json
+    from meld.adapters.claude import ClaudeAdapter
+    adapter = ClaudeAdapter(binary="claude")
+    for role in ("orchestrator", "pm"):
+        argv = adapter.argv(_spec(role, tmp_path))
+        env = json.loads(argv[argv.index("--settings") + 1])["env"]
+        assert "MELD_GROUP" not in env and "MELD_ROLE" not in env, role      # the session IS its party
+        assert env["GH_TOKEN"] == "" and env["MELD_PUSH_TOKEN"] == ""           # credentials stay blanked
+    worker = json.loads(adapter.argv(_spec("worker", tmp_path))[adapter.argv(_spec("worker", tmp_path)).index("--settings") + 1])["env"]
+    assert worker["MELD_GROUP"] == "" and worker["MELD_ROLE"] == "" and worker["GH_TOKEN"] == ""
+
+
+def test_codex_exec_passes_no_approval_flag_and_sandboxes_by_role(tmp_path: Path):
+    from meld.adapters.codex import CodexAdapter
+    adapter = CodexAdapter(binary="codex")
+    role_argv = adapter.argv(_spec("pm", tmp_path))
+    worker_argv = adapter.argv(_spec("worker", tmp_path))
+    assert "-a" not in role_argv and "-a" not in worker_argv
+    assert role_argv[role_argv.index("-s") + 1] == "danger-full-access"
+    assert worker_argv[worker_argv.index("-s") + 1] == "workspace-write" and "sandbox_workspace_write.network_access=true" in worker_argv
+    assert role_argv[:2] == ["codex", "exec"] and role_argv[-1] == "do it"
+
+
+def test_every_required_flag_is_one_the_adapter_actually_passes(tmp_path: Path):
+    from meld.adapters.claude import ClaudeAdapter
+    from meld.adapters.codex import CodexAdapter
+    for adapter in (ClaudeAdapter(binary="claude"), CodexAdapter(binary="codex")):
+        passed = set(adapter.argv(_spec("pm", tmp_path))) | set(adapter.argv(_spec("worker", tmp_path)))
+        assert set(adapter.required_flags()) <= passed, adapter.name
+        assert adapter.help_argv()[0] == adapter.version_argv()[0]

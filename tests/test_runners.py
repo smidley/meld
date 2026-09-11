@@ -107,7 +107,9 @@ def test_run_group_relaunches_a_clean_exit_after_a_minute_at_once(tmp_path):
     assert "- Reason: `exit` (" in relaunch.prompt
 
 
-def test_run_group_treats_a_quick_zero_exit_as_a_crash(tmp_path):
+def test_run_group_throttles_a_quick_zero_exit_without_calling_it_a_crash(tmp_path):
+    """A session that exits 0 within a minute is backed off like a crash (no hot loop) but is still told `exit`, not
+    `crash`: the first live run's codex PM finished honest 50-second turns and posted RESUMED on every relaunch."""
     ctx, env = make(tmp_path)
     adapter = FakeAdapter(script="import sys; sys.exit(0)")
     clock = Clock()
@@ -120,7 +122,7 @@ def test_run_group_treats_a_quick_zero_exit_as_a_crash(tmp_path):
 
     out = run_group(ctx, adapter=adapter, cycles=3, interval=0.01, sleep=sleep, clock=clock, base_env=env)
     assert 5.0 in slept and out["roles"]["orchestrator"]["restarts"] >= 1
-    assert "- Reason: `crash` (" in next(s for s in adapter.launches if "Launch number: 2" in s.prompt).prompt
+    assert "- Reason: `exit` (" in next(s for s in adapter.launches if "Launch number: 2" in s.prompt).prompt
 
 
 def test_launch_role_reports_launch_number_and_reason_and_refreshes_the_roster(tmp_path):

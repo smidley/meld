@@ -238,6 +238,7 @@ def test_git_identity_prefers_config_then_noreply(tmp_path):
 def test_dispatch_review_checks_out_pr_head(tmp_path):
     fake, ctx, repo, origin = make_product(tmp_path)
     publish_pr_branch(repo)  # the fixture PR #20 lives on meld/13-ci-pipeline
+    fake.route("GET", R + "pulls/20/reviews", [])   # board1's claude approval on abc123 would make this head already reviewed
     expected = sh(["git", "rev-parse", "meld/13-ci-pipeline"], repo)
     adapter = FakeAdapter()
     out = dispatch(ctx, 20, kind="review", adapter=adapter, now=NOW)
@@ -277,6 +278,7 @@ def test_dispatch_recovers_after_the_worktrees_directory_is_deleted(tmp_path):
     fake, ctx, repo, origin = make_product(tmp_path)
     claim_issue_11(fake)
     publish_pr_branch(repo)
+    fake.route("GET", R + "pulls/20/reviews", [])   # board1's claude approval on abc123 would make this head already reviewed
     first = dispatch(ctx, 11, adapter=FakeAdapter(), now=NOW)
     review = dispatch(ctx, 20, kind="review", adapter=FakeAdapter(), now=NOW)
     wait_for_exit(first["pid"])
@@ -306,6 +308,7 @@ def test_dispatch_review_is_refused_under_halt(tmp_path):
 def test_dispatch_security_reviewer_and_worker_validation(tmp_path):
     fake, ctx, repo, origin = make_product(tmp_path)
     publish_pr_branch(repo)
+    fake.route("GET", R + "pulls/20/reviews", [])   # board1's claude approval on abc123 would make this head already reviewed
     adapter = FakeAdapter()
     out = dispatch(ctx, 20, kind="review", worker="security", adapter=adapter, now=NOW)
     assert (Path(out["worktree"]) / BRIEF_FILE).read_text().startswith("# Meld brief: security for PR #20")

@@ -190,7 +190,10 @@ def test_review_retry_after_a_failure_downstream_of_the_post_files_no_second_rev
 def test_a_second_verdict_from_another_worker_posts_its_own_review(tmp_path):
     fake, ctx, repo, wt = reviewed_pr(tmp_path, REVIEW_SCRIPT)
     assert review(ctx, 20, now=NOW)["review_id"] == 501
-    # GitHub now shows our APPROVED on abc123; the sequential `security` review is a new verdict on the same head
+    # GitHub now shows our APPROVED on abc123; the sequential `security` review is a new verdict on the same head, and
+    # the second review slot on one head exists only for a PR that touches review.security_paths (spec 13 step 2)
+    from dataclasses import replace
+    ctx.cfg = replace(ctx.cfg, security_paths=("ci.yml",))
     fake.route("GET", R + "pulls/20/reviews", fixture("reviews_20.json"))
     fake.route("POST", R + "pulls/20/reviews", {"id": 502, "html_url": "https://github.com/acme/widgets/pull/20#pullrequestreview-502"})
     out = dispatch(ctx, 20, kind="review", worker="security", adapter=FakeAdapter(script=REVIEW_SCRIPT), now=NOW)
@@ -757,3 +760,36 @@ def test_memory_review_retries_a_failed_status_post_on_the_next_call(tmp_path):
     assert second["event"] == "APPROVE" and second.get("status_retried") is True and "status_error" not in second
     assert len(calls(fake, "POST", "pulls/40/reviews")) == 1 and len(calls(fake, "POST", "statuses/mem0001")) == 2
     assert not load_result(ctx.store.home, "codex", "review", 40).get("status_error")
+
+
+def test_author_groups_approve_marker_stays_commented_but_is_its_verdict():
+    from meld.assemble import _pull
+    from meld.review import AUTHOR_VERDICT_MARKER
+    from tests.fakegh import FakeGh
+    from meld.github import GitHub
+    fake = FakeGh()
+    raw = {"number": 20, "title": "t", "body": "Closes #13", "head": {"ref": "meld/13-x", "sha": "abc123"}, "user": {"login": "meld-claude-bot"}, "state": "open", "labels": []}
+    fake.route("GET", "repos/acme/widgets/pulls/20/reviews", [
+        {"user": {"login": "meld-claude-bot"}, "state": "COMMENTED", "commit_id": None, "submitted_at": "2026-09-03T10:00:00Z",
+         "body": f"{AUTHOR_VERDICT_MARKER} approve\n\nVerdict: approve — posted as a comment review ..."}])
+    fake.route("GET", "repos/acme/widgets/pulls/20/commits", [{"author": {"login": "meld-codex-bot"}, "committer": {"login": "meld-codex-bot"}}])
+    fake.route("GET", "repos/acme/widgets/commits/abc123/check-runs", {"check_runs": []})
+    fake.route("GET", "repos/acme/widgets/pulls/20/files", [])
+    fake.route("GET", "repos/acme/widgets/commits/abc123/status", {"state": "pending", "statuses": []})
+    gh = GitHub("acme/widgets", token="t", run=fake)
+    pr = _pull(gh, raw)
+    # the approve stays COMMENTED (quorum reads the group's status for it) and counts nothing toward the cap, but it
+    # is flagged as the author's verdict so rules._reviews_on_head sees the head as reviewed; a nulled commit_id reads as ""
+    assert pr.reviews[0].state == "COMMENTED" and pr.reviews[0].as_author and pr.reviews[0].commit_id == ""
+    assert pr.changes_requested_total() == 0 and pr.approvals_on_head() == frozenset()
+
+
+def test_review_request_changes_on_a_head_the_group_already_requested_changes_on_adds_no_round(tmp_path):
+    fake, ctx, repo, wt = reviewed_pr(tmp_path, CHANGES_SCRIPT)
+    # codex's round on an older head, plus our own reviewer's request-changes on this very head (this run is the
+    # sequential security reviewer): the cap counts distinct (reviewer, head) pairs, so the total stays 2 of 3
+    fake.route("GET", R + "pulls/20/reviews",
+               [{"user": {"login": "meld-codex-bot"}, "state": "CHANGES_REQUESTED", "commit_id": "old000", "submitted_at": "2026-09-03T09:00:00Z"},
+                {"user": {"login": "meld-claude-bot"}, "state": "CHANGES_REQUESTED", "commit_id": "abc123", "submitted_at": "2026-09-03T11:30:00Z"}])
+    out = review(ctx, 20, now=NOW)
+    assert out["issue_status"] == "in_progress" and len(calls(fake, "POST", "pulls/20/reviews")) == 1

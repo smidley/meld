@@ -84,15 +84,19 @@ def _review(r: dict) -> Review:
     an APPROVE/REQUEST_CHANGES (its own account authored the PR), so `meld review` posts it as a COMMENT review whose
     first line is the AUTHOR_VERDICT_MARKER (review.py). A request-changes marker is promoted here to a synthetic
     CHANGES_REQUESTED with as_author=True, so it counts toward the ping-pong cap like any other; an approve marker
-    stays COMMENTED -- that verdict is carried by the group's `meld/review/<group>` commit status instead (rules.approving_parties)."""
+    stays COMMENTED -- that verdict is carried by the group's `meld/review/<group>` commit status instead
+    (rules.approving_parties) -- but is flagged as_author too, so rules._reviews_on_head knows the group has reviewed
+    that head and refuses a second review run of it."""
     body = r.get("body") or ""
     first_line = body.split("\n", 1)[0]
     author = (r.get("user") or {}).get("login", "")
     state = r.get("state", "")
-    commit_id = r.get("commit_id", "")
+    commit_id = r.get("commit_id") or ""    # GitHub nulls commit_id once a review's commit is gone; keep it a string
     submitted_at = r.get("submitted_at", "")
     if state == "COMMENTED" and first_line == f"{AUTHOR_VERDICT_MARKER} request-changes":
         return Review(author=author, state="CHANGES_REQUESTED", commit_id=commit_id, submitted_at=submitted_at, as_author=True, body=body)
+    if state == "COMMENTED" and first_line == f"{AUTHOR_VERDICT_MARKER} approve":
+        return Review(author=author, state=state, commit_id=commit_id, submitted_at=submitted_at, as_author=True, body=body)
     return Review(author=author, state=state, commit_id=commit_id, submitted_at=submitted_at, body=body)
 
 

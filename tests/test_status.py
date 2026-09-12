@@ -80,7 +80,11 @@ def test_status_command_reports_board_and_legal_actions(project: Path, monkeypat
     assert data["needs_human"][0]["issue"] == 14 and data["needs_human"][0]["age_minutes"] > 0
     pulls = {p["number"]: p for p in data["pulls"]}
     assert pulls[20]["committer_party"] == "codex" and pulls[20]["approvals"] == ["claude"]
-    assert pulls[20]["legal"] == ["approve", "request-changes", "push-fix", "merge", "review", "remember"]
+    # review is not listed: claude already approved this head, and a group gets one review slot per head
+    assert pulls[20]["legal"] == ["approve", "request-changes", "push-fix", "merge", "remember"]
+    fake.route("GET", "repos/acme/widgets/pulls/20/reviews", [])   # no verdict on the head yet: review is offered
+    again = CliRunner().invoke(cli.main, ["--config", str(project / ".meld.toml"), "--compact", "status"], env=env_for(project))
+    assert "review" in {p["number"]: p for p in json.loads(again.output)["pulls"]}[20]["legal"]
     assert pulls[19]["state"] == "closed" and pulls[19]["legal"] == ["remember"]
     assert data["coordination"]["open_challenges"] == ["#12"] and data["coordination"]["ignored_comments"] == 1
     assert data["budget"]["cap"] == {"small": 200, "medium": 80, "large": 20}
@@ -176,7 +180,7 @@ def test_status_tolerates_an_unknown_head_committer(project: Path, monkeypatch):
     assert result.exit_code == 0, result.output
     pulls = {p["number"]: p for p in json.loads(result.output)["pulls"]}
     assert pulls[20]["committer_party"] is None
-    assert pulls[20]["legal"] == ["request-changes", "push-fix", "review", "remember"]
+    assert pulls[20]["legal"] == ["request-changes", "push-fix", "remember"]   # claude already approved this head
 
 
 def test_status_reports_an_unreadable_commit_status_in_state_errors(project: Path, monkeypatch):

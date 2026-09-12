@@ -47,6 +47,15 @@ def mk_issue(number: int, status: str = "ready", worker: str | None = "backend",
                  updated_at=updated_at)
 
 
+def mk_cfg(**review) -> Config:
+    """CFG2 plus a [review] section, e.g. mk_cfg(security_paths=["auth/**"])."""
+    return Config.from_dict({
+        "repo": {"name": "acme/widgets"}, "humans": {"accounts": ["empowerScott"]},
+        "groups": {"claude": _group("claude", "meld-claude-bot", "T1"), "codex": _group("codex", "meld-codex-bot", "T2")},
+        "review": review,
+    })
+
+
 def mk_pr(number: int, issue: int, head_sha: str = "abc123", committer: str | None = "meld-claude-bot",
           author: str | None = None, approvals: tuple[str, ...] = (), stale_approvals: tuple[str, ...] = (),
           changes_requested: tuple[str, ...] = (), extra_changes_requested_history: int = 0,
@@ -60,7 +69,7 @@ def mk_pr(number: int, issue: int, head_sha: str = "abc123", committer: str | No
         reviews.append(Review(a, "APPROVED", "old000", f"2026-09-03T10:{t:02d}:00Z"))
     for _ in range(extra_changes_requested_history):
         t += 1
-        reviews.append(Review((committer or "nobody") + "-other", "CHANGES_REQUESTED", "old000", f"2026-09-03T10:{t:02d}:00Z"))
+        reviews.append(Review((committer or "nobody") + "-other", "CHANGES_REQUESTED", f"old{t:03d}", f"2026-09-03T10:{t:02d}:00Z"))   # one round per earlier head
     for a in changes_requested:
         t += 1
         reviews.append(Review(a, "CHANGES_REQUESTED", head_sha, f"2026-09-03T10:{t:02d}:00Z"))

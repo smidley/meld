@@ -123,7 +123,7 @@ def test_pingpong_and_legal_pr_verbs():
     assert pingpong_exceeded(CFG2, pr)
     assert not pingpong_exceeded(CFG2, mk_pr(21, 14, extra_changes_requested_history=2))
     b = mk_board(CFG2, pulls=[pr])
-    # claude is not the head committer, but it already approved this head, so review is not listed (one review run per
+    # claude is not the head committer, but it already approved this head, so review is not listed (one review slot per
     # group per head, spec 13 step 2); remember (plan 5 task 1) is legal on any resolved, unchallenged board item
     # regardless of committer/author, so it closes out both lists
     assert legal_pr_verbs(b, CFG2, CLAUDE_PM, pr) == ["approve", "request-changes", "push-fix", "merge", "remember"]

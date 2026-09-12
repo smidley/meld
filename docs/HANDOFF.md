@@ -147,7 +147,7 @@ The first paid run (product `tally`; milestone 1 = engine, CLI, QA, docs; two gr
 - **PR #15 — codex workers** get `--add-dir` for the worktree gitdir, the common `.git`, and the uv cache, so a sandboxed worker can commit.
 - **PR #16 — review feedback reaches the retry.** `Review.body`, `brief.review_feedback(pr)`, and `collect`'s `no_change` outcome, which keeps the issue in progress instead of looping.
 - **PR #17 — audits** refuse PRs not authored by a group (`cfg.group_for_bot(author) is None`), and such PRs leave `audit_summary.pending`.
-- **PR #18 — one review slot per group per head.** `rules._review` refuses a head the group's bot already reviewed, the author group's marked COMMENT verdicts included (two slots when the PR touches `review.security_paths`; a dismissed review frees the slot), and the ping-pong cap counts distinct (reviewer, head) pairs (spec section 13 steps 2 and 5, section 21 item 31, which also records the collect-to-review window this leaves open).
+- **PR #18 — one review slot per group per head.** `rules._review` refuses a head the group's bot already reviewed, the author group's marked COMMENT verdicts included (two slots when the PR touches `review.security_paths`; a dismissed review frees the slot, though GitHub cannot dismiss the author group's marked COMMENT verdicts, which wait for a new head), and the ping-pong cap counts distinct (reviewer, head) pairs (spec section 13 steps 2 and 5, section 21 item 31, which also records the collect-to-review window this leaves open).
 
 Residuals observed in the run and deliberately not fixed live (plan 8 candidates, roughly by cost of leaving them):
 

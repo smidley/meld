@@ -80,7 +80,7 @@ def test_status_command_reports_board_and_legal_actions(project: Path, monkeypat
     assert data["needs_human"][0]["issue"] == 14 and data["needs_human"][0]["age_minutes"] > 0
     pulls = {p["number"]: p for p in data["pulls"]}
     assert pulls[20]["committer_party"] == "codex" and pulls[20]["approvals"] == ["claude"]
-    # review is not listed: claude already approved this head, and a group gets one review run per head
+    # review is not listed: claude already approved this head, and a group gets one review slot per head
     assert pulls[20]["legal"] == ["approve", "request-changes", "push-fix", "merge", "remember"]
     fake.route("GET", "repos/acme/widgets/pulls/20/reviews", [])   # no verdict on the head yet: review is offered
     again = CliRunner().invoke(cli.main, ["--config", str(project / ".meld.toml"), "--compact", "status"], env=env_for(project))

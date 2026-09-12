@@ -387,7 +387,8 @@ def _reviews_on_head(cfg: Config, group: str, pr: PullRequest) -> int:
     COMMENTED, so the state filter alone would miss it). The first live run's codex PM reviewed one unchanged
     head four times in 47 minutes -- every dispatch was legal because only the run slot was checked -- spending four
     large-tier runs and tripping the ping-pong cap on one substantive verdict (spec 21 item 31). A DISMISSED review
-    frees the slot: a human who dismisses a stale verdict is asking for a fresh look."""
+    frees the slot: a human who dismisses a stale verdict is asking for a fresh look. GitHub dismisses only APPROVED
+    and CHANGES_REQUESTED reviews, so the author group's marked COMMENT verdicts wait for a new head instead."""
     return sum(1 for r in pr.reviews
                if r.commit_id == pr.head_sha and (r.state in ("APPROVED", "CHANGES_REQUESTED") or r.as_author)
                and party_of_login(cfg, r.author) == group)

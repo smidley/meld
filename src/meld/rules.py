@@ -373,22 +373,24 @@ def _review(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | N
         return "PR has an open CHALLENGE"
     if pr.memory:
         return f"memory PR: run `meld review {pr.number}` directly, no worker needed"
-    spent = _reviews_on_head(cfg, actor.group or "", pr)
+    spent = _reviews_on_head(cfg, actor.group, pr)  # type: ignore[arg-type]
     allowed = 2 if pr.touches(cfg.security_paths) else 1   # spec 13 step 2: one reviewer, plus one security reviewer
     if spent >= allowed:
-        what = "already reviewed" if allowed == 1 else "already posted both its reviews (reviewer and security) of"
+        what = "already reviewed" if allowed == 1 else "already used both its review slots (reviewer and security) on"
         return f"{actor.group} {what} head {pr.head_sha[:7]}; a new review needs a new head"
     return _run_slot(board, cfg, actor, pr.number)
 
 
 def _reviews_on_head(cfg: Config, group: str, pr: PullRequest) -> int:
     """Verdicts `group` has already posted on the current head: GitHub reviews by its bot, the author group's marked
-    COMMENT verdict included (assemble reads it back as a Review). The first live run's codex PM reviewed one unchanged
+    COMMENT verdicts included (assemble flags both its approve and its request-changes `as_author`; the approve stays
+    COMMENTED, so the state filter alone would miss it). The first live run's codex PM reviewed one unchanged
     head four times in 47 minutes -- every dispatch was legal because only the run slot was checked -- spending four
     large-tier runs and tripping the ping-pong cap on one substantive verdict (spec 21 item 31). A DISMISSED review
     frees the slot: a human who dismisses a stale verdict is asking for a fresh look."""
     return sum(1 for r in pr.reviews
-               if r.commit_id == pr.head_sha and r.state in ("APPROVED", "CHANGES_REQUESTED") and party_of_login(cfg, r.author) == group)
+               if r.commit_id == pr.head_sha and (r.state in ("APPROVED", "CHANGES_REQUESTED") or r.as_author)
+               and party_of_login(cfg, r.author) == group)
 
 
 def _audit(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | None:

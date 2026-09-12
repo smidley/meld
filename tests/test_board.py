@@ -42,6 +42,10 @@ def test_pr_review_math_uses_latest_review_per_author_on_head():
     dup = replace(pr2, reviews=pr2.reviews + (Review("meld-claude-bot", "CHANGES_REQUESTED", "abc123", "2026-09-03T12:00:00Z"),
                                               Review("meld-codex-bot", "DISMISSED", "abc123", "2026-09-03T12:30:00Z")))
     assert dup.changes_requested_total() == 3
+    # two old rounds whose commits GitHub has forgotten (commit_id read back as "") are still two rounds
+    gone = replace(pr2, reviews=(Review("meld-codex-bot", "CHANGES_REQUESTED", "", "2026-09-03T08:00:00Z"),
+                                 Review("meld-codex-bot", "CHANGES_REQUESTED", "", "2026-09-03T08:30:00Z")))
+    assert gone.changes_requested_total() == 2
 
 
 def test_derive_phase_and_halted():

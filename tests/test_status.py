@@ -82,6 +82,9 @@ def test_status_command_reports_board_and_legal_actions(project: Path, monkeypat
     assert pulls[20]["committer_party"] == "codex" and pulls[20]["approvals"] == ["claude"]
     # review is not listed: claude already approved this head, and a group gets one review run per head
     assert pulls[20]["legal"] == ["approve", "request-changes", "push-fix", "merge", "remember"]
+    fake.route("GET", "repos/acme/widgets/pulls/20/reviews", [])   # no verdict on the head yet: review is offered
+    again = CliRunner().invoke(cli.main, ["--config", str(project / ".meld.toml"), "--compact", "status"], env=env_for(project))
+    assert "review" in {p["number"]: p for p in json.loads(again.output)["pulls"]}[20]["legal"]
     assert pulls[19]["state"] == "closed" and pulls[19]["legal"] == ["remember"]
     assert data["coordination"]["open_challenges"] == ["#12"] and data["coordination"]["ignored_comments"] == 1
     assert data["budget"]["cap"] == {"small": 200, "medium": 80, "large": 20}

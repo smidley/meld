@@ -15,7 +15,7 @@ from meld.gitops import commits_ahead, head_sha, push_branch
 from meld.grammar import Header, agreement_for, compose, verified_joint
 from meld.memory import DECISIONS_DIR, LESSONS_FILE, LESSONS_HEADER, comment_url, content_hash, render_decision, superseded_trailer
 from meld.results import cap_body, format_findings, load_result, mark_submitted, store_result, update_result
-from meld.rules import VERB_FOR, Refusal, Verb, approving_parties, author_party, memory_review_rule, pr_refusal, review_verdict_rule, status_context
+from meld.rules import VERB_FOR, Refusal, Verb, approving_parties, author_party, memory_review_rule, party_of_login, pr_refusal, review_verdict_rule, status_context
 from meld.status import build_status
 
 EVENTS = {"approve": "APPROVE", "request-changes": "REQUEST_CHANGES", "push-fix": "COMMENT"}
@@ -378,7 +378,11 @@ def review(ctx, number: int, *, now: datetime | None = None) -> dict:
         # COMMENT review (its body opens with AUTHOR_VERDICT_MARKER) is promoted to a CHANGES_REQUESTED Review by
         # assemble._pull, so it is already counted in that total too -- no as_author special case is needed here
         # any more; every path gets the same "count it unless this call is a retry of an already-posted review" rule.
-        extra = 0 if already_submitted else 1
+        # The total counts distinct (reviewer, head) pairs, so this group's second request-changes on the same head
+        # (the sequential `security` reviewer after the `reviewer`) adds nothing either.
+        same_pair = any(r.state == "CHANGES_REQUESTED" and r.commit_id == sha and party_of_login(ctx.cfg, r.author) == group.name
+                        for r in pr.reviews)
+        extra = 0 if already_submitted or same_pair else 1
         if pr.changes_requested_total() + extra >= ctx.cfg.pingpong_cap:
             _swap_labels(ctx, pr.issue_number, BLOCKED, (IN_REVIEW, IN_PROGRESS))
             ctx.gh.create_comment(pr.issue_number, f"Meld: review ping-pong cap ({ctx.cfg.pingpong_cap}) reached on PR #{number}; "

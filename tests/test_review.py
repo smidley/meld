@@ -760,3 +760,36 @@ def test_memory_review_retries_a_failed_status_post_on_the_next_call(tmp_path):
     assert second["event"] == "APPROVE" and second.get("status_retried") is True and "status_error" not in second
     assert len(calls(fake, "POST", "pulls/40/reviews")) == 1 and len(calls(fake, "POST", "statuses/mem0001")) == 2
     assert not load_result(ctx.store.home, "codex", "review", 40).get("status_error")
+
+
+def test_author_groups_approve_marker_stays_commented_but_is_its_verdict():
+    from meld.assemble import _pull
+    from meld.review import AUTHOR_VERDICT_MARKER
+    from tests.fakegh import FakeGh
+    from meld.github import GitHub
+    fake = FakeGh()
+    raw = {"number": 20, "title": "t", "body": "Closes #13", "head": {"ref": "meld/13-x", "sha": "abc123"}, "user": {"login": "meld-claude-bot"}, "state": "open", "labels": []}
+    fake.route("GET", "repos/acme/widgets/pulls/20/reviews", [
+        {"user": {"login": "meld-claude-bot"}, "state": "COMMENTED", "commit_id": None, "submitted_at": "2026-09-03T10:00:00Z",
+         "body": f"{AUTHOR_VERDICT_MARKER} approve\n\nVerdict: approve — posted as a comment review ..."}])
+    fake.route("GET", "repos/acme/widgets/pulls/20/commits", [{"author": {"login": "meld-codex-bot"}, "committer": {"login": "meld-codex-bot"}}])
+    fake.route("GET", "repos/acme/widgets/commits/abc123/check-runs", {"check_runs": []})
+    fake.route("GET", "repos/acme/widgets/pulls/20/files", [])
+    fake.route("GET", "repos/acme/widgets/commits/abc123/status", {"state": "pending", "statuses": []})
+    gh = GitHub("acme/widgets", token="t", run=fake)
+    pr = _pull(gh, raw)
+    # the approve stays COMMENTED (quorum reads the group's status for it) and counts nothing toward the cap, but it
+    # is flagged as the author's verdict so rules._reviews_on_head sees the head as reviewed; a nulled commit_id reads as ""
+    assert pr.reviews[0].state == "COMMENTED" and pr.reviews[0].as_author and pr.reviews[0].commit_id == ""
+    assert pr.changes_requested_total() == 0 and pr.approvals_on_head() == frozenset()
+
+
+def test_review_request_changes_on_a_head_the_group_already_requested_changes_on_adds_no_round(tmp_path):
+    fake, ctx, repo, wt = reviewed_pr(tmp_path, CHANGES_SCRIPT)
+    # codex's round on an older head, plus our own reviewer's request-changes on this very head (this run is the
+    # sequential security reviewer): the cap counts distinct (reviewer, head) pairs, so the total stays 2 of 3
+    fake.route("GET", R + "pulls/20/reviews",
+               [{"user": {"login": "meld-codex-bot"}, "state": "CHANGES_REQUESTED", "commit_id": "old000", "submitted_at": "2026-09-03T09:00:00Z"},
+                {"user": {"login": "meld-claude-bot"}, "state": "CHANGES_REQUESTED", "commit_id": "abc123", "submitted_at": "2026-09-03T11:30:00Z"}])
+    out = review(ctx, 20, now=NOW)
+    assert out["issue_status"] == "in_progress" and len(calls(fake, "POST", "pulls/20/reviews")) == 1

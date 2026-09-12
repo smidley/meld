@@ -12,7 +12,7 @@ from meld.rules import (
     review_verdict_rule,
     status_context,
 )
-from tests.factories import CFG2, CFG3, mk_board, mk_pr
+from tests.factories import CFG2, CFG3, mk_board, mk_cfg, mk_pr
 
 CLAUDE_PM = Actor(Party("pm", "claude"), "meld-claude-bot")
 CLAUDE_ORCH = Actor(Party("group", "claude"), "meld-claude-bot")
@@ -315,8 +315,6 @@ def test_a_merged_memory_pr_owes_no_audit():
 def test_review_dispatch_is_refused_for_a_head_the_group_already_reviewed():
     from dataclasses import replace
     from meld.board import Review
-    from meld.config import Config
-    from tests.factories import _group
     fresh = mk_pr(20, 13, committer="meld-codex-bot")
     b = mk_board(CFG2, pulls=[fresh])
     assert rule(b, CFG2, CLAUDE_PM, Verb.REVIEW, fresh) is None
@@ -327,16 +325,23 @@ def test_review_dispatch_is_refused_for_a_head_the_group_already_reviewed():
     older = replace(fresh, reviews=(Review("meld-claude-bot", "CHANGES_REQUESTED", "old000", "2026-09-03T09:00:00Z"),))
     dismissed = replace(fresh, reviews=(Review("meld-claude-bot", "DISMISSED", "abc123", "2026-09-03T09:00:00Z"),))
     human = mk_pr(20, 13, committer="meld-codex-bot", changes_requested=("empowerScott",))
-    for pr in (older, dismissed, human):
+    plain = replace(fresh, reviews=(Review("meld-claude-bot", "COMMENTED", "abc123", "2026-09-03T09:00:00Z", body="looks fine so far"),
+                                    Review("meld-claude-bot", "PENDING", "abc123", "2026-09-03T09:10:00Z")))
+    for pr in (older, dismissed, human, plain):
         assert rule(b, CFG2, CLAUDE_PM, Verb.REVIEW, pr) is None
+    # the author group's own verdicts after another group's push-fix reach the board as marked COMMENT reviews
+    # (assemble._review): the promoted request-changes and the still-COMMENTED approve both spend claude's slot
+    own = mk_pr(20, 13, committer="meld-codex-bot", author="meld-claude-bot", statuses={"meld/review/claude": "success"})
+    approve = replace(own, reviews=(Review("meld-claude-bot", "COMMENTED", "abc123", "2026-09-03T11:00:00Z", as_author=True,
+                                           body="meld-verdict: approve\n\nVerdict: approve"),))
+    changes = replace(own, reviews=(Review("meld-claude-bot", "CHANGES_REQUESTED", "abc123", "2026-09-03T11:00:00Z", as_author=True,
+                                           body="meld-verdict: request-changes\n\nVerdict: request-changes"),))
+    for pr in (approve, changes):
+        assert rule(mk_board(CFG2, pulls=[pr]), CFG2, CLAUDE_PM, Verb.REVIEW, pr) == already
     # a PR touching review.security_paths gets a second slot for the security reviewer, and no third
-    sec_cfg = Config.from_dict({
-        "repo": {"name": "acme/widgets"}, "humans": {"accounts": ["empowerScott"]},
-        "groups": {"claude": _group("claude", "meld-claude-bot", "T1"), "codex": _group("codex", "meld-codex-bot", "T2")},
-        "review": {"security_paths": ["auth/**"]},
-    })
+    sec_cfg = mk_cfg(security_paths=["auth/**"])
     one = mk_pr(20, 13, committer="meld-codex-bot", changes_requested=("meld-claude-bot",), files=("auth/login.py",))
     assert rule(mk_board(sec_cfg, pulls=[one]), sec_cfg, CLAUDE_PM, Verb.REVIEW, one) is None
     two = replace(one, reviews=one.reviews + (Review("meld-claude-bot", "APPROVED", "abc123", "2026-09-03T11:00:00Z"),))
     assert rule(mk_board(sec_cfg, pulls=[two]), sec_cfg, CLAUDE_PM, Verb.REVIEW, two) == (
-        "claude already posted both its reviews (reviewer and security) of head abc123; a new review needs a new head")
+        "claude already used both its review slots (reviewer and security) on head abc123; a new review needs a new head")

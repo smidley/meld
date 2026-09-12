@@ -265,8 +265,10 @@ class PullRequest:
 
     def changes_requested_total(self) -> int:
         """Request-changes rounds toward the ping-pong cap: distinct (reviewer, head) pairs, so a reviewer's repeated
-        verdict on one unchanged head counts once and a dismissed review not at all (spec 13 step 5)."""
-        return len({(r.author, r.commit_id) for r in self.reviews if r.state == "CHANGES_REQUESTED"})
+        verdict on one unchanged head counts once and a dismissed review not at all (spec 13 step 5). A review whose
+        commit GitHub no longer knows (commit_id nulled, read back as "") keys on its timestamp instead, so two old
+        rounds on vanished heads still count as two."""
+        return len({(r.author, r.commit_id or r.submitted_at) for r in self.reviews if r.state == "CHANGES_REQUESTED"})
 
     @property
     def challenged(self) -> bool:

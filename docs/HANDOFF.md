@@ -164,6 +164,10 @@ Residuals observed in the run and deliberately not fixed live (plan 8 candidates
 11. **Plan items have no dependency ordering**; QA was parked behind the CLI by a `DIRECTIVE`.
 12. **App setup** through GitHub's manifest flow (spec section 21 item 1) and a `doctor` login probe for each CLI.
 13. **Console ergonomics.** `meld chat`'s `/resolved` needs an issue or PR ref (free-form refs go through `meld post RESOLVED <ref>`), and a coordination thread passes 100 comments in hours, so every ad-hoc reader needs pagination.
+14. **Refusals are retried and published.** A PM launch re-derives the same intention from the board and re-issues a call the rules already refused (fifteen `PROTOCOL-VIOLATION` comments from one PM in 43 minutes; eight from the other on one PR), because nothing tells a fresh launch what the previous one tried. Fixes, cheapest first: the PM prompt treats an exit-2 refusal as terminal for that intention; `refuse()` posts one `PROTOCOL-VIOLATION` per identical (actor, verb, ref, rule) and logs repeats; the board carries attempt memory per run.
+15. **`legal` advertises verbs the rules then refuse.** `decide` on a spent agreement ref, `reopen` after a human closed the issue later than the AUDIT FAIL that offered it, `claim` when the tag's model is unknown to the claimant's adapter, and `audit`/`review` when no run slot is free are all computed differently from the refusal that follows; each should be one rule reached by both paths.
+16. **`collect` cannot push a rebased branch.** A worker that rebases onto `main` (as decision drift-1 asked) makes its branch non-fast-forward; `collect` failed twice and a PM force-pushed by hand. `collect` should push the issue's own branch with `--force-with-lease` when the worker's head descends from the PR's base.
+17. **A supervisor exits on ENOSPC** (see item 4) and nothing restarts it; the launcher is a one-shot script outside the repo.
 
 ## What is next
 

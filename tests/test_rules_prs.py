@@ -123,9 +123,11 @@ def test_pingpong_and_legal_pr_verbs():
     assert pingpong_exceeded(CFG2, pr)
     assert not pingpong_exceeded(CFG2, mk_pr(21, 14, extra_changes_requested_history=2))
     b = mk_board(CFG2, pulls=[pr])
-    # claude is not the head committer here, so review (new in Task 4) is also legal for it; remember (plan 5 task 1)
-    # is legal on any resolved, unchallenged board item regardless of committer/author, so it closes out both lists
-    assert legal_pr_verbs(b, CFG2, CLAUDE_PM, pr) == ["approve", "request-changes", "push-fix", "merge", "review", "remember"]
+    # claude is not the head committer, but it already approved this head, so review is not listed (one review run per
+    # group per head, spec 13 step 2); remember (plan 5 task 1) is legal on any resolved, unchallenged board item
+    # regardless of committer/author, so it closes out both lists
+    assert legal_pr_verbs(b, CFG2, CLAUDE_PM, pr) == ["approve", "request-changes", "push-fix", "merge", "remember"]
+    assert "review" in legal_pr_verbs(b, CFG2, CLAUDE_PM, mk_pr(22, 15, committer="meld-codex-bot"))
     assert legal_pr_verbs(b, CFG2, CODEX_PM, pr) == ["merge", "remember"]
 
 
@@ -143,10 +145,11 @@ def test_unknown_head_committer_blocks_approve_and_merge():
         assert rule(b, CFG2, CLAUDE_PM, verb, pr) is None
     assert rule(b, CFG2, CODEX_PM, Verb.PUSH_FIX, pr) is None
     assert rule(b, CFG2, CODEX_PM, Verb.REQUEST_CHANGES, pr) == AUTHOR_RULE
-    # an unknown committer cannot be reviewed away from (party_of_login is None, so claude != it),
-    # so review (new in Task 4) is also legal here even though approve/merge are blocked; remember (plan 5 task 1)
-    # is legal regardless (it never looks at committer/author), so it still closes out the list
-    assert legal_pr_verbs(b, CFG2, CLAUDE_PM, pr) == ["request-changes", "push-fix", "review", "remember"]
+    # an unknown committer cannot be reviewed away from (party_of_login is None, so claude != it), so review would be
+    # legal here even though approve/merge are blocked -- except that claude already approved this head, and a group
+    # gets one review run per head; remember (plan 5 task 1) is legal regardless (it never looks at committer/author)
+    assert legal_pr_verbs(b, CFG2, CLAUDE_PM, pr) == ["request-changes", "push-fix", "remember"]
+    assert "review" in legal_pr_verbs(b, CFG2, CLAUDE_PM, mk_pr(20, 13, committer=None, author="meld-codex-bot"))
 
 
 def test_author_party_is_refused_the_github_verbs_but_keeps_push_fix_and_review():
@@ -307,3 +310,33 @@ def test_a_merged_memory_pr_owes_no_audit():
     assert legal_pr_verbs(b, CFG2, CODEX_PM, merged) == ["remember"]
     ordinary = mk_pr(19, 9, committer="meld-claude-bot", state="closed", merged=True)
     assert prule(mk_board(CFG2, pulls=[ordinary]), CODEX_PM, Verb.AUDIT, ordinary) is None
+
+
+def test_review_dispatch_is_refused_for_a_head_the_group_already_reviewed():
+    from dataclasses import replace
+    from meld.board import Review
+    from meld.config import Config
+    from tests.factories import _group
+    fresh = mk_pr(20, 13, committer="meld-codex-bot")
+    b = mk_board(CFG2, pulls=[fresh])
+    assert rule(b, CFG2, CLAUDE_PM, Verb.REVIEW, fresh) is None
+    already = "claude already reviewed head abc123; a new review needs a new head"
+    assert rule(b, CFG2, CLAUDE_PM, Verb.REVIEW, mk_pr(20, 13, committer="meld-codex-bot", changes_requested=("meld-claude-bot",))) == already
+    assert rule(b, CFG2, CLAUDE_PM, Verb.REVIEW, mk_pr(20, 13, committer="meld-codex-bot", approvals=("meld-claude-bot",))) == already
+    # a verdict on an earlier head, another party's verdict, or a dismissed verdict leaves the slot open
+    older = replace(fresh, reviews=(Review("meld-claude-bot", "CHANGES_REQUESTED", "old000", "2026-09-03T09:00:00Z"),))
+    dismissed = replace(fresh, reviews=(Review("meld-claude-bot", "DISMISSED", "abc123", "2026-09-03T09:00:00Z"),))
+    human = mk_pr(20, 13, committer="meld-codex-bot", changes_requested=("empowerScott",))
+    for pr in (older, dismissed, human):
+        assert rule(b, CFG2, CLAUDE_PM, Verb.REVIEW, pr) is None
+    # a PR touching review.security_paths gets a second slot for the security reviewer, and no third
+    sec_cfg = Config.from_dict({
+        "repo": {"name": "acme/widgets"}, "humans": {"accounts": ["empowerScott"]},
+        "groups": {"claude": _group("claude", "meld-claude-bot", "T1"), "codex": _group("codex", "meld-codex-bot", "T2")},
+        "review": {"security_paths": ["auth/**"]},
+    })
+    one = mk_pr(20, 13, committer="meld-codex-bot", changes_requested=("meld-claude-bot",), files=("auth/login.py",))
+    assert rule(mk_board(sec_cfg, pulls=[one]), sec_cfg, CLAUDE_PM, Verb.REVIEW, one) is None
+    two = replace(one, reviews=one.reviews + (Review("meld-claude-bot", "APPROVED", "abc123", "2026-09-03T11:00:00Z"),))
+    assert rule(mk_board(sec_cfg, pulls=[two]), sec_cfg, CLAUDE_PM, Verb.REVIEW, two) == (
+        "claude already posted both its reviews (reviewer and security) of head abc123; a new review needs a new head")

@@ -113,6 +113,7 @@ def test_collect_review_run_stores_the_verdict(tmp_path):
     sh(["git", "commit", "-q", "-m", "ci"], repo)
     sh(["git", "push", "-q", "origin", "meld/13-ci-pipeline"], repo)
     sh(["git", "checkout", "-q", "main"], repo)
+    fake.route("GET", R + "pulls/20/reviews", [])   # board1's claude approval on abc123 would make this head already reviewed
     out = dispatch(ctx, 20, kind="review", adapter=FakeAdapter(script=REVIEW_SCRIPT), now=NOW)
     wait_for_exit(out["pid"])
     result = collect(ctx, 20, now=NOW)

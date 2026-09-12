@@ -190,7 +190,10 @@ def test_review_retry_after_a_failure_downstream_of_the_post_files_no_second_rev
 def test_a_second_verdict_from_another_worker_posts_its_own_review(tmp_path):
     fake, ctx, repo, wt = reviewed_pr(tmp_path, REVIEW_SCRIPT)
     assert review(ctx, 20, now=NOW)["review_id"] == 501
-    # GitHub now shows our APPROVED on abc123; the sequential `security` review is a new verdict on the same head
+    # GitHub now shows our APPROVED on abc123; the sequential `security` review is a new verdict on the same head, and
+    # the second review slot on one head exists only for a PR that touches review.security_paths (spec 13 step 2)
+    from dataclasses import replace
+    ctx.cfg = replace(ctx.cfg, security_paths=("ci.yml",))
     fake.route("GET", R + "pulls/20/reviews", fixture("reviews_20.json"))
     fake.route("POST", R + "pulls/20/reviews", {"id": 502, "html_url": "https://github.com/acme/widgets/pull/20#pullrequestreview-502"})
     out = dispatch(ctx, 20, kind="review", worker="security", adapter=FakeAdapter(script=REVIEW_SCRIPT), now=NOW)

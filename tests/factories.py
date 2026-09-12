@@ -60,7 +60,7 @@ def mk_pr(number: int, issue: int, head_sha: str = "abc123", committer: str | No
         reviews.append(Review(a, "APPROVED", "old000", f"2026-09-03T10:{t:02d}:00Z"))
     for _ in range(extra_changes_requested_history):
         t += 1
-        reviews.append(Review((committer or "nobody") + "-other", "CHANGES_REQUESTED", "old000", f"2026-09-03T10:{t:02d}:00Z"))
+        reviews.append(Review((committer or "nobody") + "-other", "CHANGES_REQUESTED", f"old{t:03d}", f"2026-09-03T10:{t:02d}:00Z"))   # one round per earlier head
     for a in changes_requested:
         t += 1
         reviews.append(Review(a, "CHANGES_REQUESTED", head_sha, f"2026-09-03T10:{t:02d}:00Z"))

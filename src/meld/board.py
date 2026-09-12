@@ -264,7 +264,9 @@ class PullRequest:
         return frozenset(a for a, r in self.latest_reviews().items() if r.state == "CHANGES_REQUESTED" and r.commit_id == self.head_sha)
 
     def changes_requested_total(self) -> int:
-        return sum(1 for r in self.reviews if r.state == "CHANGES_REQUESTED")
+        """Request-changes rounds toward the ping-pong cap: distinct (reviewer, head) pairs, so a reviewer's repeated
+        verdict on one unchanged head counts once and a dismissed review not at all (spec 13 step 5)."""
+        return len({(r.author, r.commit_id) for r in self.reviews if r.state == "CHANGES_REQUESTED"})
 
     @property
     def challenged(self) -> bool:

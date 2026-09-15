@@ -221,3 +221,19 @@ def test_app_group_ids_must_be_positive_integers():
     with pytest.raises(ConfigError, match="0 is the starter placeholder"):
         Config.from_dict({**base, "groups": {"claude": {**app, "app_id": 0}}})
     assert Config.from_dict({**base, "groups": {"claude": app}}).groups["claude"].app_id == 1234
+
+
+def test_logs_table_has_defaults_and_is_overridable():
+    base = {
+        "repo": {"name": "acme/widgets"},
+        "humans": {"accounts": ["empowerScott"]},
+        "groups": {"claude": {"cli": "claude", "bot": "meld-claude-bot", "token_env": "T1",
+                             "orchestrator": {"model": "m", "effort": "high"}, "pm": {"model": "m", "effort": "medium"}}},
+    }
+    default = Config.from_dict(base)
+    assert default.logs_max_bytes_per_run == 8 * 1024 * 1024
+    assert default.logs_warn_total_mb == 2048
+
+    tuned = Config.from_dict({**base, "logs": {"max_bytes_per_run": 1024, "warn_total_mb": 1}})
+    assert tuned.logs_max_bytes_per_run == 1024
+    assert tuned.logs_warn_total_mb == 1

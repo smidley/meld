@@ -107,6 +107,8 @@ class Config:
     lease_grace_minutes: int = 10
     audit_batch_merges: int = 5
     audit_batch_hours: int = 4
+    logs_max_bytes_per_run: int = 8 * 1024 * 1024
+    logs_warn_total_mb: int = 2048
 
     def timeout_seconds(self, size: str) -> int:
         if size not in self.timeouts:
@@ -175,6 +177,7 @@ class Config:
         worker = data.get("worker", {})
         lease = data.get("lease", {})
         audit = data.get("audit", {})
+        logs = data.get("logs", {})
         timeouts_cfg = {"S": str(timeouts.get("S", "20m")), "M": str(timeouts.get("M", "45m")), "L": str(timeouts.get("L", "90m"))}
         for size, value in timeouts_cfg.items():
             try:
@@ -211,6 +214,8 @@ class Config:
             lease_grace_minutes=int(lease.get("grace_minutes", 10)),
             audit_batch_merges=int(audit.get("batch_merges", 5)),
             audit_batch_hours=int(audit.get("batch_hours", 4)),
+            logs_max_bytes_per_run=int(logs.get("max_bytes_per_run", 8 * 1024 * 1024)),
+            logs_warn_total_mb=int(logs.get("warn_total_mb", 2048)),
         )
 
     @property

@@ -29,7 +29,7 @@
 1. **`Event` is a closed vocabulary, and `raw` is the escape hatch.** `KINDS` is a tuple in `transcript.py`; `Event.__post_init__` rejects a kind outside it. A CLI line an adapter does not recognize becomes `raw` with the line as `text`, truncated. This is what keeps a CLI upgrade from breaking `meld tail` and the failure tail.
 2. **The adapter translates; `Tail` sequences.** `parse_event(line, now)` returns an `Event` with `seq=0`; `Tail` stamps the monotonic number with `dataclasses.replace`. An adapter therefore has exactly one job and no state.
 3. **Text is capped at parse time, not at render time.** `TEXT_CAP = 2000` characters per event. A `tool_result` carrying 4 MB of command output must not sit in memory at full size while a viewer holds a thousand events. The renderer truncates again to the terminal width; the cap is about memory, the width is about reading.
-4. **The log cap is truncation in place, never a rename.** `popen_detached` hands the open log to the CLI as its stdout and the run outlives the `meld` process, so a rename would leave the writer appending to the renamed inode and the live reader watching a dead file. `open_log` already opens with `"ab"` (`O_APPEND`), which recomputes the offset from the file's end on every write, so `trim_log` copies the tail to `<name>.1`, replaces any previous `.1`, and truncates the original to zero; the writer's next line lands at the new end. `Tail` detects a file shorter than its own offset, emits `log_truncated`, and resumes from zero.
+4. **The log cap is truncation in place, never a rename.** `popen_detached` hands the open log to the CLI as its stdout and the run outlives the `meld` process, so a rename would leave the writer appending to the renamed inode and the live reader watching a dead file. `open_log` already opens with `"ab"` (`O_APPEND`), which recomputes the offset from the file's end on every write, so `trim_log` reads the tail into memory, truncates the original to zero, and only then writes that tail to `<name>.1`, replacing any previous `.1`; the writer's next line lands at the new end. The order is that way round because the disk this runs on may have no free bytes: writing the sidecar first fails with ENOSPC and frees nothing, and transiently adds up to `keep_bytes` before it fails, so a sidecar that cannot be written still counts as a trim. `Tail` detects a file shorter than its own offset, emits `log_truncated`, and resumes from zero.
 5. **`meld tail` is a human verb with no party.** It reads files under `$MELD_HOME` and prints; it takes no `MELD_GROUP`, posts nothing, and needs no board. It therefore does not call `load_context`'s GitHub path — it needs `meld_home` and the config only for `[logs]` and the group's adapter name. A worker (`MELD_WORKER=1`) still cannot run `meld` at all, which is unchanged.
 6. **The Claude switch is verified by `doctor`, not by a smoke run.** `--verbose` joins `REQUIRED_FLAGS`, so `meld doctor`'s `cli-flags:<group>` check fails loudly if a future CLI drops either flag, instead of every launch failing. No task in this plan runs a real CLI.
 7. **The `result` fixture is a real capture; the streamed events are the documented shape.** `tests/fixtures/transcripts/claude-run.jsonl`'s final `result` line is the redacted shape captured from the first live run's own log, because `--output-format json` writes exactly that event and nothing else. The `system`, `assistant`, and `user` lines are written from Claude Code's documented `stream-json` shape. Decision 1's `raw` fallback is what covers the gap until a live run adds a full capture; Task 3 includes an unknown-type line and a non-JSON line as fixtures precisely so the fallback is tested rather than assumed.
@@ -1096,6 +1096,12 @@ def trim_log(path: Path, max_bytes: int, *, keep_bytes: int | None = None) -> bo
     `O_APPEND`, which recomputes the offset from the file's end on every write, so truncating to zero lets
     the writer's next line land at the new end. The last `keep_bytes` go to `<name>.1` for post-mortem
     reading; a previous `.1` is replaced, so the newest two windows survive and no more.
+
+    Read the tail, truncate, *then* write the sidecar -- in that order, because the moment this mechanism
+    exists for is a disk with no free bytes. Writing `.1` first fails with ENOSPC and frees nothing, and
+    until it fails it transiently ADDS up to `keep_bytes`, so on a log's first trim it can be the write
+    that crosses the line. A `.1` this could not write is reported as a trim anyway: the space is the
+    incident, the tail is only the post-mortem.
     """
     keep = max_bytes // 4 if keep_bytes is None else keep_bytes
     try:
@@ -1108,10 +1114,13 @@ def trim_log(path: Path, max_bytes: int, *, keep_bytes: int | None = None) -> bo
         with path.open("rb") as f:
             f.seek(max(0, size - keep))
             tail = f.read()
-        path.with_suffix(path.suffix + ".1").write_bytes(tail)
         os.truncate(path, 0)
     except OSError:
         return False
+    try:
+        path.with_suffix(path.suffix + ".1").write_bytes(tail)
+    except OSError:
+        pass                                 # the space is freed; losing the tail is the cheaper loss
     return True
 
 

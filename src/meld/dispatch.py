@@ -529,14 +529,17 @@ def _dispatch_pr(ctx, board: Board, actor: Actor, number: int, kind: str, adapte
 
 def tick(ctx, *, now: datetime | None = None, sleep=time.sleep, env: Mapping[str, str] | None = None, post=None) -> dict:
     """PM housekeeping: kill overdue workers, create missing leases, release other groups' expired leases."""
-    # Every tick caps a runaway log before anything else, so it runs on the same cadence as the rest of
-    # tick regardless of what else this call does (an exhausted disk killed both supervisors on 2026-09-12).
-    # Filesystem-only, and cheap when nothing is over the cap, so it costs nothing to run unconditionally.
-    sweep_logs(ctx.store.home / "logs", ctx.cfg.logs_max_bytes_per_run)
     _, board = build_status(ctx)
     actor = ctx.actor()
     if not actor.is_pm:
         raise DispatchError(f"tick is a PM verb; you are {actor.party.label}")
+    # Every tick caps a runaway log ahead of the work below, so it runs on the same cadence as the rest of
+    # tick regardless of what else this call does (an exhausted disk killed both supervisors on 2026-09-12).
+    # Filesystem-only, and cheap when nothing is over the cap, so it costs nothing to run unconditionally --
+    # but only once the refusal above has passed. A refused verb must change nothing, and a human or
+    # orchestrator running `meld tick` to diagnose something would otherwise zero the very transcript they
+    # were about to read with `meld tail` (which does not read the `.1` sidecar) and then be refused.
+    sweep_logs(ctx.store.home / "logs", ctx.cfg.logs_max_bytes_per_run)
     group = ctx.cfg.groups[actor.group]  # type: ignore[index]
     when = _now(now)
     now_iso = _iso(when)

@@ -245,6 +245,19 @@ def test_trim_log_keeps_the_tail_beside_the_emptied_file(tmp_path):
     assert kept.endswith(b"line 199\n")
 
 
+def test_trim_log_frees_the_space_even_when_the_sidecar_cannot_be_written(tmp_path):
+    """The order is load-bearing. The moment this mechanism exists for is a disk with no free bytes, where
+    the sidecar write is the operation that fails -- so the truncate happens first and a `.1` that could not
+    be written is still reported as a trim. A directory in the sidecar's place is that failure, for real."""
+    log = tmp_path / "role.log"
+    log.write_bytes(b"".join(b"line %d\n" % i for i in range(200)))
+    (tmp_path / "role.log.1").mkdir()                      # write_bytes here raises IsADirectoryError
+
+    assert trim_log(log, max_bytes=64, keep_bytes=32) is True
+    assert log.stat().st_size == 0                         # the space was freed, which is the incident
+    assert (tmp_path / "role.log.1").is_dir()              # and nothing pretended to write the tail
+
+
 def test_trim_log_of_a_missing_file_is_false(tmp_path):
     assert trim_log(tmp_path / "absent.log", max_bytes=1) is False
 

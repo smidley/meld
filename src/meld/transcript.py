@@ -180,6 +180,12 @@ def trim_log(path: Path, max_bytes: int, *, keep_bytes: int | None = None) -> bo
     `O_APPEND`, which recomputes the offset from the file's end on every write, so truncating to zero lets
     the writer's next line land at the new end. The last `keep_bytes` go to `<name>.1` for post-mortem
     reading; a previous `.1` is replaced, so the newest two windows survive and no more.
+
+    Read the tail, truncate, *then* write the sidecar -- in that order, because the moment this mechanism
+    exists for is a disk with no free bytes. Writing `.1` first fails with ENOSPC and frees nothing, and
+    until it fails it transiently ADDS up to `keep_bytes`, so on a log's first trim it can be the write
+    that crosses the line. A `.1` this could not write is reported as a trim anyway: the space is the
+    incident, the tail is only the post-mortem.
     """
     keep = max_bytes // 4 if keep_bytes is None else keep_bytes
     try:
@@ -192,10 +198,13 @@ def trim_log(path: Path, max_bytes: int, *, keep_bytes: int | None = None) -> bo
         with path.open("rb") as f:
             f.seek(max(0, size - keep))
             tail = f.read()
-        path.with_suffix(path.suffix + ".1").write_bytes(tail)
         os.truncate(path, 0)
     except OSError:
         return False
+    try:
+        path.with_suffix(path.suffix + ".1").write_bytes(tail)
+    except OSError:
+        pass                                 # the space is freed; losing the tail is the cheaper loss
     return True
 
 

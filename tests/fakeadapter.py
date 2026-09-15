@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 from meld.adapters.base import LaunchSpec, open_log, popen_detached
 from meld.roster import WorkerType
+from meld.transcript import Event, cap
 
 DEFAULT_SCRIPT = "import time; time.sleep(0.2)"
 
@@ -43,6 +44,10 @@ class FakeAdapter:
 
     def version_argv(self) -> list[str]:
         return [sys.executable, "--version"]
+
+    def parse_events(self, line: str, now: str) -> list[Event]:
+        """The fake CLI writes plain text, so every line is one message."""
+        return [Event(seq=0, at=now, kind="message", text=cap(line))] if line.strip() else []
 
 
 def no_skills(cli_name: str) -> FakeAdapter:

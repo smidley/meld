@@ -4,6 +4,10 @@ from pathlib import Path
 import meld.adapters.claude as claude_mod
 from meld.adapters.base import SCRUBBED_EXACT, LaunchSpec
 from meld.adapters.claude import ClaudeAdapter
+from meld.transcript import Tail, render
+
+FIXTURES = Path(__file__).parent / "fixtures" / "transcripts"
+NOW = "2026-09-12T02:11:19Z"
 
 
 def spec(tmp_path: Path, **over) -> LaunchSpec:
@@ -63,3 +67,60 @@ def test_installed_skills_scans_personal_and_plugin_skills(tmp_path: Path):
     assert names == [("brand", "Brand voice."), ("slides", "Decks.")]
     assert ClaudeAdapter(home=tmp_path / "nowhere").installed_skills() == []
     assert ClaudeAdapter().command_timeout_ceiling_seconds() == 600 and ClaudeAdapter().supports_effort() is True
+
+
+def test_parse_events_renders_a_whole_claude_run():
+    events = Tail(FIXTURES / "claude-run.jsonl").read(ClaudeAdapter().parse_events, NOW)
+    assert [e.kind for e in events] == [
+        "run_started", "message", "tool_call", "tool_result", "thinking",
+        "tool_call", "tool_result", "raw", "run_finished",
+    ]
+    assert render(events, width=96) == "\n".join([
+        "02:11:19  started  claude-opus-5",
+        "02:11:19  message  Checking the board first.",
+        "02:11:19  tool     Bash: meld status",
+        '02:11:19  result   ok · {"repo": "acme/widgets"}',
+        "02:11:19  think    The audit failed on defects already fixed on main.",
+        "02:11:19  tool     Bash: meld post STATUS -m 'board is clean'",
+        "02:11:19  result   FAILED · refused: HALT is in effect",
+        "02:11:19  raw      a bare line the CLI printed before its first event",
+        "02:11:19  done     PR 15 merged.",
+    ])
+
+
+def test_parse_events_splits_one_assistant_line_into_its_content_blocks():
+    line = ('{"type":"assistant","message":{"role":"assistant","content":['
+            '{"type":"text","text":"Checking."},'
+            '{"type":"tool_use","id":"toolu_9","name":"Bash","input":{"command":"meld status"}}]}}')
+    events = ClaudeAdapter().parse_events(line, NOW)
+    assert [(e.kind, e.tool, e.text) for e in events] == [
+        ("message", None, "Checking."), ("tool_call", "Bash", "meld status")]
+
+
+def test_parse_events_marks_a_failed_tool_result():
+    line = ('{"type":"user","message":{"role":"user","content":[{"type":"tool_result",'
+            '"tool_use_id":"toolu_2","content":"refused: HALT is in effect","is_error":true}]}}')
+    (event,) = ClaudeAdapter().parse_events(line, NOW)
+    assert (event.kind, event.ok, event.text) == ("tool_result", False, "refused: HALT is in effect")
+
+
+def test_parse_events_reads_the_result_event_as_the_runs_end():
+    line = ('{"type":"result","subtype":"success","is_error":false,"num_turns":89,'
+            '"total_cost_usd":8.343978,"result":"PR 15 merged.","usage":{"output_tokens":76943}}')
+    (event,) = ClaudeAdapter().parse_events(line, NOW)
+    assert (event.kind, event.ok, event.text) == ("run_finished", True, "PR 15 merged.")
+    assert event.meta["num_turns"] == 89 and event.meta["cost_usd"] == 8.343978
+
+
+def test_parse_events_drops_a_partial_stream_event_and_keeps_an_unknown_type_as_raw():
+    assert ClaudeAdapter().parse_events('{"type":"stream_event","event":{"type":"content_block_delta"}}', NOW) == []
+    (unknown,) = ClaudeAdapter().parse_events('{"type":"weather_report","temp":21}', NOW)
+    assert unknown.kind == "raw" and "weather_report" in unknown.text
+
+
+def test_parse_events_never_raises_on_junk():
+    (raw,) = ClaudeAdapter().parse_events("not json at all", NOW)
+    assert raw.kind == "raw" and raw.text == "not json at all"
+    (broken,) = ClaudeAdapter().parse_events('{"type": "assistant", "message": {', NOW)
+    assert broken.kind == "raw"
+    assert ClaudeAdapter().parse_events("   ", NOW) == []

@@ -5,8 +5,9 @@ import json
 from pathlib import Path
 from typing import Mapping
 
-from meld.adapters.base import SCRUBBED_EXACT, LaunchSpec, open_log, popen_detached, scan_skills
+from meld.adapters.base import SCRUBBED_EXACT, LaunchSpec, open_log, parse_doc, popen_detached, raw_event, scan_skills
 from meld.roster import WorkerType
+from meld.transcript import Event, cap
 
 # `--setting-sources user,project` loads the user's and the product's settings.json, whose `env` maps are applied to
 # the session; `--settings` is merged last, so blanking a scrubbed variable name here means neither file can hand the
@@ -93,6 +94,57 @@ class ClaudeAdapter:
 
     def required_flags(self) -> tuple[str, ...]:
         return REQUIRED_FLAGS
+
+    def parse_events(self, line: str, now: str) -> list[Event]:
+        """One `stream-json` line as events. A content array is many events, which is why this is plural."""
+        doc, stripped = parse_doc(line)
+        if doc is None:
+            return raw_event(now, stripped)
+        kind = doc.get("type")
+        if kind == "system":
+            if doc.get("subtype") != "init":
+                return []
+            return [Event(seq=0, at=now, kind="run_started", text=cap(doc.get("model", "")),
+                          meta={"session_id": str(doc.get("session_id", "")), "model": str(doc.get("model", ""))})]
+        if kind == "stream_event":
+            return []                                  # only present with --include-partial-messages
+        if kind in ("assistant", "user"):
+            message = doc.get("message")
+            blocks = message.get("content") if isinstance(message, dict) else None
+            if isinstance(blocks, str):                # a plain-string content field
+                return [Event(seq=0, at=now, kind="message", text=cap(blocks))]
+            if not isinstance(blocks, list):
+                return raw_event(now, stripped)
+            return [e for b in blocks if isinstance(b, dict) for e in _block(b, now)]
+        if kind == "result":
+            usage = doc.get("usage") if isinstance(doc.get("usage"), dict) else {}
+            return [Event(seq=0, at=now, kind="run_finished", ok=not doc.get("is_error", False),
+                          text=cap(doc.get("result", doc.get("subtype", ""))),
+                          meta={"subtype": str(doc.get("subtype", "")), "num_turns": doc.get("num_turns"),
+                                "cost_usd": doc.get("total_cost_usd"), "usage": usage})]
+        return raw_event(now, stripped)
+
+
+def _block(b: dict, now: str) -> list[Event]:
+    """One content block as zero or one event. An unknown block type is silently skipped: the line it
+    came from was recognized, so rendering the whole line as `raw` would duplicate what was understood."""
+    kind = b.get("type")
+    if kind == "text":
+        return [Event(seq=0, at=now, kind="message", text=cap(b.get("text", "")))]
+    if kind == "thinking":
+        return [Event(seq=0, at=now, kind="thinking", text=cap(b.get("thinking", "")))]
+    if kind == "tool_use":
+        args = b.get("input") if isinstance(b.get("input"), dict) else {}
+        summary = args.get("command") or args.get("file_path") or args.get("pattern") or args.get("description") or ""
+        return [Event(seq=0, at=now, kind="tool_call", tool=cap(b.get("name", "tool")), text=cap(summary),
+                      meta={"id": str(b.get("id", ""))})]
+    if kind == "tool_result":
+        content = b.get("content")
+        if isinstance(content, list):
+            content = " ".join(str(c.get("text", "")) for c in content if isinstance(c, dict))
+        return [Event(seq=0, at=now, kind="tool_result", ok=not b.get("is_error", False), text=cap(content),
+                      meta={"id": str(b.get("tool_use_id", ""))})]
+    return []
 
 
 ADAPTER = ClaudeAdapter()

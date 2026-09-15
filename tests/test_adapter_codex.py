@@ -3,6 +3,10 @@ from pathlib import Path
 import meld.adapters.codex as codex_mod
 from meld.adapters.base import LaunchSpec
 from meld.adapters.codex import CodexAdapter
+from meld.transcript import Tail
+
+FIXTURES = Path(__file__).parent / "fixtures" / "transcripts"
+NOW = "2026-09-12T02:11:19Z"
 
 
 def spec(tmp_path: Path, **over) -> LaunchSpec:
@@ -55,3 +59,46 @@ def test_installed_skills_scans_agents_and_codex_dirs_but_not_system(tmp_path: P
     names = [s.name for s in CodexAdapter(home=tmp_path).installed_skills()]
     assert names == ["deploy", "review"]
     assert CodexAdapter().command_timeout_ceiling_seconds() == 600 and CodexAdapter().supports_effort() is True
+
+
+def test_parse_events_renders_a_whole_codex_run():
+    events = Tail(FIXTURES / "codex-run.jsonl").read(CodexAdapter().parse_events, NOW)
+    assert [e.kind for e in events] == [
+        "raw", "run_started", "message", "tool_call", "tool_result",
+        "tool_call", "tool_result", "raw", "usage",
+    ]
+    assert events[0].text.startswith("2026-09-12T02:11:19.320141Z ERROR")
+
+
+def test_parse_events_pairs_a_command_start_with_its_exit_code():
+    start = ('{"type": "item.started", "item": {"id": "i1", "type": "command_execution", '
+             '"command": "meld status", "exit_code": null, "status": "in_progress"}}')
+    done = ('{"type": "item.completed", "item": {"id": "i1", "type": "command_execution", '
+            '"command": "meld status", "aggregated_output": "ok", "exit_code": 0, "status": "completed"}}')
+    (call,) = CodexAdapter().parse_events(start, NOW)
+    (result,) = CodexAdapter().parse_events(done, NOW)
+    assert (call.kind, call.tool, call.text) == ("tool_call", "command", "meld status")
+    assert (result.kind, result.ok, result.meta["exit_code"]) == ("tool_result", True, 0)
+
+
+def test_parse_events_marks_a_nonzero_exit_as_failed():
+    done = ('{"type": "item.completed", "item": {"id": "i2", "type": "command_execution", '
+            '"command": "meld dispatch 45", "aggregated_output": "refused", "exit_code": 1}}')
+    (result,) = CodexAdapter().parse_events(done, NOW)
+    assert result.ok is False and result.meta["exit_code"] == 1
+
+
+def test_parse_events_drops_turn_started_and_an_in_progress_message():
+    assert CodexAdapter().parse_events('{"type": "turn.started"}', NOW) == []
+    assert CodexAdapter().parse_events('{"type": "item.started", "item": {"type": "agent_message", "text": "x"}}', NOW) == []
+
+
+def test_parse_events_keeps_an_unknown_item_type_as_raw():
+    (raw,) = CodexAdapter().parse_events('{"type": "item.completed", "item": {"type": "web_search", "query": "x"}}', NOW)
+    assert raw.kind == "raw" and "web_search" in raw.text
+
+
+def test_parse_events_never_raises_on_junk():
+    (raw,) = CodexAdapter().parse_events("thread panicked at src/main.rs:12", NOW)
+    assert raw.kind == "raw"
+    assert CodexAdapter().parse_events("", NOW) == []

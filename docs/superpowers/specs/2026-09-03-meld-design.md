@@ -642,7 +642,8 @@ kind in {run_started, message, thinking, tool_call, tool_result, usage, run_fini
 | `tool_result` | `type: user`, `tool_result` block | `item.completed`, `item_type: command_execution` (`exit_code`) |
 | `usage` | `type: result` (its `usage` block) | `turn.completed` |
 | `run_finished` | `type: result` | not emitted: a Codex transcript ends at `usage`. Synthesizing a terminal event from process exit is a reader's job, not an adapter's, and is left to plan 8b |
-| `raw` | any non-JSON line, and any unknown `type` | any non-JSON line (the CLI's own startup errors on stderr) and any unknown `item_type` |
+| `cli_error` | not emitted | `turn.failed` (its `error.message`, `ok=False`) |
+| `raw` | any non-JSON line, any unknown `type`, and a known line whose every content block was unknown | any non-JSON line (the CLI's own startup errors on stderr) and any unknown `item_type` |
 | (dropped) | `stream_event` | `turn.started` |
 
 Three rules keep this honest. A line an adapter does not recognize becomes `raw`, and one it recognizes as carrying nothing (Codex's `turn.started`, a Claude `stream_event`) becomes no event at all; `parse_events` never raises, so a CLI that adds an event type degrades the view instead of breaking the failure tail. `Tail` tracks a byte offset and yields only complete lines, so a half-written JSONL line is never parsed. And `at` comes from the CLI's own timestamp when it has one, else from an injected clock, so no test depends on wall time.

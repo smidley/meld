@@ -21,6 +21,12 @@ KINDS = ("run_started", "message", "thinking", "tool_call", "tool_result",
 #: Per-event character cap, applied at parse time. About memory, not about reading.
 TEXT_CAP = 2000
 
+#: Ceiling on the unterminated trailing bytes one `Tail` holds between reads. `TEXT_CAP` guards an event's
+#: text once a line has been parsed; this guards the bytes before there is a line at all, so a writer that
+#: emits a megabyte without a newline cannot grow a reader without bound. Generously above any real event
+#: line (500x `TEXT_CAP`), so only a pathological writer ever meets it.
+PARTIAL_CAP = 1 << 20
+
 _TRUNCATED = " …(truncated)"
 
 #: The fixed-width label each kind renders as, so a transcript's second column always lines up.
@@ -89,6 +95,12 @@ class Tail:
     text: a multi-byte character split across two reads must not be decoded twice). And a log that
     `trim_log` truncated under a reader would otherwise look like a file that had shrunk to nonsense, so a
     size below the held offset is reported as one `log_truncated` event and the offset resets to zero.
+
+    Held bytes are capped at `PARTIAL_CAP`: a line that has not ended after a megabyte is a writer that is
+    never going to end it, and only what a reader holds *between* reads can grow without bound (a long line
+    that does arrive with its newline is parsed whole, however long it is). And a reader being retired calls
+    `flush`, because once nothing more is coming the unterminated line is no longer "not yet" -- it is the
+    crash message a dying CLI wrote without a newline.
     """
 
     def __init__(self, path: Path | str, *, offset: int = 0, seq: int = 0) -> None:
@@ -133,7 +145,9 @@ class Tail:
             return out
         self._offset += len(chunk)
         parts = (self._partial + chunk).split(b"\n")
-        self._partial = parts.pop()          # "" when the chunk ended on a newline, else a partial line
+        # "" when the chunk ended on a newline, else a partial line -- kept head-first and bounded, so a
+        # never-terminated line still renders its opening bytes (as `raw`: a clipped JSON object does not parse).
+        self._partial = parts.pop()[:PARTIAL_CAP]
         for raw in parts:
             line = raw.rstrip(b"\r").decode("utf-8", errors="replace")
             if not line.strip():
@@ -141,6 +155,21 @@ class Tail:
             for ev in parse(line, now):
                 out.append(self._stamp(ev))
         return out
+
+    def flush(self, parse: Callable[[str, str], list[Event]], now: str) -> list[Event]:
+        """The held partial line as a final event, for a reader that will not read again.
+
+        `read` withholds an unterminated trailing line because in a growing log it is a line that has not
+        happened yet. When nothing further is coming -- a one-shot `--no-follow` read, or the failure tail of
+        a worker that died -- that residue is the most interesting line in the file, because a process that
+        crashed mid-write left no newline behind it. It is parsed like any other line, so a truncated JSON
+        object arrives as `raw` through `parse_doc`. Following a live log must NOT call this.
+        """
+        residue, self._partial = self._partial, b""
+        line = residue.rstrip(b"\r").decode("utf-8", errors="replace")
+        if not line.strip():
+            return []
+        return [self._stamp(ev) for ev in parse(line, now)]
 
 
 def trim_log(path: Path, max_bytes: int, *, keep_bytes: int | None = None) -> bool:

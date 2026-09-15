@@ -66,6 +66,35 @@ def test_tail_refuses_an_unknown_group(tmp_path, monkeypatch):
     assert result.exit_code != 0 and "ghost" in result.output
 
 
+def test_tail_without_follow_renders_the_unterminated_last_line(tmp_path, monkeypatch):
+    """A one-shot read is the end of the reader's life, so the residue a live reader withholds is flushed."""
+    config = _tail_home(tmp_path, monkeypatch)
+    log = tmp_path / "home" / "logs" / "claude" / "orchestrator-20260912T020000Z.log"
+    with log.open("ab") as f:
+        f.write(b'{"type":"assistant","message":{"role":"assistant","content":[{"type":"tex')
+    result = CliRunner().invoke(main, ["--config", str(config), "tail", "--no-follow"])
+    assert result.exit_code == 0
+    assert "message  Checking the board first." in result.output
+    assert 'raw      {"type":"assistant"' in result.output
+
+
+def test_tail_with_follow_withholds_the_unterminated_last_line(tmp_path, monkeypatch):
+    """The same bytes while following are a line the CLI has not finished writing, so they stay held."""
+    config = _tail_home(tmp_path, monkeypatch)
+    log = tmp_path / "home" / "logs" / "claude" / "orchestrator-20260912T020000Z.log"
+    with log.open("ab") as f:
+        f.write(b'{"type":"assistant","message":{"role":"assistant","content":[{"type":"tex')
+
+    def fake_sleep(seconds):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "SLEEP", fake_sleep)
+    result = CliRunner().invoke(main, ["--config", str(config), "tail", "--follow"])
+    assert result.exit_code == 0
+    assert "message  Checking the board first." in result.output
+    assert "raw" not in result.output
+
+
 def test_tail_follows_until_the_sleep_hook_stops_it(tmp_path, monkeypatch):
     """--follow loops; the suite never sleeps, so SLEEP raises to end the loop deterministically."""
     config = _tail_home(tmp_path, monkeypatch)

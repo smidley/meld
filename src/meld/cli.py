@@ -530,6 +530,11 @@ def tail(ctx: click.Context, target: str | None, issue: int | None, follow: bool
         for event in reader.read(adapter.parse_events, now):
             click.echo(render_line(event, width))
         if not follow:
+            # Nothing more is coming, so the held partial line is not "not yet" any more -- it is the last
+            # thing the run wrote, unterminated because it died mid-write. While following we never flush:
+            # there the same bytes really are a line the CLI has not finished writing.
+            for event in reader.flush(adapter.parse_events, now):
+                click.echo(render_line(event, width))
             return
         try:
             SLEEP(interval)

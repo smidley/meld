@@ -688,6 +688,25 @@ def test_render_tail_keeps_only_the_last_n_events(tmp_path):
     assert "line 9" in rendered and "line 6" not in rendered
 
 
+def test_render_tail_keeps_the_final_unterminated_line(tmp_path):
+    """The one path this function serves is a worker that died without writing a result. A process killed
+    mid-write leaves its last line with no newline, and that line is the one saying why the run died."""
+    log = tmp_path / "audit-14.log"
+    log.write_bytes(b'{"type": "item.completed", "item": {"type": "agent_message", "text": "working"}}\n'
+                    b'Traceback (most recent call last): fatal, out of memory')
+    rendered = render_tail(log, CODEX, lines=50, now=TAIL_NOW)
+    assert "message  working" in rendered
+    assert rendered.endswith("raw      Traceback (most recent call last): fatal, out of memory")
+
+
+def test_render_tail_of_a_one_blob_log_with_no_trailing_newline_is_not_empty(tmp_path):
+    """A pre-plan-8 Claude log is one JSON object with no trailing newline. It rendered as the empty string,
+    so the posted comment was a header above an empty code fence."""
+    log = tmp_path / "audit-14.log"
+    log.write_bytes(b'{"type":"result","subtype":"success","is_error":false,"result":"PR 15 merged."}')
+    assert "done     PR 15 merged." in render_tail(log, ClaudeAdapter(), lines=50, now=TAIL_NOW)
+
+
 def test_render_tail_of_a_missing_or_empty_log_is_empty(tmp_path):
     assert render_tail(tmp_path / "absent.log", CODEX, lines=50, now=TAIL_NOW) == ""
     (tmp_path / "empty.log").write_text("")

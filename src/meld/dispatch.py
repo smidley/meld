@@ -100,10 +100,17 @@ def render_tail(path: Path, adapter, lines: int, now: str) -> str:
     missing or empty log renders as empty, and so does a `None` adapter (a human party holds no group
     and so no adapter, per `Context.adapter()`) -- there is nothing to translate the log with, and this
     must never be the reason a collect raises.
+
+    The reader is read once and then flushed, because this is called on exactly one path: a worker that
+    died without writing `.meld-result.json`. A process killed mid-write leaves its last line without a
+    newline, which `Tail.read` correctly withholds from a *live* reader and which would be lost here --
+    and it is the line that says why the run died. `flush` is also what keeps a single-blob log (one JSON
+    object, no trailing newline) from rendering as an empty code fence.
     """
     if adapter is None:
         return ""
-    events = Tail(path).read(adapter.parse_events, now)
+    reader = Tail(path)
+    events = reader.read(adapter.parse_events, now) + reader.flush(adapter.parse_events, now)
     return render(events[-lines:]) if events else ""
 
 

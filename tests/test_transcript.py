@@ -7,7 +7,8 @@ import time
 
 import pytest
 
-from meld.transcript import KINDS, TEXT_CAP, Event, Tail, cap, newest_log, render, render_line, sweep_logs, total_bytes, trim_log
+from meld.transcript import (KINDS, PARTIAL_CAP, TEXT_CAP, Event, Tail, cap, newest_log, render, render_line,
+                             sweep_logs, total_bytes, trim_log)
 
 
 def mk(kind: str, **kw) -> Event:
@@ -152,6 +153,63 @@ def test_tail_reports_a_trim_and_resumes_from_the_start(tmp_path):
     assert "was trimmed" in events[0].text
     assert events[1].text == "after"
     assert [e.seq for e in events] == [2, 3]
+
+
+def test_tail_flush_yields_the_unterminated_last_line_and_read_alone_does_not(tmp_path):
+    """A process killed mid-write leaves no trailing newline; `read` withholds that line (it may still be
+    growing), and `flush` is how a reader that will not read again claims it."""
+    log = tmp_path / "role.log"
+    log.write_bytes(b'{"say": "working"}\nTraceback (most recent call last): fatal, out of memory')
+    t = Tail(log)
+    assert [e.text for e in t.read(fake_parse, NOW)] == ["working"]
+    flushed = t.flush(fake_parse, NOW)
+    assert [(e.seq, e.kind, e.text) for e in flushed] == [(2, "raw", "Traceback (most recent call last): fatal, out of memory")]
+    assert t.flush(fake_parse, NOW) == []                 # the residue is consumed, not re-emitted
+
+
+def test_tail_flush_of_a_single_line_log_with_no_newline_is_that_line(tmp_path):
+    """The pre-plan-8 Claude shape: one JSON blob, no trailing newline. Without a flush it read as nothing."""
+    log = tmp_path / "role.log"
+    log.write_bytes(b'{"say": "the whole run in one blob"}')
+    t = Tail(log)
+    assert t.read(fake_parse, NOW) == []
+    assert [e.text for e in t.flush(fake_parse, NOW)] == ["the whole run in one blob"]
+
+
+def test_tail_flush_of_a_log_that_ends_on_a_newline_is_empty(tmp_path):
+    log = tmp_path / "role.log"
+    log.write_bytes(b'{"say": "one"}\n')
+    t = Tail(log)
+    assert [e.text for e in t.read(fake_parse, NOW)] == ["one"]
+    assert t.flush(fake_parse, NOW) == []
+
+
+def _line_length(line: str, now: str) -> list[Event]:
+    """A parser that reports the length of the line it was handed, so a test can see the buffer's bound."""
+    return [Event(seq=0, at=now, kind="raw", text=str(len(line)))]
+
+
+def test_tail_bounds_the_partial_line_it_holds_between_reads(tmp_path):
+    """An unterminated line is held head-first and capped: a writer that never emits a newline cannot grow
+    the reader without bound. The line is clipped, never dropped -- its opening bytes still render."""
+    log = tmp_path / "role.log"
+    log.write_bytes(b"x" * (PARTIAL_CAP + 50))
+    t = Tail(log)
+    assert t.read(_line_length, NOW) == []                # nothing complete yet
+    with log.open("ab") as f:
+        f.write(b"yyy\n")
+    (event,) = t.read(_line_length, NOW)
+    assert event.text == str(PARTIAL_CAP + 3)             # the 50 bytes past the cap were dropped, not the line
+
+
+def test_tail_flush_of_an_over_cap_line_still_renders_its_head(tmp_path):
+    log = tmp_path / "role.log"
+    log.write_bytes(b'{"say": "' + b"z" * (PARTIAL_CAP + 100))
+    t = Tail(log)
+    assert t.read(fake_parse, NOW) == []
+    (event,) = t.flush(fake_parse, NOW)
+    assert event.kind == "raw"                            # a clipped JSON object does not parse
+    assert event.text.startswith('{"say": "zzz') and event.text.endswith(" …(truncated)")
 
 
 def test_tail_of_a_missing_file_is_empty_and_does_not_raise(tmp_path):

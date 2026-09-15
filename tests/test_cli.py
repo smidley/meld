@@ -95,6 +95,18 @@ def test_tail_with_follow_withholds_the_unterminated_last_line(tmp_path, monkeyp
     assert "raw" not in result.output
 
 
+def test_tail_refuses_to_run_inside_a_worker(tmp_path, monkeypatch):
+    """`tail` needs no board and so never calls load_context, where the refusal lives -- but spec section 18
+    says `meld` itself refuses to run with MELD_WORKER=1, and a worker reading the *other* group's
+    orchestrator transcript through a framework verb is exactly what that sentence forbids."""
+    config = _tail_home(tmp_path, monkeypatch)
+    monkeypatch.setenv("MELD_WORKER", "1")
+    result = CliRunner().invoke(main, ["--config", str(config), "tail", "--no-follow"])
+    assert result.exit_code != 0
+    assert "meld may not be run by a worker" in result.output
+    assert "Checking the board first." not in result.output
+
+
 def test_tail_follows_until_the_sleep_hook_stops_it(tmp_path, monkeypatch):
     """--follow loops; the suite never sleeps, so SLEEP raises to end the loop deterministically."""
     config = _tail_home(tmp_path, monkeypatch)

@@ -21,7 +21,7 @@ from meld.board import HELD_CATEGORIES
 from meld.challenge import challenge as do_challenge
 from meld.chat import inbox as build_inbox, run_chat
 from meld.config import ConfigError, load_config
-from meld.context import Context, find_config, load_context
+from meld.context import Context, find_config, load_context, refuse_worker
 from meld.dispatch import DispatchError, collect as do_collect, dispatch as do_dispatch, reap as do_reap, tick as do_tick
 from meld.doctor import run_checks, summary, sweep
 from meld.github import GitHub, GitHubError
@@ -498,6 +498,9 @@ def tail(ctx: click.Context, target: str | None, issue: int | None, follow: bool
     TARGET is `<group>` or `<group>/<role-or-kind>`; with neither TARGET nor --run, the newest log wins.
     Reads local files only: no board, no party, nothing posted.
     """
+    # Needing no board, `tail` never calls `load_context` -- which is where the worker refusal lives, so it
+    # is raised here directly rather than making `tail` the one verb a worker can run (spec section 18).
+    _guard(lambda: refuse_worker(os.environ))
     config_path = ctx.obj["config_path"] or _guard(lambda: find_config(Path.cwd()))
     cfg = _guard(lambda: load_config(config_path))
     home = meld_home(os.environ)

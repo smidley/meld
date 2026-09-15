@@ -1,0 +1,18 @@
+# Dependabot version updates.
+#
+# Alerts and security updates are repository settings rather than file config, and both are already on
+# (`GET /repos/:owner/:repo/vulnerability-alerts` answers 204; automated-security-fixes reports enabled).
+# Those two react to advisories immediately and independently of the schedule below, so this file governs
+# only routine version bumps.
+#
+# One ecosystem, because there is one: `pyproject.toml` declares `click>=8.1` plus a `pytest>=8` dev group,
+# and `uv.lock` is tracked, which is the pair the `uv` ecosystem reads. There is no `.github/workflows/`
+# yet, so a `github-actions` block would watch nothing; add one in the same list when CI lands.
+version: 2
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      # Monthly, not weekly: two declared dependencies produce almost no routine churn, and anything
+      # urgent arrives through the security-updates setting above rather than waiting for this interval.
+      interval: "monthly"

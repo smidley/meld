@@ -8,8 +8,9 @@ at full size.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Iterable
+from dataclasses import dataclass, field, replace
+from pathlib import Path
+from typing import Callable, Iterable
 
 #: Every kind an adapter may produce. `raw` is the escape hatch for a line no adapter recognized;
 #: `log_truncated` is written by `Tail` itself, never by an adapter.
@@ -77,3 +78,65 @@ def render_line(e: Event, width: int = 100) -> str:
 def render(events: Iterable[Event], width: int = 100) -> str:
     """Every event as one line, in `seq` order."""
     return "\n".join(render_line(e, width) for e in sorted(events, key=lambda e: e.seq))
+
+
+class Tail:
+    """A byte-offset reader over one growing log. Yields only complete lines, and notices a trim.
+
+    Two failure modes this exists to prevent. A JSONL line read halfway is not a parse error to recover
+    from, it is a line that has not happened yet, so an incomplete trailing line is held as bytes (not as
+    text: a multi-byte character split across two reads must not be decoded twice). And a log that
+    `trim_log` truncated under a reader would otherwise look like a file that had shrunk to nonsense, so a
+    size below the held offset is reported as one `log_truncated` event and the offset resets to zero.
+    """
+
+    def __init__(self, path: Path | str, *, offset: int = 0, seq: int = 0) -> None:
+        self.path = Path(path)
+        self._offset = offset
+        self._seq = seq
+        self._partial = b""
+
+    @property
+    def offset(self) -> int:
+        """Bytes consumed so far. A caller may hold this and rebuild the reader with it."""
+        return self._offset
+
+    @property
+    def seq(self) -> int:
+        """The last sequence number stamped."""
+        return self._seq
+
+    def _stamp(self, ev: Event) -> Event:
+        self._seq += 1
+        return replace(ev, seq=self._seq)
+
+    def read(self, parse: Callable[[str, str], list[Event]], now: str) -> list[Event]:
+        """Every event in the bytes appended since the last call. `parse` is an adapter's `parse_events`."""
+        out: list[Event] = []
+        try:
+            size = self.path.stat().st_size
+        except OSError:
+            return out
+        if size < self._offset:
+            self._offset = 0
+            self._partial = b""
+            out.append(self._stamp(Event(seq=0, at=now, kind="log_truncated",
+                                         text=cap(f"{self.path.name} was trimmed; resuming from the start"))))
+        if size == self._offset:
+            return out
+        try:
+            with self.path.open("rb") as f:
+                f.seek(self._offset)
+                chunk = f.read(size - self._offset)
+        except OSError:
+            return out
+        self._offset += len(chunk)
+        parts = (self._partial + chunk).split(b"\n")
+        self._partial = parts.pop()          # "" when the chunk ended on a newline, else a partial line
+        for raw in parts:
+            line = raw.rstrip(b"\r").decode("utf-8", errors="replace")
+            if not line.strip():
+                continue
+            for ev in parse(line, now):
+                out.append(self._stamp(ev))
+        return out

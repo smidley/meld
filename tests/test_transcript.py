@@ -1,8 +1,9 @@
 import dataclasses
+import json
 
 import pytest
 
-from meld.transcript import KINDS, TEXT_CAP, Event, cap, render, render_line
+from meld.transcript import KINDS, TEXT_CAP, Event, Tail, cap, render, render_line
 
 
 def mk(kind: str, **kw) -> Event:
@@ -71,3 +72,94 @@ def test_render_orders_by_seq_and_renders_nothing_as_empty():
     events = [mk("message", seq=2, text="second"), mk("run_started", seq=1, text="claude-opus-5")]
     assert render(events) == "02:11:19  started  claude-opus-5\n02:11:19  message  second"
     assert render([]) == ""
+
+
+NOW = "2026-09-12T02:11:19Z"
+
+
+def fake_parse(line: str, now: str) -> list[Event]:
+    """A miniature adapter: {"say": "..."} becomes one message; anything else becomes raw."""
+    try:
+        doc = json.loads(line)
+    except json.JSONDecodeError:
+        return [Event(seq=0, at=now, kind="raw", text=cap(line))]
+    if isinstance(doc, dict) and "say" in doc:
+        return [Event(seq=0, at=now, kind="message", text=cap(doc["say"]))]
+    if isinstance(doc, dict) and "pair" in doc:
+        return [Event(seq=0, at=now, kind="message", text="first"),
+                Event(seq=0, at=now, kind="message", text="second")]
+    return []
+
+
+def test_tail_reads_only_complete_lines_and_holds_the_partial_one(tmp_path):
+    log = tmp_path / "role.log"
+    log.write_bytes(b'{"say": "one"}\n{"say": "two"}\n{"say": "thr')
+    t = Tail(log)
+    first = t.read(fake_parse, NOW)
+    assert [e.text for e in first] == ["one", "two"]
+    assert t.offset == log.stat().st_size
+
+    with log.open("ab") as f:
+        f.write(b'ee"}\n')
+    assert [e.text for e in t.read(fake_parse, NOW)] == ["three"]
+
+
+def test_tail_stamps_a_monotonic_seq_across_reads_and_across_multi_event_lines(tmp_path):
+    log = tmp_path / "role.log"
+    log.write_bytes(b'{"say": "one"}\n{"pair": true}\n')
+    t = Tail(log)
+    assert [e.seq for e in t.read(fake_parse, NOW)] == [1, 2, 3]
+    with log.open("ab") as f:
+        f.write(b'{"say": "four"}\n')
+    assert [(e.seq, e.text) for e in t.read(fake_parse, NOW)] == [(4, "four")]
+    assert t.seq == 4
+
+
+def test_tail_reassembles_a_multibyte_character_split_across_two_reads(tmp_path):
+    log = tmp_path / "role.log"
+    log.write_bytes(b'{"say": "caf\xc3')
+    t = Tail(log)
+    assert t.read(fake_parse, NOW) == []
+    with log.open("ab") as f:
+        f.write(b'\xa9"}\n')
+    assert [e.text for e in t.read(fake_parse, NOW)] == ["café"]
+
+
+def test_tail_skips_blank_lines_and_drops_events_the_parser_declines(tmp_path):
+    log = tmp_path / "role.log"
+    log.write_bytes(b'\n\n{"ignored": true}\n{"say": "kept"}\n')
+    t = Tail(log)
+    assert [e.text for e in t.read(fake_parse, NOW)] == ["kept"]
+
+
+def test_tail_reports_a_trim_and_resumes_from_the_start(tmp_path):
+    import os
+
+    log = tmp_path / "role.log"
+    log.write_bytes(b'{"say": "before"}\n')
+    t = Tail(log)
+    assert [e.text for e in t.read(fake_parse, NOW)] == ["before"]
+
+    os.truncate(log, 0)
+    with log.open("ab") as f:
+        f.write(b'{"say": "after"}\n')
+    events = t.read(fake_parse, NOW)
+    assert [e.kind for e in events] == ["log_truncated", "message"]
+    assert "was trimmed" in events[0].text
+    assert events[1].text == "after"
+    assert [e.seq for e in events] == [2, 3]
+
+
+def test_tail_of_a_missing_file_is_empty_and_does_not_raise(tmp_path):
+    assert Tail(tmp_path / "absent.log").read(fake_parse, NOW) == []
+
+
+def test_tail_can_resume_from_a_caller_held_offset_and_seq(tmp_path):
+    log = tmp_path / "role.log"
+    log.write_bytes(b'{"say": "one"}\n{"say": "two"}\n')
+    first = Tail(log)
+    first.read(fake_parse, NOW)
+    resumed = Tail(log, offset=first.offset, seq=first.seq)
+    with log.open("ab") as f:
+        f.write(b'{"say": "three"}\n')
+    assert [(e.seq, e.text) for e in resumed.read(fake_parse, NOW)] == [(3, "three")]

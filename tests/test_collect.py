@@ -200,7 +200,7 @@ def test_collect_neutralises_closing_keywords_and_fences_the_log_tail(tmp_path):
     wait_for_exit(out2["pid"])
     collect(ctx2, 11, now=NOW)
     comment = issue_posts(fake2, 11)[-1]
-    assert comment.endswith("Last 50 log lines:\n\n````\n```\n# not a heading\n````")
+    assert comment.endswith("Last 50 log lines:\n\n````\n12:00:00  message  ```\n12:00:00  message  # not a heading\n````")
 
 
 def test_worker_git_never_reads_the_humans_global_gitconfig(tmp_path):

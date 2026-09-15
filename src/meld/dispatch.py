@@ -44,7 +44,7 @@ from meld.roster import WorkerType, roster
 from meld.rules import Actor, Refusal, Verb, issue_refusal, pr_refusal, reap_rule, review_concern
 from meld.state import pid_alive
 from meld.status import build_status
-from meld.transcript import sweep_logs
+from meld.transcript import Tail, render, sweep_logs
 
 WORKER_PROMPT = ("Read .meld-brief.md in the current directory and carry it out exactly. "
                  "When you finish, write .meld-result.json as the brief instructs, then stop.")
@@ -90,6 +90,21 @@ def tail_lines(path: Path, n: int) -> str:
     except OSError:
         return ""
     return "\n".join(lines[-n:])
+
+
+def render_tail(path: Path, adapter, lines: int, now: str) -> str:
+    """The last `lines` events of a run's log, rendered. Empty when there is nothing to read.
+
+    `tail_lines` above returns raw bytes, which a streamed transcript makes unreadable: JSONL at best,
+    and under the pre-plan-8 Claude adapter one 5 KB line that said nothing a person could act on. A
+    missing or empty log renders as empty, and so does a `None` adapter (a human party holds no group
+    and so no adapter, per `Context.adapter()`) -- there is nothing to translate the log with, and this
+    must never be the reason a collect raises.
+    """
+    if adapter is None:
+        return ""
+    events = Tail(path).read(adapter.parse_events, now)
+    return render(events[-lines:]) if events else ""
 
 
 def neutralise_closers(text: str) -> str:
@@ -603,7 +618,7 @@ def collect(ctx, number: int, *, now: datetime | None = None) -> dict:
         refusal = issue_refusal(board, ctx.cfg, actor, Verb.COLLECT, issue, ctx.models)
         if refusal:
             refuse(ctx, board, refusal)
-        return _collect_build(ctx, board, group, rec, issue)
+        return _collect_build(ctx, board, group, rec, issue, when)
     return _collect_verdict(ctx, group, rec, when)
 
 
@@ -622,7 +637,7 @@ def _read_outcome(rec: RunRecord) -> tuple[WorkerResult | None, str | None]:
     return result, None
 
 
-def _collect_build(ctx, board: Board, group: GroupConfig, rec: RunRecord, issue) -> dict:
+def _collect_build(ctx, board: Board, group: GroupConfig, rec: RunRecord, issue, when: datetime) -> dict:
     number = rec.issue
     if issue.status != "in_progress" or issue.claimed_by != group.name:
         # The claim moved on while the worker ran (our lease expired and another group re-claimed, a human
@@ -638,7 +653,7 @@ def _collect_build(ctx, board: Board, group: GroupConfig, rec: RunRecord, issue)
                 "reason": f"issue is {issue.status} and claimed by {holder}; {group.name} no longer holds it"}
     wt = Path(rec.worktree)
     result, reason = _read_outcome(rec)
-    tail = tail_lines(Path(rec.log_path), ctx.cfg.worker_log_tail_lines)
+    tail = render_tail(Path(rec.log_path), ctx.adapter(), ctx.cfg.worker_log_tail_lines, _iso(when))
     if reason is None and result is not None and result.outcome == "blocked":
         _swap_labels(ctx, number, NEEDS_HUMAN, (IN_PROGRESS,))
         ask = result.needs_human or result.summary or "The worker did not say what it needs."

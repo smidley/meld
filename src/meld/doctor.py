@@ -32,6 +32,7 @@ from meld.github import GitHub, GitHubError
 from meld.gitops import GitError, git, noreply_email, remove_worktree
 from meld.housekeeping import CI_RED_STATE
 from meld.models import ModelRegistry
+from meld.transcript import total_bytes
 
 MEMORY_WARN_BYTES = 2 * 1024 * 1024
 PROBE_CONTEXT = "meld/doctor"
@@ -286,6 +287,12 @@ def run_checks(cfg: Config, repo_root: Path, *, env: Mapping[str, str], gh_facto
     big = size > MEMORY_WARN_BYTES
     checks.append(Check("memory-size", None if big else True, f"{size} bytes of decisions and lessons" + (" exceeds the 2 MB mark: recall scans grow with it (spec 21 item 13)" if big else ""),
                         "prune or split .meld/memory/lessons.md, or build the recall index" if big else ""))
+    # 10b. logs total size (plan 8a): a streamed transcript can be huge; warn only, since nothing is broken by it
+    logs_mb = total_bytes(home / "logs") // (1024 * 1024)
+    over = logs_mb > cfg.logs_warn_total_mb
+    checks.append(Check("logs-size", None if over else True, f"{logs_mb} MB of run logs under {home / 'logs'}",
+                        f"streamed transcripts accumulate; `meld tick` caps a single run at "
+                        f"{cfg.logs_max_bytes_per_run // (1024 * 1024)} MB, but old runs are yours to delete" if over else ""))
     # 11. webhook
     if cfg.notify_webhook_env:
         set_ = bool(env.get(cfg.notify_webhook_env))

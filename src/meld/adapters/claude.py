@@ -5,8 +5,9 @@ import json
 from pathlib import Path
 from typing import Mapping
 
-from meld.adapters.base import SCRUBBED_EXACT, LaunchSpec, open_log, popen_detached, scan_skills
+from meld.adapters.base import SCRUBBED_EXACT, LaunchSpec, open_log, parse_doc, popen_detached, raw_event, scan_skills
 from meld.roster import WorkerType
+from meld.transcript import Event, cap
 
 # `--setting-sources user,project` loads the user's and the product's settings.json, whose `env` maps are applied to
 # the session; `--settings` is merged last, so blanking a scrubbed variable name here means neither file can hand the
@@ -34,7 +35,7 @@ def settings_for(role: str, env: Mapping[str, str]) -> dict:
 
 # The flags below that `claude --help` lists; `meld doctor` checks each is still known to the installed CLI. `--max-turns`
 # is passed too but is undocumented in `--help` (it works; anthropics/claude-code#16963), so it cannot be verified this way.
-REQUIRED_FLAGS = ("-p", "--model", "--output-format", "--permission-mode", "--strict-mcp-config", "--mcp-config", "--settings", "--setting-sources")
+REQUIRED_FLAGS = ("-p", "--model", "--output-format", "--verbose", "--permission-mode", "--strict-mcp-config", "--mcp-config", "--settings", "--setting-sources")
 _MCP_CONFIG = {"mcpServers": {}}
 _DROP_ENV = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
 BASH_TOOL_CEILING_SECONDS = 600  # Claude Code's Bash tool caps one command at 10 minutes
@@ -51,7 +52,8 @@ class ClaudeAdapter:
         return [
             self.binary, "-p", spec.prompt,
             "--model", spec.model,
-            "--output-format", "json",
+            "--output-format", "stream-json",
+            "--verbose",                       # claude -p refuses stream-json without it
             "--permission-mode", "bypassPermissions",
             "--strict-mcp-config", "--mcp-config", json.dumps(_MCP_CONFIG),
             "--settings", json.dumps(settings_for(spec.role, spec.env)),
@@ -93,6 +95,64 @@ class ClaudeAdapter:
 
     def required_flags(self) -> tuple[str, ...]:
         return REQUIRED_FLAGS
+
+    def parse_events(self, line: str, now: str) -> list[Event]:
+        """One `stream-json` line as events. A content array is many events, which is why this is plural."""
+        doc, stripped = parse_doc(line)
+        if doc is None:
+            return raw_event(now, stripped)
+        kind = doc.get("type")
+        if kind == "system":
+            if doc.get("subtype") != "init":
+                return []
+            return [Event(seq=0, at=now, kind="run_started", text=cap(doc.get("model", "")),
+                          meta={"session_id": str(doc.get("session_id", "")), "model": str(doc.get("model", ""))})]
+        if kind == "stream_event":
+            return []                                  # only present with --include-partial-messages
+        if kind in ("assistant", "user"):
+            message = doc.get("message")
+            blocks = message.get("content") if isinstance(message, dict) else None
+            if isinstance(blocks, str):                # a plain-string content field
+                return [Event(seq=0, at=now, kind="message", text=cap(blocks))]
+            if not isinstance(blocks, list):
+                return raw_event(now, stripped)
+            events = [e for b in blocks if isinstance(b, dict) for e in _block(b, now)]
+            # A new content block type inside an existing `assistant` line is how every Claude Code addition
+            # has arrived (`thinking`, `redacted_thinking`, `server_tool_use`, `mcp_tool_use`). If NOTHING on
+            # the line was understood, the line is unrecognized and falls back to `raw` -- Codex's unknown
+            # `item_type` does the same. Without this the line produced no event at all and a person watching
+            # saw an unexplained gap. A line with one known block and one unknown keeps only the known event:
+            # the line WAS understood, so rendering the whole of it as `raw` would duplicate that.
+            return events or raw_event(now, stripped)
+        if kind == "result":
+            usage = doc.get("usage") if isinstance(doc.get("usage"), dict) else {}
+            return [Event(seq=0, at=now, kind="run_finished", ok=not doc.get("is_error", False),
+                          text=cap(doc.get("result", doc.get("subtype", ""))),
+                          meta={"subtype": str(doc.get("subtype", "")), "num_turns": doc.get("num_turns"),
+                                "cost_usd": doc.get("total_cost_usd"), "usage": usage})]
+        return raw_event(now, stripped)
+
+
+def _block(b: dict, now: str) -> list[Event]:
+    """One content block as zero or one event. An unknown block type yields nothing here; the caller renders
+    the line as `raw` when that leaves the whole line empty, and otherwise keeps only what it understood."""
+    kind = b.get("type")
+    if kind == "text":
+        return [Event(seq=0, at=now, kind="message", text=cap(b.get("text", "")))]
+    if kind == "thinking":
+        return [Event(seq=0, at=now, kind="thinking", text=cap(b.get("thinking", "")))]
+    if kind == "tool_use":
+        args = b.get("input") if isinstance(b.get("input"), dict) else {}
+        summary = args.get("command") or args.get("file_path") or args.get("pattern") or args.get("description") or ""
+        return [Event(seq=0, at=now, kind="tool_call", tool=cap(b.get("name", "tool")), text=cap(summary),
+                      meta={"id": str(b.get("id", ""))})]
+    if kind == "tool_result":
+        content = b.get("content")
+        if isinstance(content, list):
+            content = " ".join(str(c.get("text", "")) for c in content if isinstance(c, dict))
+        return [Event(seq=0, at=now, kind="tool_result", ok=not b.get("is_error", False), text=cap(content),
+                      meta={"id": str(b.get("tool_use_id", ""))})]
+    return []
 
 
 ADAPTER = ClaudeAdapter()

@@ -112,6 +112,36 @@ def test_doctor_warns_when_memory_is_large_and_origin_is_not_https(tmp_path):
     assert checks["origin-https"].ok is None   # tmp_path is not a git repo: reported as a warning, never a crash
 
 
+def test_logs_size_check_reports_the_total_without_failing(tmp_path):
+    logs = tmp_path / "home" / "logs" / "claude"
+    logs.mkdir(parents=True)
+    (logs / "orchestrator-1.log").write_bytes(b"x" * (3 * 1024 * 1024))
+
+    check = by_name(run(tmp_path, fakes()))["logs-size"]
+    assert check.ok is True                         # 3 MB is far under the 2048 MB default
+    assert check.detail == f"3 MB of run logs under {tmp_path / 'home' / 'logs'}"
+    assert check.fix == ""
+    assert "logs-size" not in summary(run(tmp_path, fakes()))["failed"]
+
+
+def test_logs_size_check_warns_but_never_fails_when_the_total_is_over(tmp_path):
+    logs = tmp_path / "home" / "logs" / "claude"
+    logs.mkdir(parents=True)
+    (logs / "orchestrator-1.log").write_bytes(b"x" * (3 * 1024 * 1024))
+    loud = Config.from_dict(tomllib.loads(PROJECT_TOML + "\n[logs]\nwarn_total_mb = 2\n"))
+
+    by_token = fakes()
+    checks = by_name(run_checks(loud, tmp_path, env={"MELD_TOKEN_CLAUDE": "tok-c", "MELD_TOKEN_CODEX": "tok-x"},
+                                gh_factory=lambda token: GitHub("acme/widgets", token=token, run=by_token[token]),
+                                registry=ModelRegistry.load(),
+                                adapter_for=lambda name: FakeAdapter(ceiling=600, name=name),
+                                which=lambda b: "/bin/" + b, home=tmp_path / "home",
+                                user_home=tmp_path / "userhome"))
+    check = checks["logs-size"]
+    assert check.ok is None                         # a warning, never a failure: nothing is broken
+    assert "3 MB" in check.detail and "meld tick" in check.fix
+
+
 def test_cli_doctor_reports_token_mismatch_and_exits_1(tmp_path, monkeypatch):
     (tmp_path / ".meld.toml").write_text(PROJECT_TOML)
     monkeypatch.setenv("MELD_TOKEN_CLAUDE", "tok-c")

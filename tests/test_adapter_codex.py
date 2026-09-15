@@ -3,6 +3,10 @@ from pathlib import Path
 import meld.adapters.codex as codex_mod
 from meld.adapters.base import LaunchSpec
 from meld.adapters.codex import CodexAdapter
+from meld.transcript import Tail, render_line
+
+FIXTURES = Path(__file__).parent / "fixtures" / "transcripts"
+NOW = "2026-09-12T02:11:19Z"
 
 
 def spec(tmp_path: Path, **over) -> LaunchSpec:
@@ -55,3 +59,82 @@ def test_installed_skills_scans_agents_and_codex_dirs_but_not_system(tmp_path: P
     names = [s.name for s in CodexAdapter(home=tmp_path).installed_skills()]
     assert names == ["deploy", "review"]
     assert CodexAdapter().command_timeout_ceiling_seconds() == 600 and CodexAdapter().supports_effort() is True
+
+
+def test_parse_events_renders_a_whole_codex_run():
+    events = Tail(FIXTURES / "codex-run.jsonl").read(CodexAdapter().parse_events, NOW)
+    assert [e.kind for e in events] == [
+        "raw", "run_started", "message", "tool_call", "tool_result",
+        "tool_call", "tool_result", "raw", "usage",
+    ]
+    assert events[0].text.startswith("2026-09-12T02:11:19.320141Z ERROR")
+
+
+def test_parse_events_pairs_a_command_start_with_its_exit_code():
+    start = ('{"type": "item.started", "item": {"id": "i1", "type": "command_execution", '
+             '"command": "meld status", "exit_code": null, "status": "in_progress"}}')
+    done = ('{"type": "item.completed", "item": {"id": "i1", "type": "command_execution", '
+            '"command": "meld status", "aggregated_output": "ok", "exit_code": 0, "status": "completed"}}')
+    (call,) = CodexAdapter().parse_events(start, NOW)
+    (result,) = CodexAdapter().parse_events(done, NOW)
+    assert (call.kind, call.tool, call.text) == ("tool_call", "command", "meld status")
+    assert (result.kind, result.ok, result.meta["exit_code"]) == ("tool_result", True, 0)
+
+
+def test_parse_events_marks_a_nonzero_exit_as_failed():
+    done = ('{"type": "item.completed", "item": {"id": "i2", "type": "command_execution", '
+            '"command": "meld dispatch 45", "aggregated_output": "refused", "exit_code": 1}}')
+    (result,) = CodexAdapter().parse_events(done, NOW)
+    assert result.ok is False and result.meta["exit_code"] == 1
+
+
+def test_parse_events_drops_turn_started_and_an_in_progress_message():
+    assert CodexAdapter().parse_events('{"type": "turn.started"}', NOW) == []
+    assert CodexAdapter().parse_events('{"type": "item.started", "item": {"type": "agent_message", "text": "x"}}', NOW) == []
+
+
+def test_parse_events_reports_a_failed_turn_as_a_cli_error():
+    """`cli_error` is the only kind exclusive to one adapter: Codex's `turn.failed` is the only thing that
+    produces it, so nothing else in the suite can cover the kind, its `ok=False`, or its rendered label."""
+    line = '{"type": "turn.failed", "error": {"message": "stream disconnected before completion"}}'
+    (event,) = CodexAdapter().parse_events(line, NOW)
+    assert (event.kind, event.ok, event.text) == ("cli_error", False, "stream disconnected before completion")
+    assert render_line(event) == "02:11:19  error    stream disconnected before completion"
+
+
+def test_parse_events_reports_a_failed_turn_with_no_message_at_all():
+    (event,) = CodexAdapter().parse_events('{"type": "turn.failed"}', NOW)
+    assert (event.kind, event.ok, event.text) == ("cli_error", False, "turn failed")
+
+
+def test_parse_events_maps_a_completed_reasoning_item_to_thinking():
+    line = ('{"type": "item.completed", "item": {"id": "item_4", "type": "reasoning", '
+            '"text": "The audit failed on defects already fixed on main."}}')
+    (event,) = CodexAdapter().parse_events(line, NOW)
+    assert (event.kind, event.text) == ("thinking", "The audit failed on defects already fixed on main.")
+    assert render_line(event) == "02:11:19  think    The audit failed on defects already fixed on main."
+    # Only the completed form carries content, the same as an agent_message.
+    assert CodexAdapter().parse_events('{"type": "item.started", "item": {"type": "reasoning", "text": "half"}}', NOW) == []
+
+
+def test_parse_events_formats_usage_as_sorted_key_value_pairs():
+    line = '{"type": "turn.completed", "usage": {"output_tokens": 800, "input_tokens": 12000, "cached_input_tokens": 9568}}'
+    (event,) = CodexAdapter().parse_events(line, NOW)
+    assert event.kind == "usage"
+    assert event.text == "cached_input_tokens=9568, input_tokens=12000, output_tokens=800"
+    assert event.meta["usage"]["input_tokens"] == 12000
+    assert render_line(event) == "02:11:19  usage    cached_input_tokens=9568, input_tokens=12000, output_tokens=800"
+    # A turn that reported no usage still ends the turn, with nothing to say about it.
+    (empty,) = CodexAdapter().parse_events('{"type": "turn.completed"}', NOW)
+    assert (empty.kind, empty.text) == ("usage", "")
+
+
+def test_parse_events_keeps_an_unknown_item_type_as_raw():
+    (raw,) = CodexAdapter().parse_events('{"type": "item.completed", "item": {"type": "web_search", "query": "x"}}', NOW)
+    assert raw.kind == "raw" and "web_search" in raw.text
+
+
+def test_parse_events_never_raises_on_junk():
+    (raw,) = CodexAdapter().parse_events("thread panicked at src/main.rs:12", NOW)
+    assert raw.kind == "raw"
+    assert CodexAdapter().parse_events("", NOW) == []

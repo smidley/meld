@@ -44,6 +44,7 @@ from meld.roster import WorkerType, roster
 from meld.rules import Actor, Refusal, Verb, issue_refusal, pr_refusal, reap_rule, review_concern
 from meld.state import pid_alive
 from meld.status import build_status
+from meld.transcript import Tail, render, sweep_logs
 
 WORKER_PROMPT = ("Read .meld-brief.md in the current directory and carry it out exactly. "
                  "When you finish, write .meld-result.json as the brief instructs, then stop.")
@@ -89,6 +90,28 @@ def tail_lines(path: Path, n: int) -> str:
     except OSError:
         return ""
     return "\n".join(lines[-n:])
+
+
+def render_tail(path: Path, adapter, lines: int, now: str) -> str:
+    """The last `lines` events of a run's log, rendered. Empty when there is nothing to read.
+
+    `tail_lines` above returns raw bytes, which a streamed transcript makes unreadable: JSONL at best,
+    and under the pre-plan-8 Claude adapter one 5 KB line that said nothing a person could act on. A
+    missing or empty log renders as empty, and so does a `None` adapter (a human party holds no group
+    and so no adapter, per `Context.adapter()`) -- there is nothing to translate the log with, and this
+    must never be the reason a collect raises.
+
+    The reader is read once and then flushed, because this is called on exactly one path: a worker that
+    died without writing `.meld-result.json`. A process killed mid-write leaves its last line without a
+    newline, which `Tail.read` correctly withholds from a *live* reader and which would be lost here --
+    and it is the line that says why the run died. `flush` is also what keeps a single-blob log (one JSON
+    object, no trailing newline) from rendering as an empty code fence.
+    """
+    if adapter is None:
+        return ""
+    reader = Tail(path)
+    events = reader.read(adapter.parse_events, now) + reader.flush(adapter.parse_events, now)
+    return render(events[-lines:]) if events else ""
 
 
 def neutralise_closers(text: str) -> str:
@@ -510,6 +533,13 @@ def tick(ctx, *, now: datetime | None = None, sleep=time.sleep, env: Mapping[str
     actor = ctx.actor()
     if not actor.is_pm:
         raise DispatchError(f"tick is a PM verb; you are {actor.party.label}")
+    # Every tick caps a runaway log ahead of the work below, so it runs on the same cadence as the rest of
+    # tick regardless of what else this call does (an exhausted disk killed both supervisors on 2026-09-12).
+    # Filesystem-only, and cheap when nothing is over the cap, so it costs nothing to run unconditionally --
+    # but only once the refusal above has passed. A refused verb must change nothing, and a human or
+    # orchestrator running `meld tick` to diagnose something would otherwise zero the very transcript they
+    # were about to read with `meld tail` (which does not read the `.1` sidecar) and then be refused.
+    sweep_logs(ctx.store.home / "logs", ctx.cfg.logs_max_bytes_per_run)
     group = ctx.cfg.groups[actor.group]  # type: ignore[index]
     when = _now(now)
     now_iso = _iso(when)
@@ -598,7 +628,7 @@ def collect(ctx, number: int, *, now: datetime | None = None) -> dict:
         refusal = issue_refusal(board, ctx.cfg, actor, Verb.COLLECT, issue, ctx.models)
         if refusal:
             refuse(ctx, board, refusal)
-        return _collect_build(ctx, board, group, rec, issue)
+        return _collect_build(ctx, board, group, rec, issue, when)
     return _collect_verdict(ctx, group, rec, when)
 
 
@@ -617,7 +647,7 @@ def _read_outcome(rec: RunRecord) -> tuple[WorkerResult | None, str | None]:
     return result, None
 
 
-def _collect_build(ctx, board: Board, group: GroupConfig, rec: RunRecord, issue) -> dict:
+def _collect_build(ctx, board: Board, group: GroupConfig, rec: RunRecord, issue, when: datetime) -> dict:
     number = rec.issue
     if issue.status != "in_progress" or issue.claimed_by != group.name:
         # The claim moved on while the worker ran (our lease expired and another group re-claimed, a human
@@ -633,7 +663,7 @@ def _collect_build(ctx, board: Board, group: GroupConfig, rec: RunRecord, issue)
                 "reason": f"issue is {issue.status} and claimed by {holder}; {group.name} no longer holds it"}
     wt = Path(rec.worktree)
     result, reason = _read_outcome(rec)
-    tail = tail_lines(Path(rec.log_path), ctx.cfg.worker_log_tail_lines)
+    tail = render_tail(Path(rec.log_path), ctx.adapter(), ctx.cfg.worker_log_tail_lines, _iso(when))
     if reason is None and result is not None and result.outcome == "blocked":
         _swap_labels(ctx, number, NEEDS_HUMAN, (IN_PROGRESS,))
         ask = result.needs_human or result.summary or "The worker did not say what it needs."
@@ -651,7 +681,7 @@ def _collect_build(ctx, board: Board, group: GroupConfig, rec: RunRecord, issue)
         _swap_labels(ctx, number, BLOCKED, (IN_PROGRESS,))
         summary = f"\n\nWorker summary: {result.summary}" if result else ""
         ctx.gh.create_comment(number, f"Meld: `{group.name}` worker did not complete #{number}: {reason}.{summary}\n\n"
-                                      f"Last {ctx.cfg.worker_log_tail_lines} log lines:\n\n{fenced(tail)}")
+                                      f"Last {ctx.cfg.worker_log_tail_lines} log events:\n\n{fenced(tail)}")
         ctx.store.write_run(replace(rec, collected=True))
         return {"collected": number, "outcome": "failed", "reason": reason}
     assert result is not None
@@ -693,6 +723,10 @@ def _collect_verdict(ctx, group: GroupConfig, rec: RunRecord, when: datetime) ->
     payload = {"kind": rec.kind, "pr": rec.pr, "worker": rec.worker, "head_sha": rec.head_sha or worktree_sha, "worktree_sha": worktree_sha,
                "collected_at": _iso(when), "timed_out": rec.timed_out, "reason": reason,
                "result": asdict(result) if result else None,
+               # Raw lines here, rendered events in the failure comment above, deliberately: this payload is
+               # an archive on disk, so it keeps the CLI's own bytes -- rendering is lossy (TEXT_CAP, the
+               # line width, the event types an adapter drops) and it needs an adapter a stored artifact
+               # should not depend on. The comment is read by a person, so it is translated. Do not unify.
                "log_tail": tail_lines(Path(rec.log_path), ctx.cfg.worker_log_tail_lines)}
     path = store_result(ctx.store.home, group.name, rec.kind, rec.issue, payload, _iso(when))
     ctx.store.write_run(replace(rec, collected=True))

@@ -10,9 +10,10 @@ from click.testing import CliRunner
 import meld.cli as cli
 from meld.actions import Refused
 from meld.adapters.claude import ClaudeAdapter
+from meld.adapters.codex import ADAPTER as CODEX
 from meld.brief import BRIEF_FILE
 from meld.context import load_context
-from meld.dispatch import DispatchError, dispatch, git_identity, materialise_skills, worker_env
+from meld.dispatch import DispatchError, dispatch, git_identity, materialise_skills, render_tail, worker_env
 from meld.gitops import head_sha, worktree_exists
 from meld.roster import WorkerType
 from tests.conftest import env_for
@@ -656,3 +657,65 @@ def test_dispatch_survives_a_tracked_file_blocking_the_project_skills_directory(
     assert (wt / ".fake").is_file()
     assert out["skills_materialised"] == {"made": [], "skipped": [".fake/skills is a file in this repo; skills not materialised"]}
     wait_for_exit(out["pid"])
+
+
+# A separate ISO string, not the module's `NOW` datetime: render_tail's `now` parameter is the string
+# `_iso(when)` produces at the call site, not a `datetime` -- these tests exercise it directly.
+TAIL_NOW = "2026-09-12T02:11:19Z"
+
+
+def test_render_tail_renders_events_rather_than_json(tmp_path):
+    log = tmp_path / "audit-14.log"
+    log.write_text("\n".join([
+        '{"type": "thread.started", "thread_id": "t1"}',
+        '{"type": "item.completed", "item": {"type": "agent_message", "text": "Running the suite."}}',
+        '{"type": "item.completed", "item": {"id": "i1", "type": "command_execution", '
+        '"command": "uv run pytest -q", "aggregated_output": "1 failed", "exit_code": 1}}',
+    ]) + "\n")
+    rendered = render_tail(log, CODEX, lines=50, now=TAIL_NOW)
+    assert "message  Running the suite." in rendered
+    assert "result   FAILED · 1 failed" in rendered
+    assert "thread.started" not in rendered          # the JSON itself never reaches the comment
+
+
+def test_render_tail_keeps_only_the_last_n_events(tmp_path):
+    log = tmp_path / "audit-14.log"
+    log.write_text("".join(
+        '{"type": "item.completed", "item": {"type": "agent_message", "text": "line %d"}}\n' % i
+        for i in range(10)))
+    rendered = render_tail(log, CODEX, lines=3, now=TAIL_NOW)
+    assert rendered.count("\n") == 2
+    assert "line 9" in rendered and "line 6" not in rendered
+
+
+def test_render_tail_keeps_the_final_unterminated_line(tmp_path):
+    """The one path this function serves is a worker that died without writing a result. A process killed
+    mid-write leaves its last line with no newline, and that line is the one saying why the run died."""
+    log = tmp_path / "audit-14.log"
+    log.write_bytes(b'{"type": "item.completed", "item": {"type": "agent_message", "text": "working"}}\n'
+                    b'Traceback (most recent call last): fatal, out of memory')
+    rendered = render_tail(log, CODEX, lines=50, now=TAIL_NOW)
+    assert "message  working" in rendered
+    assert rendered.endswith("raw      Traceback (most recent call last): fatal, out of memory")
+
+
+def test_render_tail_of_a_one_blob_log_with_no_trailing_newline_is_not_empty(tmp_path):
+    """A pre-plan-8 Claude log is one JSON object with no trailing newline. It rendered as the empty string,
+    so the posted comment was a header above an empty code fence."""
+    log = tmp_path / "audit-14.log"
+    log.write_bytes(b'{"type":"result","subtype":"success","is_error":false,"result":"PR 15 merged."}')
+    assert "done     PR 15 merged." in render_tail(log, ClaudeAdapter(), lines=50, now=TAIL_NOW)
+
+
+def test_render_tail_of_a_missing_or_empty_log_is_empty(tmp_path):
+    assert render_tail(tmp_path / "absent.log", CODEX, lines=50, now=TAIL_NOW) == ""
+    (tmp_path / "empty.log").write_text("")
+    assert render_tail(tmp_path / "empty.log", CODEX, lines=50, now=TAIL_NOW) == ""
+
+
+def test_render_tail_of_a_none_adapter_is_empty(tmp_path):
+    """A human party with no group has no adapter (Context.adapter() returns None); render_tail degrades to
+    empty rather than raising, the same as a missing log -- there is nothing meld can translate the log with."""
+    log = tmp_path / "audit-14.log"
+    log.write_text('{"type": "item.completed", "item": {"type": "agent_message", "text": "hi"}}\n')
+    assert render_tail(log, None, lines=50, now=TAIL_NOW) == ""

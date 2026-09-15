@@ -21,11 +21,12 @@ Goals
 - Hallucination protection: evidence requirements, challenges, independent audit, drift detection.
 - Shared, versioned memory of decisions and lessons that orchestrators consult.
 - One human console to chat with all orchestrators and receive one agreed answer.
+- One local page that shows what every agent is doing while it does it, and from which a person can answer what needs a person.
 - Every rule that matters is code with tests.
 
 Non-goals for v1
 
-- Webhooks or any hosted service. Polling only.
+- Webhooks, or any service reachable from off this machine. Polling only. `meld watch`'s viewer (section 22) is not an exception: a person starts it, it binds loopback, and it dies with the terminal that started it.
 - Running groups on separate machines. Designed for portability; tested on one machine.
 - Fine-grained token scoping per branch or per label. Mitigated by giving workers no GitHub credentials at all (section 12).
 - Judging model quality automatically. That is done by humans watching the first milestones and turning bad decisions into prompt edits or new invariants.
@@ -51,7 +52,7 @@ Non-goals for v1
 
 Three layers in one Python package.
 
-1. **`meld` CLI.** The only way any agent touches GitHub. Verbs today: `status`, `wait`, `claim`, `release`, `post`, `models`, `dispatch`, `tick`, `collect`, `review`, `merge`, `audit`, `reopen`, `reap`, `tag`, `challenge`, `roster`, `run`, `decide`, `remember`, `recall`, `plan`, `inbox`, `chat`, `notify`; `setup` and `doctor` are plan 5 (section 21). Every mutating verb recomputes the legal-action set for the calling party and refuses anything outside it, naming the violated rule. The calling party is `MELD_GROUP` (a group name) plus `MELD_ROLE` (`orchestrator` or `pm`), or `human` when neither is set and `gh` is on a listed human account. State lives under `MELD_HOME`, default `~/.meld`.
+1. **`meld` CLI.** The only way any agent touches GitHub. Verbs today: `status`, `wait`, `claim`, `release`, `post`, `models`, `dispatch`, `tick`, `collect`, `review`, `merge`, `audit`, `reopen`, `reap`, `tag`, `challenge`, `roster`, `run`, `decide`, `remember`, `recall`, `plan`, `inbox`, `chat`, `notify`, `setup`, `doctor`, `tail` (plan 8a); `watch` is plan 8b (section 22). Every mutating verb recomputes the legal-action set for the calling party and refuses anything outside it, naming the violated rule. The calling party is `MELD_GROUP` (a group name) plus `MELD_ROLE` (`orchestrator` or `pm`), or `human` when neither is set and `gh` is on a listed human account. State lives under `MELD_HOME`, default `~/.meld`.
 2. **Role prompts.** Markdown, one per role, rendered identically for every adapter: `orchestrator.md`, `pm.md`, `workers/<speciality>.md`. Shared preamble carries the cardinal rules, the `meld status` first habit, the header grammar, and a pointer to the product repo's own agent instructions, which win over framework defaults.
 3. **Runners and adapters.** `meld run <group>` starts a group's orchestrator and PM processes with the right prompts and environment, restarting them on a schedule. `meld chat` (the human console, section 14) landed in plan 4; `meld setup` (prepares a product repo) and `meld doctor` (checks the machine) are still plan-5 work (section 21). Each supported CLI is an adapter module that knows how to render prompts, launch a headless run with a model and effort, and which models and efforts are valid.
 
@@ -72,12 +73,16 @@ meld/
     review.py audit.py      # meld review / merge; meld audit / reopen
     results.py              # verdict files under $MELD_HOME/results
     status.py waiting.py state.py context.py config.py models.py gitops.py brief.py roster.py runners.py
+    transcript.py           # the normalized run-event model, the tail reader, and the renderer (section 22)
     memory.py chat.py       # decisions, lessons, recall; the human console (inbox + REPL)
     plan.py notifier.py housekeeping.py   # the plan gate; Slack nudges; CI-red/ignored-comment/off-protocol sweeps run from tick
     adapters/
       base.py               # Adapter protocol, environment scrubbing, skill scanning
       claude.py
       codex.py
+    viewer/
+      server.py             # loopback HTTP, token and Host checks, routes (section 22)
+      static/               # one hand-written page: app.html, app.css, app.js; no CDN, no build step
   src/meld/data/models.toml   # per adapter: models, efforts, context class, tier
   src/meld/prompts/           # packaged with the module, not a top-level directory
     _preamble.md  _worker_contract.md  orchestrator.md  pm.md
@@ -171,6 +176,14 @@ wallclock_hours = 72
 [notify]
 slack_dm_webhook_env = "MELD_SLACK_DM_WEBHOOK"   # optional
 repeat_after_minutes = 120
+
+[logs]                             # streamed transcripts are large; an exhausted disk killed both supervisors on 2026-09-12
+max_bytes_per_run = 8388608        # 8 MiB, then rotate to <name>.1 and keep the newest two; at least 65536
+warn_total_mb = 2048               # meld doctor warns past this much under logs/; at least 1
+
+[viewer]                           # meld watch; every field optional
+port = 0                           # 0 lets the OS choose; the URL is printed at startup
+open_browser = false
 ```
 
 Model identifiers shown for Claude are examples. Values written as `<populated ...>` are filled by `meld setup` from the packaged `models.toml`, not hand-typed — `setup._group_block` takes a `large`-tier model for the orchestrator and a `medium`-tier one for the PM, falling back to the first model the registry lists for that adapter — and `meld doctor` re-verifies every configured model against `models.toml`. The starter file `meld setup` writes carries `[repo]`, `[humans]`, one `[groups.<name>]` block per shipped adapter (commented out unless that CLI is on `PATH` *and* the registry lists models for it, and, in the PAT form, the alternative App-form settings written in beneath it as comments), `[review]`, and `[notify]`; every other table above is optional and falls back to the defaults in `config.py`.
@@ -345,7 +358,7 @@ The orchestrator prompt carries the rubric as a table with three worked examples
 
 **Post-run**: `meld status` reports a run as `finished` once its process has exited. The PM then calls `meld collect <issue>`, which does all side effects: read `.meld-result.json`; if commits exist, push the branch and open (or update) the PR with `Closes #<issue>` and the `verified-by:` line (GitHub closing keywords inside the worker's own text are neutralised, so only that line can close an issue); post the finish comment; move the issue to `in-review`. If the issue is no longer `in-progress`, or its `meld:claimed-by:` label no longer names the group alone, when `collect` runs (its lease expired and another group re-claimed it, a human released it, or the issue is contested — `dispatch._collect_build` reads `Issue.claimed_by`, which is `None` while two claim labels are present), the run is recorded as `superseded`: nothing is pushed or posted, and the worktree is kept for inspection. A retry on the same issue archives the previous run record, so every run counts against the budget. For reviewer and auditor runs, `collect` instead writes the verdict to `$MELD_HOME/results/<group>/<kind>-<n>.json`, tagged with the PR's `head_sha` at dispatch time (head SHA, whether it timed out, the worker's result, and the log tail), and marks the run collected; a second collect that finds an unconsumed verdict there moves it aside to `superseded/` rather than overwriting it. `meld review` and `meld audit` read that file to act on it — submitting the review (approve, request-changes with the worker's comments, or push-fix which pushes the reviewer's commits and requests re-review from the author group) or posting `AUDIT` and, on a `fail` finding, calling `reopen` — then move the consumed file to `submitted/`. A review verdict whose stored `head_sha` no longer matches the PR's current head is stale: `meld review` refuses to submit it and reports so instead of acting on stale intent; re-dispatch a fresh review.
 
-**Failures**: exit without a result file, or a result with outcome `failed`, moves the issue to `blocked` with the last 50 log lines posted. A timeout kills the process, keeps the branch, and does the same. `meld reap` removes the worktree and archives the record after merge or close.
+**Failures**: exit without a result file, or a result with outcome `failed`, moves the issue to `blocked` with the last 50 rendered log events posted (`[logs]`/`worker.log_tail_lines`, section 22). A timeout kills the process, keeps the branch, and does the same. `meld reap` removes the worktree and archives the record after merge or close.
 
 ## 12. Polling
 
@@ -413,9 +426,9 @@ Canonical memory is versioned files in the product repo.
 
 ## 16. Adapters (N groups)
 
-An adapter implements: `launch(spec: LaunchSpec) -> subprocess.Popen`, `installed_skills() -> list[WorkerType]`, `project_skills_dir() -> str | None` (where this CLI looks for a *project's* skills, relative to the worktree — `.claude/skills` and `.agents/skills` today; `None` for a CLI with no such directory, which then gets no materialised copies, section 10), `command_timeout_ceiling_seconds() -> int`, `supports_effort() -> bool`, `version_argv() -> list[str]` (the argv `meld doctor`'s `cli:<group>` check runs to prove the binary is there and answers), and `help_argv() -> list[str]` with `required_flags() -> tuple[str, ...]` (the command whose `--help` lists the flags `launch` passes, and those flags; doctor's `cli-flags:<group>` check names any the installed CLI no longer lists, so a renamed flag fails doctor instead of every launch). `LaunchSpec` carries `role`, `model`, `effort`, `cwd`, `prompt`, `log_path`, `timeout_seconds`, `env`, and `max_turns`; model validity and tiers live in `models.toml`, not in the adapter. Claude and Codex ship in v1. Adding a system is one adapter module, one `models.toml` section, one bot account, and one `[groups.<name>]` block. Nothing in `rules.py`, `grammar.py`, or the prompts refers to a specific CLI.
+An adapter implements: `launch(spec: LaunchSpec) -> subprocess.Popen`, `installed_skills() -> list[WorkerType]`, `project_skills_dir() -> str | None` (where this CLI looks for a *project's* skills, relative to the worktree — `.claude/skills` and `.agents/skills` today; `None` for a CLI with no such directory, which then gets no materialised copies, section 10), `command_timeout_ceiling_seconds() -> int`, `supports_effort() -> bool`, `version_argv() -> list[str]` (the argv `meld doctor`'s `cli:<group>` check runs to prove the binary is there and answers), and `help_argv() -> list[str]` with `required_flags() -> tuple[str, ...]` (the command whose `--help` lists the flags `launch` passes, and those flags; doctor's `cli-flags:<group>` check names any the installed CLI no longer lists, so a renamed flag fails doctor instead of every launch). An adapter also implements `parse_events(line: str, now: str) -> list[Event]`: the adapter is already the only layer that knows how a CLI is *launched*, and it is now also the only layer that knows how that CLI *talks* (section 22). `LaunchSpec` carries `role`, `model`, `effort`, `cwd`, `prompt`, `log_path`, `timeout_seconds`, `env`, and `max_turns`; model validity and tiers live in `models.toml`, not in the adapter. Claude and Codex ship in v1. Adding a system is one adapter module, one `models.toml` section, one bot account, and one `[groups.<name>]` block. Nothing in `rules.py`, `grammar.py`, or the prompts refers to a specific CLI.
 
-The Claude adapter runs `claude -p <prompt> --model <model> --output-format json --permission-mode bypassPermissions --strict-mcp-config --mcp-config '{"mcpServers": {}}' --settings '{"disableAllHooks": true, "autoMemoryEnabled": false, "env": {...}}' --setting-sources user,project --max-turns <n>`. The `env` map in `--settings` sets every scrubbed credential name (`GH_TOKEN`, `GITHUB_TOKEN`, the enterprise variants, `MELD_PUSH_TOKEN`) to the empty string for every launch; for a worker it also blanks `MELD_GROUP` and `MELD_ROLE`, and for an orchestrator or PM it PINS them to the values `runners.role_env` set. `--settings` is merged last, so a `settings.json` `env` block loaded through `--setting-sources` can neither hand a worker a token or a party identity that `worker_env` just removed nor re-point a credentialed role session at another group (section 18). (Blanking the identity for every launch, as the first live run did, turned every `meld` call an orchestrator or PM made into a `[human]` one.) Its environment sets `CLAUDE_CODE_EFFORT_LEVEL` to the effort, disables auto-memory and nonessential traffic, and drops the `CLAUDECODE`/`CLAUDE_CODE_ENTRYPOINT` variables a worker would otherwise inherit from meld's own process. `user` was added to `--setting-sources` in plan 3 so a worker can actually load skills installed under `~/.claude/skills` and plugin caches (section 10 already counted them into the roster); hooks stay disabled and the MCP config stays empty, so the change only reaches the user's own `settings.json` permissions and environment, which `--permission-mode bypassPermissions` already makes moot.
+The Claude adapter runs `claude -p <prompt> --model <model> --output-format stream-json --verbose --permission-mode bypassPermissions --strict-mcp-config --mcp-config '{"mcpServers": {}}' --settings '{"disableAllHooks": true, "autoMemoryEnabled": false, "env": {...}}' --setting-sources user,project --max-turns <n>`. The `env` map in `--settings` sets every scrubbed credential name (`GH_TOKEN`, `GITHUB_TOKEN`, the enterprise variants, `MELD_PUSH_TOKEN`) to the empty string for every launch; for a worker it also blanks `MELD_GROUP` and `MELD_ROLE`, and for an orchestrator or PM it PINS them to the values `runners.role_env` set. `--settings` is merged last, so a `settings.json` `env` block loaded through `--setting-sources` can neither hand a worker a token or a party identity that `worker_env` just removed nor re-point a credentialed role session at another group (section 18). (Blanking the identity for every launch, as the first live run did, turned every `meld` call an orchestrator or PM made into a `[human]` one.) Its environment sets `CLAUDE_CODE_EFFORT_LEVEL` to the effort, disables auto-memory and nonessential traffic, and drops the `CLAUDECODE`/`CLAUDE_CODE_ENTRYPOINT` variables a worker would otherwise inherit from meld's own process. `user` was added to `--setting-sources` in plan 3 so a worker can actually load skills installed under `~/.claude/skills` and plugin caches (section 10 already counted them into the roster); hooks stay disabled and the MCP config stays empty, so the change only reaches the user's own `settings.json` permissions and environment, which `--permission-mode bypassPermissions` already makes moot.
 
 The Codex adapter runs `codex exec -m <model> -c 'model_reasoning_effort="<effort>"' -s <sandbox> -C <cwd> --json -o <cwd>/.meld-last-message.txt --ignore-user-config --ephemeral <prompt>`, where the sandbox is `danger-full-access` for an orchestrator or PM (they run `meld`, GitHub, and git) and `workspace-write` with `-c sandbox_workspace_write.network_access=true` for a worker (and for any role the adapter does not know); `exec` never prompts, so it takes no approval flag (the `-a never` of plans 2–7 was removed from `codex exec` upstream and made the first live run crash-loop). The environment is passed through unchanged; the rest is unchanged from plan 2, since `codex exec --help` scopes `--ignore-user-config` to `config.toml` and does not mention skills, so it was never blocking one. Codex has no equivalent way to load a skill at run time from meld's own launch, though. Plan 5 closed the gap as far as it can be closed from outside the CLI: `project_skills_dir()` is `.agents/skills`, so a product's skills are copied there inside the worktree before launch (section 10), its `installed_skills()` scan still feeds the roster and the brief, and the worker contract tells a worker to invoke a skill by name where its tooling loads skills and otherwise to open and follow the `SKILL.md` at the path the brief prints. Both adapters run in the worktree with stdin closed and stdout and stderr appended to the log file, no interactive approval prompts.
 
@@ -423,7 +436,7 @@ The Codex adapter runs `codex exec -m <model> -c 'model_reasoning_effort="<effor
 
 | Failure | Detected by | Response |
 |---|---|---|
-| Worker exits without result | PM via run record | `blocked`, log tail posted, orchestrator re-tags and re-dispatches or splits |
+| Worker exits without result | PM via run record | `blocked`, log tail posted **rendered through `transcript.py`** (section 22: a raw tail of a streamed log is JSONL, and a raw tail of the pre-plan-8 Claude log was one unreadable line), orchestrator re-tags and re-dispatches or splits |
 | Worker exceeds deadline | `meld tick` | SIGTERM then SIGKILL; `collect` marks a build issue `blocked` with the log tail, or records the timeout and log tail in the verdict file for review/audit runs |
 | Review ping-pong cap | rules | `blocked`; orchestrators must post a resolution |
 | Review verdict on a moved head | `meld review` | marked stale; re-dispatch |
@@ -456,6 +469,7 @@ Budgets are per milestone in worker runs by model tier plus a wall-clock cap. `c
 - **Audit, challenge, and results** (`test_audit.py`, `test_challenge.py`, `test_results.py`): posting `AUDIT` and reopening a failed issue; opening, answering, and closing a challenge under the closer rules; verdict-file storage, superseding, and submission.
 - **Dispatch** (`test_dispatch.py`): a fake adapter binary records arguments and writes fake results; tests worktree creation, brief rendering, timeout kill, post-run PR opening, reap.
 - **Memory** (`test_memory.py`): decision rendering, hash match for auto-approval, recall ranking.
+- **Transcripts and the viewer** (`test_transcript.py`, `test_viewer.py`, `test_config_write.py`): the event vocabulary and tail reader over recorded JSONL fixtures for both CLIs; the viewer's token, `Host`, and routing checks, driven in-process against the same board fixtures the rules tests use; the config writer's round trip; each adapter's parse over every event type that CLI emits. No test binds a port beyond loopback or launches a CLI, and none depends on wall-clock time — `now` is injected everywhere. One test does sleep: the `O_APPEND` case polls a real child process's log until it has written, against a bounded deadline, because the thing under test is that a live writer survives a truncation.
 - **Smoke** (`tests/smoke/`, opt-in): one tiny real task per adapter against a scratch repo.
 
 No test claims to measure decision quality. That is done by watching the first milestones and converting each bad decision into a prompt edit or a new invariant.
@@ -482,6 +496,10 @@ A survey of existing multi-agent coding systems (Symphony and its forks, Gas Tow
 
 
 - Webhooks when running on an always-on box.
+- A curses transcript view for a headless box. `meld tail` is the non-graphical surface in plan 8; the full-screen terminal version waits until the page has proved which panes matter.
+- Token-level streaming in the viewer. Claude's `--include-partial-messages` would render text as it is typed, at a large multiple of the log volume; plan 8 streams whole events instead.
+- Starting or stopping a group's supervisor from the viewer, and editing budgets or run records from it. The page reports supervisor liveness and refuses to change it (section 22).
+- Guided setup in the viewer beyond the `.meld.toml` form: App creation still goes through GitHub's browser flow (item 1 above).
 - Per-group machines and a shared `$MELD_HOME` alternative.
 - A third adapter to prove the N-group claims end to end.
 - A read-only GitHub token for workers that need to read issues beyond their brief.
@@ -598,7 +616,72 @@ From plan 7 (2026-09-10), accepted as residuals rather than fixed:
 30. **A decision whose agreed prose ends with a `---` line followed by a `Status: superseded by …` line as the file's last line reads as superseded at birth.** Any end-anchored trailer marker keeps this residual; only a verified `[joint] DECISION` becomes a decision file, so a worker cannot reach it.
 31. **One review run per group per head.** In the first live run (2026-09-11, `smidley/meld-playground`) codex's PM reviewed one unchanged head of PR #40 four times in 47 minutes — every dispatch was legal because `rules._review` checked only the run slot — spending four large-tier runs and tripping the ping-pong cap on one substantive verdict, which a human then had to reconcile by dismissing the duplicates. **Landed as a live-run hotfix** (Meld PR #18): `rules._review` refuses a head the group's bot has already reviewed (two slots when the PR touches `review.security_paths`; a `DISMISSED` review frees the slot), and `PullRequest.changes_requested_total` counts distinct (reviewer, head) pairs. Residuals: the security slot is a count, not a worker type, so a PM that dispatches a second `reviewer` instead of `--worker security` on a security-path PR is stopped only by the prompt; and the slot is spent by the *posted* verdict, so between `meld collect` (verdict stored) and `meld review` (verdict posted) a second run of the same head is still legal — closing that window needs a `submitted` flag on `RunRecord` (the store's `mark_submitted` surfaced on the board), which is plan-8 work.
 
-## 22. Glossary
+## 22. Observability: transcripts and the local viewer
+
+A run that cannot be watched can only be reconstructed afterwards from what it happened to post. The first live run made the cost concrete: two groups published 530 coordination comments in ten hours, 109 of them the same refusal retried, and the only way to see why was to read a log after the process that wrote it had died. This section makes a run watchable while it runs, and gives the human one surface for the three things they actually do: watch, answer, and configure.
+
+### Normalized transcripts
+
+Both adapters already append a run's output to `$MELD_HOME/logs/<group>/<role>-<stamp>.log`. Two changes make that file readable as it grows.
+
+First, the Claude adapter launches with `--output-format stream-json --verbose` rather than `--output-format json` (section 16). `--verbose` is not optional: `claude -p` refuses `stream-json` without it. The log becomes JSONL, one event per line, and the closing `{"type": "result"}` event carries the fields the single blob carried before. Nothing loses data, because nothing read that blob: a worker's outcome is the `.meld-result.json` it writes in its worktree (section 11), Codex's final message is `.meld-last-message.txt`, and the log was never the source of truth for correctness. What the change fixes is section 17's failure tail. Under `--output-format json` a Claude run's entire log is one line, so the "last `worker.log_tail_lines` lines" a PM posts when a worker dies without a result was one unreadable 5 KB JSON object.
+
+Second, each adapter gains `parse_events(line: str, now: str) -> list[Event]`. It returns a list because one line is not one event: a Claude `assistant` line carries a content array, and a single line routinely holds a sentence and the tool call that follows it. Sequencing is not the adapter's business either -- it returns events with `seq` unset and `Tail` stamps the monotonic number -- so an adapter has exactly one job, which is translation. `transcript.py` owns the types and everything above them, and no module outside `adapters/` learns either CLI's vocabulary.
+
+```
+Event(seq: int, at: str, kind: str, text: str, tool: str | None, ok: bool | None, meta: dict)
+kind in {run_started, message, thinking, tool_call, tool_result, usage, run_finished, log_truncated, cli_error, raw}
+```
+
+| Event | Claude (`stream-json`) | Codex (`--json`) |
+|---|---|---|
+| `run_started` | `type: system`, `subtype: init` | `type: thread.started` |
+| `message` | `type: assistant`, text block | `item.completed`, `item_type: agent_message` |
+| `thinking` | `type: assistant`, thinking block | `item.completed`, `item_type: reasoning` |
+| `tool_call` | `type: assistant`, `tool_use` block | `item.started`, `item_type: command_execution` |
+| `tool_result` | `type: user`, `tool_result` block | `item.completed`, `item_type: command_execution` (`exit_code`) |
+| `usage` | `type: result` (its `usage` block) | `turn.completed` |
+| `run_finished` | `type: result` | not emitted: a Codex transcript ends at `usage`. Synthesizing a terminal event from process exit is a reader's job, not an adapter's, and is left to plan 8b |
+| `cli_error` | not emitted | `turn.failed` (its `error.message`, `ok=False`) |
+| `raw` | any non-JSON line, any unknown `type`, and a known line whose every content block was unknown | any non-JSON line (the CLI's own startup errors on stderr) and any unknown `item_type` |
+| (dropped) | `stream_event` | `turn.started` |
+
+Three rules keep this honest. A line an adapter does not recognize becomes `raw`, and one it recognizes as carrying nothing (Codex's `turn.started`, a Claude `stream_event`) becomes no event at all; `parse_events` never raises, so a CLI that adds an event type degrades the view instead of breaking the failure tail. `Tail` tracks a byte offset and yields only complete lines, so a half-written JSONL line is never parsed. And `at` comes from the CLI's own timestamp when it has one, else from an injected clock, so no test depends on wall time.
+
+`meld tail <group>/<role>` and `meld tail --run <issue>` render a live transcript to the terminal, with no server and no page. That is the surface for a headless box, the thing the tests drive, and the fallback whenever the viewer is not running.
+
+**Log volume is a first-order constraint, not a detail.** A streamed log is one to two orders of magnitude larger than a result blob: the first live run's Codex orchestrator wrote 1.8 MB in a single launch, and an exhausted disk is what killed both supervisors that night, mid-milestone, with no signal on the board. Capping it takes care, because the child process holds the log's file descriptor: `popen_detached` hands the open file to the CLI as its stdout and the run outlives the `meld` process that started it (section 11), so nothing meld-side can rename the file out from under the writer. What works instead is truncation in place. `open_log` opens with `O_APPEND`, so every write recomputes the offset from the file's end; `transcript.trim_log`, called from `meld tick` and from the viewer's own poll, reads the file's tail into memory, truncates the original to zero, and only then writes that tail to `<name>.1`, replacing any previous `.1` — in that order, because on the exhausted disk this exists for the sidecar write is the operation that fails, and it transiently adds up to a keep-window before it does. A `.1` that could not be written is reported as a trim anyway: the freed space is the incident, the tail only the post-mortem. The writer's next line lands at the new end with no fd invalidated and no process restarted. `Tail` closes the loop from the reading side: a file shorter than the offset it holds means the log was trimmed, so it emits `log_truncated` and resumes from zero, which is also how it survives a truncation nothing in meld performed. `meld doctor` reports total bytes under `logs/` and warns past `[logs] warn_total_mb`.
+
+### The viewer
+
+`meld watch` serves one page and prints its URL. It is a tool a person runs, not a service the framework depends on: no role may start it, nothing reads from it, and every verb it offers also exists on the CLI. Section 2's "polling only" non-goal rules out webhooks and anything reachable from off the machine; a loopback page that a human starts and closes is neither.
+
+| Route | Method | Purpose |
+|---|---|---|
+| `/` | GET | the page, the only HTML served |
+| `/api/state` | GET | `status.render_status`, plus supervisor liveness, budget spend, free disk, and log bytes |
+| `/api/streams` | GET | the live runs: group, role, issue, pid, started, log path |
+| `/api/events` | GET | `text/event-stream` for one run, resumable from a `seq` |
+| `/api/action` | POST | one human verb |
+| `/api/config` | GET, PUT | the parsed `.meld.toml`, and a validated write |
+
+**Authentication and binding.** The server binds `127.0.0.1` on an OS-assigned port unless `[viewer] port` says otherwise. A 32-byte URL-safe token is minted per launch, printed in the URL, and required on every request including the page load; a request without it gets 403 and an empty body. The `Host` header must name a loopback host and the served port, which is what stops a page in the user's browser from reaching the API by rebinding DNS to 127.0.0.1. No CORS header is ever sent. The token lives in the process and in the URL the human pasted, never on disk.
+
+**What the page may do.** Reading is unrestricted within `$MELD_HOME` and the configured repo: transcripts, board, status, config. Writing is exactly the set of verbs `rules.py` already grants the `human` party (section 14): `claim`, `release`, `post`, `tag`, `challenge`, `decide`, `remember`, `plan approve`, `plan ack`, and `merge`. The human's overrides are not separate commands. `HALT`, `RESUME`, `REVERT`, `DIRECTIVE`, `RESOLVED`, `PROVIDED`, `ACK`, and `APPROVE` are header verbs that `post` carries (section 7), so the page offers them as the grammar already defines them and `grammar.py` validates the header exactly as it does for a comment typed at the CLI. Worker-authored text is the only thing `neutralise_closers` guards, so nothing the page posts as `human` passes through it. **The viewer holds no legality logic.** `POST /api/action` names a party, a verb, and a ref; `rules.py` decides; a refusal is rendered verbatim, including the rule it names. `meld status` therefore remains able to list every legal verb, and a button the page offers for a verb rules refuses is a rendering bug, never a second authority.
+
+**What it may not do.** Start or stop a group's supervisor, kill a run, edit a run record, write into a worktree, or post as any party other than `human`. Supervisor liveness is reported and never changed (section 21).
+
+**Liveness is a tri-state.** `/api/state` reports each supervisor as `alive`, `dead`, or `unknown`, each with the reason that produced it, and pairs every pid with the process start time it was recorded against. A bare boolean is what made the first live run announce a dead audit worker as running: the pid had been reused. "Could not confirm alive" and "confirmed gone" are different facts and the page shows which one it has.
+
+### The configuration form
+
+`PUT /api/config` accepts the fields section 5 defines and refuses any key it does not know. `tomllib` reads; the standard library cannot write TOML, so `config.py` gains a canonical serializer for the known schema. That asymmetry is a feature rather than a workaround: a form that can only emit named fields, in a fixed order, under a comment header re-rendered from a template, cannot corrupt a table it does not understand. A write is refused unless the candidate text parses back into an equal `Config` and `meld doctor`'s configuration checks pass against it; only then does it replace the file through `atomic.write_atomic`. Model choices are offered from `models.toml`, so an invalid model cannot be chosen rather than being rejected after the fact.
+
+### Testing
+
+Everything here is testable without a CLI, a port, or a clock. `test_transcript.py` drives the event vocabulary, `Tail`'s partial-line and rotation behaviour, and a golden render from recorded, redacted JSONL captures under `tests/fixtures/transcripts/`; each adapter's `parse_events(line, now) -> list[Event]` is tested over every event type that CLI emits plus an unknown type, an unknown content block or item type inside a known line, and a non-JSON line, all of which must become `raw`. `test_viewer.py` drives the handler in process: a missing token, a wrong token, a rebinding `Host`, SSE resumption from a `seq`, and, for every mutating route, that it refuses exactly what `rules.py` refuses against the same board fixtures the rules suites use. `test_config_write.py` covers round-trip equality field by field, refusal of an unknown key, and an atomic replace that leaves the original file intact when validation fails.
+
+## 23. Glossary
 
 - **Group**: one AI system (CLI + bot account + config) with an orchestrator, PM, and workers.
 - **Party**: who is speaking in the grammar: a group, a group's PM, `human`, or `joint`.

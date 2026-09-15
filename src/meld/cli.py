@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,7 +21,7 @@ from meld.board import HELD_CATEGORIES
 from meld.challenge import challenge as do_challenge
 from meld.chat import inbox as build_inbox, run_chat
 from meld.config import ConfigError, load_config
-from meld.context import Context, find_config, load_context
+from meld.context import Context, find_config, load_context, refuse_worker
 from meld.dispatch import DispatchError, collect as do_collect, dispatch as do_dispatch, reap as do_reap, tick as do_tick
 from meld.doctor import run_checks, summary, sweep
 from meld.github import GitHub, GitHubError
@@ -34,13 +35,15 @@ from meld.results import ResultsError
 from meld.review import merge as do_merge, review as do_review
 from meld.runners import run_group
 from meld.setup import SetupError, setup as do_setup
-from meld.state import CHANGE_KINDS, meld_home
+from meld.state import CHANGE_KINDS, StateStore, meld_home
 from meld.status import build_status
 from meld.tagging import tag as do_tag
+from meld.transcript import Tail, newest_log, render_line
 from meld.waiting import wait_for_change
 
 RUN = subprocess.run  # tests monkeypatch this with a FakeGh
 ADAPTER_FOR = get_adapter
+SLEEP = time.sleep  # tests monkeypatch this so the suite never actually sleeps
 
 
 def emit(data: object, pretty: bool) -> None:
@@ -479,6 +482,68 @@ def doctor(ctx: click.Context, probe_status: bool, do_sweep: bool, dry_run: bool
     emit(result, ctx.obj["pretty"])
     if not result["ok"]:
         raise SystemExit(1)
+
+
+@main.command()
+@click.argument("target", required=False)
+@click.option("--run", "issue", type=int, default=None,
+              help="Tail a dispatched run by issue number instead of naming a log.")
+@click.option("--follow/--no-follow", default=True, help="Keep reading until interrupted (Ctrl-C).")
+@click.option("--width", default=100, show_default=True, help="Truncate each rendered line to this width.")
+@click.option("--interval", default=1.0, show_default=True, help="Seconds between reads while following.")
+@click.pass_context
+def tail(ctx: click.Context, target: str | None, issue: int | None, follow: bool, width: int, interval: float) -> None:
+    """Render a run's transcript as it is written.
+
+    TARGET is `<group>` or `<group>/<role-or-kind>`; with neither TARGET nor --run, the newest log wins.
+    Reads local files only: no board, no party, nothing posted.
+    """
+    # Needing no board, `tail` never calls `load_context` -- which is where the worker refusal lives, so it
+    # is raised here directly rather than making `tail` the one verb a worker can run (spec section 18).
+    _guard(lambda: refuse_worker(os.environ))
+    config_path = ctx.obj["config_path"] or _guard(lambda: find_config(Path.cwd()))
+    cfg = _guard(lambda: load_config(config_path))
+    home = meld_home(os.environ)
+
+    if issue is not None:
+        record = None
+        for group_runs in StateStore(home, None).load_runs().values():
+            record = group_runs.get(issue) or record
+        if record is None:
+            raise click.ClickException(f"no run record for issue #{issue} under {home / 'runs'}")
+        log_path, group = Path(record.log_path), record.group
+    else:
+        if target and target.partition("/")[0] not in cfg.groups:
+            raise click.ClickException(f"unknown group {target.partition('/')[0]!r}; configured: {', '.join(cfg.groups)}")
+        found = newest_log(home / "logs", target)
+        if found is None:
+            where = f" for {target}" if target else ""
+            raise click.ClickException(f"no run log{where} under {home / 'logs'}")
+        log_path, group = found, found.parent.name
+
+    group_cfg = cfg.groups.get(group)
+    if group_cfg is None:
+        raise click.ClickException(f"log {log_path} belongs to group {group!r}, which is not in {config_path}")
+    adapter = _guard(lambda: ADAPTER_FOR(group_cfg.cli))
+    click.echo(f"{log_path} ({group}, {group_cfg.cli})", err=True)
+
+    reader = Tail(log_path)
+    while True:
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for event in reader.read(adapter.parse_events, now):
+            click.echo(render_line(event, width))
+        if not follow:
+            # Nothing more is coming, so the held partial line is not "not yet" any more -- it is the last
+            # thing the run wrote, unterminated because it died mid-write. While following we never flush:
+            # there the same bytes really are a line the CLI has not finished writing.
+            for event in reader.flush(adapter.parse_events, now):
+                click.echo(render_line(event, width))
+            return
+        try:
+            SLEEP(interval)
+        except KeyboardInterrupt:
+            click.echo("", err=True)
+            return
 
 
 if __name__ == "__main__":

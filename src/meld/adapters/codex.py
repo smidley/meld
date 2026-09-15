@@ -3,8 +3,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from meld.adapters.base import LaunchSpec, open_log, popen_detached, scan_skills
+from meld.adapters.base import LaunchSpec, open_log, parse_doc, popen_detached, raw_event, scan_skills
 from meld.roster import WorkerType
+from meld.transcript import Event, cap
 
 LAST_MESSAGE_FILE = ".meld-last-message.txt"
 COMMAND_CEILING_SECONDS = 600  # conservative; the exact Codex shell-command ceiling is verified by `meld doctor`
@@ -101,6 +102,51 @@ class CodexAdapter:
 
     def required_flags(self) -> tuple[str, ...]:
         return REQUIRED_FLAGS
+
+    def parse_events(self, line: str, now: str) -> list[Event]:
+        """One `--json` line as events. `turn.started` and an in-progress message carry nothing."""
+        doc, stripped = parse_doc(line)
+        if doc is None:
+            return raw_event(now, stripped)
+        kind = doc.get("type")
+        if kind == "thread.started":
+            thread = str(doc.get("thread_id", ""))
+            return [Event(seq=0, at=now, kind="run_started", text=cap(thread), meta={"thread_id": thread})]
+        if kind == "turn.started":
+            return []
+        if kind == "turn.completed":
+            usage = doc.get("usage") if isinstance(doc.get("usage"), dict) else {}
+            return [Event(seq=0, at=now, kind="usage",
+                          text=cap(", ".join(f"{k}={v}" for k, v in sorted(usage.items()))), meta={"usage": usage})]
+        if kind == "turn.failed":
+            error = doc.get("error") if isinstance(doc.get("error"), dict) else {}
+            return [Event(seq=0, at=now, kind="cli_error", ok=False, text=cap(error.get("message", "turn failed")))]
+        if kind in ("item.started", "item.completed", "item.updated"):
+            item = doc.get("item") if isinstance(doc.get("item"), dict) else {}
+            return _item(kind, item, now, stripped)
+        return raw_event(now, stripped)
+
+
+def _item(kind: str, item: dict, now: str, stripped: str) -> list[Event]:
+    """One `item.*` event. Only the completed form of a message or a command carries its content."""
+    item_type = item.get("type") or item.get("item_type")
+    if item_type in ("agent_message", "reasoning"):
+        if kind != "item.completed":
+            return []
+        event_kind = "message" if item_type == "agent_message" else "thinking"
+        return [Event(seq=0, at=now, kind=event_kind, text=cap(item.get("text", "")))]
+    if item_type == "command_execution":
+        command = cap(item.get("command", ""))
+        if kind == "item.started":
+            return [Event(seq=0, at=now, kind="tool_call", tool="command", text=command,
+                          meta={"id": str(item.get("id", ""))})]
+        if kind == "item.updated":
+            return []
+        code = item.get("exit_code")
+        return [Event(seq=0, at=now, kind="tool_result", tool="command", ok=(code == 0),
+                      text=cap(item.get("aggregated_output", "")),
+                      meta={"exit_code": code, "command": command, "id": str(item.get("id", ""))})]
+    return raw_event(now, stripped)
 
 
 ADAPTER = CodexAdapter()

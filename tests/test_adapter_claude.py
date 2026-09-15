@@ -4,6 +4,10 @@ from pathlib import Path
 import meld.adapters.claude as claude_mod
 from meld.adapters.base import SCRUBBED_EXACT, LaunchSpec
 from meld.adapters.claude import ClaudeAdapter
+from meld.transcript import Tail, render
+
+FIXTURES = Path(__file__).parent / "fixtures" / "transcripts"
+NOW = "2026-09-12T02:11:19Z"
 
 
 def spec(tmp_path: Path, **over) -> LaunchSpec:
@@ -18,7 +22,7 @@ def test_argv_is_the_documented_unattended_shape(tmp_path: Path):
     argv = ClaudeAdapter().argv(spec(tmp_path))
     assert argv[:3] == ["claude", "-p", "Read .meld-brief.md and do it."]
     assert argv[argv.index("--model") + 1] == "claude-sonnet-5"
-    assert argv[argv.index("--output-format") + 1] == "json"
+    assert argv[argv.index("--output-format") + 1] == "stream-json"
     assert argv[argv.index("--permission-mode") + 1] == "bypassPermissions"
     assert "--strict-mcp-config" in argv and json.loads(argv[argv.index("--mcp-config") + 1]) == {"mcpServers": {}}
     settings = json.loads(argv[argv.index("--settings") + 1])
@@ -28,6 +32,15 @@ def test_argv_is_the_documented_unattended_shape(tmp_path: Path):
     assert argv[argv.index("--setting-sources") + 1] == "user,project"
     assert argv[argv.index("--max-turns") + 1] == "200"
     assert "--effort" not in argv and "--bare" not in argv and "--dangerously-skip-permissions" not in argv
+
+
+def test_argv_streams_events_and_verbose_is_required_for_it(tmp_path: Path):
+    argv = ClaudeAdapter().argv(spec(tmp_path))
+    assert argv[argv.index("--output-format") + 1] == "stream-json"
+    # claude -p refuses stream-json without --verbose, so the flag is part of the contract, not a preference.
+    assert "--verbose" in argv
+    assert "--include-partial-messages" not in argv          # token-level streaming is out of plan 8 (spec §21)
+    assert "--verbose" in ClaudeAdapter().required_flags()
 
 
 def test_env_sets_effort_and_strips_nested_session_guard(tmp_path: Path):
@@ -63,3 +76,78 @@ def test_installed_skills_scans_personal_and_plugin_skills(tmp_path: Path):
     assert names == [("brand", "Brand voice."), ("slides", "Decks.")]
     assert ClaudeAdapter(home=tmp_path / "nowhere").installed_skills() == []
     assert ClaudeAdapter().command_timeout_ceiling_seconds() == 600 and ClaudeAdapter().supports_effort() is True
+
+
+def test_parse_events_renders_a_whole_claude_run():
+    events = Tail(FIXTURES / "claude-run.jsonl").read(ClaudeAdapter().parse_events, NOW)
+    assert [e.kind for e in events] == [
+        "run_started", "message", "tool_call", "tool_result", "thinking",
+        "tool_call", "tool_result", "raw", "run_finished",
+    ]
+    assert render(events, width=96) == "\n".join([
+        "02:11:19  started  claude-opus-5",
+        "02:11:19  message  Checking the board first.",
+        "02:11:19  tool     Bash: meld status",
+        '02:11:19  result   ok · {"repo": "acme/widgets"}',
+        "02:11:19  think    The audit failed on defects already fixed on main.",
+        "02:11:19  tool     Bash: meld post STATUS -m 'board is clean'",
+        "02:11:19  result   FAILED · refused: HALT is in effect",
+        "02:11:19  raw      a bare line the CLI printed before its first event",
+        "02:11:19  done     PR 15 merged.",
+    ])
+
+
+def test_parse_events_splits_one_assistant_line_into_its_content_blocks():
+    line = ('{"type":"assistant","message":{"role":"assistant","content":['
+            '{"type":"text","text":"Checking."},'
+            '{"type":"tool_use","id":"toolu_9","name":"Bash","input":{"command":"meld status"}}]}}')
+    events = ClaudeAdapter().parse_events(line, NOW)
+    assert [(e.kind, e.tool, e.text) for e in events] == [
+        ("message", None, "Checking."), ("tool_call", "Bash", "meld status")]
+
+
+def test_parse_events_marks_a_failed_tool_result():
+    line = ('{"type":"user","message":{"role":"user","content":[{"type":"tool_result",'
+            '"tool_use_id":"toolu_2","content":"refused: HALT is in effect","is_error":true}]}}')
+    (event,) = ClaudeAdapter().parse_events(line, NOW)
+    assert (event.kind, event.ok, event.text) == ("tool_result", False, "refused: HALT is in effect")
+
+
+def test_parse_events_reads_the_result_event_as_the_runs_end():
+    line = ('{"type":"result","subtype":"success","is_error":false,"num_turns":89,'
+            '"total_cost_usd":8.343978,"result":"PR 15 merged.","usage":{"output_tokens":76943}}')
+    (event,) = ClaudeAdapter().parse_events(line, NOW)
+    assert (event.kind, event.ok, event.text) == ("run_finished", True, "PR 15 merged.")
+    assert event.meta["num_turns"] == 89 and event.meta["cost_usd"] == 8.343978
+
+
+def test_parse_events_drops_a_partial_stream_event_and_keeps_an_unknown_type_as_raw():
+    assert ClaudeAdapter().parse_events('{"type":"stream_event","event":{"type":"content_block_delta"}}', NOW) == []
+    (unknown,) = ClaudeAdapter().parse_events('{"type":"weather_report","temp":21}', NOW)
+    assert unknown.kind == "raw" and "weather_report" in unknown.text
+
+
+def test_parse_events_renders_an_all_unknown_block_line_as_raw():
+    """The most likely shape of a future Claude Code change is a new content block type inside an `assistant`
+    line -- `thinking`, `redacted_thinking`, `server_tool_use` and `mcp_tool_use` all arrived that way. A line
+    whose blocks are all unrecognized must degrade to `raw`, not disappear."""
+    line = ('{"type":"assistant","message":{"role":"assistant","content":'
+            '[{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{"query":"x"}}]}}')
+    (event,) = ClaudeAdapter().parse_events(line, NOW)
+    assert event.kind == "raw" and "server_tool_use" in event.text
+
+
+def test_parse_events_keeps_only_the_recognized_block_when_a_line_mixes_them():
+    """The line itself WAS understood, so it does not also render as `raw`: that would duplicate the text."""
+    line = ('{"type":"assistant","message":{"role":"assistant","content":'
+            '[{"type":"text","text":"Searching."},{"type":"server_tool_use","id":"srvtoolu_2","name":"web_search"}]}}')
+    events = ClaudeAdapter().parse_events(line, NOW)
+    assert [(e.kind, e.text) for e in events] == [("message", "Searching.")]
+
+
+def test_parse_events_never_raises_on_junk():
+    (raw,) = ClaudeAdapter().parse_events("not json at all", NOW)
+    assert raw.kind == "raw" and raw.text == "not json at all"
+    (broken,) = ClaudeAdapter().parse_events('{"type": "assistant", "message": {', NOW)
+    assert broken.kind == "raw"
+    assert ClaudeAdapter().parse_events("   ", NOW) == []

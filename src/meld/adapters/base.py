@@ -1,6 +1,7 @@
 """Adapter protocol: the only layer that knows how a particular CLI is launched."""
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 from dataclasses import dataclass
@@ -8,6 +9,7 @@ from pathlib import Path
 from typing import IO, Iterable, Mapping, Protocol
 
 from meld.roster import WorkerType
+from meld.transcript import Event, cap
 
 SCRUBBED_EXACT = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "MELD_GROUP", "MELD_ROLE", "MELD_PUSH_TOKEN")
 SCRUBBED_PREFIXES = ("MELD_TOKEN_", "MELD_APP_KEY_")
@@ -49,12 +51,36 @@ class Adapter(Protocol):
 
     def required_flags(self) -> tuple[str, ...]: ...  # flags `meld doctor` checks against that help text
 
+    def parse_events(self, line: str, now: str) -> list[Event]: ...
+
 
 def scrub_env(env: Mapping[str, str]) -> dict[str, str]:
     """Environment for a worker: no GitHub tokens or App private keys, no party identity, a marker that it is a worker."""
     out = {k: v for k, v in env.items() if k not in SCRUBBED_EXACT and not k.startswith(SCRUBBED_PREFIXES)}
     out["MELD_WORKER"] = "1"
     return out
+
+
+def parse_doc(line: str) -> tuple[dict | None, str]:
+    """`(the JSON object, the stripped line)`, or `(None, stripped)` when the line is not a JSON object.
+
+    Every adapter's `parse_events` starts here, because every adapter faces the same two non-events: a
+    blank line, and a line the CLI wrote to stderr that was never JSON at all (a Rust panic, a node
+    warning, a cache error). Neither is a parse failure worth raising over.
+    """
+    s = line.strip()
+    if not s or not s.startswith("{"):
+        return None, s
+    try:
+        doc = json.loads(s)
+    except json.JSONDecodeError:
+        return None, s
+    return (doc, s) if isinstance(doc, dict) else (None, s)
+
+
+def raw_event(now: str, stripped: str) -> list[Event]:
+    """The `raw` fallback: one event per unrecognized line, or nothing at all for a blank one."""
+    return [Event(seq=0, at=now, kind="raw", text=cap(stripped))] if stripped else []
 
 
 def parse_frontmatter(text: str) -> dict[str, str]:

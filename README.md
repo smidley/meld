@@ -39,6 +39,7 @@ Design: `docs/superpowers/specs/2026-09-03-meld-design.md`. Plans: `docs/superpo
 | `meld notify [--dry-run]` | Send the Slack nudge for needs-human items now (a PM's `tick` also does this on its own) |
 | `meld roster` | List the worker types available to the calling party |
 | `meld run GROUP [--once]` | Supervise a group's orchestrator and PM as headless CLI sessions |
+| `meld tail [TARGET] [--run N] [--follow/--no-follow] [--width W] [--interval S]` | Render a run's transcript as it is written; TARGET is `<group>` or `<group>/<role-or-kind>`, defaulting to the newest log — reads local files only, nothing posted |
 | `meld setup REPO --goal TEXT [--pr] [--app] [--allow-public] [--no-protection] [--force] [--milestone T] [--dir P]` | Bootstrap a product repo: labels, milestone, coordination issue, CODEOWNERS, `.meld/STANDARDS.md`, branch protection, and a starter `.meld.toml`; `--pr` opens the setup PR, `--app` writes the GitHub App form and prints the steps |
 | `meld doctor [--probe-status] [--sweep [--dry-run] [--older-than-days N]]` | Verify CLIs, credentials, identities, models, ceilings, and permissions (exit 1 on a failure); `--sweep` clears meld's scratch under `$MELD_HOME` |
 

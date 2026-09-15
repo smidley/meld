@@ -55,6 +55,15 @@ def test_load_context_refuses_to_run_inside_a_worker(project: Path):
     assert fake.calls == []  # refused before touching GitHub
 
 
+def test_refuse_worker_is_the_one_refusal_every_verb_shares(project: Path):
+    """`meld tail` needs no board, so it never calls load_context; it calls this helper directly instead of
+    carrying a second copy of the check (cli.tail, tests/test_cli.py)."""
+    from meld.context import refuse_worker
+    with pytest.raises(ConfigError, match="meld may not be run by a worker"):
+        refuse_worker({"MELD_WORKER": "1"})
+    assert refuse_worker({}) is None and refuse_worker({"MELD_WORKER": "0"}) is None
+
+
 def test_load_context_human_uses_viewer_login(project: Path):
     fake = FakeGh()
     fake.route("GET", "user", {"login": "empowerScott"})

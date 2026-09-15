@@ -61,6 +61,18 @@ class Context:
         return Actor(self.party, self.actor_login, names)
 
 
+def refuse_worker(env: Mapping[str, str]) -> None:
+    """Refuse when the caller is a worker (spec section 18). One message, one behaviour, for every verb.
+
+    Workers hold no token and no party; a worker that reaches for `meld` is trying to act as its group.
+    `load_context` calls this, which covers every verb that needs a board -- and `meld tail`, which
+    deliberately needs no board and so never calls `load_context`, calls it directly. Without that a
+    worker could read the *other* group's orchestrator transcript through a framework-blessed path.
+    """
+    if env.get("MELD_WORKER") == "1":
+        raise ConfigError("meld may not be run by a worker")
+
+
 def find_config(start: Path) -> Path:
     for d in [start, *start.parents]:
         candidate = d / ".meld.toml"
@@ -73,9 +85,7 @@ def load_context(config_path: Path | None = None, env: Mapping[str, str] | None 
                  cwd: Path | None = None, models: ModelRegistry | None = None, adapter_for: Callable[[str], Adapter] = get_adapter,
                  app_post=None) -> Context:
     env = os.environ if env is None else env
-    if env.get("MELD_WORKER") == "1":
-        # Workers hold no token and no party; a worker that reaches for meld is trying to act as its group.
-        raise ConfigError("meld may not be run by a worker")
+    refuse_worker(env)
     path = config_path or find_config(cwd or Path.cwd())
     cfg = load_config(path)
     party = party_from_env(cfg, env)

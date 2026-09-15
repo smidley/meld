@@ -4,11 +4,11 @@
 
 **Goal:** Make a running role or worker watchable while it runs: both CLIs stream their output, each adapter translates its own vocabulary into one closed event type, and `meld tail` renders a live transcript in the terminal with no server and no page.
 
-**Architecture:** `transcript.py` owns the event model (`Event`), the reader (`Tail`, a byte-offset reader that yields only complete lines and detects truncation), the terminal renderer, and the log cap (`trim_log`, `sweep_logs`). Each adapter gains one method, `parse_event(line, now) -> Event | None`, so the adapter stays the only layer that knows a CLI — how it is launched, and now how it talks. The Claude adapter switches from `--output-format json` (one blob at exit, invisible until then) to `--output-format stream-json --verbose`. Because the child process holds the log's file descriptor and outlives the `meld` process, the cap is enforced by truncation in place against `O_APPEND`, never by renaming the file.
+**Architecture:** `transcript.py` owns the event model (`Event`), the reader (`Tail`, a byte-offset reader that yields only complete lines and detects truncation), the terminal renderer, and the log cap (`trim_log`, `sweep_logs`). Each adapter gains one method, `parse_events(line, now) -> list[Event]`, so the adapter stays the only layer that knows a CLI — how it is launched, and now how it talks. The Claude adapter switches from `--output-format json` (one blob at exit, invisible until then) to `--output-format stream-json --verbose`. Because the child process holds the log's file descriptor and outlives the `meld` process, the cap is enforced by truncation in place against `O_APPEND`, never by renaming the file.
 
 **Tech Stack:** Python 3.13, standard library plus `click` only. No new dependency. Real files in `tmp_path` and recorded JSONL fixtures in tests; no network, no real CLI.
 
-**Spec:** `docs/superpowers/specs/2026-09-03-meld-design.md` — §22 (all of "Normalized transcripts"; the viewer and the config form are plans 8b–8d and are **out of scope here**), §2 (the live-view goal), §4 (`transcript.py` in the layout; `tail` in the verb list), §5 (`[logs]`), §16 (`parse_event`; the Claude argv), §17 (the rendered failure tail), §19 (the new suite), §21 (what plan 8 leaves out).
+**Spec:** `docs/superpowers/specs/2026-09-03-meld-design.md` — §22 (all of "Normalized transcripts"; the viewer and the config form are plans 8b–8d and are **out of scope here**), §2 (the live-view goal), §4 (`transcript.py` in the layout; `tail` in the verb list), §5 (`[logs]`), §16 (`parse_events`; the Claude argv), §17 (the rendered failure tail), §19 (the new suite), §21 (what plan 8 leaves out).
 
 ## Global Constraints
 
@@ -17,7 +17,7 @@
 - `github.py` is the only GitHub path (plus `appauth.py`'s two App-JWT calls); `gitops.py` the only git runner. This plan adds no call to either.
 - Adapters are the only code that knows how a CLI is launched, and now also how it talks. No module outside `src/meld/adapters/` may branch on a CLI's event names.
 - Workers never hold credentials; anything a worker writes that reaches GitHub passes through `neutralise_closers`. Task 7 renders a worker's log tail into a GitHub comment, so the rendered text keeps passing through `neutralise_closers` exactly as the raw tail does today.
-- `parse_event` never raises and never returns a partial parse: an unrecognized line becomes `kind="raw"`. A CLI that adds an event type must degrade the view, never break a run.
+- `parse_events` never raises and never returns a partial parse: an unrecognized line becomes `kind="raw"`, and so does a known line whose every content block or item was unrecognized. A CLI that adds an event type must degrade the view, never break a run.
 - Tests are hermetic and real: real files over fakes where a file is the thing under test; no network, no real CLI, no host `~/.claude`/gitconfig/wall-clock dependence; inject `now`; pass `adapter_for=` to every `load_context` in tests. `uv run pytest -q -p no:cacheprovider` must be green with **no warnings** before every commit.
 - Never set `MELD_SMOKE=1`.
 - Conventional commit subjects, **no attribution trailers of any kind**, one logical change per commit; repo-local identity `Scott Brant <421573+smidley@users.noreply.github.com>`.
@@ -27,10 +27,10 @@
 ## Decisions (rulings made while writing the plan; recorded so executors do not re-litigate)
 
 1. **`Event` is a closed vocabulary, and `raw` is the escape hatch.** `KINDS` is a tuple in `transcript.py`; `Event.__post_init__` rejects a kind outside it. A CLI line an adapter does not recognize becomes `raw` with the line as `text`, truncated. This is what keeps a CLI upgrade from breaking `meld tail` and the failure tail.
-2. **The adapter translates; `Tail` sequences.** `parse_event(line, now)` returns an `Event` with `seq=0`; `Tail` stamps the monotonic number with `dataclasses.replace`. An adapter therefore has exactly one job and no state.
+2. **The adapter translates; `Tail` sequences.** `parse_events(line, now)` returns a list of `Event`, each with `seq=0` (a list because one line is not one event: a Claude `assistant` line carries a content array); `Tail` stamps the monotonic number with `dataclasses.replace`. An adapter therefore has exactly one job and no state.
 3. **Text is capped at parse time, not at render time.** `TEXT_CAP = 2000` characters per event. A `tool_result` carrying 4 MB of command output must not sit in memory at full size while a viewer holds a thousand events. The renderer truncates again to the terminal width; the cap is about memory, the width is about reading.
 4. **The log cap is truncation in place, never a rename.** `popen_detached` hands the open log to the CLI as its stdout and the run outlives the `meld` process, so a rename would leave the writer appending to the renamed inode and the live reader watching a dead file. `open_log` already opens with `"ab"` (`O_APPEND`), which recomputes the offset from the file's end on every write, so `trim_log` reads the tail into memory, truncates the original to zero, and only then writes that tail to `<name>.1`, replacing any previous `.1`; the writer's next line lands at the new end. The order is that way round because the disk this runs on may have no free bytes: writing the sidecar first fails with ENOSPC and frees nothing, and transiently adds up to `keep_bytes` before it fails, so a sidecar that cannot be written still counts as a trim. `Tail` detects a file shorter than its own offset, emits `log_truncated`, and resumes from zero.
-5. **`meld tail` is a human verb with no party.** It reads files under `$MELD_HOME` and prints; it takes no `MELD_GROUP`, posts nothing, and needs no board. It therefore does not call `load_context`'s GitHub path — it needs `meld_home` and the config only for `[logs]` and the group's adapter name. A worker (`MELD_WORKER=1`) still cannot run `meld` at all, which is unchanged.
+5. **`meld tail` is a human verb with no party.** It reads files under `$MELD_HOME` and prints; it takes no `MELD_GROUP`, posts nothing, and needs no board. It therefore does not call `load_context`'s GitHub path — it needs `meld_home` and the config only for `[logs]` and the group's adapter name. A worker (`MELD_WORKER=1`) still cannot run `meld` at all: the refusal that `load_context` raises lives in `context.refuse_worker`, which `tail` calls directly for exactly this reason.
 6. **The Claude switch is verified by `doctor`, not by a smoke run.** `--verbose` joins `REQUIRED_FLAGS`, so `meld doctor`'s `cli-flags:<group>` check fails loudly if a future CLI drops either flag, instead of every launch failing. No task in this plan runs a real CLI.
 7. **The `result` fixture is a real capture; the streamed events are the documented shape.** `tests/fixtures/transcripts/claude-run.jsonl`'s final `result` line is the redacted shape captured from the first live run's own log, because `--output-format json` writes exactly that event and nothing else. The `system`, `assistant`, and `user` lines are written from Claude Code's documented `stream-json` shape. Decision 1's `raw` fallback is what covers the gap until a live run adds a full capture; Task 3 includes an unknown-type line and a non-JSON line as fixtures precisely so the fallback is tested rather than assumed.
 8. **`sweep_logs` is a plain function over a directory.** It takes `(logs_root, max_bytes)` and returns the paths it trimmed, so it is tested against `tmp_path` with no `Context`, no board, and no fake GitHub. `dispatch.tick` calls it; plan 8b's viewer will call the same function from its poll.
@@ -41,16 +41,16 @@
 |---|---|
 | `src/meld/transcript.py` | **new.** `Event`, `KINDS`, `TEXT_CAP`, `cap`; `Tail` (offset reader, complete lines only, truncation detection); `render_line`/`render`; `trim_log`, `sweep_logs`, `total_bytes` |
 | `src/meld/config.py` | `[logs]`: `logs_max_bytes_per_run`, `logs_warn_total_mb` |
-| `src/meld/adapters/base.py` | `Adapter` protocol gains `parse_event`; `Event` re-exported for adapters |
-| `src/meld/adapters/claude.py` | `--output-format stream-json --verbose`; `--verbose` in `REQUIRED_FLAGS`; `parse_event` for `system`/`assistant`/`user`/`result` |
-| `src/meld/adapters/codex.py` | `parse_event` for `thread.started`/`turn.*`/`item.started`/`item.completed` |
+| `src/meld/adapters/base.py` | `Adapter` protocol gains `parse_events`; `Event` re-exported for adapters |
+| `src/meld/adapters/claude.py` | `--output-format stream-json --verbose`; `--verbose` in `REQUIRED_FLAGS`; `parse_events` for `system`/`assistant`/`user`/`result` |
+| `src/meld/adapters/codex.py` | `parse_events` for `thread.started`/`turn.*`/`item.started`/`item.completed` |
 | `src/meld/cli.py` | `meld tail` |
 | `src/meld/dispatch.py` | `tick` calls `sweep_logs`; the failure comment's tail is rendered through `transcript.render` |
 | `src/meld/doctor.py` | `logs-size` check against `[logs] warn_total_mb` |
 | `tests/fixtures/transcripts/claude-run.jsonl`, `codex-run.jsonl` | **new.** recorded, redacted event streams, each ending in a real terminal event, each containing one unknown type and one non-JSON line |
 | `tests/test_transcript.py` | **new.** the event model, the renderer, `Tail`, `trim_log`/`sweep_logs`/`total_bytes` |
-| `tests/test_adapter_claude.py`, `tests/test_adapter_codex.py` | `parse_event` per event type, the unknown type, the non-JSON line, the argv change |
-| `tests/fakeadapter.py` | `FakeAdapter.parse_event` so the protocol stays satisfied in every existing test |
+| `tests/test_adapter_claude.py`, `tests/test_adapter_codex.py` | `parse_events` per event type, the unknown type, the non-JSON line, the argv change |
+| `tests/fakeadapter.py` | `FakeAdapter.parse_events` so the protocol stays satisfied in every existing test |
 | `tests/test_config.py`, `tests/test_dispatch.py`, `tests/test_doctor.py`, `tests/test_cli.py` | the new config fields, the tick sweep, the rendered tail, the doctor check, the `tail` command |
 | `docs/HANDOFF.md`, `README.md` | plan 8a state, `meld tail` in the verb list, the `[logs]` table |
 

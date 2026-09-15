@@ -292,6 +292,23 @@ def test_tick_runs_the_housekeeping_sweeps(tmp_path):
     assert out["ci_red"] == [] and out["off_protocol"] == [] and out["ignored"]["flagged"] == [103] and out["notified"] == []
 
 
+def test_tick_trims_a_runaway_log_and_leaves_small_ones_alone(tmp_path):
+    fake, ctx, repo, origin = make_product(tmp_path)
+    logs = tmp_path / "home" / "logs" / "claude"
+    logs.mkdir(parents=True, exist_ok=True)
+    runaway = logs / "orchestrator-20260903T120000Z.log"
+    runaway.write_bytes(b"x" * (ctx.cfg.logs_max_bytes_per_run + 1))
+    small = logs / "pm-20260903T120000Z.log"
+    small.write_bytes(b"y" * 10)
+
+    tick(ctx, now=NOW, env={})
+
+    assert runaway.stat().st_size == 0                       # truncated in place, not renamed
+    assert runaway.exists()                                  # the writer's descriptor still points here
+    assert (logs / "orchestrator-20260903T120000Z.log.1").exists()
+    assert small.read_bytes() == b"y" * 10
+
+
 def test_kill_run_skips_a_pid_that_leads_no_process_group(monkeypatch):
     import os, signal, subprocess, sys
     from meld.board import RunRecord

@@ -1,9 +1,12 @@
 import dataclasses
 import json
+import subprocess
+import sys
+import time
 
 import pytest
 
-from meld.transcript import KINDS, TEXT_CAP, Event, Tail, cap, render, render_line
+from meld.transcript import KINDS, TEXT_CAP, Event, Tail, cap, render, render_line, sweep_logs, total_bytes, trim_log
 
 
 def mk(kind: str, **kw) -> Event:
@@ -163,3 +166,71 @@ def test_tail_can_resume_from_a_caller_held_offset_and_seq(tmp_path):
     with log.open("ab") as f:
         f.write(b'{"say": "three"}\n')
     assert [(e.seq, e.text) for e in resumed.read(fake_parse, NOW)] == [(3, "three")]
+
+
+def test_trim_log_leaves_a_small_file_alone(tmp_path):
+    log = tmp_path / "role.log"
+    log.write_bytes(b"short\n")
+    assert trim_log(log, max_bytes=1024) is False
+    assert log.read_bytes() == b"short\n"
+    assert not (tmp_path / "role.log.1").exists()
+
+
+def test_trim_log_keeps_the_tail_beside_the_emptied_file(tmp_path):
+    log = tmp_path / "role.log"
+    log.write_bytes(b"".join(b"line %d\n" % i for i in range(200)))
+    assert trim_log(log, max_bytes=64, keep_bytes=32) is True
+    assert log.stat().st_size == 0
+    kept = (tmp_path / "role.log.1").read_bytes()
+    assert len(kept) == 32
+    assert kept.endswith(b"line 199\n")
+
+
+def test_trim_log_of_a_missing_file_is_false(tmp_path):
+    assert trim_log(tmp_path / "absent.log", max_bytes=1) is False
+
+
+def test_a_live_writer_keeps_writing_at_the_new_end_after_a_trim(tmp_path):
+    """The load-bearing assumption: O_APPEND means truncation does not strand the child's descriptor."""
+    log = tmp_path / "child.log"
+    with open(log, "ab") as handle:
+        child = subprocess.Popen(
+            [sys.executable, "-u", "-c",
+             "import sys,time\nfor i in range(6):\n sys.stdout.write('line %d\\n' % i)\n time.sleep(0.2)"],
+            stdout=handle, stderr=subprocess.STDOUT)
+        try:
+            deadline = time.monotonic() + 5
+            while log.stat().st_size == 0 and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert trim_log(log, max_bytes=1, keep_bytes=200) is True
+            assert child.wait(timeout=10) == 0
+        finally:
+            if child.poll() is None:
+                child.kill()
+    after = log.read_text()
+    assert "\x00" not in after                      # no sparse gap: the writer resumed at offset 0
+    assert after.startswith("line ")
+    assert (tmp_path / "child.log.1").read_text().startswith("line 0")
+
+
+def test_sweep_logs_trims_only_the_logs_over_the_cap(tmp_path):
+    (tmp_path / "claude").mkdir()
+    big = tmp_path / "claude" / "orchestrator-1.log"
+    small = tmp_path / "claude" / "pm-1.log"
+    big.write_bytes(b"x" * 500)
+    small.write_bytes(b"x" * 10)
+    assert sweep_logs(tmp_path, max_bytes=100) == [big]
+    assert big.stat().st_size == 0 and small.stat().st_size == 10
+    assert sweep_logs(tmp_path, max_bytes=100) == []          # idempotent
+
+
+def test_sweep_logs_ignores_a_directory_that_is_not_there(tmp_path):
+    assert sweep_logs(tmp_path / "absent", max_bytes=1) == []
+
+
+def test_total_bytes_counts_every_file_including_kept_tails(tmp_path):
+    (tmp_path / "claude").mkdir()
+    (tmp_path / "claude" / "pm-1.log").write_bytes(b"x" * 10)
+    (tmp_path / "claude" / "pm-1.log.1").write_bytes(b"x" * 5)
+    assert total_bytes(tmp_path) == 15
+    assert total_bytes(tmp_path / "absent") == 0

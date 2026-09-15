@@ -8,6 +8,7 @@ at full size.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Iterable
@@ -140,3 +141,51 @@ class Tail:
             for ev in parse(line, now):
                 out.append(self._stamp(ev))
         return out
+
+
+def trim_log(path: Path, max_bytes: int, *, keep_bytes: int | None = None) -> bool:
+    """Cap one log by truncating it in place. `True` when it was trimmed.
+
+    Not a rename: the CLI writing this file holds its descriptor and the run outlives the `meld` process
+    (section 11), so renaming would leave the writer appending to the renamed inode. `open_log` opens with
+    `O_APPEND`, which recomputes the offset from the file's end on every write, so truncating to zero lets
+    the writer's next line land at the new end. The last `keep_bytes` go to `<name>.1` for post-mortem
+    reading; a previous `.1` is replaced, so the newest two windows survive and no more.
+    """
+    keep = max_bytes // 4 if keep_bytes is None else keep_bytes
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return False
+    if size <= max_bytes:
+        return False
+    try:
+        with path.open("rb") as f:
+            f.seek(max(0, size - keep))
+            tail = f.read()
+        path.with_suffix(path.suffix + ".1").write_bytes(tail)
+        os.truncate(path, 0)
+    except OSError:
+        return False
+    return True
+
+
+def sweep_logs(logs_root: Path, max_bytes: int) -> list[Path]:
+    """Trim every `*.log` under `logs_root` that is over the cap; returns what was trimmed."""
+    if not logs_root.is_dir():
+        return []
+    return [p for p in sorted(logs_root.rglob("*.log")) if trim_log(p, max_bytes)]
+
+
+def total_bytes(logs_root: Path) -> int:
+    """Every byte under `logs_root`, kept tails included. Unreadable entries count as zero."""
+    if not logs_root.is_dir():
+        return 0
+    total = 0
+    for p in logs_root.rglob("*"):
+        try:
+            if p.is_file():
+                total += p.stat().st_size
+        except OSError:
+            continue
+    return total

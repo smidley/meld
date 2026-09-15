@@ -44,6 +44,7 @@ from meld.roster import WorkerType, roster
 from meld.rules import Actor, Refusal, Verb, issue_refusal, pr_refusal, reap_rule, review_concern
 from meld.state import pid_alive
 from meld.status import build_status
+from meld.transcript import sweep_logs
 
 WORKER_PROMPT = ("Read .meld-brief.md in the current directory and carry it out exactly. "
                  "When you finish, write .meld-result.json as the brief instructs, then stop.")
@@ -506,6 +507,10 @@ def _dispatch_pr(ctx, board: Board, actor: Actor, number: int, kind: str, adapte
 
 def tick(ctx, *, now: datetime | None = None, sleep=time.sleep, env: Mapping[str, str] | None = None, post=None) -> dict:
     """PM housekeeping: kill overdue workers, create missing leases, release other groups' expired leases."""
+    # Every tick caps a runaway log before anything else, so it runs on the same cadence as the rest of
+    # tick regardless of what else this call does (an exhausted disk killed both supervisors on 2026-09-12).
+    # Filesystem-only, and cheap when nothing is over the cap, so it costs nothing to run unconditionally.
+    sweep_logs(ctx.store.home / "logs", ctx.cfg.logs_max_bytes_per_run)
     _, board = build_status(ctx)
     actor = ctx.actor()
     if not actor.is_pm:

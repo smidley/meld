@@ -35,7 +35,7 @@ def settings_for(role: str, env: Mapping[str, str]) -> dict:
 
 # The flags below that `claude --help` lists; `meld doctor` checks each is still known to the installed CLI. `--max-turns`
 # is passed too but is undocumented in `--help` (it works; anthropics/claude-code#16963), so it cannot be verified this way.
-REQUIRED_FLAGS = ("-p", "--model", "--output-format", "--permission-mode", "--strict-mcp-config", "--mcp-config", "--settings", "--setting-sources")
+REQUIRED_FLAGS = ("-p", "--model", "--output-format", "--verbose", "--permission-mode", "--strict-mcp-config", "--mcp-config", "--settings", "--setting-sources")
 _MCP_CONFIG = {"mcpServers": {}}
 _DROP_ENV = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
 BASH_TOOL_CEILING_SECONDS = 600  # Claude Code's Bash tool caps one command at 10 minutes
@@ -52,7 +52,8 @@ class ClaudeAdapter:
         return [
             self.binary, "-p", spec.prompt,
             "--model", spec.model,
-            "--output-format", "json",
+            "--output-format", "stream-json",
+            "--verbose",                       # claude -p refuses stream-json without it
             "--permission-mode", "bypassPermissions",
             "--strict-mcp-config", "--mcp-config", json.dumps(_MCP_CONFIG),
             "--settings", json.dumps(settings_for(spec.role, spec.env)),

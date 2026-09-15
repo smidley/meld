@@ -22,7 +22,7 @@ def test_argv_is_the_documented_unattended_shape(tmp_path: Path):
     argv = ClaudeAdapter().argv(spec(tmp_path))
     assert argv[:3] == ["claude", "-p", "Read .meld-brief.md and do it."]
     assert argv[argv.index("--model") + 1] == "claude-sonnet-5"
-    assert argv[argv.index("--output-format") + 1] == "json"
+    assert argv[argv.index("--output-format") + 1] == "stream-json"
     assert argv[argv.index("--permission-mode") + 1] == "bypassPermissions"
     assert "--strict-mcp-config" in argv and json.loads(argv[argv.index("--mcp-config") + 1]) == {"mcpServers": {}}
     settings = json.loads(argv[argv.index("--settings") + 1])
@@ -32,6 +32,15 @@ def test_argv_is_the_documented_unattended_shape(tmp_path: Path):
     assert argv[argv.index("--setting-sources") + 1] == "user,project"
     assert argv[argv.index("--max-turns") + 1] == "200"
     assert "--effort" not in argv and "--bare" not in argv and "--dangerously-skip-permissions" not in argv
+
+
+def test_argv_streams_events_and_verbose_is_required_for_it(tmp_path: Path):
+    argv = ClaudeAdapter().argv(spec(tmp_path))
+    assert argv[argv.index("--output-format") + 1] == "stream-json"
+    # claude -p refuses stream-json without --verbose, so the flag is part of the contract, not a preference.
+    assert "--verbose" in argv
+    assert "--include-partial-messages" not in argv          # token-level streaming is out of plan 8 (spec §21)
+    assert "--verbose" in ClaudeAdapter().required_flags()
 
 
 def test_env_sets_effort_and_strips_nested_session_guard(tmp_path: Path):

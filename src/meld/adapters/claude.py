@@ -116,7 +116,14 @@ class ClaudeAdapter:
                 return [Event(seq=0, at=now, kind="message", text=cap(blocks))]
             if not isinstance(blocks, list):
                 return raw_event(now, stripped)
-            return [e for b in blocks if isinstance(b, dict) for e in _block(b, now)]
+            events = [e for b in blocks if isinstance(b, dict) for e in _block(b, now)]
+            # A new content block type inside an existing `assistant` line is how every Claude Code addition
+            # has arrived (`thinking`, `redacted_thinking`, `server_tool_use`, `mcp_tool_use`). If NOTHING on
+            # the line was understood, the line is unrecognized and falls back to `raw` -- Codex's unknown
+            # `item_type` does the same. Without this the line produced no event at all and a person watching
+            # saw an unexplained gap. A line with one known block and one unknown keeps only the known event:
+            # the line WAS understood, so rendering the whole of it as `raw` would duplicate that.
+            return events or raw_event(now, stripped)
         if kind == "result":
             usage = doc.get("usage") if isinstance(doc.get("usage"), dict) else {}
             return [Event(seq=0, at=now, kind="run_finished", ok=not doc.get("is_error", False),
@@ -127,8 +134,8 @@ class ClaudeAdapter:
 
 
 def _block(b: dict, now: str) -> list[Event]:
-    """One content block as zero or one event. An unknown block type is silently skipped: the line it
-    came from was recognized, so rendering the whole line as `raw` would duplicate what was understood."""
+    """One content block as zero or one event. An unknown block type yields nothing here; the caller renders
+    the line as `raw` when that leaves the whole line empty, and otherwise keeps only what it understood."""
     kind = b.get("type")
     if kind == "text":
         return [Event(seq=0, at=now, kind="message", text=cap(b.get("text", "")))]

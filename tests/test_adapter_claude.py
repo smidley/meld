@@ -127,6 +127,24 @@ def test_parse_events_drops_a_partial_stream_event_and_keeps_an_unknown_type_as_
     assert unknown.kind == "raw" and "weather_report" in unknown.text
 
 
+def test_parse_events_renders_an_all_unknown_block_line_as_raw():
+    """The most likely shape of a future Claude Code change is a new content block type inside an `assistant`
+    line -- `thinking`, `redacted_thinking`, `server_tool_use` and `mcp_tool_use` all arrived that way. A line
+    whose blocks are all unrecognized must degrade to `raw`, not disappear."""
+    line = ('{"type":"assistant","message":{"role":"assistant","content":'
+            '[{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{"query":"x"}}]}}')
+    (event,) = ClaudeAdapter().parse_events(line, NOW)
+    assert event.kind == "raw" and "server_tool_use" in event.text
+
+
+def test_parse_events_keeps_only_the_recognized_block_when_a_line_mixes_them():
+    """The line itself WAS understood, so it does not also render as `raw`: that would duplicate the text."""
+    line = ('{"type":"assistant","message":{"role":"assistant","content":'
+            '[{"type":"text","text":"Searching."},{"type":"server_tool_use","id":"srvtoolu_2","name":"web_search"}]}}')
+    events = ClaudeAdapter().parse_events(line, NOW)
+    assert [(e.kind, e.text) for e in events] == [("message", "Searching.")]
+
+
 def test_parse_events_never_raises_on_junk():
     (raw,) = ClaudeAdapter().parse_events("not json at all", NOW)
     assert raw.kind == "raw" and raw.text == "not json at all"

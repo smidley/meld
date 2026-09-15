@@ -1,12 +1,13 @@
 import dataclasses
 import json
+import os
 import subprocess
 import sys
 import time
 
 import pytest
 
-from meld.transcript import KINDS, TEXT_CAP, Event, Tail, cap, render, render_line, sweep_logs, total_bytes, trim_log
+from meld.transcript import KINDS, TEXT_CAP, Event, Tail, cap, newest_log, render, render_line, sweep_logs, total_bytes, trim_log
 
 
 def mk(kind: str, **kw) -> Event:
@@ -234,3 +235,39 @@ def test_total_bytes_counts_every_file_including_kept_tails(tmp_path):
     (tmp_path / "claude" / "pm-1.log.1").write_bytes(b"x" * 5)
     assert total_bytes(tmp_path) == 15
     assert total_bytes(tmp_path / "absent") == 0
+
+
+def _log(root, group, name, mtime):
+    d = root / group
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / name
+    p.write_bytes(b"{}\n")
+    os.utime(p, (mtime, mtime))
+    return p
+
+
+def test_newest_log_picks_the_most_recently_written_across_groups(tmp_path):
+    _log(tmp_path, "claude", "orchestrator-20260912T020000Z.log", 1000)
+    newest = _log(tmp_path, "codex", "pm-20260912T030000Z.log", 2000)
+    assert newest_log(tmp_path) == newest
+
+
+def test_newest_log_narrows_to_a_group_then_to_a_role_or_kind(tmp_path):
+    claude_pm = _log(tmp_path, "claude", "pm-20260912T010000Z.log", 1000)
+    claude_orc = _log(tmp_path, "claude", "orchestrator-20260912T020000Z.log", 1500)
+    _log(tmp_path, "codex", "pm-20260912T030000Z.log", 2000)
+    assert newest_log(tmp_path, "claude") == claude_orc
+    assert newest_log(tmp_path, "claude/pm") == claude_pm
+
+
+def test_newest_log_matches_a_worker_kind_prefix(tmp_path):
+    audit = _log(tmp_path, "claude", "audit-14-20260912T011514Z.log", 1000)
+    _log(tmp_path, "claude", "review-40-20260912T022109Z.log", 900)
+    assert newest_log(tmp_path, "claude/audit") == audit
+
+
+def test_newest_log_is_none_when_there_is_nothing_to_read(tmp_path):
+    assert newest_log(tmp_path) is None
+    assert newest_log(tmp_path / "absent") is None
+    _log(tmp_path, "claude", "pm-1.log", 1000)
+    assert newest_log(tmp_path, "nosuchgroup") is None

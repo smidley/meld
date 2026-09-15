@@ -189,3 +189,17 @@ def total_bytes(logs_root: Path) -> int:
         except OSError:
             continue
     return total
+
+
+def newest_log(logs_root: Path, target: str | None = None) -> Path | None:
+    """The most recently written log, narrowed by `<group>` or `<group>/<prefix>`; `None` when there is none.
+
+    Every log a run writes lands in `logs/<group>/`: a role's as `<role>-<stamp>.log`, a worker's as
+    `<kind>-<issue>-<stamp>.log`. One glob therefore covers both, and a prefix selects either a role
+    (`claude/orchestrator`) or a worker kind (`claude/audit`).
+    """
+    if not logs_root.is_dir():
+        return None
+    group, _, prefix = (target or "").partition("/")
+    candidates = [p for p in logs_root.glob(f"{group or '*'}/{prefix}*.log") if p.is_file()]
+    return max(candidates, key=lambda p: (p.stat().st_mtime, p.name), default=None)

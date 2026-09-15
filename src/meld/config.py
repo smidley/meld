@@ -68,6 +68,20 @@ def _role(data: Mapping[str, Any], path: str) -> RoleConfig:
     return RoleConfig(model=str(_require(data, "model", path)), effort=str(_require(data, "effort", path)))
 
 
+#: Floors for the `[logs]` table, which a human hand-edits and a later plan will expose in a form. A
+#: `max_bytes_per_run` of 0 or a negative makes every tick trim every log -- writing an empty `.1` over the
+#: previous one and zeroing the original each cycle -- which is silent, total log destruction from one typo.
+LOGS_MIN_BYTES_PER_RUN = 64 * 1024
+LOGS_MIN_WARN_TOTAL_MB = 1
+
+
+def _at_least(value: Any, minimum: int, path: str, unit: str) -> int:
+    """A real TOML integer no smaller than `minimum`. `bool` is an `int` subclass, so it is refused by name."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise ConfigError(f"{path} must be an integer of at least {minimum} {unit}, got {value!r}")
+    return value
+
+
 _DURATION_RE = re.compile(r"^\s*(\d+)\s*([smh]?)\s*$")
 _DURATION_UNITS = {"": 1, "s": 1, "m": 60, "h": 3600}
 
@@ -102,6 +116,8 @@ class Config:
     budget_wallclock_hours: int
     notify_webhook_env: str | None
     notify_repeat_after_minutes: int
+    # Since plan 8a this bounds rendered EVENTS in the failure comment `collect` posts (`dispatch.render_tail`)
+    # and raw LINES in the stored verdict payload (`dispatch.tail_lines`); the key keeps its name.
     worker_log_tail_lines: int = 50
     worker_max_turns: int = 200
     lease_grace_minutes: int = 10
@@ -214,8 +230,10 @@ class Config:
             lease_grace_minutes=int(lease.get("grace_minutes", 10)),
             audit_batch_merges=int(audit.get("batch_merges", 5)),
             audit_batch_hours=int(audit.get("batch_hours", 4)),
-            logs_max_bytes_per_run=int(logs.get("max_bytes_per_run", 8 * 1024 * 1024)),
-            logs_warn_total_mb=int(logs.get("warn_total_mb", 2048)),
+            logs_max_bytes_per_run=_at_least(logs.get("max_bytes_per_run", 8 * 1024 * 1024), LOGS_MIN_BYTES_PER_RUN,
+                                             "logs.max_bytes_per_run", "bytes"),
+            logs_warn_total_mb=_at_least(logs.get("warn_total_mb", 2048), LOGS_MIN_WARN_TOTAL_MB,
+                                         "logs.warn_total_mb", "megabytes"),
         )
 
     @property

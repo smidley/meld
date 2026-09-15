@@ -178,8 +178,8 @@ slack_dm_webhook_env = "MELD_SLACK_DM_WEBHOOK"   # optional
 repeat_after_minutes = 120
 
 [logs]                             # streamed transcripts are large; an exhausted disk killed both supervisors on 2026-09-12
-max_bytes_per_run = 8388608        # 8 MiB, then rotate to <name>.1 and keep the newest two
-warn_total_mb = 2048               # meld doctor warns past this much under logs/
+max_bytes_per_run = 8388608        # 8 MiB, then rotate to <name>.1 and keep the newest two; at least 65536
+warn_total_mb = 2048               # meld doctor warns past this much under logs/; at least 1
 
 [viewer]                           # meld watch; every field optional
 port = 0                           # 0 lets the OS choose; the URL is printed at startup

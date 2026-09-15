@@ -234,6 +234,25 @@ def test_logs_table_has_defaults_and_is_overridable():
     assert default.logs_max_bytes_per_run == 8 * 1024 * 1024
     assert default.logs_warn_total_mb == 2048
 
-    tuned = Config.from_dict({**base, "logs": {"max_bytes_per_run": 1024, "warn_total_mb": 1}})
-    assert tuned.logs_max_bytes_per_run == 1024
+    tuned = Config.from_dict({**base, "logs": {"max_bytes_per_run": 1024 * 1024, "warn_total_mb": 1}})
+    assert tuned.logs_max_bytes_per_run == 1024 * 1024
     assert tuned.logs_warn_total_mb == 1
+
+
+def test_logs_table_refuses_a_size_that_would_destroy_every_log():
+    """`[logs]` is hand-edited (and a later plan puts it in a form). `max_bytes_per_run = 0` or a negative
+    makes every tick trim every log -- an empty `.1` over the previous one and the original zeroed, each
+    cycle -- so one typo is silent, total log destruction. It is a config error instead."""
+    base = {
+        "repo": {"name": "acme/widgets"},
+        "humans": {"accounts": ["empowerScott"]},
+        "groups": {"claude": {"cli": "claude", "bot": "meld-claude-bot", "token_env": "T1",
+                             "orchestrator": {"model": "m", "effort": "high"}, "pm": {"model": "m", "effort": "medium"}}},
+    }
+    for bad in (0, -1, 1024, 1.5, True, "8388608"):
+        with pytest.raises(ConfigError, match="logs.max_bytes_per_run must be an integer of at least 65536 bytes"):
+            Config.from_dict({**base, "logs": {"max_bytes_per_run": bad}})
+    for bad in (0, -1, 2.5, False, "2048"):
+        with pytest.raises(ConfigError, match="logs.warn_total_mb must be an integer of at least 1 megabytes"):
+            Config.from_dict({**base, "logs": {"warn_total_mb": bad}})
+    assert Config.from_dict({**base, "logs": {"max_bytes_per_run": 65536}}).logs_max_bytes_per_run == 65536

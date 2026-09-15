@@ -161,8 +161,8 @@ def test_logs_table_has_defaults_and_is_overridable():
     assert default.logs_max_bytes_per_run == 8 * 1024 * 1024
     assert default.logs_warn_total_mb == 2048
 
-    tuned = Config.from_dict({**base, "logs": {"max_bytes_per_run": 1024, "warn_total_mb": 1}})
-    assert tuned.logs_max_bytes_per_run == 1024
+    tuned = Config.from_dict({**base, "logs": {"max_bytes_per_run": 1024 * 1024, "warn_total_mb": 1}})
+    assert tuned.logs_max_bytes_per_run == 1024 * 1024
     assert tuned.logs_warn_total_mb == 1
 ```
 
@@ -276,8 +276,10 @@ In `Config.from_dict`, read the table alongside the other `data.get` lookups nea
 and pass both values in the constructor call, immediately after `audit_batch_hours=int(audit.get("batch_hours", 4)),`:
 
 ```python
-            logs_max_bytes_per_run=int(logs.get("max_bytes_per_run", 8 * 1024 * 1024)),
-            logs_warn_total_mb=int(logs.get("warn_total_mb", 2048)),
+            logs_max_bytes_per_run=_at_least(logs.get("max_bytes_per_run", 8 * 1024 * 1024), LOGS_MIN_BYTES_PER_RUN,
+                                             "logs.max_bytes_per_run", "bytes"),
+            logs_warn_total_mb=_at_least(logs.get("warn_total_mb", 2048), LOGS_MIN_WARN_TOTAL_MB,
+                                         "logs.warn_total_mb", "megabytes"),
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**

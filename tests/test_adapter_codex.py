@@ -3,7 +3,7 @@ from pathlib import Path
 import meld.adapters.codex as codex_mod
 from meld.adapters.base import LaunchSpec
 from meld.adapters.codex import CodexAdapter
-from meld.transcript import Tail
+from meld.transcript import Tail, render_line
 
 FIXTURES = Path(__file__).parent / "fixtures" / "transcripts"
 NOW = "2026-09-12T02:11:19Z"
@@ -91,6 +91,42 @@ def test_parse_events_marks_a_nonzero_exit_as_failed():
 def test_parse_events_drops_turn_started_and_an_in_progress_message():
     assert CodexAdapter().parse_events('{"type": "turn.started"}', NOW) == []
     assert CodexAdapter().parse_events('{"type": "item.started", "item": {"type": "agent_message", "text": "x"}}', NOW) == []
+
+
+def test_parse_events_reports_a_failed_turn_as_a_cli_error():
+    """`cli_error` is the only kind exclusive to one adapter: Codex's `turn.failed` is the only thing that
+    produces it, so nothing else in the suite can cover the kind, its `ok=False`, or its rendered label."""
+    line = '{"type": "turn.failed", "error": {"message": "stream disconnected before completion"}}'
+    (event,) = CodexAdapter().parse_events(line, NOW)
+    assert (event.kind, event.ok, event.text) == ("cli_error", False, "stream disconnected before completion")
+    assert render_line(event) == "02:11:19  error    stream disconnected before completion"
+
+
+def test_parse_events_reports_a_failed_turn_with_no_message_at_all():
+    (event,) = CodexAdapter().parse_events('{"type": "turn.failed"}', NOW)
+    assert (event.kind, event.ok, event.text) == ("cli_error", False, "turn failed")
+
+
+def test_parse_events_maps_a_completed_reasoning_item_to_thinking():
+    line = ('{"type": "item.completed", "item": {"id": "item_4", "type": "reasoning", '
+            '"text": "The audit failed on defects already fixed on main."}}')
+    (event,) = CodexAdapter().parse_events(line, NOW)
+    assert (event.kind, event.text) == ("thinking", "The audit failed on defects already fixed on main.")
+    assert render_line(event) == "02:11:19  think    The audit failed on defects already fixed on main."
+    # Only the completed form carries content, the same as an agent_message.
+    assert CodexAdapter().parse_events('{"type": "item.started", "item": {"type": "reasoning", "text": "half"}}', NOW) == []
+
+
+def test_parse_events_formats_usage_as_sorted_key_value_pairs():
+    line = '{"type": "turn.completed", "usage": {"output_tokens": 800, "input_tokens": 12000, "cached_input_tokens": 9568}}'
+    (event,) = CodexAdapter().parse_events(line, NOW)
+    assert event.kind == "usage"
+    assert event.text == "cached_input_tokens=9568, input_tokens=12000, output_tokens=800"
+    assert event.meta["usage"]["input_tokens"] == 12000
+    assert render_line(event) == "02:11:19  usage    cached_input_tokens=9568, input_tokens=12000, output_tokens=800"
+    # A turn that reported no usage still ends the turn, with nothing to say about it.
+    (empty,) = CodexAdapter().parse_events('{"type": "turn.completed"}', NOW)
+    assert (empty.kind, empty.text) == ("usage", "")
 
 
 def test_parse_events_keeps_an_unknown_item_type_as_raw():

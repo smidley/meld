@@ -681,7 +681,7 @@ def _collect_build(ctx, board: Board, group: GroupConfig, rec: RunRecord, issue,
         _swap_labels(ctx, number, BLOCKED, (IN_PROGRESS,))
         summary = f"\n\nWorker summary: {result.summary}" if result else ""
         ctx.gh.create_comment(number, f"Meld: `{group.name}` worker did not complete #{number}: {reason}.{summary}\n\n"
-                                      f"Last {ctx.cfg.worker_log_tail_lines} log lines:\n\n{fenced(tail)}")
+                                      f"Last {ctx.cfg.worker_log_tail_lines} log events:\n\n{fenced(tail)}")
         ctx.store.write_run(replace(rec, collected=True))
         return {"collected": number, "outcome": "failed", "reason": reason}
     assert result is not None
@@ -723,6 +723,10 @@ def _collect_verdict(ctx, group: GroupConfig, rec: RunRecord, when: datetime) ->
     payload = {"kind": rec.kind, "pr": rec.pr, "worker": rec.worker, "head_sha": rec.head_sha or worktree_sha, "worktree_sha": worktree_sha,
                "collected_at": _iso(when), "timed_out": rec.timed_out, "reason": reason,
                "result": asdict(result) if result else None,
+               # Raw lines here, rendered events in the failure comment above, deliberately: this payload is
+               # an archive on disk, so it keeps the CLI's own bytes -- rendering is lossy (TEXT_CAP, the
+               # line width, the event types an adapter drops) and it needs an adapter a stored artifact
+               # should not depend on. The comment is read by a person, so it is translated. Do not unify.
                "log_tail": tail_lines(Path(rec.log_path), ctx.cfg.worker_log_tail_lines)}
     path = store_result(ctx.store.home, group.name, rec.kind, rec.issue, payload, _iso(when))
     ctx.store.write_run(replace(rec, collected=True))

@@ -12,7 +12,8 @@ import meld.cli as cli
 from meld.adapters.claude import ClaudeAdapter
 from meld.dispatch import DispatchError
 from meld.roster import WorkerType
-from meld.runners import _StopRequested, freeze_path, launch_role, limit_of, read_freeze, role_env, run_group
+from meld.runners import (MAX_FREEZE_MINUTES, _StopRequested, freeze_path, launch_role, limit_of, read_freeze,
+                          role_env, run_group)
 from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
 from tests.fakeadapter import FakeAdapter
 from tests.fakegh import FakeGh
@@ -245,6 +246,8 @@ def test_run_group_treats_a_late_stop_request_as_a_clean_stop(tmp_path):
 
 
 def test_run_group_cleans_up_first_role_when_second_launch_fails(tmp_path):
+    """`FlakyAdapter` raises `RuntimeError`, not an `OSError`: the per-role boundary catches `OSError` only, so
+    a programming error still reaches the caller with the group torn down rather than being backed off for ever."""
     _, ctx, env = make(tmp_path)
     adapter = FlakyAdapter(script="import time; time.sleep(30)")
     prev_term = signal.getsignal(signal.SIGTERM)
@@ -382,6 +385,9 @@ def test_a_live_freeze_survives_a_supervisor_restart_without_posting_again(tmp_p
     for role, path in paths.items():
         assert out["roles"][role]["launches"] == 0                       # a live freeze is never launched into
         assert read_freeze(path) == live                                 # nor rewritten, nor announced again
+        # The report says the role is frozen and until when, so a frozen role is not read as one that failed to
+        # launch -- and the instant it names is the six-hour cap, not the 2099 the freeze file claims.
+        assert out["roles"][role]["frozen_until"] == "2026-09-12T08:11:19Z"
 
 
 def test_an_untimed_freeze_reprobes_after_limit_retry_minutes(tmp_path):
@@ -431,34 +437,120 @@ def test_a_freeze_naming_no_instant_at_all_reads_as_passed(tmp_path):
     assert out["roles"]["orchestrator"]["reason"] == "limit" and read_freeze(path) is None
 
 
-def test_a_notice_that_could_not_be_posted_is_retried_while_the_freeze_stands(tmp_path):
+def test_a_notice_that_could_not_be_posted_is_recorded_and_the_freeze_stands(tmp_path):
     """A supervisor rate-limited at the moment a quota runs out must not leave the board silent for the whole
-    window -- that is the original symptom. The freeze is honoured either way; the notice is retried."""
+    window -- that is the original symptom. The freeze is honoured either way, the failure is recorded, and the
+    attempt is *not* repeated on the next poll: one attempt is `find_active_milestone`'s paginated reads plus a
+    POST, aimed at a board that is already failing, and the poll interval is five seconds."""
     fake, ctx, env = make(tmp_path)
     fake.route("POST", COMMENTS, {"message": "boom"}, status=500)         # the board is unreachable
     adapter = RecordingAdapter(script=LIMIT_SCRIPT)
 
-    out = run_group(ctx, adapter=adapter, cycles=2, interval=0, sleep=_wait_for(adapter), base_env=env,
+    out = run_group(ctx, adapter=adapter, cycles=4, interval=0, sleep=_wait_for(adapter), base_env=env,
                     wall=lambda: NOW)
 
-    assert _limited_posts(fake), "the supervisor tried to announce the freeze"
+    attempts = _limited_posts(fake)
+    assert len(attempts) == 2, attempts                                   # one per role for four cycles, not four
     for role in ("orchestrator", "pm"):
         freeze = read_freeze(freeze_path(ctx.store.home, "claude", role))
         assert freeze is not None and freeze["posted"] is False           # recorded as unannounced
+        assert freeze["announce_attempted_at"] == NOW                     # and when the attempt was made
         assert out["roles"][role]["launches"] == 1                        # and frozen all the same
+        assert out["roles"][role]["frozen_until"] == "2026-09-12T02:41:19Z"   # `at` plus the 30-minute cadence
+
+
+def test_an_unposted_notice_is_retried_on_the_cadence_and_stops_once_it_lands(tmp_path):
+    """The retry runs on `runners.limit_retry_minutes`, not on every poll, and the last attempt is persisted so
+    the cadence holds across a supervisor restart. The freeze here names a reset four hours out, so it outlives
+    several cadences -- an untimed freeze re-probes at the first one and the relaunch posts for itself."""
+    fake, ctx, env = make(tmp_path)
+    fake.route("POST", COMMENTS, {"message": "boom"}, status=500)         # the board is still unreachable
+    path = freeze_path(ctx.store.home, "claude", "orchestrator")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"at": NOW, "resets_at": "2026-09-12T06:11:19Z", "posted": False}))
+
+    run_group(ctx, adapter=FakeAdapter(), cycles=6, interval=0, sleep=lambda s: None, base_env=env,
+              wall=lambda: NOW)
+    assert len(_limited_posts(fake)) == 1                                 # six cycles, one attempt
+    assert read_freeze(path) == {"at": NOW, "resets_at": "2026-09-12T06:11:19Z", "posted": False,
+                                "announce_attempted_at": NOW}             # written even though it failed
+
+    mark, later = len(fake.calls), "2026-09-12T02:42:19Z"                 # NOW + 31 minutes: the cadence passed
+    run_group(ctx, adapter=FakeAdapter(), cycles=4, interval=0, sleep=lambda s: None, base_env=env,
+              wall=lambda: later)
+    assert len(_limited_posts(fake, mark)) == 1, "exactly one more attempt, not one per cycle"
+    assert read_freeze(path)["announce_attempted_at"] == later
+    assert read_freeze(path)["posted"] is False
 
     fake.route("POST", COMMENTS, {"id": 999, "html_url": "u"})            # the board comes back
-    mark = len(fake.calls)
-    adapter2 = RecordingAdapter(script=LIMIT_SCRIPT)
-    out2 = run_group(ctx, adapter=adapter2, cycles=3, interval=0, sleep=_wait_for(adapter2), base_env=env,
-                     wall=lambda: NOW)
-
+    mark, landed_at = len(fake.calls), "2026-09-12T03:13:19Z"
+    run_group(ctx, adapter=FakeAdapter(), cycles=4, interval=0, sleep=lambda s: None, base_env=env,
+              wall=lambda: landed_at)
     landed = _limited_posts(fake, mark)
-    assert len(landed) == 2, landed                                       # one per role, and not again per cycle
-    assert {b.splitlines()[0] for b in landed} == {"[claude] LIMITED", "[claude:pm] LIMITED"}
-    for role in ("orchestrator", "pm"):
-        assert read_freeze(freeze_path(ctx.store.home, "claude", role))["posted"] is True
-        assert out2["roles"][role]["launches"] == 0                       # still frozen, so still never launched
+    assert len(landed) == 1 and landed[0].splitlines()[0] == "[claude] LIMITED"
+    assert read_freeze(path)["posted"] is True
+
+    mark = len(fake.calls)
+    run_group(ctx, adapter=FakeAdapter(), cycles=4, interval=0, sleep=lambda s: None, base_env=env,
+              wall=lambda: "2026-09-12T05:00:00Z")
+    assert not _limited_posts(fake, mark)                                 # a notice that landed is never re-posted
+
+
+def test_a_named_reset_is_believed_only_up_to_the_six_hour_cap(tmp_path):
+    """A CLI's limit message is prose, and one stray instant in it ("...the milestone closes 2026-12-01") would
+    otherwise freeze a role for months: the freeze is persisted, survives every restart, is re-probed by nothing,
+    and no local surface shows it. The named instant is honoured only as far as the cap."""
+    assert MAX_FREEZE_MINUTES == 360                                      # six hours, from NOW = 02:11:19
+    fake, ctx, env = make(tmp_path)
+    fake.route("POST", COMMENTS, {"id": 999, "html_url": "u"})
+    path = freeze_path(ctx.store.home, "claude", "pm")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"resets_at": "2027-09-12T02:11:19Z", "posted": True, "at": NOW}))
+
+    out = run_group(ctx, adapter=FakeAdapter(), cycles=1, interval=0, sleep=lambda s: None, base_env=env,
+                    wall=lambda: "2026-09-12T07:11:19Z")                  # five hours in: still frozen
+    assert out["roles"]["pm"]["launches"] == 0 and read_freeze(path) is not None
+    assert out["roles"]["pm"]["frozen_until"] == "2026-09-12T08:11:19Z"
+
+    out = run_group(ctx, adapter=FakeAdapter(), cycles=1, interval=0, sleep=lambda s: None, base_env=env,
+                    wall=lambda: "2026-09-12T08:12:19Z")                  # six hours and a minute in: re-probed
+    assert out["roles"]["pm"]["reason"] == "limit" and read_freeze(path) is None
+    assert out["roles"]["pm"]["frozen_until"] is None
+    assert not _limited_posts(fake)                                       # a thaw announces nothing
+
+
+def test_the_cap_never_shortens_a_window_the_cli_really_named(tmp_path):
+    """The cap is a ceiling on belief, not a floor on the wait: a two-hour reset thaws at two hours."""
+    fake, ctx, env = make(tmp_path)
+    path = freeze_path(ctx.store.home, "claude", "pm")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"resets_at": "2026-09-12T04:11:19Z", "posted": True, "at": NOW}))
+
+    out = run_group(ctx, adapter=FakeAdapter(), cycles=1, interval=0, sleep=lambda s: None, base_env=env,
+                    wall=lambda: "2026-09-12T04:00:00Z")                  # eleven minutes to go
+    assert out["roles"]["pm"]["launches"] == 0
+    assert out["roles"]["pm"]["frozen_until"] == "2026-09-12T04:11:19Z"   # its own instant, not the cap
+
+    out = run_group(ctx, adapter=FakeAdapter(), cycles=1, interval=0, sleep=lambda s: None, base_env=env,
+                    wall=lambda: "2026-09-12T04:12:19Z")
+    assert out["roles"]["pm"]["reason"] == "limit" and read_freeze(path) is None
+
+
+@pytest.mark.parametrize("resets", ["later", 12345, ["2026-09-12T03:00:00Z"]])
+def test_a_resets_at_that_is_not_an_instant_fails_open(tmp_path, resets):
+    """A corrupted or hand-edited `resets_at` must fail open exactly as `at` already does. It goes through the one
+    parser, so a string that is not an instant and a JSON number both leave the deadline to `at` plus the re-probe
+    cadence -- long passed here -- instead of raising `TypeError` or stranding the role for ever."""
+    fake, ctx, env = make(tmp_path)
+    fake.route("POST", COMMENTS, {"id": 999, "html_url": "u"})
+    path = freeze_path(ctx.store.home, "claude", "orchestrator")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"resets_at": resets, "posted": True, "at": "2020-01-01T00:00:00Z"}))
+
+    out = run_group(ctx, adapter=FakeAdapter(), cycles=1, interval=0, sleep=lambda s: None, base_env=env,
+                    wall=lambda: NOW)
+    assert out["roles"]["orchestrator"]["reason"] == "limit" and read_freeze(path) is None
+    assert out["roles"]["orchestrator"]["frozen_until"] is None
 
 
 # --- a launch that cannot start backs off instead of ending the run (plan 9 task 3) --------------------
@@ -631,3 +723,63 @@ def test_a_failed_relaunch_still_owes_the_launch_it_was_making(tmp_path):
     assert out["roles"]["orchestrator"]["restarts"] == 1
     assert out["roles"]["orchestrator"]["launch_errors"] == 1
     assert out["roles"]["orchestrator"]["last_launch_error"].startswith("cannot start breaks: ")
+
+
+# --- one OSError boundary around the whole per-role step (plan 9 fix wave) -----------------------------
+
+
+def test_a_freeze_the_supervisor_cannot_write_does_not_end_the_run(tmp_path):
+    """Everything a role's turn does sits behind one `except OSError`, not just its launch. Here the launch
+    works, the role hits a limit, and the freeze file cannot be written because its directory is read-only --
+    a bare `OSError` out of `write_atomic` that used to end the supervisor, which is the failure this plan
+    exists to remove. The role's cycle is recorded as failed, backed off, and the other role still runs."""
+    fake, ctx, env = make(tmp_path)
+    fake.route("POST", COMMENTS, {"id": 999, "html_url": "u"})
+    stuck = freeze_path(ctx.store.home, "claude", "orchestrator").parent
+    stuck.mkdir(parents=True, exist_ok=True)
+    adapter = RecordingAdapter(script=LIMIT_SCRIPT)
+
+    stuck.chmod(0o500)                                   # readable, so read_freeze works; nothing may be created
+    try:
+        out = run_group(ctx, adapter=adapter, cycles=3, interval=0, sleep=_wait_for(adapter), base_env=env,
+                        wall=lambda: NOW)                # returns instead of raising PermissionError
+    finally:
+        stuck.chmod(0o700)
+
+    assert out["group"] == "claude"
+    assert out["roles"]["orchestrator"]["launch_errors"] >= 1
+    assert "cycle failed" in out["roles"]["orchestrator"]["last_launch_error"]
+    assert out["roles"]["pm"]["launches"] == 1            # the other role took its turn, and froze normally
+    assert read_freeze(freeze_path(ctx.store.home, "claude", "pm"))["posted"] is True
+
+
+@dataclass
+class MissingGh(FakeGh):
+    """A `gh` that is no longer on the PATH: `subprocess.run` raises `FileNotFoundError`, which is an `OSError`
+    and so is not caught by `_announce`'s `except (GitHubError, BoardError)`."""
+    armed: bool = False
+
+    def __call__(self, cmd, input=None, **kw):
+        if self.armed:
+            raise FileNotFoundError(2, "No such file or directory", "gh")
+        return super().__call__(cmd, input=input, **kw)
+
+
+def test_a_gh_that_vanished_mid_run_does_not_end_the_run(tmp_path):
+    """`_announce` reaches `subprocess.run` through `github._request`, so a missing or upgraded `gh` raises an
+    `OSError` straight through it. The supervisor records the role's failed cycle and keeps going."""
+    (tmp_path / ".meld.toml").write_text(PROJECT_TOML)
+    fake = MissingGh()
+    load_board1_routes(fake)
+    env = env_for(tmp_path, role="orchestrator")
+    ctx = load_context(tmp_path / ".meld.toml", env=env, run=fake, adapter_for=lambda name: FakeAdapter())
+    adapter = RecordingAdapter(script=LIMIT_SCRIPT)
+    fake.armed = True                                    # every gh call from here on is a missing binary
+
+    out = run_group(ctx, adapter=adapter, cycles=2, interval=0, sleep=_wait_for(adapter), base_env=env,
+                    wall=lambda: NOW)
+
+    assert out["group"] == "claude"
+    for role in ("orchestrator", "pm"):
+        assert out["roles"][role]["launch_errors"] >= 1
+        assert "No such file or directory" in out["roles"][role]["last_launch_error"]

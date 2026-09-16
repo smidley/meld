@@ -27,7 +27,7 @@
 ## Decisions (rulings made while writing the plan; recorded so executors do not re-litigate)
 
 1. **A limit replaces the terminal event rather than accompanying it.** When an adapter is about to emit `run_finished`, `cli_error` or `raw` and that event's text matches a limit, it emits a single `usage_limit` event instead, carrying the same text plus `meta["resets_at"]`. One event, one meaning: a run whose quota ran out did not finish, and `run_finished` asserts the model returned a final answer. The check runs at all three emission points in both adapters, not only the terminal one, because a rate limit reaches Codex's log as a `turn.failed` and can reach either CLI's log as a bare stderr line.
-2. **Recognition is best-effort prose matching, and its failure mode is today's behaviour.** There is no captured limit transcript for either CLI, so the patterns come from prose observed in the first live run plus the tested set in `Maurdekye/orgtree`'s `limits.py` (MIT). A pattern that fails to match means the role is treated as a crash and backed off exactly as it is now — the current bug, not a new one. A pattern that matches wrongly freezes a healthy role until `limit_retry_minutes` passes, so the patterns must require a possessive limit phrase and never match the bare word "limit". Task 1's tests include negative cases for exactly this.
+2. **Recognition is best-effort prose matching, and its failure mode is today's behaviour.** There is no captured limit transcript for either CLI, so the patterns come from prose observed in the first live run plus the tested set in `Maurdekye/orgtree`'s `limits.py` (MIT). A pattern that fails to match means the role is treated as a crash and backed off exactly as it is now — the current bug, not a new one. A pattern that matches wrongly freezes a healthy role until `limit_retry_minutes` passes, so the patterns use a closed list of quota nouns, require context around a bare 429, and never match the bare word "limit". More important than any pattern: **the model's own narration never triggers a limit** — only what the CLI reports as an error or writes to stderr is checked, so a successful run cannot be reclassified whatever its summary says. Task 1's tests include negative cases for all of this, and its first review round is what forced the tightening: the original patterns fired on "you've hit your context limit" and on "Closes #429".
 3. **A reset instant is used when the CLI named one and re-probing is used when it did not.** `meta["resets_at"]` is an ISO instant or absent. Absent means the supervisor re-probes every `[runners] limit_retry_minutes` (default 30) rather than guessing a window length, because guessing wrong in the long direction strands a group for hours.
 4. **The supervisor posts `LIMITED`, not the role.** The role that hit the limit is already gone. `run_group` resolves the coordination issue with `assemble.find_active_milestone(ctx.gh)`, which is one call and no board, and posts once per freeze — the persisted freeze file carries `posted`, so a supervisor restart inside the same freeze does not post again.
 5. **A fifth launch reason, `limit`.** `LAUNCH_REASONS` and `_REASON_TEXT` in `prompts.py` gain it, and both role prompts add it to the list of reasons that warrant a `RESUMED`. Reusing `crash` would tell the role something false; reusing `exit` would suppress the `RESUMED` that closes the `LIMITED` pair.
@@ -228,12 +228,12 @@ In `src/meld/adapters/base.py`, add `import re` and `from datetime import dateti
 # So every alternative below requires a possessive limit phrase, an explicit rate-limit phrase, or a 429 --
 # never the bare word "limit", and never the max-turns ceiling, which is an ordinary exit.
 _LIMIT_RE = re.compile(
-    r"(?:\byou(?:'ve|\s+have)\s+(?:hit|reached|used)\s+(?:your|the)\b[^.]{0,60}?\blimit\b"
-    r"|\b(?:your|the)\b[^.]{0,40}?\b(?:usage|rate|spend|session|weekly|daily|monthly)\s+limit\b"
+    r"(?:\b(?:your|the)\b[^.]{0,40}?\b(?:usage|rate|spend|session|weekly|daily|monthly)\s+limit\b"
     r"|\busage\s+limit\s+reached\b"
     r"|\brate[-\s]?limit(?:ed|ing)?\b"
     r"|\bquota\s+exceeded\b"
-    r"|\b429\b)",
+    r"|\b429\s+too\s+many\s+requests\b"
+    r"|\b(?:http|status|code)\s*:?\s*429\b)",
     re.IGNORECASE)
 # The max-turns ceiling says "limit" and is not one: a role that used its turns exited, it was not throttled.
 _NOT_LIMIT_RE = re.compile(r"\bmax[-_\s]?turns\b", re.IGNORECASE)
@@ -265,12 +265,21 @@ def reset_at(text: str, now: str) -> str | None:
     None is a real answer, not a failure: the supervisor re-probes on a fixed cadence rather than guessing a
     window length, because guessing long strands a whole group for hours (spec section 17).
     """
-    m = _ISO_RESET_RE.search(text or "")
-    if m:
-        return m.group(1).replace(" ", "T") + "Z"
     base = _parse_now(now)
     if base is None:
         return None
+    m = _ISO_RESET_RE.search(text or "")
+    if m:
+        # A codex stderr line leads with its own RFC3339 timestamp, so a matched instant is only believed
+        # when it is strictly after `now` -- otherwise it is the log line's own clock, not a stated reset,
+        # and an already-expired "reset" would relaunch a limited role at once (the 45-minute silent
+        # relaunch storm this plan exists to stop). A match that fails that test falls through to the
+        # duration and clock branches below, as if it had not matched -- a real "resets in 3 hours" further
+        # in the same line still gets its chance.
+        candidate_str = m.group(1).replace(" ", "T") + "Z"
+        candidate = _parse_now(candidate_str)
+        if candidate is not None and candidate > base:
+            return candidate_str
     m = _DURATION_RESET_RE.search(text or "")
     if m:
         unit = {"second": "seconds", "minute": "minutes", "hour": "hours"}[m.group(2).lower()]
@@ -311,20 +320,25 @@ the `result` branch checks its own text before building `run_finished`:
 ```python
         if kind == "result":
             usage = doc.get("usage") if isinstance(doc.get("usage"), dict) else {}
-            said = str(doc.get("result", "")) + " " + str(doc.get("subtype", ""))
-            if is_limit(said):
-                return limit_event(now, str(doc.get("result", "")) or str(doc.get("subtype", "")))
+            # The model's own narration never triggers a limit -- only what the CLI itself reports as an
+            # error may. A successful result's text is the model talking about its own work (it can say
+            # "429" or "the rate limit for GitHub's API" while doing so), so is_limit is consulted only when
+            # the CLI marked the run an error; a clean result is always an ordinary run_finished.
+            if doc.get("is_error", False):
+                said = str(doc.get("result", "")) + " " + str(doc.get("subtype", ""))
+                if is_limit(said):
+                    return limit_event(now, str(doc.get("result", "")) or str(doc.get("subtype", "")))
             return [Event(seq=0, at=now, kind="run_finished", ok=not doc.get("is_error", False),
                           text=cap(doc.get("result", doc.get("subtype", ""))),
                           meta={"subtype": str(doc.get("subtype", "")), "num_turns": doc.get("num_turns"),
                                 "cost_usd": doc.get("total_cost_usd"), "usage": usage})]
 ```
 
-Only the two `said`/`is_limit` lines are new; the `run_finished` construction below them is exactly what is there today.
+The `is_error` gate is the substance: a result the CLI calls a success is the model talking, and the model's own narration never triggers a limit. Only the guarded block is new; the `run_finished` construction is exactly what is there today.
 
 and the trailing `return raw_event(now, stripped)` for an unknown type becomes the same pair as the first one. Import `is_limit` and `limit_event` alongside the existing `parse_doc, raw_event`.
 
-In `src/meld/adapters/codex.py`, the same three: the `doc is None` fallback, the `turn.failed` branch (check `error.get("message")` and emit `limit_event` instead of `cli_error` when it matches), and the trailing unknown-type `raw_event`. `_item`'s own `raw_event` fallback also routes through the check, since a `command_execution` is a worker's own output and a limit there belongs to the worker's CLI call rather than the role — leave `_item` alone and say so in your report if you disagree.
+In `src/meld/adapters/codex.py`, the same three: the `doc is None` fallback, the `turn.failed` branch (check `error.get("message")` and emit `limit_event` instead of `cli_error` when it matches), and the trailing unknown-type `raw_event`. Leave codex's `_item` alone: a `command_execution`'s output is the worker's own CLI call, not the role whose quota the supervisor judges, so a limit printed inside a command must not freeze the role. Its `raw_event` fallback stays unrouted.
 
 In `src/meld/config.py`, add the two fields beside the ones plan 8a added, with the same `_at_least` validation those use:
 

@@ -88,15 +88,22 @@ def raw_event(now: str, stripped: str) -> list[Event]:
 # transcript of either CLI hitting a limit, so these come from prose observed in the first live run plus
 # the tested set in Maurdekye/orgtree's limits.py (MIT). Getting it wrong in one direction leaves today's
 # behaviour (the role is treated as a crash and backed off); wrong in the other freezes a healthy role.
-# So every alternative below requires a possessive limit phrase, an explicit rate-limit phrase, or a 429 --
-# never the bare word "limit", and never the max-turns ceiling, which is an ordinary exit.
+# So every alternative below requires one of a fixed set of quota-related nouns before "limit" (usage, rate,
+# spend, session, weekly, daily, monthly) -- never a free noun, which admits a healthy role's own "context
+# limit" or "turn limit" -- an explicit rate-limit phrase, "usage limit reached", "quota exceeded", or a 429
+# with surrounding context ("429 Too Many Requests", "HTTP 429") -- never a bare 429, which is as likely to
+# be a PR number or a config.py:429 as a status code. Never the max-turns ceiling either, which is an
+# ordinary exit. This still matches real prose about someone else's rate limit ("the rate limit for GitHub's
+# API") inside a healthy role's own summary of its own work, and that is by design, not a gap to close here:
+# each adapter's own result/turn-failure handling is what keeps a successful run's own narration from ever
+# reaching is_limit (see claude.py's result branch), so the pattern itself does not need to be narrower.
 _LIMIT_RE = re.compile(
-    r"(?:\byou(?:'ve|\s+have)\s+(?:hit|reached|used)\s+(?:your|the)\b[^.]{0,60}?\blimit\b"
-    r"|\b(?:your|the)\b[^.]{0,40}?\b(?:usage|rate|spend|session|weekly|daily|monthly)\s+limit\b"
+    r"(?:\b(?:your|the)\b[^.]{0,40}?\b(?:usage|rate|spend|session|weekly|daily|monthly)\s+limit\b"
     r"|\busage\s+limit\s+reached\b"
     r"|\brate[-\s]?limit(?:ed|ing)?\b"
     r"|\bquota\s+exceeded\b"
-    r"|\b429\b)",
+    r"|\b429\s+too\s+many\s+requests\b"
+    r"|\b(?:http|status|code)\s*:?\s*429\b)",
     re.IGNORECASE)
 # The max-turns ceiling says "limit" and is not one: a role that used its turns exited, it was not throttled.
 _NOT_LIMIT_RE = re.compile(r"\bmax[-_\s]?turns\b", re.IGNORECASE)

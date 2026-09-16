@@ -258,6 +258,23 @@ def test_is_limit_does_not_fire_on_prose_that_merely_says_limit():
         assert not is_limit(text), text
 
 
+def test_is_limit_ignores_a_free_noun_before_limit():
+    """Alt 1 of the original pattern accepted any noun; these are real things a healthy role says."""
+    for text in [
+        "You've hit your context limit, so I'm summarizing here.",
+        "You have used the turn limit wisely.",
+    ]:
+        assert not is_limit(text), text
+
+
+def test_is_limit_needs_context_around_429():
+    for text in ["Closes #429.", "Fixed the off-by-one in src/meld/config.py:429 and added a regression test.",
+                 "Bumped the retry backoff from 400 to 429 seconds per the reviewer request."]:
+        assert not is_limit(text), text
+    for text in ["429 Too Many Requests", "HTTP 429", "status: 429 from the API", "error code 429"]:
+        assert is_limit(text), text
+
+
 def test_reset_at_reads_an_explicit_instant_a_clock_time_and_a_duration():
     assert reset_at("resets at 2026-09-12T18:00:00Z", NOW) == "2026-09-12T18:00:00Z"
     assert reset_at("It resets at 6pm.", NOW) == "2026-09-12T18:00:00Z"

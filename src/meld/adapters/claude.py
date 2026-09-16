@@ -127,9 +127,14 @@ class ClaudeAdapter:
             return events or raw_event(now, stripped)
         if kind == "result":
             usage = doc.get("usage") if isinstance(doc.get("usage"), dict) else {}
-            said = str(doc.get("result", "")) + " " + str(doc.get("subtype", ""))
-            if is_limit(said):
-                return limit_event(now, str(doc.get("result", "")) or str(doc.get("subtype", "")))
+            # The model's own narration never triggers a limit -- only what the CLI itself reports as an
+            # error may. A successful result's text is the model talking about its own work (it can say
+            # "429" or "the rate limit for GitHub's API" while doing so), so is_limit is consulted only when
+            # the CLI marked the run an error; a clean result is always an ordinary run_finished.
+            if doc.get("is_error", False):
+                said = str(doc.get("result", "")) + " " + str(doc.get("subtype", ""))
+                if is_limit(said):
+                    return limit_event(now, str(doc.get("result", "")) or str(doc.get("subtype", "")))
             return [Event(seq=0, at=now, kind="run_finished", ok=not doc.get("is_error", False),
                           text=cap(doc.get("result", doc.get("subtype", ""))),
                           meta={"subtype": str(doc.get("subtype", "")), "num_turns": doc.get("num_turns"),

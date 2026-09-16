@@ -128,12 +128,21 @@ def reset_at(text: str, now: str) -> str | None:
     None is a real answer, not a failure: the supervisor re-probes on a fixed cadence rather than guessing a
     window length, because guessing long strands a whole group for hours (spec section 17).
     """
-    m = _ISO_RESET_RE.search(text or "")
-    if m:
-        return m.group(1).replace(" ", "T") + "Z"
     base = _parse_now(now)
     if base is None:
         return None
+    m = _ISO_RESET_RE.search(text or "")
+    if m:
+        # A codex stderr line leads with its own RFC3339 timestamp, so a matched instant is only believed
+        # when it is strictly after `now` -- otherwise it is the log line's own clock, not a stated reset,
+        # and an already-expired "reset" would relaunch a limited role at once (the 45-minute silent
+        # relaunch storm this plan exists to stop). A match that fails that test falls through to the
+        # duration and clock branches below, as if it had not matched -- a real "resets in 3 hours" further
+        # in the same line still gets its chance.
+        candidate_str = m.group(1).replace(" ", "T") + "Z"
+        candidate = _parse_now(candidate_str)
+        if candidate is not None and candidate > base:
+            return candidate_str
     m = _DURATION_RESET_RE.search(text or "")
     if m:
         unit = {"second": "seconds", "minute": "minutes", "hour": "hours"}[m.group(2).lower()]

@@ -119,7 +119,8 @@ def _memory_bytes(repo_root: Path) -> int:
 
 def run_checks(cfg: Config, repo_root: Path, *, env: Mapping[str, str], gh_factory: Callable[[str | None], GitHub], registry: ModelRegistry,
                adapter_for, which: Callable[[str], str | None] = shutil.which, home: Path, probe_status: bool = False,
-               user_home: Path = Path.home(), run=subprocess.run, app_post=None, app_get=None) -> list[Check]:
+               user_home: Path = Path.home(), run=subprocess.run, app_post=None, app_get=None,
+               disk_usage: Callable[[Path], object] = shutil.disk_usage) -> list[Check]:
     checks: list[Check] = []
     # 1. gh's own login is a listed human
     try:
@@ -293,6 +294,18 @@ def run_checks(cfg: Config, repo_root: Path, *, env: Mapping[str, str], gh_facto
     checks.append(Check("logs-size", None if over else True, f"{logs_mb} MB of run logs under {home / 'logs'}",
                         f"streamed transcripts accumulate; `meld tick` caps a single run at "
                         f"{cfg.logs_max_bytes_per_run // (1024 * 1024)} MB, but old runs are yours to delete" if over else ""))
+    # 10c. free space on the volume holding $MELD_HOME (plan 9): the log cap above bounds one run's log, nothing bounds
+    # the volume, and a full disk killed both supervisors on 2026-09-12. Warn only -- low disk is a machine condition a
+    # person fixes, never a misconfiguration, so this check is never `False`.
+    try:
+        free_mb = disk_usage(home).free // (1024 * 1024)
+    except OSError as e:
+        checks.append(Check("disk-free", None, f"cannot read free space on {home}: {e}"))
+    else:
+        low = free_mb < cfg.logs_warn_free_mb
+        checks.append(Check("disk-free", None if low else True, f"{free_mb} MB free on the volume holding {home}",
+                            "a supervisor that cannot create a log file backs off rather than exiting, but every "
+                            "launch will keep failing until there is room" if low else ""))
     # 11. webhook
     if cfg.notify_webhook_env:
         set_ = bool(env.get(cfg.notify_webhook_env))

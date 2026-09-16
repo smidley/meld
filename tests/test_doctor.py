@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -45,13 +46,14 @@ def fakes(*, claude_login="meld-claude-bot", codex_login="meld-codex-bot", human
     return by_token
 
 
-def run(tmp_path, by_token, *, env=None, which=lambda b: "/bin/" + b, registry=None, probe_status=False, adapters=None, user_home=None):
+def run(tmp_path, by_token, *, env=None, which=lambda b: "/bin/" + b, registry=None, probe_status=False, adapters=None, user_home=None,
+        disk_usage=shutil.disk_usage):
     env = {"MELD_TOKEN_CLAUDE": "tok-c", "MELD_TOKEN_CODEX": "tok-x", **(env or {})}
     adapters = adapters or {"claude": FakeAdapter(ceiling=600, name="claude"), "codex": FakeAdapter(ceiling=600, name="codex")}
     return run_checks(cfg(), tmp_path, env=env, gh_factory=lambda token: GitHub("acme/widgets", token=token, run=by_token[token]),
                       registry=registry or ModelRegistry.load(),
                       adapter_for=lambda name: adapters[name], which=which, home=tmp_path / "home", probe_status=probe_status,
-                      user_home=user_home or tmp_path / "userhome")
+                      user_home=user_home or tmp_path / "userhome", disk_usage=disk_usage)
 
 
 def by_name(checks):
@@ -140,6 +142,22 @@ def test_logs_size_check_warns_but_never_fails_when_the_total_is_over(tmp_path):
     check = checks["logs-size"]
     assert check.ok is None                         # a warning, never a failure: nothing is broken
     assert "3 MB" in check.detail and "meld tick" in check.fix
+
+
+def test_disk_free_check_reports_space_and_warns_below_the_threshold(tmp_path):
+    import collections
+    usage = collections.namedtuple("usage", "total used free")
+
+    plenty = by_name(run(tmp_path, fakes(), disk_usage=lambda p: usage(0, 0, 50 * 1024 * 1024 * 1024)))["disk-free"]
+    assert plenty.ok is True and "51200 MB free" in plenty.detail and plenty.fix == ""
+
+    scarce = by_name(run(tmp_path, fakes(), disk_usage=lambda p: usage(0, 0, 100 * 1024 * 1024)))["disk-free"]
+    assert scarce.ok is None                      # a warning: low disk is a machine condition, not a misconfiguration
+    assert "100 MB free" in scarce.detail
+    assert "supervisor" in scarce.fix
+
+    assert "disk-free" not in summary(run(tmp_path, fakes(),
+                                          disk_usage=lambda p: usage(0, 0, 100 * 1024 * 1024)))["failed"]
 
 
 def test_cli_doctor_reports_token_mismatch_and_exits_1(tmp_path, monkeypatch):

@@ -920,18 +920,39 @@ Expected: the first test fails because a comment is posted and `violation_posted
 In `src/meld/actions.py`, add the predicate and consult it in `refuse`:
 
 ```python
-def _already_said(board: Board, party: Party, target: str, rule: str) -> bool:
-    """Is the newest PROTOCOL-VIOLATION from this party about this target already this rule?
+def _refusal_text(verb: Verb, rule: str) -> str:
+    """The exact body `refuse` posts for a refusal of `verb` naming `rule`. Built in one place and used both
+    to compose the post and, in `_already_said`, to compare against what is already on the board -- so the
+    text that gets checked and the text that gets posted can never drift apart."""
+    return f"Refused `{verb.value}`: {rule}"
+
+
+def _already_said(board: Board, party: Party, target: str, verb: Verb, rule: str) -> bool:
+    """Is the newest PROTOCOL-VIOLATION from this party about this target already this exact refusal?
 
     The board is the throttle, not a local file: two supervisors and a restart all read the same history,
     so GitHub's own record is the only place the count can be right (the `meld:nudged` argument, spec 14).
-    Only the NEWEST matching violation counts — a different rule posted since means the topic moved.
+    Only the NEWEST matching violation counts -- a different refusal posted since means the topic moved.
+
+    Comments are gated on `.ok` before their header is trusted, the same as every other reader of
+    `ParsedComment.header` in this codebase (`agreement_for` in grammar.py; several checks in board.py):
+    `parse_comment` parses `header` from the text alone, independent of who posted it, so an unauthorized
+    comment that merely types the header line is not this party's own record and must not suppress a
+    genuinely new refusal.
+
+    The match compares the whole composed body, not a substring of the rule: `_claim` builds rules like
+    "already claimed by claude" that are a literal prefix of "already claimed by claude, grunt", and
+    `_collect`/`reap_rule` both return the exact text "worker is still running" for entirely different
+    verbs -- a substring or rule-only match would let one throttle the other.
     """
+    expected = _refusal_text(verb, rule)
     for comment in sorted(board.comments, key=lambda c: (c.created_at, c.id), reverse=True):
-        h = comment.header
-        if h is None or h.verb != "PROTOCOL-VIOLATION" or h.party != party or h.ref != target:
+        if not comment.ok or comment.header is None:
             continue
-        return rule in comment.text
+        h = comment.header
+        if h.verb != "PROTOCOL-VIOLATION" or h.party != party or h.ref != target:
+            continue
+        return comment.text.strip() == expected
     return False
 ```
 
@@ -940,10 +961,10 @@ and in `refuse`, between building the header and posting:
 ```python
     if board is not None and not actor.is_human:
         header = Header(actor.party, "PROTOCOL-VIOLATION", refusal.target, None)
-        if _already_said(board, actor.party, refusal.target, refusal.rule):
+        if _already_said(board, actor.party, refusal.target, refusal.verb, refusal.rule):
             raise Refused(refusal, post_error=None, violation_posted=None)
         try:
-            ctx.gh.create_comment(board.coordination_issue, compose(header, f"Refused `{refusal.verb.value}`: {refusal.rule}"))
+            ctx.gh.create_comment(board.coordination_issue, compose(header, _refusal_text(refusal.verb, refusal.rule)))
             violation_posted = True
         except GitHubError as e:
             post_error = str(e)
@@ -951,7 +972,7 @@ and in `refuse`, between building the header and posting:
     raise Refused(refusal, post_error=post_error, violation_posted=violation_posted)
 ```
 
-Only the two `_already_said` lines are new; everything below them is exactly what `refuse` does today.
+The `.ok` gate, the verb parameter and the shared `_refusal_text` helper are what the task's first review forced: the brief's original predicate trusted an unauthorized comment's header and matched `rule in text`, which a shorter rule that prefixes a longer one, or the same rule text under a different verb, both defeated.
 
 Update `Refused`'s own docstring where it explains `violation_posted` (it documents `True` and `False` today) to name the third case: `None` means the board already carried this refusal and nothing was posted.
 

@@ -153,16 +153,13 @@ def limit_of(log_path: Path, adapter: Adapter, now: str) -> str | None | bool:
     return False
 
 
-def _freeze(ctx, group: GroupConfig, role: str, *, resets_at: str | None, now: str) -> None:
-    """Remember the freeze, and tell the board once. The role that hit the limit is already gone, so the
-    supervisor is the only thing left that can say so (spec section 7)."""
-    path = freeze_path(ctx.store.home, group.name, role)
-    existing = read_freeze(path)
-    if existing is not None and existing.get("posted"):
-        return                                        # a restart inside a live freeze says nothing new
-    payload: dict = {"at": now, "posted": False}
-    if resets_at:
-        payload["resets_at"] = resets_at
+def _announce(ctx, group: GroupConfig, role: str, *, resets_at: str | None) -> bool:
+    """Post the one LIMITED notice for a freeze. True when it reached the board.
+
+    The role that hit the limit is already gone, so the supervisor is the only thing left that can say so
+    (spec section 7) -- and it says so through `create_comment`, not `meld post`, because LIMITED is a
+    framework-only verb no role may forge (`posting.FRAMEWORK_ONLY_VERBS`).
+    """
     try:
         _, coordination = find_active_milestone(ctx.gh)
         party = Party("pm", group.name) if role == "pm" else Party("group", group.name)
@@ -170,24 +167,42 @@ def _freeze(ctx, group: GroupConfig, role: str, *, resets_at: str | None, now: s
                  else f"resets: unknown; re-probing every {ctx.cfg.runners_limit_retry_minutes}m")
         ctx.gh.create_comment(coordination, compose(Header(party, "LIMITED", None, None),
                                                     f"{group.name}'s {role} hit its usage limit and is frozen.\n{until}"))
-        payload["posted"] = True
     except (GitHubError, BoardError):
-        pass                                          # the freeze matters more than the announcement
-    write_freeze(path, payload)
+        return False
+    return True
+
+
+def _freeze(ctx, group: GroupConfig, role: str, *, resets_at: str | None, now: str) -> None:
+    """Remember the freeze, and tell the board.
+
+    The freeze matters more than the announcement, so a notice that could not be posted -- a supervisor
+    rate-limited at the very moment a role's quota ran out -- is written as `posted: False` and retried by
+    `_frozen` for as long as the freeze stands. A freeze nobody was told about is the silent role this
+    mechanism exists to remove.
+    """
+    payload: dict = {"at": now, "posted": False}
+    if resets_at:
+        payload["resets_at"] = resets_at
+    payload["posted"] = _announce(ctx, group, role, resets_at=resets_at)
+    write_freeze(freeze_path(ctx.store.home, group.name, role), payload)
 
 
 def _frozen(ctx, group: GroupConfig, role: str, *, now: str) -> bool:
-    """True while the freeze stands. A passed freeze is cleared here, so the next poll relaunches."""
+    """True while the freeze stands, with the two side effects that belong to answering that question: a
+    freeze whose window has passed is cleared here, so the next poll relaunches; and a freeze that still
+    stands but has never been announced is announced here, and recorded once it lands."""
     path = freeze_path(ctx.store.home, group.name, role)
     freeze = read_freeze(path)
     if freeze is None:
         return False
     resets_at = freeze.get("resets_at")
     deadline = resets_at or _plus_minutes(freeze.get("at") or "", ctx.cfg.runners_limit_retry_minutes)
-    if deadline and now < deadline:                   # ISO-8601 Z strings sort chronologically
-        return True
-    path.unlink(missing_ok=True)
-    return False
+    if not (deadline and now < deadline):             # ISO-8601 Z strings sort chronologically
+        path.unlink(missing_ok=True)
+        return False
+    if not freeze.get("posted") and _announce(ctx, group, role, resets_at=resets_at):
+        write_freeze(path, {**freeze, "posted": True})
+    return True
 
 
 def run_group(ctx, *, adapter: Adapter | None = None, once: bool = False, cycles: int | None = None, interval: float = 5.0,

@@ -342,6 +342,22 @@ def test_framework_and_command_verbs_are_refused_by_post(tmp_path):
         post(orch, "UPHELD", ref="#12", text="yes")
 
 
+def test_limited_is_framework_only(tmp_path):
+    # A role must not be able to forge a freeze notice for a role that is demonstrably alive. Plan 9 task 2 added
+    # LIMITED to both verb sets (so the supervisor's own comment parses) and taught both role prompts the word, which
+    # left `meld post` as the only gate: spec section 7 assigns the verb to the supervisor, which posts it through
+    # `github.create_comment` from `runners._announce` -- never through here. That path is covered by
+    # tests/test_runners.py::test_a_limited_role_freezes_rather_than_relaunching_and_posts_LIMITED_once.
+    fake, pm = make(tmp_path, role="pm")
+    with pytest.raises(PostError, match="LIMITED is written by meld itself"):
+        post(pm, "LIMITED", text="claude's orchestrator hit its usage limit and is frozen.")
+    fake_orch, orch = make(tmp_path, role="orchestrator")
+    with pytest.raises(PostError, match="LIMITED is written by meld itself"):
+        post(orch, "LIMITED", text="resets: unknown")
+    # refused before any API call, though both fixtures route the comment POST to a 200
+    assert not posted(fake) and not posted(fake_orch)
+
+
 def test_released_is_framework_only(tmp_path):
     from tests.productfixtures import make_product
     # make_product's role defaults to "pm"; an orchestrator context needs MELD_ROLE=orchestrator (tests.conftest.env_for),

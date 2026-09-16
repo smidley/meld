@@ -286,8 +286,10 @@ NOW = "2026-09-12T02:11:19Z"           # every freeze test injects `wall`, so no
 COMMENTS = "repos/acme/widgets/issues/10/comments"
 
 
-def _limited_posts(fake) -> list[str]:
-    return [c.body["body"] for c in fake.calls
+def _limited_posts(fake, since: int = 0) -> list[str]:
+    """The LIMITED comments the supervisor sent. FakeGh records a call whatever the route answers, so a test that
+    routes a failure reads the freeze file for the outcome and passes `since` to count only what landed after."""
+    return [c.body["body"] for c in fake.calls[since:]
             if c.method == "POST" and "comments" in c.endpoint and "LIMITED" in c.body["body"]]
 
 
@@ -427,3 +429,33 @@ def test_a_freeze_naming_no_instant_at_all_reads_as_passed(tmp_path):
     out = run_group(ctx, adapter=FakeAdapter(), cycles=1, interval=0, sleep=lambda s: None, base_env=env,
                     wall=lambda: NOW)
     assert out["roles"]["orchestrator"]["reason"] == "limit" and read_freeze(path) is None
+
+
+def test_a_notice_that_could_not_be_posted_is_retried_while_the_freeze_stands(tmp_path):
+    """A supervisor rate-limited at the moment a quota runs out must not leave the board silent for the whole
+    window -- that is the original symptom. The freeze is honoured either way; the notice is retried."""
+    fake, ctx, env = make(tmp_path)
+    fake.route("POST", COMMENTS, {"message": "boom"}, status=500)         # the board is unreachable
+    adapter = RecordingAdapter(script=LIMIT_SCRIPT)
+
+    out = run_group(ctx, adapter=adapter, cycles=2, interval=0, sleep=_wait_for(adapter), base_env=env,
+                    wall=lambda: NOW)
+
+    assert _limited_posts(fake), "the supervisor tried to announce the freeze"
+    for role in ("orchestrator", "pm"):
+        freeze = read_freeze(freeze_path(ctx.store.home, "claude", role))
+        assert freeze is not None and freeze["posted"] is False           # recorded as unannounced
+        assert out["roles"][role]["launches"] == 1                        # and frozen all the same
+
+    fake.route("POST", COMMENTS, {"id": 999, "html_url": "u"})            # the board comes back
+    mark = len(fake.calls)
+    adapter2 = RecordingAdapter(script=LIMIT_SCRIPT)
+    out2 = run_group(ctx, adapter=adapter2, cycles=3, interval=0, sleep=_wait_for(adapter2), base_env=env,
+                     wall=lambda: NOW)
+
+    landed = _limited_posts(fake, mark)
+    assert len(landed) == 2, landed                                       # one per role, and not again per cycle
+    assert {b.splitlines()[0] for b in landed} == {"[claude] LIMITED", "[claude:pm] LIMITED"}
+    for role in ("orchestrator", "pm"):
+        assert read_freeze(freeze_path(ctx.store.home, "claude", role))["posted"] is True
+        assert out2["roles"][role]["launches"] == 1                       # still frozen, still not relaunched

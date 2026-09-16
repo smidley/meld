@@ -84,5 +84,7 @@ def test_a_limit_relaunch_is_a_reason_and_both_roles_announce_it():
     assert "`limit`" in block and "quota" in block.lower()
     for name in ("orchestrator.md", "pm.md"):
         text = (Path(__file__).parents[1] / "src" / "meld" / "prompts" / name).read_text()
-        # the supervisor posted LIMITED while the role was gone, so the role's RESUMED closes that pair
+        # the supervisor posted LIMITED while the role was gone, so the role's RESUMED closes that pair -- and the
+        # role is told the verb is not its to post, because `posting.FRAMEWORK_ONLY_VERBS` refuses it
         assert "`limit`" in text and "RESUMED" in text and "LIMITED" in text, name
+        assert "`meld post LIMITED` is refused" in text, name

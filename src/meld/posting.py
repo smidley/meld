@@ -15,9 +15,11 @@ class PostError(ValueError):
     """A usage error: the call is malformed, not a legal call that the rules refuse."""
 
 
-# Written by meld itself (dispatch, tick, and release) as `[<group>:pm]` or `[<group>]`; `meld post` refuses them for
-# every caller, so a lease can only be asserted by an actual run, expired by a tick, or ended by `meld release`.
-FRAMEWORK_ONLY_VERBS = frozenset({"LEASE", "EXPIRED", "IGNORED-COMMENT", "RELEASED"})
+# Written by meld itself (dispatch, tick, release, and `meld run`'s supervisor) as `[<group>:pm]` or `[<group>]`;
+# `meld post` refuses them for every caller, so a lease can only be asserted by an actual run, expired by a tick, or
+# ended by `meld release` -- and LIMITED only by the supervisor that froze the role (spec section 7), never by a role
+# claiming another role is out of quota.
+FRAMEWORK_ONLY_VERBS = frozenset({"LEASE", "EXPIRED", "IGNORED-COMMENT", "RELEASED", "LIMITED"})
 # Challenge verbs carry a label change and closer rules; `meld challenge` applies them, `meld post` refuses them.
 COMMAND_VERBS = frozenset({"CHALLENGE", "EVIDENCE", "RETRACT", "UPHELD", "DISMISSED"})
 
@@ -62,7 +64,8 @@ def post(ctx, verb: str, ref: str | None = None, qualifier: str | None = None, t
     if joint and actor.is_human:
         raise PostError("humans cannot post [joint] comments")
     if verb in FRAMEWORK_ONLY_VERBS:
-        raise PostError(f"{verb} is written by meld itself (dispatch, tick, claim, release, and the PM summary), never through meld post")
+        raise PostError(f"{verb} is written by meld itself (dispatch, tick, claim, release, the run supervisor, and the "
+                        "PM summary), never through meld post")
     if verb in COMMAND_VERBS:
         raise PostError(f"{verb} is posted through `meld challenge <open|evidence|retract|uphold|dismiss> REF -m ...`, not meld post")
     party = Party("joint") if joint else actor.party

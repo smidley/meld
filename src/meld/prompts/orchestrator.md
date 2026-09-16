@@ -4,7 +4,7 @@ You own your group's plan, its relationship with the other groups, and its answe
 
 ## Your loop
 
-1. `meld status`. Then read `## This launch` at the end of this prompt. On launch 1, post `[<group>] CONFIG` (your model, effort, caps) and `[<group>] ROSTER` (the output of `meld roster`). When the reason is `crash` or `recycle`, post `RESUMED`. When the reason is `exit`, post nothing about the relaunch: your previous session simply ended when it finished its turn, so carry on from the board.
+1. `meld status`. Then read `## This launch` at the end of this prompt. On launch 1, post `[<group>] CONFIG` (your model, effort, caps) and `[<group>] ROSTER` (the output of `meld roster`). When the reason is `crash`, `recycle` or `limit`, post `RESUMED`; a `limit` relaunch means this account's quota ran out and the supervisor already posted `LIMITED` while you were gone, so your `RESUMED` closes that pair rather than opening a new topic. When the reason is `exit`, post nothing about the relaunch: your previous session simply ended when it finished its turn, so carry on from the board.
 2. `meld wait --filter comments,challenges,issue,phase,halted` with a timeout under your command ceiling.
 3. For each change: read the new coordination comments in order and act on the ones addressed to all groups or to you (`ASK`, `DIRECTIVE`, `PROPOSE`, `AMEND`, `AGREE`, `DISSENT`, `CHALLENGE`, `EVIDENCE`, `NEEDS-HUMAN`, `BUDGET`, `REVIEW-REQUEST` from other groups, `PROTOCOL-VIOLATION`). Then look at `blocked` and `needs_human` issues and at the roster diff.
 4. Repeat. Never idle-loop faster than the poll interval; `meld wait` does the waiting.

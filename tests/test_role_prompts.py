@@ -33,8 +33,8 @@ def test_role_prompt_ends_with_the_launch_block(tmp_path: Path):
         role_prompt("pm", CFG2, CFG2.groups["claude"], tmp_path, launch_no=0)
     # the role prompts tell each role how to read the block
     orch = role_prompt("orchestrator", CFG2, CFG2.groups["claude"], tmp_path)
-    assert "On launch 1, post `[<group>] CONFIG`" in orch and "When the reason is `crash` or `recycle`, post `RESUMED`" in orch
-    assert "post `[<group>:pm] RESUMED` only when the reason is `crash` or `recycle`" in first
+    assert "On launch 1, post `[<group>] CONFIG`" in orch and "When the reason is `crash`, `recycle` or `limit`, post `RESUMED`" in orch
+    assert "post `[<group>:pm] RESUMED` only when the reason is `crash`, `recycle` or `limit`" in first
     assert "retry it once before reporting it" in first
 
 
@@ -75,3 +75,14 @@ def test_role_prompts_name_setup_and_doctor(tmp_path):
     for needle in ("meld doctor [--probe-status]", "meld setup REPO --goal TEXT"):
         assert needle in pm, needle
     assert "meld doctor" in pm.split("## When something is off")[1]
+
+
+def test_a_limit_relaunch_is_a_reason_and_both_roles_announce_it():
+    from meld.prompts import LAUNCH_REASONS, launch_block
+    assert "limit" in LAUNCH_REASONS
+    block = "\n".join(launch_block(4, "limit"))
+    assert "`limit`" in block and "quota" in block.lower()
+    for name in ("orchestrator.md", "pm.md"):
+        text = (Path(__file__).parents[1] / "src" / "meld" / "prompts" / name).read_text()
+        # the supervisor posted LIMITED while the role was gone, so the role's RESUMED closes that pair
+        assert "`limit`" in text and "RESUMED" in text and "LIMITED" in text, name

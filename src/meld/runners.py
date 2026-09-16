@@ -1,17 +1,24 @@
 """Supervise a group's two long-lived roles: launch, restart on exit, recycle on schedule."""
 from __future__ import annotations
 
+import json
 import os
 import signal
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from meld.adapters import Adapter, LaunchSpec
-from meld.config import GroupConfig
+from meld.assemble import BoardError, find_active_milestone
+from meld.atomic import write_atomic
+from meld.config import GroupConfig, Party
 from meld.dispatch import DispatchError
+from meld.github import GitHubError
+from meld.grammar import Header, compose
 from meld.prompts import ROLES, role_prompt
+from meld.transcript import Tail
 
 ROLE_MAX_TURNS = 10000
 _MAX_BACKOFF = 300.0
@@ -23,6 +30,7 @@ _MAX_BACKOFF = 300.0
 # codex PM finished honest 50-second turns (`meld wait` returning early on board activity) and, told
 # "crash" each time, posted RESUMED on every relaunch.
 CLEAN_EXIT_SECONDS = 60.0
+_ISO_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
 
 class _StopRequested(Exception):
@@ -38,6 +46,7 @@ class RoleProcess:
     restarts: int = 0
     launches: int = 1
     last_exit: int | None = None
+    reason: str = "start"
 
 
 def role_env(ctx, group: GroupConfig, role: str, *, base_env: dict | None = None) -> dict[str, str]:
@@ -64,7 +73,7 @@ def launch_role(ctx, group: GroupConfig, adapter: Adapter, role: str, *, base_en
         proc = adapter.launch(spec)
     except OSError as e:
         raise DispatchError(f"cannot start {adapter.name}: {e}") from e
-    return RoleProcess(role=role, proc=proc, started=clock(), log_path=log_path, launches=launch_no)
+    return RoleProcess(role=role, proc=proc, started=clock(), log_path=log_path, launches=launch_no, reason=reason)
 
 
 def _terminate(proc, *, grace: float = 10.0, sleep=time.sleep) -> None:
@@ -87,8 +96,106 @@ def _terminate(proc, *, grace: float = 10.0, sleep=time.sleep) -> None:
         proc.wait()
 
 
+def _iso_now() -> str:
+    """The default `wall` seam (see run_group): what time it is, as the format every instant here uses."""
+    return datetime.now(timezone.utc).strftime(_ISO_FMT)
+
+
+def _plus_minutes(iso: str, minutes: int) -> str:
+    """`iso` plus `minutes`, in the same format, or "" when `iso` is not an instant.
+
+    The one place an instant is parsed. Every other comparison in the freeze path is a plain string compare,
+    which is chronological for this format -- and "" is falsy, so a freeze file carrying no usable instant
+    reads as passed rather than as a freeze with no end.
+    """
+    try:
+        base = datetime.strptime(iso, _ISO_FMT).replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return ""
+    return (base + timedelta(minutes=minutes)).strftime(_ISO_FMT)
+
+
+def freeze_path(home: Path, group: str, role: str) -> Path:
+    """Where a usage freeze is remembered. Local state, so a supervisor restart honours a live freeze."""
+    return home / "state" / group / role / "limit.json"
+
+
+def read_freeze(path: Path) -> dict | None:
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def write_freeze(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_atomic(path, json.dumps(payload, indent=2) + "\n")
+
+
+def limit_of(log_path: Path, adapter: Adapter, now: str) -> str | None | bool:
+    """`False` when this role's transcript shows no usage limit; the reset instant when it shows one that
+    named a time; `None` when it shows one that named no time.
+
+    Three outcomes rather than two on purpose: "limited, time unknown" has to be distinguishable from "not
+    limited", because the first waits `runners.limit_retry_minutes` and the second relaunches at once.
+
+    Only the adapter knows how its CLI says this, so this asks it for events and looks for the one kind that
+    means the quota is gone; no prose is matched here.
+    """
+    reader = Tail(log_path)
+    # read then flush, exactly as dispatch.render_tail does: a role killed mid-write leaves its last line
+    # unterminated, and that is the line most likely to carry the limit.
+    events = reader.read(adapter.parse_events, now) + reader.flush(adapter.parse_events, now)
+    for event in reversed(events):
+        if event.kind == "usage_limit":
+            return event.meta.get("resets_at") or None
+    return False
+
+
+def _freeze(ctx, group: GroupConfig, role: str, *, resets_at: str | None, now: str) -> None:
+    """Remember the freeze, and tell the board once. The role that hit the limit is already gone, so the
+    supervisor is the only thing left that can say so (spec section 7)."""
+    path = freeze_path(ctx.store.home, group.name, role)
+    existing = read_freeze(path)
+    if existing is not None and existing.get("posted"):
+        return                                        # a restart inside a live freeze says nothing new
+    payload: dict = {"at": now, "posted": False}
+    if resets_at:
+        payload["resets_at"] = resets_at
+    try:
+        _, coordination = find_active_milestone(ctx.gh)
+        party = Party("pm", group.name) if role == "pm" else Party("group", group.name)
+        until = (f"resets: {resets_at}" if resets_at
+                 else f"resets: unknown; re-probing every {ctx.cfg.runners_limit_retry_minutes}m")
+        ctx.gh.create_comment(coordination, compose(Header(party, "LIMITED", None, None),
+                                                    f"{group.name}'s {role} hit its usage limit and is frozen.\n{until}"))
+        payload["posted"] = True
+    except (GitHubError, BoardError):
+        pass                                          # the freeze matters more than the announcement
+    write_freeze(path, payload)
+
+
+def _frozen(ctx, group: GroupConfig, role: str, *, now: str) -> bool:
+    """True while the freeze stands. A passed freeze is cleared here, so the next poll relaunches."""
+    path = freeze_path(ctx.store.home, group.name, role)
+    freeze = read_freeze(path)
+    if freeze is None:
+        return False
+    resets_at = freeze.get("resets_at")
+    deadline = resets_at or _plus_minutes(freeze.get("at") or "", ctx.cfg.runners_limit_retry_minutes)
+    if deadline and now < deadline:                   # ISO-8601 Z strings sort chronologically
+        return True
+    path.unlink(missing_ok=True)
+    return False
+
+
 def run_group(ctx, *, adapter: Adapter | None = None, once: bool = False, cycles: int | None = None, interval: float = 5.0,
-              sleep=time.sleep, clock=time.monotonic, base_env: dict | None = None) -> dict:
+              sleep=time.sleep, clock=time.monotonic, wall: Callable[[], str] = _iso_now,
+              base_env: dict | None = None) -> dict:
+    """Keep a group's roles alive. Two clocks, for two jobs: `clock` is monotonic and drives the backoff and
+    the restart schedule; `wall` answers what time it is, because a freeze deadline is a wall-clock instant a
+    CLI named and monotonic seconds cannot be compared with one. Both are injected so tests never wait."""
     group = ctx.cfg.groups[ctx.party.group]
     adp = adapter if adapter is not None else ctx.adapter()
     if adp is None:
@@ -122,11 +229,34 @@ def run_group(ctx, *, adapter: Adapter | None = None, once: bool = False, cycles
         while not state["stop"]:
             cycle += 1
             for role, rp in procs.items():
+                now = wall()  # one instant for this role's whole turn, so the freeze it writes matches the one it read
+                # This check must stay first -- before the poll, before any decision to launch. A role frozen
+                # on a usage limit is left alone, and nothing this loop later learns to do may relaunch it.
+                had_freeze = read_freeze(freeze_path(ctx.store.home, group.name, role)) is not None
+                if _frozen(ctx, group, role, now=now):
+                    continue
+                if had_freeze:
+                    # `_frozen` has just cleared a freeze whose window passed. Relaunch deliberately, as
+                    # `limit` so the role posts RESUMED and closes the LIMITED pair -- and without reading the
+                    # transcript again: its last event is still the usage_limit that froze it.
+                    if rp.proc.poll() is None:
+                        _terminate(rp.proc, sleep=sleep)
+                    fresh = launch_role(ctx, group, adp, role, base_env=base_env, clock=clock,
+                                        launch_no=rp.launches + 1, reason="limit")
+                    fresh.restarts, fresh.last_exit = rp.restarts, rp.proc.poll()
+                    procs[role] = fresh
+                    continue
                 code = rp.proc.poll()
                 if code is not None:
                     rp.last_exit = code
                     if once:
                         continue
+                    # A limit outranks the exit code: an exhausted quota exits in a way no code distinguishes
+                    # from a clean finish, and relaunching it is the bug this branch exists to stop.
+                    limited = limit_of(rp.log_path, adp, now)
+                    if limited is not False:
+                        _freeze(ctx, group, role, resets_at=limited or None, now=now)
+                        continue                     # do not relaunch; the next cycle re-checks the freeze
                     if code == 0 and clock() - rp.started >= CLEAN_EXIT_SECONDS:
                         restarts, reason = 0, "exit"
                     else:
@@ -159,5 +289,6 @@ def run_group(ctx, *, adapter: Adapter | None = None, once: bool = False, cycles
             for rp in procs.values():
                 _terminate(rp.proc, sleep=sleep)
     return {"group": group.name, "roles": {role: {"launches": rp.launches, "restarts": rp.restarts,
-                                                   "last_exit": rp.proc.poll() if rp.proc.poll() is not None else rp.last_exit}
+                                                   "last_exit": rp.proc.poll() if rp.proc.poll() is not None else rp.last_exit,
+                                                   "reason": rp.reason}
                                             for role, rp in procs.items()}}

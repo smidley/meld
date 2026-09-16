@@ -151,3 +151,23 @@ def test_parse_events_never_raises_on_junk():
     (broken,) = ClaudeAdapter().parse_events('{"type": "assistant", "message": {', NOW)
     assert broken.kind == "raw"
     assert ClaudeAdapter().parse_events("   ", NOW) == []
+
+
+def test_parse_events_turns_a_limited_result_into_usage_limit_not_run_finished():
+    line = ('{"type":"result","subtype":"error_usage_limit","is_error":true,'
+            '"result":"You\'ve hit your individual spend limit. It resets at 6pm.","num_turns":3}')
+    (event,) = ClaudeAdapter().parse_events(line, "2026-09-12T02:11:19Z")
+    assert event.kind == "usage_limit"
+    assert event.meta["resets_at"] == "2026-09-12T18:00:00Z"
+    assert "spend limit" in event.text
+
+
+def test_parse_events_leaves_a_max_turns_result_an_ordinary_run_finished():
+    line = '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"","num_turns":10000}'
+    (event,) = ClaudeAdapter().parse_events(line, "2026-09-12T02:11:19Z")
+    assert event.kind == "run_finished" and event.ok is False
+
+
+def test_parse_events_recognises_a_limit_on_a_bare_stderr_line():
+    (event,) = ClaudeAdapter().parse_events("Claude AI usage limit reached|1789500000", "2026-09-12T02:11:19Z")
+    assert event.kind == "usage_limit"

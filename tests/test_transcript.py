@@ -342,3 +342,9 @@ def test_newest_log_is_none_when_there_is_nothing_to_read(tmp_path):
     assert newest_log(tmp_path / "absent") is None
     _log(tmp_path, "claude", "pm-1.log", 1000)
     assert newest_log(tmp_path, "nosuchgroup") is None
+
+
+def test_usage_limit_is_a_kind_and_renders_as_limit():
+    assert "usage_limit" in KINDS
+    assert render_line(mk("usage_limit", text="You've hit your spend limit.")) == \
+        "02:11:19  limit    You've hit your spend limit."

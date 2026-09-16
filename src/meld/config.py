@@ -73,6 +73,8 @@ def _role(data: Mapping[str, Any], path: str) -> RoleConfig:
 #: previous one and zeroing the original each cycle -- which is silent, total log destruction from one typo.
 LOGS_MIN_BYTES_PER_RUN = 64 * 1024
 LOGS_MIN_WARN_TOTAL_MB = 1
+RUNNERS_MIN_LIMIT_RETRY_MINUTES = 1
+LOGS_MIN_WARN_FREE_MB = 1
 
 
 def _at_least(value: Any, minimum: int, path: str, unit: str) -> int:
@@ -125,6 +127,8 @@ class Config:
     audit_batch_hours: int = 4
     logs_max_bytes_per_run: int = 8 * 1024 * 1024
     logs_warn_total_mb: int = 2048
+    runners_limit_retry_minutes: int = 30
+    logs_warn_free_mb: int = 2048
 
     def timeout_seconds(self, size: str) -> int:
         if size not in self.timeouts:
@@ -234,6 +238,9 @@ class Config:
                                              "logs.max_bytes_per_run", "bytes"),
             logs_warn_total_mb=_at_least(logs.get("warn_total_mb", 2048), LOGS_MIN_WARN_TOTAL_MB,
                                          "logs.warn_total_mb", "megabytes"),
+            runners_limit_retry_minutes=_at_least(runners.get("limit_retry_minutes", 30), RUNNERS_MIN_LIMIT_RETRY_MINUTES,
+                                                  "runners.limit_retry_minutes", "minutes"),
+            logs_warn_free_mb=_at_least(logs.get("warn_free_mb", 2048), LOGS_MIN_WARN_FREE_MB, "logs.warn_free_mb", "MB"),
         )
 
     @property

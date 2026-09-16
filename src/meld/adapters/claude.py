@@ -5,7 +5,8 @@ import json
 from pathlib import Path
 from typing import Mapping
 
-from meld.adapters.base import SCRUBBED_EXACT, LaunchSpec, open_log, parse_doc, popen_detached, raw_event, scan_skills
+from meld.adapters.base import (SCRUBBED_EXACT, LaunchSpec, is_limit, limit_event, open_log, parse_doc,
+                                popen_detached, raw_event, scan_skills)
 from meld.roster import WorkerType
 from meld.transcript import Event, cap
 
@@ -100,7 +101,7 @@ class ClaudeAdapter:
         """One `stream-json` line as events. A content array is many events, which is why this is plural."""
         doc, stripped = parse_doc(line)
         if doc is None:
-            return raw_event(now, stripped)
+            return limit_event(now, stripped) if is_limit(stripped) else raw_event(now, stripped)
         kind = doc.get("type")
         if kind == "system":
             if doc.get("subtype") != "init":
@@ -126,11 +127,14 @@ class ClaudeAdapter:
             return events or raw_event(now, stripped)
         if kind == "result":
             usage = doc.get("usage") if isinstance(doc.get("usage"), dict) else {}
+            said = str(doc.get("result", "")) + " " + str(doc.get("subtype", ""))
+            if is_limit(said):
+                return limit_event(now, str(doc.get("result", "")) or str(doc.get("subtype", "")))
             return [Event(seq=0, at=now, kind="run_finished", ok=not doc.get("is_error", False),
                           text=cap(doc.get("result", doc.get("subtype", ""))),
                           meta={"subtype": str(doc.get("subtype", "")), "num_turns": doc.get("num_turns"),
                                 "cost_usd": doc.get("total_cost_usd"), "usage": usage})]
-        return raw_event(now, stripped)
+        return limit_event(now, stripped) if is_limit(stripped) else raw_event(now, stripped)
 
 
 def _block(b: dict, now: str) -> list[Event]:

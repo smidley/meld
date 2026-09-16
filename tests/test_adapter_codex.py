@@ -138,3 +138,21 @@ def test_parse_events_never_raises_on_junk():
     (raw,) = CodexAdapter().parse_events("thread panicked at src/main.rs:12", NOW)
     assert raw.kind == "raw"
     assert CodexAdapter().parse_events("", NOW) == []
+
+
+def test_parse_events_turns_a_rate_limited_turn_failure_into_usage_limit():
+    line = '{"type": "turn.failed", "error": {"message": "429 Too Many Requests; rate limited"}}'
+    (event,) = CodexAdapter().parse_events(line, "2026-09-12T02:11:19Z")
+    assert event.kind == "usage_limit" and event.ok is False
+
+
+def test_parse_events_leaves_an_ordinary_turn_failure_a_cli_error():
+    line = '{"type": "turn.failed", "error": {"message": "sandbox denied write to /etc"}}'
+    (event,) = CodexAdapter().parse_events(line, "2026-09-12T02:11:19Z")
+    assert event.kind == "cli_error" and event.ok is False
+
+
+def test_parse_events_recognises_a_limit_on_a_bare_stderr_line():
+    (event,) = CodexAdapter().parse_events(
+        "2026-09-12T02:11:19Z ERROR codex_core: quota exceeded for this organization", "2026-09-12T02:11:19Z")
+    assert event.kind == "usage_limit"

@@ -225,3 +225,99 @@ def test_codex_worker_sandbox_admits_its_git_dirs_and_the_uv_cache(tmp_path: Pat
     assert adapter.argv(with_env)[-3:-1] != ["--add-dir", str(home / ".cache" / "uv")] and str(tmp_path / "uvc") in adapter.argv(with_env)
     role = LaunchSpec(**{**spec.__dict__, "role": "pm"})
     assert "--add-dir" not in adapter.argv(role)                                         # full access needs no grants
+
+
+from meld.adapters.base import is_limit, limit_event, reset_at
+
+NOW = "2026-09-12T02:11:19Z"
+
+
+def test_is_limit_recognises_the_prose_each_cli_actually_prints():
+    for text in [
+        "You've hit your individual spend limit. It resets at 6pm.",
+        "You have reached your usage limit for this model.",
+        "Claude AI usage limit reached|1789500000",
+        "You've reached your session limit",
+        "Your weekly limit for this model has been used up",
+        "429 Too Many Requests",
+        "rate limited; retry later",
+        "quota exceeded for this organization",
+    ]:
+        assert is_limit(text), text
+
+
+def test_is_limit_does_not_fire_on_prose_that_merely_says_limit():
+    for text in [
+        "error_max_turns",                                   # --max-turns, an ordinary exit, never a freeze
+        "the max turns limit was reached",                   # same, phrased as prose
+        "I refactored the rate limiter and its limit test",   # a worker talking about code
+        "limit",
+        "the limits of this approach are worth naming",
+        "",
+    ]:
+        assert not is_limit(text), text
+
+
+def test_is_limit_ignores_a_free_noun_before_limit():
+    """Alt 1 of the original pattern accepted any noun; these are real things a healthy role says."""
+    for text in [
+        "You've hit your context limit, so I'm summarizing here.",
+        "You have used the turn limit wisely.",
+    ]:
+        assert not is_limit(text), text
+
+
+def test_is_limit_needs_context_around_429():
+    for text in ["Closes #429.", "Fixed the off-by-one in src/meld/config.py:429 and added a regression test.",
+                 "Bumped the retry backoff from 400 to 429 seconds per the reviewer request."]:
+        assert not is_limit(text), text
+    for text in ["429 Too Many Requests", "HTTP 429", "status: 429 from the API", "error code 429"]:
+        assert is_limit(text), text
+
+
+def test_reset_at_reads_an_explicit_instant_a_clock_time_and_a_duration():
+    assert reset_at("resets at 2026-09-12T18:00:00Z", NOW) == "2026-09-12T18:00:00Z"
+    assert reset_at("It resets at 6pm.", NOW) == "2026-09-12T18:00:00Z"
+    assert reset_at("resets at 18:00", NOW) == "2026-09-12T18:00:00Z"
+    assert reset_at("try again in 3 hours", NOW) == "2026-09-12T05:11:19Z"
+    assert reset_at("try again in 45 minutes", NOW) == "2026-09-12T02:56:19Z"
+
+
+def test_reset_at_rolls_a_clock_time_that_has_already_passed_to_tomorrow():
+    assert reset_at("resets at 1am", "2026-09-12T02:11:19Z") == "2026-09-13T01:00:00Z"
+
+
+def test_reset_at_is_none_when_no_time_is_named():
+    assert reset_at("You've hit your limit.", NOW) is None
+    assert reset_at("resets soon", NOW) is None
+
+
+def test_reset_at_ignores_a_timestamp_that_is_not_in_the_future():
+    """A codex stderr line leads with its own RFC3339 timestamp; believing it would produce an
+    already-expired freeze, which relaunches a limited role at once."""
+    line = "2026-09-12T02:11:19.320141Z ERROR codex_core: quota exceeded for this organization"
+    assert reset_at(line, "2026-09-16T02:11:19Z") is None
+
+
+def test_reset_at_still_finds_a_real_reset_past_a_stale_log_timestamp():
+    line = "2026-09-12T02:11:19.320141Z ERROR codex_core: rate limited; try again in 2 hours"
+    assert reset_at(line, "2026-09-16T02:11:19Z") == "2026-09-16T04:11:19Z"
+
+
+def test_reset_at_returns_none_when_now_cannot_be_parsed():
+    assert reset_at("resets at 2026-09-12T18:00:00Z", "not-a-time") is None
+
+
+def test_the_codex_stderr_limit_event_carries_no_bogus_reset():
+    from meld.adapters.codex import CodexAdapter
+    line = "2026-09-12T02:11:19.320141Z ERROR codex_core: quota exceeded for this organization"
+    (event,) = CodexAdapter().parse_events(line, "2026-09-16T02:11:19Z")
+    assert event.kind == "usage_limit"
+    assert "resets_at" not in event.meta          # absent means "re-probe on the cadence", which is safe
+
+
+def test_limit_event_carries_the_text_and_the_reset_when_there_is_one():
+    (with_reset,) = limit_event(NOW, "You've hit your spend limit. It resets at 6pm.")
+    assert with_reset.kind == "usage_limit" and with_reset.meta["resets_at"] == "2026-09-12T18:00:00Z"
+    (without,) = limit_event(NOW, "You've hit your spend limit.")
+    assert without.kind == "usage_limit" and "resets_at" not in without.meta

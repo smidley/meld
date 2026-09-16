@@ -16,7 +16,7 @@ from typing import Callable, Iterable
 #: Every kind an adapter may produce. `raw` is the escape hatch for a line no adapter recognized;
 #: `log_truncated` is written by `Tail` itself, never by an adapter.
 KINDS = ("run_started", "message", "thinking", "tool_call", "tool_result",
-         "usage", "run_finished", "log_truncated", "cli_error", "raw")
+         "usage", "run_finished", "usage_limit", "log_truncated", "cli_error", "raw")
 
 #: Per-event character cap, applied at parse time. About memory, not about reading.
 TEXT_CAP = 2000
@@ -33,7 +33,7 @@ _TRUNCATED = " …(truncated)"
 _LABELS = {
     "run_started": "started", "message": "message", "thinking": "think",
     "tool_call": "tool", "tool_result": "result", "usage": "usage",
-    "run_finished": "done", "log_truncated": "trimmed", "cli_error": "error", "raw": "raw",
+    "run_finished": "done", "usage_limit": "limit", "log_truncated": "trimmed", "cli_error": "error", "raw": "raw",
 }
 _LABEL_WIDTH = max(len(v) for v in _LABELS.values()) + 1
 

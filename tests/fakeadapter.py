@@ -4,7 +4,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass, field
 
-from meld.adapters.base import LaunchSpec, open_log, popen_detached
+from meld.adapters.base import LaunchSpec, is_limit, limit_event, open_log, popen_detached
 from meld.roster import WorkerType
 from meld.transcript import Event, cap
 
@@ -46,8 +46,13 @@ class FakeAdapter:
         return [sys.executable, "--version"]
 
     def parse_events(self, line: str, now: str) -> list[Event]:
-        """The fake CLI writes plain text, so every line is one message."""
-        return [Event(seq=0, at=now, kind="message", text=cap(line))] if line.strip() else []
+        """The fake CLI writes plain text, so every line is one message -- except a line saying the quota is gone,
+        which every real adapter turns into `usage_limit` and so must this one, or no test could drive a freeze."""
+        if not line.strip():
+            return []
+        if is_limit(line):
+            return limit_event(now, line)
+        return [Event(seq=0, at=now, kind="message", text=cap(line))]
 
 
 def no_skills(cli_name: str) -> FakeAdapter:

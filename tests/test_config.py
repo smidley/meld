@@ -256,3 +256,24 @@ def test_logs_table_refuses_a_size_that_would_destroy_every_log():
         with pytest.raises(ConfigError, match="logs.warn_total_mb must be an integer of at least 1 megabytes"):
             Config.from_dict({**base, "logs": {"warn_total_mb": bad}})
     assert Config.from_dict({**base, "logs": {"max_bytes_per_run": 65536}}).logs_max_bytes_per_run == 65536
+
+
+def test_limit_retry_and_free_space_knobs_have_defaults_and_floors():
+    base = {
+        "repo": {"name": "acme/widgets"},
+        "humans": {"accounts": ["empowerScott"]},
+        "groups": {"claude": {"cli": "claude", "bot": "b", "token_env": "T",
+                              "orchestrator": {"model": "claude-opus-5", "effort": "high"},
+                              "pm": {"model": "claude-sonnet-5", "effort": "medium"}}},
+    }
+    default = Config.from_dict(base)
+    assert default.runners_limit_retry_minutes == 30
+    assert default.logs_warn_free_mb == 2048
+
+    tuned = Config.from_dict({**base, "runners": {"limit_retry_minutes": 5}, "logs": {"warn_free_mb": 1}})
+    assert tuned.runners_limit_retry_minutes == 5 and tuned.logs_warn_free_mb == 1
+
+    with pytest.raises(ConfigError, match="limit_retry_minutes"):
+        Config.from_dict({**base, "runners": {"limit_retry_minutes": 0}})
+    with pytest.raises(ConfigError, match="warn_free_mb"):
+        Config.from_dict({**base, "logs": {"warn_free_mb": 0}})

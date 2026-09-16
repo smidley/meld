@@ -151,3 +151,47 @@ def test_parse_events_never_raises_on_junk():
     (broken,) = ClaudeAdapter().parse_events('{"type": "assistant", "message": {', NOW)
     assert broken.kind == "raw"
     assert ClaudeAdapter().parse_events("   ", NOW) == []
+
+
+def test_parse_events_turns_a_limited_result_into_usage_limit_not_run_finished():
+    line = ('{"type":"result","subtype":"error_usage_limit","is_error":true,'
+            '"result":"You\'ve hit your individual spend limit. It resets at 6pm.","num_turns":3}')
+    (event,) = ClaudeAdapter().parse_events(line, "2026-09-12T02:11:19Z")
+    assert event.kind == "usage_limit"
+    assert event.meta["resets_at"] == "2026-09-12T18:00:00Z"
+    assert "spend limit" in event.text
+
+
+def test_parse_events_leaves_a_max_turns_result_an_ordinary_run_finished():
+    line = '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"","num_turns":10000}'
+    (event,) = ClaudeAdapter().parse_events(line, "2026-09-12T02:11:19Z")
+    assert event.kind == "run_finished" and event.ok is False
+
+
+def test_parse_events_recognises_a_limit_on_a_bare_stderr_line():
+    (event,) = ClaudeAdapter().parse_events("Claude AI usage limit reached|1789500000", "2026-09-12T02:11:19Z")
+    assert event.kind == "usage_limit"
+
+
+def test_a_successful_result_is_never_a_usage_limit_whatever_it_says():
+    """The model's own narration must not trigger a freeze; only a CLI-reported error may."""
+    line = ('{"type":"result","subtype":"success","is_error":false,"num_turns":12,'
+            '"result":"I added middleware that returns 429 when the rate limit is exceeded, plus tests. '
+            'Next scheduled deploy window is 2026-09-20T00:00:00Z."}')
+    (event,) = ClaudeAdapter().parse_events(line, "2026-09-16T02:11:19Z")
+    assert event.kind == "run_finished" and event.ok is True
+    assert "resets_at" not in event.meta
+
+
+def test_a_success_that_talks_about_a_rate_limit_is_still_a_success():
+    line = ('{"type":"result","subtype":"success","is_error":false,"num_turns":5,'
+            '"result":"You\'ve reached the rate limit for GitHub\'s API; retrying in a moment. Done."}')
+    (event,) = ClaudeAdapter().parse_events(line, "2026-09-16T02:11:19Z")
+    assert event.kind == "run_finished" and event.ok is True
+
+
+def test_an_error_result_about_a_limit_is_still_a_usage_limit():
+    line = ('{"type":"result","subtype":"error_during_execution","is_error":true,'
+            '"result":"You have reached your usage limit for this model. It resets at 6pm."}')
+    (event,) = ClaudeAdapter().parse_events(line, "2026-09-16T02:11:19Z")
+    assert event.kind == "usage_limit" and event.meta["resets_at"] == "2026-09-16T18:00:00Z"

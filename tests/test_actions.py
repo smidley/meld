@@ -5,9 +5,11 @@ import pytest
 from click.testing import CliRunner
 
 import meld.cli as cli
-from meld.actions import Refused, claim, release
+from meld.actions import Refusal, Refused, claim, refuse, release
 from meld.context import load_context
 from meld.github import GitHubError
+from meld.rules import Verb
+from meld.status import build_status
 from tests.conftest import FIXTURES, PROJECT_TOML, env_for, load_board1_routes
 from tests.fakeadapter import no_skills
 from tests.fakegh import FakeGh
@@ -39,6 +41,26 @@ def make(tmp_path, group="claude", role="pm"):
 
 def posted_headers(fake):
     return [c.body["body"].splitlines()[0] for c in fake.calls if c.method == "POST" and c.endpoint.endswith("/comments")]
+
+
+def violation(rule: str, *, target="#11", created_at="2026-09-03T11:00:00Z", cid=8001, verb="collect") -> dict:
+    """A PROTOCOL-VIOLATION as claude's PM would have posted it. The author must be the configured bot or
+    the parser treats it as an outsider's comment and it never reaches the board's headers."""
+    return {"id": cid, "user": {"login": "meld-claude-bot"}, "created_at": created_at,
+            "body": f"[claude:pm] PROTOCOL-VIOLATION {target}\nRefused `{verb}`: {rule}"}
+
+
+def board_with(fake, ctx, extra):
+    fake.route("GET", R + "issues/10/comments", fixture_comments() + extra)
+    fake.route("POST", R + "issues/10/comments", {"id": 9001, "html_url": "u"})
+    return build_status(ctx)[1]
+
+
+def posts(fake):
+    return [c for c in fake.calls if c.method == "POST" and c.endpoint.endswith("/comments")]
+
+
+RULE = "only the PM may collect"
 
 
 def test_claim_adds_the_label_verifies_it_and_swaps_status_labels(tmp_path):
@@ -317,3 +339,92 @@ def test_a_human_claims_with_the_shared_human_label(tmp_path):
     fake.route("GET", R + "issues/11", {**fixture_issue(11), "labels": fixture_issue(11)["labels"] + [{"name": "meld:claimed-by:human"}]})
     fake.route("DELETE", label_ep(11, "meld:ready"), {}, status=200)
     assert claim(human, 11) == {"claimed": 11, "claimed_by": "human"}
+
+
+def test_an_identical_refusal_is_refused_without_a_second_comment(tmp_path):
+    """Residual 14: 109 protocol violations on one coordination issue, most the same one re-derived."""
+    fake, ctx = make(tmp_path, role="pm")
+    board = board_with(fake, ctx, [violation(RULE)])
+    before = len(posts(fake))
+
+    with pytest.raises(Refused) as caught:
+        refuse(ctx, board, Refusal(Verb.COLLECT, "#11", RULE))
+
+    assert len(posts(fake)) == before                 # nothing new on the board
+    assert caught.value.violation_posted is None      # skipped, distinct from posted (True) or failed (False)
+
+
+def test_a_refusal_naming_a_different_rule_is_still_announced(tmp_path):
+    fake, ctx = make(tmp_path, role="pm")
+    board = board_with(fake, ctx, [violation(RULE)])
+
+    with pytest.raises(Refused) as caught:
+        refuse(ctx, board, Refusal(Verb.COLLECT, "#11", "worker is still running"))
+
+    assert caught.value.violation_posted is True
+    assert "worker is still running" in posts(fake)[-1].body["body"]
+
+
+def test_a_refusal_about_a_different_target_is_still_announced(tmp_path):
+    fake, ctx = make(tmp_path, role="pm")
+    board = board_with(fake, ctx, [violation(RULE, target="#11")])
+
+    with pytest.raises(Refused) as caught:
+        refuse(ctx, board, Refusal(Verb.COLLECT, "#12", RULE))
+
+    assert caught.value.violation_posted is True
+
+
+def test_only_the_newest_violation_about_a_target_throttles(tmp_path):
+    """A different rule posted since means the board moved on, so the earlier one is news again."""
+    fake, ctx = make(tmp_path, role="pm")
+    board = board_with(fake, ctx, [
+        violation(RULE, created_at="2026-09-03T11:00:00Z", cid=8001),
+        violation("worker is still running", created_at="2026-09-03T11:30:00Z", cid=8002),
+    ])
+
+    with pytest.raises(Refused) as caught:
+        refuse(ctx, board, Refusal(Verb.COLLECT, "#11", RULE))
+
+    assert caught.value.violation_posted is True
+
+
+def test_a_human_still_never_posts_a_violation_at_all(tmp_path):
+    """Unchanged behaviour, asserted here because the new branch sits next to it."""
+    fake, ctx = make(tmp_path, group=None, role="pm")
+    board = board_with(fake, ctx, [])
+    before = len(posts(fake))
+
+    with pytest.raises(Refused):
+        refuse(ctx, board, Refusal(Verb.COLLECT, "#11", RULE))
+
+    assert len(posts(fake)) == before
+
+
+def test_a_shorter_rule_is_not_swallowed_by_a_longer_one_it_prefixes(tmp_path):
+    """rules._claim builds 'already claimed by <a>, <b>'; after a release the rule shortens and is news."""
+    fake, ctx = make(tmp_path, role="pm")
+    board = board_with(fake, ctx, [violation("already claimed by claude, grunt")])
+    with pytest.raises(Refused) as caught:
+        refuse(ctx, board, Refusal(Verb.CLAIM, "#11", "already claimed by claude"))
+    assert caught.value.violation_posted is True
+
+
+def test_the_same_rule_text_under_a_different_verb_is_a_different_refusal(tmp_path):
+    """COLLECT and REAP both say 'worker is still running'; a REAP attempt must reach the board."""
+    fake, ctx = make(tmp_path, role="pm")
+    board = board_with(fake, ctx, [violation("worker is still running", verb="collect")])
+    with pytest.raises(Refused) as caught:
+        refuse(ctx, board, Refusal(Verb.REAP, "#11", "worker is still running"))
+    assert caught.value.violation_posted is True
+
+
+def test_an_unauthorized_comment_that_mimics_the_header_does_not_throttle(tmp_path):
+    """Only this party's own record counts. A stranger typing the header line is not that record."""
+    fake, ctx = make(tmp_path, role="pm")
+    forged = violation(RULE)
+    forged["user"] = {"login": "some-stranger"}
+    board = board_with(fake, ctx, [forged])
+    with pytest.raises(Refused) as caught:
+        refuse(ctx, board, Refusal(Verb.COLLECT, "#11", RULE))
+    assert caught.value.violation_posted is True

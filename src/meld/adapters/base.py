@@ -5,6 +5,7 @@ import json
 import re
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import IO, Iterable, Mapping, Protocol
 
@@ -81,6 +82,99 @@ def parse_doc(line: str) -> tuple[dict | None, str]:
 def raw_event(now: str, stripped: str) -> list[Event]:
     """The `raw` fallback: one event per unrecognized line, or nothing at all for a blank one."""
     return [Event(seq=0, at=now, kind="raw", text=cap(stripped))] if stripped else []
+
+
+# A CLI's answer when the subscription's quota is gone. Best-effort by nature: there is no captured
+# transcript of either CLI hitting a limit, so these come from prose observed in the first live run plus
+# the tested set in Maurdekye/orgtree's limits.py (MIT). Getting it wrong in one direction leaves today's
+# behaviour (the role is treated as a crash and backed off); wrong in the other freezes a healthy role.
+# So every alternative below requires one of a fixed set of quota-related nouns before "limit" (usage, rate,
+# spend, session, weekly, daily, monthly) -- never a free noun, which admits a healthy role's own "context
+# limit" or "turn limit" -- an explicit rate-limit phrase, "usage limit reached", "quota exceeded", or a 429
+# with surrounding context ("429 Too Many Requests", "HTTP 429") -- never a bare 429, which is as likely to
+# be a PR number or a config.py:429 as a status code. Never the max-turns ceiling either, which is an
+# ordinary exit. This still matches real prose about someone else's rate limit ("the rate limit for GitHub's
+# API") inside a healthy role's own summary of its own work, and that is by design, not a gap to close here:
+# each adapter's own result/turn-failure handling is what keeps a successful run's own narration from ever
+# reaching is_limit (see claude.py's result branch), so the pattern itself does not need to be narrower.
+_LIMIT_RE = re.compile(
+    r"(?:\b(?:your|the)\b[^.]{0,40}?\b(?:usage|rate|spend|session|weekly|daily|monthly)\s+limit\b"
+    r"|\busage\s+limit\s+reached\b"
+    r"|\brate[-\s]?limit(?:ed|ing)?\b"
+    r"|\bquota\s+exceeded\b"
+    r"|\b429\s+too\s+many\s+requests\b"
+    r"|\b(?:http|status|code)\s*:?\s*429\b)",
+    re.IGNORECASE)
+# The max-turns ceiling says "limit" and is not one: a role that used its turns exited, it was not throttled.
+_NOT_LIMIT_RE = re.compile(r"\bmax[-_\s]?turns\b", re.IGNORECASE)
+_ISO_RESET_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})Z?\b")
+_CLOCK_RESET_RE = re.compile(r"\b(?:reset(?:s|ting)?|available|try\s+again|back)\b[^.]{0,20}?\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b",
+                             re.IGNORECASE)
+_DURATION_RESET_RE = re.compile(r"\bin\s+(?:about\s+)?(\d{1,3})\s*(second|minute|hour)s?\b", re.IGNORECASE)
+_ISO_FMT = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def is_limit(text: object) -> bool:
+    """Does this text say the subscription's quota is gone, rather than merely containing the word "limit"?"""
+    s = text if isinstance(text, str) else ("" if text is None else str(text))
+    if not s or _NOT_LIMIT_RE.search(s):
+        return False
+    return bool(_LIMIT_RE.search(s))
+
+
+def _parse_now(now: str) -> datetime | None:
+    try:
+        return datetime.strptime(now, _ISO_FMT).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def reset_at(text: str, now: str) -> str | None:
+    """When the quota comes back, as an ISO instant, or None when the text named no time.
+
+    None is a real answer, not a failure: the supervisor re-probes on a fixed cadence rather than guessing a
+    window length, because guessing long strands a whole group for hours (spec section 17).
+    """
+    base = _parse_now(now)
+    if base is None:
+        return None
+    m = _ISO_RESET_RE.search(text or "")
+    if m:
+        # A codex stderr line leads with its own RFC3339 timestamp, so a matched instant is only believed
+        # when it is strictly after `now` -- otherwise it is the log line's own clock, not a stated reset,
+        # and an already-expired "reset" would relaunch a limited role at once (the 45-minute silent
+        # relaunch storm this plan exists to stop). A match that fails that test falls through to the
+        # duration and clock branches below, as if it had not matched -- a real "resets in 3 hours" further
+        # in the same line still gets its chance.
+        candidate_str = m.group(1).replace(" ", "T") + "Z"
+        candidate = _parse_now(candidate_str)
+        if candidate is not None and candidate > base:
+            return candidate_str
+    m = _DURATION_RESET_RE.search(text or "")
+    if m:
+        unit = {"second": "seconds", "minute": "minutes", "hour": "hours"}[m.group(2).lower()]
+        return (base + timedelta(**{unit: int(m.group(1))})).strftime(_ISO_FMT)
+    m = _CLOCK_RESET_RE.search(text or "")
+    if m:
+        hour, minute, meridiem = int(m.group(1)), int(m.group(2) or 0), (m.group(3) or "").lower()
+        if meridiem == "pm" and hour < 12:
+            hour += 12
+        elif meridiem == "am" and hour == 12:
+            hour = 0
+        if hour > 23 or minute > 59:
+            return None
+        when = base.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if when <= base:                      # the named clock time already passed today
+            when += timedelta(days=1)
+        return when.strftime(_ISO_FMT)
+    return None
+
+
+def limit_event(now: str, text: str) -> list[Event]:
+    """The one event a supervisor acts on. `ok` is False: a quota that ran out is not a success."""
+    when = reset_at(text, now)
+    meta = {"resets_at": when} if when else {}
+    return [Event(seq=0, at=now, kind="usage_limit", ok=False, text=cap(text), meta=meta)]
 
 
 def parse_frontmatter(text: str) -> dict[str, str]:

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from meld.adapters.base import LaunchSpec, open_log, parse_doc, popen_detached, raw_event, scan_skills
+from meld.adapters.base import LaunchSpec, is_limit, limit_event, open_log, parse_doc, popen_detached, raw_event, scan_skills
 from meld.roster import WorkerType
 from meld.transcript import Event, cap
 
@@ -107,7 +107,7 @@ class CodexAdapter:
         """One `--json` line as events. `turn.started` and an in-progress message carry nothing."""
         doc, stripped = parse_doc(line)
         if doc is None:
-            return raw_event(now, stripped)
+            return limit_event(now, stripped) if is_limit(stripped) else raw_event(now, stripped)
         kind = doc.get("type")
         if kind == "thread.started":
             thread = str(doc.get("thread_id", ""))
@@ -120,11 +120,14 @@ class CodexAdapter:
                           text=cap(", ".join(f"{k}={v}" for k, v in sorted(usage.items()))), meta={"usage": usage})]
         if kind == "turn.failed":
             error = doc.get("error") if isinstance(doc.get("error"), dict) else {}
-            return [Event(seq=0, at=now, kind="cli_error", ok=False, text=cap(error.get("message", "turn failed")))]
+            message = str(error.get("message", "turn failed"))
+            if is_limit(message):
+                return limit_event(now, message)
+            return [Event(seq=0, at=now, kind="cli_error", ok=False, text=cap(message))]
         if kind in ("item.started", "item.completed", "item.updated"):
             item = doc.get("item") if isinstance(doc.get("item"), dict) else {}
             return _item(kind, item, now, stripped)
-        return raw_event(now, stripped)
+        return limit_event(now, stripped) if is_limit(stripped) else raw_event(now, stripped)
 
 
 def _item(kind: str, item: dict, now: str, stripped: str) -> list[Event]:

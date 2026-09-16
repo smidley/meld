@@ -29,6 +29,18 @@ def test_parse_header_variants():
     assert parse_header("  [claude] DRIFT  ", CFG) == Header(Party("group", "claude"), "DRIFT", None, None)
 
 
+def test_the_supervisor_may_post_limited_for_either_role():
+    # Spec section 7 lists LIMITED beside RESUMED for both parties, but the verb sets had not caught up. Without
+    # the verb, `parse_header` returns None for the supervisor's own freeze notice, so the board would read the
+    # one comment explaining a silent role as an off-protocol comment from a bot.
+    assert parse_header("[claude] LIMITED", CFG) == Header(Party("group", "claude"), "LIMITED", None, None)
+    assert parse_header("[codex:pm] LIMITED", CFG) == Header(Party("pm", "codex"), "LIMITED", None, None)
+    body = compose(Header(Party("group", "claude"), "LIMITED", None, None),
+                   "claude's orchestrator hit its usage limit and is frozen.\nresets: 2026-09-12T18:00:00Z")
+    c = parse_comment({"id": 1, "user": {"login": "meld-claude-bot"}, "body": body}, CFG)
+    assert c.ok and c.header.verb == "LIMITED" and "resets:" in c.text
+
+
 def test_a_human_may_post_needs_human():
     # I4: a human's own `meld tag --held` stamps the hold with its own ask, and HANDOFF decision 11's "post a new
     # NEEDS-HUMAN #N by hand" needs the verb to exist for the human party at all -- `parse_header` returns None for

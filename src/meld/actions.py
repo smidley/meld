@@ -19,10 +19,47 @@ class Refused(Exception):
         super().__init__(str(refusal))
         self.refusal = refusal
         self.post_error = post_error
-        # True: a PROTOCOL-VIOLATION comment was posted. False: posting it was attempted
-        # and failed. None: no post was attempted (a human refusal, or a lost claim race,
-        # which is the designed outcome of first-label-wins rather than an illegal call).
+        # True: a PROTOCOL-VIOLATION comment was posted. False: posting it was attempted and failed. None: no
+        # post was attempted -- a human refusal, a lost claim race (the designed outcome of first-label-wins
+        # rather than an illegal call), or the board already carried this same violation from this party about
+        # this target (residual 14: a re-derived call that repeats a refusal already on the record).
         self.violation_posted = violation_posted
+
+
+def _refusal_text(verb: Verb, rule: str) -> str:
+    """The exact body `refuse` posts for a refusal of `verb` naming `rule`. Built in one place and used both
+    to compose the post and, in `_already_said`, to compare against what is already on the board -- so the
+    text that gets checked and the text that gets posted can never drift apart."""
+    return f"Refused `{verb.value}`: {rule}"
+
+
+def _already_said(board: Board, party: Party, target: str, verb: Verb, rule: str) -> bool:
+    """Is the newest PROTOCOL-VIOLATION from this party about this target already this exact refusal?
+
+    The board is the throttle, not a local file: two supervisors and a restart all read the same history,
+    so GitHub's own record is the only place the count can be right (the `meld:nudged` argument, spec 14).
+    Only the NEWEST matching violation counts -- a different refusal posted since means the topic moved.
+
+    Comments are gated on `.ok` before their header is trusted, the same as every other reader of
+    `ParsedComment.header` in this codebase (`agreement_for` in grammar.py; several checks in board.py):
+    `parse_comment` parses `header` from the text alone, independent of who posted it, so an unauthorized
+    comment that merely types the header line is not this party's own record and must not suppress a
+    genuinely new refusal.
+
+    The match compares the whole composed body, not a substring of the rule: `_claim` builds rules like
+    "already claimed by claude" that are a literal prefix of "already claimed by claude, grunt", and
+    `_collect`/`reap_rule` both return the exact text "worker is still running" for entirely different
+    verbs -- a substring or rule-only match would let one throttle the other.
+    """
+    expected = _refusal_text(verb, rule)
+    for comment in sorted(board.comments, key=lambda c: (c.created_at, c.id), reverse=True):
+        if not comment.ok or comment.header is None:
+            continue
+        h = comment.header
+        if h.verb != "PROTOCOL-VIOLATION" or h.party != party or h.ref != target:
+            continue
+        return comment.text.strip() == expected
+    return False
 
 
 def refuse(ctx, board: Board | None, refusal: Refusal) -> NoReturn:
@@ -31,8 +68,10 @@ def refuse(ctx, board: Board | None, refusal: Refusal) -> NoReturn:
     violation_posted: bool | None = None
     if board is not None and not actor.is_human:
         header = Header(actor.party, "PROTOCOL-VIOLATION", refusal.target, None)
+        if _already_said(board, actor.party, refusal.target, refusal.verb, refusal.rule):
+            raise Refused(refusal, post_error=None, violation_posted=None)
         try:
-            ctx.gh.create_comment(board.coordination_issue, compose(header, f"Refused `{refusal.verb.value}`: {refusal.rule}"))
+            ctx.gh.create_comment(board.coordination_issue, compose(header, _refusal_text(refusal.verb, refusal.rule)))
             violation_posted = True
         except GitHubError as e:
             post_error = str(e)

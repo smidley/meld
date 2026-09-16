@@ -236,19 +236,73 @@ def run_group(ctx, *, adapter: Adapter | None = None, once: bool = False, cycles
             state["sleeping"] = False
 
     previous = {sig: signal.signal(sig, on_signal) for sig in (signal.SIGTERM, signal.SIGINT)}
-    procs: dict[str, RoleProcess] = {}
+    procs: dict[str, RoleProcess | None] = {}   # None once a role's launch attempt failed: nothing to poll
+    errors: dict[str, int] = {}                 # how many launches this role could not make at all
+    failures: dict[str, str] = {}               # and what the last one said
+    pending: dict[str, dict] = {}               # the launch a role is still owed, its attempt having failed
+
+    def _try_launch(role: str, *, launch_no: int, reason: str, restarts: int = 0,
+                    last_exit: int | None = None) -> RoleProcess | None:
+        """Launch a role, or record the failure, back off, and answer None.
+
+        A supervisor that cannot start a role has a problem only a person can fix -- no disk, no binary, no
+        permission -- and exiting hides it instead of reporting it: residual 4 is an `OSError` creating a log
+        file, which is how both groups died mid-milestone on 2026-09-12 with `[Errno 28] No space left on
+        device` as their last word. `once` is the exception, because it is a one-shot and not a supervisor: a
+        relaunch is the very thing `--once` excludes, so a role that cannot start there is the answer.
+        """
+        try:
+            fresh = launch_role(ctx, group, adp, role, base_env=base_env, clock=clock,
+                                launch_no=launch_no, reason=reason)
+        except DispatchError as e:
+            if once:
+                raise
+            errors[role] = errors.get(role, 0) + 1
+            failures[role] = str(e)
+            # The attempt is still owed, unchanged: nothing ran, so this role's launch number, the reason it
+            # was launching for and the exit that prompted it are all still true of it on the next cycle.
+            pending[role] = {"launch_no": launch_no, "reason": reason, "restarts": restarts, "last_exit": last_exit}
+            _pause(min(5.0 * (2 ** (errors[role] - 1)), _MAX_BACKOFF))   # the crash schedule, for the same reason
+            return None
+        pending.pop(role, None)
+        fresh.restarts, fresh.last_exit = restarts, last_exit
+        return fresh
+
+    def _report(role: str) -> dict:
+        """What this role did, for the caller. A role can have no live process -- frozen since before this
+        supervisor started, or a launch that could not be made -- and then its line says what it managed
+        before that, with `launch_errors` and `last_launch_error` carrying the diagnosis."""
+        rp, owed = procs.get(role), pending.get(role, {})
+        if rp is None:
+            # It has made one fewer launch than the one it is still owed: none at all, for a role that has
+            # never started, and `reason` is null because it has no launch to have a reason for.
+            line = {"launches": owed.get("launch_no", 1) - 1, "restarts": owed.get("restarts", 0),
+                    "last_exit": owed.get("last_exit"), "reason": None}
+        else:
+            code = rp.proc.poll()
+            line = {"launches": rp.launches, "restarts": rp.restarts,
+                    "last_exit": code if code is not None else rp.last_exit, "reason": rp.reason}
+        return {**line, "launch_errors": errors.get(role, 0), "last_launch_error": failures.get(role)}
+
     try:
-        for role in ROLES:
-            procs[role] = launch_role(ctx, group, adp, role, base_env=base_env, clock=clock)
         cycle = 0
         while not state["stop"]:
             cycle += 1
-            for role, rp in procs.items():
+            for role in ROLES:  # ROLES, not the live processes: a role with no process is a role to launch
                 now = wall()  # one instant for this role's whole turn, so the freeze it writes matches the one it read
                 # This check must stay first -- before the poll, before any decision to launch. A role frozen
-                # on a usage limit is left alone, and nothing this loop later learns to do may relaunch it.
+                # on a usage limit is left alone, and nothing this loop later learns to do may relaunch it --
+                # including the first cycle's launches, which is why they happen here and not before the loop.
                 had_freeze = read_freeze(freeze_path(ctx.store.home, group.name, role)) is not None
                 if _frozen(ctx, group, role, now=now):
+                    continue
+                rp = procs.get(role)
+                if rp is None:
+                    # Nothing to poll: this role has never started, or its last attempt failed. The launch it
+                    # is owed carries the reason it was owed for -- `limit` when `_frozen` has just cleared a
+                    # freeze, so the role posts RESUMED, and `start` on this supervisor's first cycle.
+                    procs[role] = _try_launch(role, **(pending.get(role)
+                                                       or {"launch_no": 1, "reason": "limit" if had_freeze else "start"}))
                     continue
                 if had_freeze:
                     # `_frozen` has just cleared a freeze whose window passed. Relaunch deliberately, as
@@ -256,10 +310,8 @@ def run_group(ctx, *, adapter: Adapter | None = None, once: bool = False, cycles
                     # transcript again: its last event is still the usage_limit that froze it.
                     if rp.proc.poll() is None:
                         _terminate(rp.proc, sleep=sleep)
-                    fresh = launch_role(ctx, group, adp, role, base_env=base_env, clock=clock,
-                                        launch_no=rp.launches + 1, reason="limit")
-                    fresh.restarts, fresh.last_exit = rp.restarts, rp.proc.poll()
-                    procs[role] = fresh
+                    procs[role] = _try_launch(role, launch_no=rp.launches + 1, reason="limit",
+                                              restarts=rp.restarts, last_exit=rp.proc.poll())
                     continue
                 code = rp.proc.poll()
                 if code is not None:
@@ -277,16 +329,14 @@ def run_group(ctx, *, adapter: Adapter | None = None, once: bool = False, cycles
                     else:
                         restarts, reason = rp.restarts + 1, ("exit" if code == 0 else "crash")
                         _pause(min(5.0 * (2 ** rp.restarts), _MAX_BACKOFF))
-                    fresh = launch_role(ctx, group, adp, role, base_env=base_env, clock=clock, launch_no=rp.launches + 1, reason=reason)
-                    fresh.restarts, fresh.last_exit = restarts, code
-                    procs[role] = fresh
+                    procs[role] = _try_launch(role, launch_no=rp.launches + 1, reason=reason,
+                                              restarts=restarts, last_exit=code)
                 elif clock() - rp.started >= ctx.cfg.restart_hours * 3600:
                     _terminate(rp.proc, sleep=sleep)
-                    fresh = launch_role(ctx, group, adp, role, base_env=base_env, clock=clock, launch_no=rp.launches + 1, reason="recycle")
-                    fresh.last_exit = rp.last_exit
-                    procs[role] = fresh
-            if once and all(rp.proc.poll() is not None for rp in procs.values()):
-                break
+                    procs[role] = _try_launch(role, launch_no=rp.launches + 1, reason="recycle",
+                                              last_exit=rp.last_exit)
+            if once and not any(rp is not None and rp.proc.poll() is None for rp in procs.values()):
+                break                                # --once is over once nothing of the group is running
             if cycles is not None and cycle >= cycles:
                 break
             _pause(interval)
@@ -302,8 +352,6 @@ def run_group(ctx, *, adapter: Adapter | None = None, once: bool = False, cycles
             signal.signal(sig, handler)
         if state["stop"]:
             for rp in procs.values():
-                _terminate(rp.proc, sleep=sleep)
-    return {"group": group.name, "roles": {role: {"launches": rp.launches, "restarts": rp.restarts,
-                                                   "last_exit": rp.proc.poll() if rp.proc.poll() is not None else rp.last_exit,
-                                                   "reason": rp.reason}
-                                            for role, rp in procs.items()}}
+                if rp is not None:                   # a launch that failed left no process to stop
+                    _terminate(rp.proc, sleep=sleep)
+    return {"group": group.name, "roles": {role: _report(role) for role in ROLES}}

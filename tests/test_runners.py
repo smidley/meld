@@ -358,7 +358,7 @@ def test_a_freeze_expires_on_the_injected_clock_and_the_role_comes_back_as_limit
 
     out = run_group(ctx, adapter=FakeAdapter(), cycles=1, interval=0, sleep=lambda s: None, base_env=env,
                     wall=lambda: NOW)
-    assert out["roles"]["pm"]["launches"] == 2
+    assert out["roles"]["pm"]["launches"] == 1                           # the freeze was cleared before its first launch
     assert read_freeze(path) is None                                    # a passed freeze is cleared, not re-read
     assert out["roles"]["pm"]["reason"] == "limit"                       # so the role posts RESUMED itself
     assert out["roles"]["orchestrator"]["reason"] == "start"             # one role's freeze is not the other's
@@ -380,7 +380,7 @@ def test_a_live_freeze_survives_a_supervisor_restart_without_posting_again(tmp_p
 
     assert not [c for c in fake.calls if c.method == "POST" and "LIMITED" in str(c.body)]
     for role, path in paths.items():
-        assert out["roles"][role]["launches"] == 1                       # a live freeze is not relaunched
+        assert out["roles"][role]["launches"] == 0                       # a live freeze is never launched into
         assert read_freeze(path) == live                                 # nor rewritten, nor announced again
 
 
@@ -394,14 +394,14 @@ def test_an_untimed_freeze_reprobes_after_limit_retry_minutes(tmp_path):
 
     out = run_group(ctx, adapter=FakeAdapter(), cycles=1, interval=0, sleep=lambda s: None, base_env=env,
                     wall=lambda: NOW)
-    assert out["roles"]["orchestrator"]["launches"] == 2
+    assert out["roles"]["orchestrator"]["launches"] == 1                  # cleared, then launched, in one cycle
     assert out["roles"]["orchestrator"]["reason"] == "limit"
     assert read_freeze(path) is None
 
 
 def test_an_untimed_freeze_stands_until_the_cadence_has_passed(tmp_path):
     """The re-probe is due `limit_retry_minutes` after the persisted `at`, not after now: 11 minutes in, the
-    freeze still stands, and the role is neither polled nor relaunched."""
+    freeze still stands, and the role is neither polled nor launched."""
     fake, ctx, env = make(tmp_path)
     fake.route("POST", COMMENTS, {"id": 999, "html_url": "u"})           # a wrong post would succeed, and be seen
     path = freeze_path(ctx.store.home, "claude", "orchestrator")
@@ -411,8 +411,8 @@ def test_an_untimed_freeze_stands_until_the_cadence_has_passed(tmp_path):
 
     out = run_group(ctx, adapter=FakeAdapter(), cycles=1, interval=0, sleep=lambda s: None, base_env=env,
                     wall=lambda: NOW)
-    assert out["roles"]["orchestrator"]["launches"] == 1
-    assert out["roles"]["orchestrator"]["reason"] == "start"
+    assert out["roles"]["orchestrator"]["launches"] == 0                  # not even the supervisor's first launch
+    assert out["roles"]["orchestrator"]["reason"] is None                 # it has no process to have a reason
     assert read_freeze(path) == fresh
     assert not _limited_posts(fake)                                      # a standing freeze says nothing new
 
@@ -458,4 +458,176 @@ def test_a_notice_that_could_not_be_posted_is_retried_while_the_freeze_stands(tm
     assert {b.splitlines()[0] for b in landed} == {"[claude] LIMITED", "[claude:pm] LIMITED"}
     for role in ("orchestrator", "pm"):
         assert read_freeze(freeze_path(ctx.store.home, "claude", role))["posted"] is True
-        assert out2["roles"][role]["launches"] == 1                       # still frozen, still not relaunched
+        assert out2["roles"][role]["launches"] == 0                       # still frozen, so still never launched
+
+
+# --- a launch that cannot start backs off instead of ending the run (plan 9 task 3) --------------------
+
+THAWED = "2026-09-12T09:00:00Z"        # well past NOW plus the 30-minute re-probe cadence
+
+
+def test_a_launch_that_cannot_start_backs_off_and_keeps_the_run_alive(tmp_path):
+    _, ctx, env = make(tmp_path)
+
+    class Refusing:
+        """An adapter whose launch fails the way a full disk fails, then recovers."""
+        name = "refusing"
+
+        def __init__(self, fail_times: int):
+            self.left = fail_times
+            self.ok = FakeAdapter()
+
+        def launch(self, spec):
+            if self.left > 0:
+                self.left -= 1
+                raise OSError(28, "No space left on device")
+            return self.ok.launch(spec)
+
+        def __getattr__(self, item):                 # everything else behaves like the fake
+            return getattr(self.ok, item)
+
+    slept: list[float] = []
+    out = run_group(ctx, adapter=Refusing(fail_times=2), cycles=3, interval=0,
+                    sleep=slept.append, clock=Clock(), wall=lambda: NOW, base_env=env)
+
+    assert slept, "a failed launch must back off rather than spin"
+    assert out["group"] == "claude"                  # the run returned normally instead of raising
+    assert out["roles"]["orchestrator"]["launch_errors"] >= 1
+
+
+def test_one_roles_launch_failure_does_not_take_the_other_role_down(tmp_path):
+    _, ctx, env = make(tmp_path)
+
+    class HalfBroken:
+        name = "half"
+
+        def __init__(self):
+            self.ok = FakeAdapter()
+
+        def launch(self, spec):
+            if spec.role == "orchestrator":
+                raise OSError(28, "No space left on device")
+            return self.ok.launch(spec)
+
+        def __getattr__(self, item):
+            return getattr(self.ok, item)
+
+    out = run_group(ctx, adapter=HalfBroken(), cycles=2, interval=0, sleep=lambda s: None,
+                    clock=Clock(), wall=lambda: NOW, base_env=env)
+    assert out["roles"]["pm"]["launches"] >= 1        # the healthy role ran
+    assert out["roles"]["orchestrator"]["launch_errors"] >= 1
+
+
+def test_a_supervisor_started_inside_a_live_freeze_never_launches_the_frozen_role(tmp_path):
+    """A restart inside a live freeze must not burn a launch on a role whose quota is known to be gone: the
+    initial launches go through the same guarded per-role path as every relaunch, so there is no unguarded
+    gap before the loop starts."""
+    fake, ctx, env = make(tmp_path)
+    path = freeze_path(ctx.store.home, "claude", "orchestrator")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"resets_at": "2099-01-01T00:00:00Z", "posted": True, "at": "2026-09-12T02:11:19Z"}))
+    adapter = FakeAdapter()
+
+    out = run_group(ctx, adapter=adapter, cycles=2, interval=0, sleep=lambda s: None,
+                    clock=Clock(), wall=lambda: "2026-09-12T02:11:19Z", base_env=env)
+
+    assert [s.role for s in adapter.launches] == ["pm"]          # the healthy role only, ever
+    assert out["roles"]["orchestrator"]["launches"] == 0
+    assert out["roles"]["pm"]["launches"] >= 1
+
+
+class _PollGuard:
+    """A process that refuses to be polled while its role's freeze stands.
+
+    Deleting `run_group`'s freeze check while keeping its thaw branch leaves every other freeze test green --
+    Task 2's review proved that, because a relaunch reads the same either way. So the proof that the check is
+    still the FIRST thing done for a role is a process that screams when the loop reaches past it.
+    """
+
+    def __init__(self, proc, freeze: Path):
+        self._proc = proc
+        self._freeze = freeze
+
+    def poll(self):
+        if self._freeze.exists():
+            raise AssertionError("polled a frozen role")
+        return self._proc.poll()
+
+    def __getattr__(self, item):
+        return getattr(self.__dict__["_proc"], item)    # __dict__, so a missing _proc cannot recurse
+
+
+@dataclass
+class GuardedAdapter(FakeAdapter):
+    """A FakeAdapter whose processes are _PollGuards over this group's freeze files."""
+    home: Path | None = None
+    procs: list = field(default_factory=list)
+
+    def launch(self, spec):
+        proc = _PollGuard(super().launch(spec), freeze_path(self.home, "claude", spec.role))
+        self.procs.append(proc)
+        return proc
+
+
+def test_a_frozen_role_is_never_polled_while_its_freeze_stands(tmp_path):
+    """One run through the whole freeze: both roles launch, hit a limit, stand frozen for a cycle without
+    being touched at all, and come back as `limit` once the window passes."""
+    fake, ctx, env = make(tmp_path)
+    fake.route("POST", COMMENTS, {"id": 999, "html_url": "u"})
+    adapter = GuardedAdapter(script=LIMIT_SCRIPT, home=ctx.store.home)
+    ticks = {"n": 0}
+
+    def sleep(_seconds):
+        ticks["n"] += 1
+        for proc in adapter.procs:
+            proc.wait(timeout=10)        # the exits are waited for, not slept for, so the cycles are exact
+
+    # cycle 1 launches, cycle 2 reads the limit and freezes, cycle 3 must leave the freeze alone, cycle 4 thaws.
+    out = run_group(ctx, adapter=adapter, cycles=4, interval=0, sleep=sleep, clock=Clock(), base_env=env,
+                    wall=lambda: NOW if ticks["n"] < 3 else THAWED)
+
+    assert len(_limited_posts(fake)) == 2                                          # it really did freeze
+    for role in ("orchestrator", "pm"):
+        assert read_freeze(freeze_path(ctx.store.home, "claude", role)) is None    # stood, then passed
+        assert out["roles"][role]["launches"] == 2                                 # one launch, one thaw
+        assert out["roles"][role]["reason"] == "limit"
+
+
+def test_a_failed_relaunch_still_owes_the_launch_it_was_making(tmp_path):
+    """A launch that could not be made changes nothing about what the role is owed: the same launch number,
+    the same reason, the same exit behind it. Otherwise a role that had crashed three times would come back
+    as a first launch and say nothing about it."""
+    _, ctx, env = make(tmp_path)
+
+    class BreaksOnRelaunch:
+        """Every launch works except the orchestrator's second attempt, which fails the way a full disk does."""
+        name = "breaks"
+
+        def __init__(self):
+            self.ok = FakeAdapter(script="import sys; sys.exit(1)")
+            self.tried: list = []
+            self.procs: list = []
+
+        def launch(self, spec):
+            self.tried.append(spec)
+            if spec.role == "orchestrator" and len([s for s in self.tried if s.role == spec.role]) == 2:
+                raise OSError(28, "No space left on device")
+            proc = self.ok.launch(spec)
+            self.procs.append(proc)
+            return proc
+
+        def __getattr__(self, item):
+            return getattr(self.ok, item)
+
+    adapter = BreaksOnRelaunch()
+    # cycle 1 launches both, cycle 2 reads the crash and cannot relaunch the orchestrator, cycle 3 can.
+    out = run_group(ctx, adapter=adapter, cycles=3, interval=0, sleep=_wait_for(adapter), clock=Clock(),
+                    wall=lambda: NOW, base_env=env)
+
+    made = [s for s in adapter.tried if s.role == "orchestrator"]
+    assert len(made) == 3                                                 # a launch, a refusal, a launch
+    assert "- Launch number: 2\n- Reason: `crash` (" in made[2].prompt    # the very launch it was owed
+    assert out["roles"]["orchestrator"]["launches"] == 2                  # of which two were made
+    assert out["roles"]["orchestrator"]["restarts"] == 1
+    assert out["roles"]["orchestrator"]["launch_errors"] == 1
+    assert out["roles"]["orchestrator"]["last_launch_error"].startswith("cannot start breaks: ")

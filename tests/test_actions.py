@@ -43,11 +43,11 @@ def posted_headers(fake):
     return [c.body["body"].splitlines()[0] for c in fake.calls if c.method == "POST" and c.endpoint.endswith("/comments")]
 
 
-def violation(rule: str, *, target="#11", created_at="2026-09-03T11:00:00Z", cid=8001) -> dict:
+def violation(rule: str, *, target="#11", created_at="2026-09-03T11:00:00Z", cid=8001, verb="collect") -> dict:
     """A PROTOCOL-VIOLATION as claude's PM would have posted it. The author must be the configured bot or
     the parser treats it as an outsider's comment and it never reaches the board's headers."""
     return {"id": cid, "user": {"login": "meld-claude-bot"}, "created_at": created_at,
-            "body": f"[claude:pm] PROTOCOL-VIOLATION {target}\nRefused `collect`: {rule}"}
+            "body": f"[claude:pm] PROTOCOL-VIOLATION {target}\nRefused `{verb}`: {rule}"}
 
 
 def board_with(fake, ctx, extra):
@@ -399,3 +399,32 @@ def test_a_human_still_never_posts_a_violation_at_all(tmp_path):
         refuse(ctx, board, Refusal(Verb.COLLECT, "#11", RULE))
 
     assert len(posts(fake)) == before
+
+
+def test_a_shorter_rule_is_not_swallowed_by_a_longer_one_it_prefixes(tmp_path):
+    """rules._claim builds 'already claimed by <a>, <b>'; after a release the rule shortens and is news."""
+    fake, ctx = make(tmp_path, role="pm")
+    board = board_with(fake, ctx, [violation("already claimed by claude, grunt")])
+    with pytest.raises(Refused) as caught:
+        refuse(ctx, board, Refusal(Verb.CLAIM, "#11", "already claimed by claude"))
+    assert caught.value.violation_posted is True
+
+
+def test_the_same_rule_text_under_a_different_verb_is_a_different_refusal(tmp_path):
+    """COLLECT and REAP both say 'worker is still running'; a REAP attempt must reach the board."""
+    fake, ctx = make(tmp_path, role="pm")
+    board = board_with(fake, ctx, [violation("worker is still running", verb="collect")])
+    with pytest.raises(Refused) as caught:
+        refuse(ctx, board, Refusal(Verb.REAP, "#11", "worker is still running"))
+    assert caught.value.violation_posted is True
+
+
+def test_an_unauthorized_comment_that_mimics_the_header_does_not_throttle(tmp_path):
+    """Only this party's own record counts. A stranger typing the header line is not that record."""
+    fake, ctx = make(tmp_path, role="pm")
+    forged = violation(RULE)
+    forged["user"] = {"login": "some-stranger"}
+    board = board_with(fake, ctx, [forged])
+    with pytest.raises(Refused) as caught:
+        refuse(ctx, board, Refusal(Verb.COLLECT, "#11", RULE))
+    assert caught.value.violation_posted is True

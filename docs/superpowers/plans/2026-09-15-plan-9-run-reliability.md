@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13, standard library plus `click` only. No new dependency. `FakeGh` and injected clocks in tests; no network, no real CLI, no sleeping.
 
-**Spec:** `docs/superpowers/specs/2026-09-03-meld-design.md` — §7 (`LIMITED` in the liveness verb row), §17 (the three new rows, one per residual), §22 (the `usage_limit` kind and who recognises it), §5 (`[runners] limit_retry_minutes`, `[logs] warn_free_mb`), §19 (what the new suites prove). Those amendments are commit `7f99ed6`, the first commit on this branch; this plan implements them and adds nothing they do not say.
+**Spec:** `docs/superpowers/specs/2026-09-03-meld-design.md` — §7 (`LIMITED` in the liveness verb row), §17 (the three new rows, one per residual), §22 (the `usage_limit` kind and who recognises it), §5 (`[runners] limit_retry_minutes`, `[logs] warn_free_mb`), §19 (what the new suites prove). Those amendments are commit `73c831c`, the first commit on this branch; this plan implements them and adds nothing they do not say.
 
 ## Global Constraints
 
@@ -22,7 +22,7 @@
 - Never set `MELD_SMOKE=1`.
 - Conventional commit subjects from `feat:`/`fix:`/`docs:`/`test:`/`refactor:`, **no attribution trailers of any kind**, one logical change per commit; repo-local identity is already configured.
 - Work in `/Users/scottbrant/code/meld-main` on branch `plan-9-run-reliability`. `~/Documents/meld` is iCloud-synced and stalls git; do not work there. Commit with `git -C /Users/scottbrant/code/meld-main ...`.
-- Baseline at this plan's base (`7f99ed6`, spec-only): **716 passed**, no warnings.
+- Baseline at this plan's base (`73c831c`, spec-only): **716 passed**, no warnings.
 
 ## Decisions (rulings made while writing the plan; recorded so executors do not re-litigate)
 
@@ -1065,7 +1065,7 @@ still happens, it is only no longer announced twice."
 
 ## Self-review
 
-**Spec coverage.** Every amendment in `7f99ed6` has a task. §7's `LIMITED` verb: Task 2. §17's three rows: Tasks 2, 3 and 4 respectively. §22's `usage_limit` kind and per-adapter recognition: Task 1. §5's `[runners] limit_retry_minutes` and `[logs] warn_free_mb`: Task 1 declares them, Tasks 2 and 5 consume them. §19's new bullet names five behaviours and each has a test: the freeze (Task 2), the persisted freeze surviving a restart (Task 2), the launch backoff leaving the other role alive (Task 3), the identical refusal (Task 4), and the free-space warning (Task 5).
+**Spec coverage.** Every amendment in `73c831c` has a task. §7's `LIMITED` verb: Task 2. §17's three rows: Tasks 2, 3 and 4 respectively. §22's `usage_limit` kind and per-adapter recognition: Task 1. §5's `[runners] limit_retry_minutes` and `[logs] warn_free_mb`: Task 1 declares them, Tasks 2 and 5 consume them. §19's new bullet names five behaviours and each has a test: the freeze (Task 2), the persisted freeze surviving a restart (Task 2), the launch backoff leaving the other role alive (Task 3), the identical refusal (Task 4), and the free-space warning (Task 5).
 
 **Nothing in the spec is left unimplemented, and nothing here exceeds it.** In particular this plan does not add a `meld doctor` probe of either CLI's login state, does not touch the 8b–8d viewer work, and does not attempt residuals 1, 2 or 5–13.
 

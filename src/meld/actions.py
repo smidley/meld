@@ -19,10 +19,26 @@ class Refused(Exception):
         super().__init__(str(refusal))
         self.refusal = refusal
         self.post_error = post_error
-        # True: a PROTOCOL-VIOLATION comment was posted. False: posting it was attempted
-        # and failed. None: no post was attempted (a human refusal, or a lost claim race,
-        # which is the designed outcome of first-label-wins rather than an illegal call).
+        # True: a PROTOCOL-VIOLATION comment was posted. False: posting it was attempted and failed. None: no
+        # post was attempted -- a human refusal, a lost claim race (the designed outcome of first-label-wins
+        # rather than an illegal call), or the board already carried this same violation from this party about
+        # this target (residual 14: a re-derived call that repeats a refusal already on the record).
         self.violation_posted = violation_posted
+
+
+def _already_said(board: Board, party: Party, target: str, rule: str) -> bool:
+    """Is the newest PROTOCOL-VIOLATION from this party about this target already this rule?
+
+    The board is the throttle, not a local file: two supervisors and a restart all read the same history,
+    so GitHub's own record is the only place the count can be right (the `meld:nudged` argument, spec 14).
+    Only the NEWEST matching violation counts -- a different rule posted since means the topic moved.
+    """
+    for comment in sorted(board.comments, key=lambda c: (c.created_at, c.id), reverse=True):
+        h = comment.header
+        if h is None or h.verb != "PROTOCOL-VIOLATION" or h.party != party or h.ref != target:
+            continue
+        return rule in comment.text
+    return False
 
 
 def refuse(ctx, board: Board | None, refusal: Refusal) -> NoReturn:
@@ -31,6 +47,8 @@ def refuse(ctx, board: Board | None, refusal: Refusal) -> NoReturn:
     violation_posted: bool | None = None
     if board is not None and not actor.is_human:
         header = Header(actor.party, "PROTOCOL-VIOLATION", refusal.target, None)
+        if _already_said(board, actor.party, refusal.target, refusal.rule):
+            raise Refused(refusal, post_error=None, violation_posted=None)
         try:
             ctx.gh.create_comment(board.coordination_issue, compose(header, f"Refused `{refusal.verb.value}`: {refusal.rule}"))
             violation_posted = True

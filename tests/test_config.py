@@ -1,3 +1,4 @@
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -277,3 +278,19 @@ def test_limit_retry_and_free_space_knobs_have_defaults_and_floors():
         Config.from_dict({**base, "runners": {"limit_retry_minutes": 0}})
     with pytest.raises(ConfigError, match="warn_free_mb"):
         Config.from_dict({**base, "logs": {"warn_free_mb": 0}})
+
+
+def test_viewer_table_has_defaults_and_is_overridable():
+    base = tomllib.loads(MINIMAL)
+    default = Config.from_dict(base)
+    assert default.viewer_port == 0 and default.viewer_open_browser is False
+    tuned = Config.from_dict({**base, "viewer": {"port": 8642, "open_browser": True}})
+    assert tuned.viewer_port == 8642 and tuned.viewer_open_browser is True
+
+
+@pytest.mark.parametrize("bad", [65536, -1, "8080", True, 1.5])
+def test_viewer_port_must_be_a_tcp_port_number(bad):
+    """0 is legitimate (the OS chooses); anything that is not an int in 0..65535 is a config error naming the key."""
+    base = tomllib.loads(MINIMAL)
+    with pytest.raises(ConfigError, match="viewer.port"):
+        Config.from_dict({**base, "viewer": {"port": bad}})

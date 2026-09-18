@@ -41,7 +41,12 @@ def stream_path(logs_root: Path, stream: str) -> Path | None:
     if len(parts) != 2 or not parts[1].endswith(".log") or any(p in ("", ".", "..") for p in parts):
         return None
     path = logs_root / parts[0] / parts[1]
-    return path if path.is_file() else None
+    try:
+        # A name a filesystem call chokes on (ENAMETOOLONG) or a symlink that resolves outside `logs_root`
+        # (`logs/claude/evil.log -> ../../secret`) must answer None like any other bad id, not raise or escape.
+        return path if path.is_file() and path.resolve().is_relative_to(logs_root.resolve()) else None
+    except OSError:
+        return None
 
 
 def _role_record(home: Path, group: str, role: str) -> tuple[dict | None, Path | None]:

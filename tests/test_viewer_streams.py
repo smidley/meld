@@ -1,4 +1,5 @@
 import json
+import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -50,6 +51,21 @@ def test_stream_path_names_only_logs_under_the_logs_root(tmp_path):
     for bad in ("claude/../../secret.log", "../secret.log", "claude", "claude/pm-1.log/x", "claude/pm-1.txt",
                 "", "claude//pm-1.log", "./pm-1.log", "claude/missing.log"):
         assert stream_path(logs, bad) is None, bad
+
+
+def test_stream_path_returns_none_for_an_over_long_name_instead_of_raising(tmp_path):
+    _, home = home_with(tmp_path)
+    logs = home / "logs"
+    assert stream_path(logs, "claude/" + "a" * 400 + ".log") is None
+
+
+def test_stream_path_returns_none_for_a_symlink_that_escapes_logs_root(tmp_path):
+    _, home = home_with(tmp_path)
+    logs = home / "logs"
+    outside = tmp_path / "outside.txt"
+    outside.write_text("not a log")
+    os.symlink(outside, logs / "claude" / "evil.log")
+    assert stream_path(logs, "claude/evil.log") is None
 
 
 def test_discover_lists_a_roles_recorded_launch_else_its_newest_log_then_every_worker_run(tmp_path, monkeypatch):

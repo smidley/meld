@@ -200,3 +200,27 @@ def test_api_events_answers_404_for_a_stream_that_is_not_a_log_of_a_configured_g
     (ctx.store.home / "logs" / "ghost" / "pm-1.log").write_text("x\n")   # exists on disk, but `ghost` is no group
     resp = get(v, f"/api/events?stream={stream}")
     assert resp.status == 404 and "error" in body(resp)
+
+
+def test_the_page_and_its_assets_are_served_behind_the_gate_with_the_token_substituted(tmp_path):
+    v, _, _ = viewer_for(tmp_path)
+    page = get(v, "/")
+    assert page.status == 200 and page.content_type == "text/html; charset=utf-8"
+    html = page.body.decode()
+    assert "__TOKEN__" not in html and f"/static/app.css?t={TOKEN}" in html and f"/static/app.js?t={TOKEN}" in html
+    assert html.lstrip().lower().startswith("<!doctype html>") and '<meta charset="utf-8">' in html
+    assert get(v, "/", token=None).status == 403 and get(v, "/static/app.js", token=None).status == 403
+    assert get(v, "/static/app.css").content_type == "text/css; charset=utf-8"
+    assert get(v, "/static/app.js").content_type == "text/javascript; charset=utf-8"
+    assert get(v, "/", method="POST").status == 405
+
+
+def test_the_page_references_nothing_off_the_machine_and_renders_text_as_text(tmp_path):
+    v, _, _ = viewer_for(tmp_path)
+    html, css, js = (get(v, p).body.decode() for p in ("/", "/static/app.css", "/static/app.js"))
+    for text in (html, css, js):
+        assert "http://" not in text and "https://" not in text and "//cdn" not in text and "@import" not in text
+    assert "innerHTML" not in js and "textContent" in js and "EventSource" in js
+    for route in ("/api/state", "/api/streams", "/api/events"):
+        assert route in js
+    assert 'name="referrer" content="no-referrer"' in html

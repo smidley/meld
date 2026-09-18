@@ -14,6 +14,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from importlib import resources
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -91,10 +92,15 @@ def _int(text: str) -> int:
         return 0
 
 
+def _static(name: str) -> str:
+    return resources.files("meld.viewer").joinpath("static", name).read_text(encoding="utf-8")
+
+
 class Viewer:
     """One `meld watch`: its token, its port, and the routes. Reads only; posts nothing; holds no legality logic."""
 
-    ROUTES: dict[str, str] = {"/api/state": "api_state", "/api/streams": "api_streams", "/api/events": "api_events"}
+    ROUTES: dict[str, str] = {"/": "page", "/static/app.css": "asset_css", "/static/app.js": "asset_js",
+                              "/api/state": "api_state", "/api/streams": "api_streams", "/api/events": "api_events"}
 
     def __init__(self, ctx, *, token: str, port: int, now: Callable[[], str] = _iso_now, clock: Callable[[], float] = time.monotonic,
                  sleep: Callable[[float], None] = time.sleep, alive: Callable[[int], bool] = pid_alive,
@@ -135,6 +141,17 @@ class Viewer:
         return getattr(self, name)(req)
 
     # ---- routes -----------------------------------------------------------------------------------------
+
+    def page(self, req: Request) -> Response:
+        # The stylesheet and script are fetched through the same gate as everything else, so the page carries the
+        # token in their URLs; it is already in the URL the person pasted, so this discloses nothing new.
+        return Response(200, _static("app.html").replace("__TOKEN__", self.token).encode(), "text/html; charset=utf-8")
+
+    def asset_css(self, req: Request) -> Response:
+        return Response(200, _static("app.css").encode(), "text/css; charset=utf-8")
+
+    def asset_js(self, req: Request) -> Response:
+        return Response(200, _static("app.js").encode(), "text/javascript; charset=utf-8")
 
     def api_state(self, req: Request) -> Response:
         with self._lock:                                  # single-flight: one build at a time, shared by every tab

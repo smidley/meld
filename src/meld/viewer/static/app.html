@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>meld watch</title>
+<link rel="stylesheet" href="/static/app.css?t=__TOKEN__">
+</head>
+<body>
+<header id="top">
+  <div id="board" class="row">
+    <span id="repo" class="strong">loading…</span>
+    <span id="milestone"></span>
+    <span id="phase" class="badge"></span>
+    <span id="halted" class="badge bad hidden">HALTED</span>
+    <span id="budget"></span>
+  </div>
+  <div id="machine" class="row">
+    <span id="disk"></span>
+    <span id="logs"></span>
+    <span id="stamp" class="dim"></span>
+    <span id="error" class="bad"></span>
+  </div>
+  <div id="supervisors" class="row"></div>
+  <div id="needs-human" class="row"></div>
+</header>
+<main id="streams"></main>
+<template id="column">
+  <section class="column">
+    <h2><span class="who"></span> <span class="live badge"></span> <span class="why dim"></span></h2>
+    <ol class="events"></ol>
+  </section>
+</template>
+<script src="/static/app.js?t=__TOKEN__"></script>
+</body>
+</html>

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,6 +33,56 @@ def pid_alive(pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def proc_start_of(pid: int, run=subprocess.run) -> str:
+    """The instant the kernel started `pid`, in `ps`'s own words, or "" when it cannot be read.
+
+    An opaque string compared for equality and never parsed: `ps -o lstart=` prints the same value for the same
+    process on every call and a different one for a pid that has been reused, which is all a liveness check needs
+    to know. Empty on every failure -- no `ps`, a timeout, a pid that is gone -- so a machine without `ps`
+    degrades to `unknown` rather than to a crash.
+    """
+    if pid <= 0:
+        return ""
+    try:
+        out = run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
+def liveness(record: Mapping[str, object] | None, *, alive: Callable[[int], bool] = pid_alive,
+             start_of: Callable[[int], str] = proc_start_of) -> dict:
+    """Is the process a record describes still the process it described? A tri-state with its reason (spec 22).
+
+    `alive` needs a live pid AND a matching start time. `dead` is a pid that is gone, or a live pid whose start
+    time is not the recorded one: the pid was reused, which is what announced a dead audit worker as running on
+    2026-09-11. `unknown` is everything the check cannot settle -- no record, no pid, no recorded start time to
+    compare against, or a start time `ps` could not read -- because "could not confirm alive" and "confirmed
+    gone" are different facts and the page shows which one it has.
+    """
+    if not record:
+        return {"state": "unknown", "reason": "no record of a process", "pid": None, "started_at": None, "proc_start": ""}
+    try:
+        pid = int(record.get("pid", 0))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        pid = 0
+    started_at = record.get("started_at")
+    recorded = str(record.get("proc_start") or "")
+    base = {"pid": pid or None, "started_at": started_at if isinstance(started_at, str) else None, "proc_start": recorded}
+    if pid <= 0:
+        return {**base, "state": "unknown", "reason": "the record carries no pid"}
+    if not alive(pid):
+        return {**base, "state": "dead", "reason": f"pid {pid} is gone"}
+    if not recorded:
+        return {**base, "state": "unknown", "reason": f"pid {pid} is alive, but the record carries no start time to match it against"}
+    current = start_of(pid)
+    if not current:
+        return {**base, "state": "unknown", "reason": f"pid {pid} is alive, but its start time could not be read"}
+    if current != recorded:
+        return {**base, "state": "dead", "reason": f"pid {pid} was reused: it started {current}; the record says {recorded}"}
+    return {**base, "state": "alive", "reason": f"pid {pid} started {recorded}"}
 
 
 class StateStore:
@@ -110,7 +161,7 @@ class StateStore:
             deadline=str(data.get("deadline", "")), branch=str(data.get("branch", "")),
             lease_comment=(int(data["lease_comment"]) if data.get("lease_comment") is not None else None),
             timed_out=bool(data.get("timed_out", False)), head_sha=str(data.get("head_sha", "")),
-            worker=str(data.get("worker", "")),
+            worker=str(data.get("worker", "")), proc_start=str(data.get("proc_start", "")),
         )
 
     def load_runs(self, alive: Callable[[int], bool] = pid_alive) -> dict[str, dict[int, RunRecord]]:

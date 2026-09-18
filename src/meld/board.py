@@ -308,6 +308,7 @@ class RunRecord:
     timed_out: bool = False
     head_sha: str = ""
     worker: str = ""            # the worker type the run was dispatched with (reviewer, security, auditor, ...)
+    proc_start: str = ""        # `ps -o lstart=` for `pid` at launch, so a reused pid is not mistaken for the run (spec 22)
 
     @property
     def finished(self) -> bool:

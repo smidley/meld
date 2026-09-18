@@ -1,12 +1,13 @@
 import json
 import os
+import subprocess
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from meld.board import Challenge
-from meld.state import CHANGE_KINDS, StateStore, board_digest, diff_digest, meld_home, diff_changes, filter_changes
+from meld.state import CHANGE_KINDS, StateStore, board_digest, diff_digest, meld_home, diff_changes, filter_changes, liveness, proc_start_of
 from tests.factories import CFG2, mk_board, mk_issue, mk_pr, mk_run
 
 
@@ -240,3 +241,64 @@ def test_digest_and_diff_carry_challenges_audits_and_statuses():
     texts = [c.text for c in diff_changes(d1, board_digest(b2))]
     assert any("challenger" in t for t in texts) and any("statuses" in t for t in texts) and any("audit" in t for t in texts)
     assert "audits" in CHANGE_KINDS
+
+
+def test_proc_start_of_returns_ps_own_words_and_empty_on_any_failure():
+    calls = []
+
+    def ps_ok(argv, **kw):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="Tue Sep 16 08:27:05 2026\n", stderr="")
+
+    assert proc_start_of(4242, run=ps_ok) == "Tue Sep 16 08:27:05 2026"
+    assert calls == [["ps", "-o", "lstart=", "-p", "4242"]]
+    assert proc_start_of(4242, run=lambda argv, **kw: subprocess.CompletedProcess(argv, 1, stdout="", stderr="")) == ""
+
+    def missing(argv, **kw):
+        raise FileNotFoundError("ps")
+
+    def slow(argv, **kw):
+        raise subprocess.TimeoutExpired(argv, 5)
+
+    assert proc_start_of(4242, run=missing) == ""
+    assert proc_start_of(4242, run=slow) == ""
+    assert proc_start_of(0, run=ps_ok) == "" and len(calls) == 1   # no pid, no ps
+
+
+LIVE = {"pid": 4242, "started_at": "2026-09-18T12:00:00Z", "proc_start": "Fri Sep 18 05:00:00 2026"}
+
+
+@pytest.mark.parametrize("record, alive, start, state, reason_has", [
+    (None, True, "x", "unknown", "no record"),
+    ({"started_at": "2026-09-18T12:00:00Z"}, True, "x", "unknown", "no pid"),
+    (LIVE, False, "x", "dead", "gone"),
+    ({**LIVE, "proc_start": ""}, True, "x", "unknown", "no start time"),
+    (LIVE, True, "", "unknown", "could not be read"),
+    (LIVE, True, "Sat Sep 19 09:00:00 2026", "dead", "reused"),
+    (LIVE, True, LIVE["proc_start"], "alive", "started"),
+])
+def test_liveness_is_a_tri_state_with_a_reason(record, alive, start, state, reason_has):
+    out = liveness(record, alive=lambda pid: alive, start_of=lambda pid: start)
+    assert out["state"] == state and reason_has in out["reason"]
+    assert out["pid"] == (4242 if record and "pid" in record else None)
+    assert out["started_at"] == (record or {}).get("started_at")
+    assert out["proc_start"] == (record or {}).get("proc_start", "")
+
+
+def test_liveness_never_asks_ps_about_a_pid_that_is_gone():
+    def start_of(pid):
+        raise AssertionError("ps must not run for a dead pid")
+
+    assert liveness(LIVE, alive=lambda pid: False, start_of=start_of)["state"] == "dead"
+
+
+def test_run_record_round_trips_proc_start_and_reads_an_older_file_as_empty(tmp_path):
+    store = StateStore(tmp_path, "claude")
+    rec = replace(mk_run("claude", 12), proc_start="Fri Sep 18 05:00:00 2026")
+    path = store.write_run(rec)
+    assert json.loads(path.read_text())["proc_start"] == "Fri Sep 18 05:00:00 2026"
+    assert store.load_runs(alive=lambda pid: True)["claude"][12].proc_start == "Fri Sep 18 05:00:00 2026"
+    older = json.loads(path.read_text())
+    older.pop("proc_start")
+    path.write_text(json.dumps(older))              # a record written before this field existed
+    assert store.load_runs(alive=lambda pid: True)["claude"][12].proc_start == ""

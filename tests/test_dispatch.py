@@ -8,6 +8,7 @@ import pytest
 from click.testing import CliRunner
 
 import meld.cli as cli
+import meld.dispatch as dispatch_module
 from meld.actions import Refused
 from meld.adapters.claude import ClaudeAdapter
 from meld.adapters.codex import ADAPTER as CODEX
@@ -719,3 +720,12 @@ def test_render_tail_of_a_none_adapter_is_empty(tmp_path):
     log = tmp_path / "audit-14.log"
     log.write_text('{"type": "item.completed", "item": {"type": "agent_message", "text": "hi"}}\n')
     assert render_tail(log, None, lines=50, now=TAIL_NOW) == ""
+
+
+def test_dispatch_records_the_process_start_time_beside_the_pid(tmp_path, monkeypatch):
+    fake, ctx, repo, origin = make_product(tmp_path)
+    claim_issue_11(fake)
+    monkeypatch.setattr(dispatch_module, "proc_start_of", lambda pid: f"started-{pid}")
+    out = dispatch(ctx, 11, adapter=FakeAdapter(script=DONE_SCRIPT), now=NOW)
+    rec = json.loads((tmp_path / "home" / "runs" / "claude" / "11.json").read_text())
+    assert rec["proc_start"] == f"started-{out['pid']}"

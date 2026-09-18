@@ -109,9 +109,14 @@ def discover(cfg: Config, home: Path, *, alive: Callable[[int], bool] = pid_aliv
     return sorted(out, key=lambda s: (s["group"], s["kind"] != "role", s["role"] or "", s["issue"] or 0))
 
 
-def frame(event: Event) -> bytes:
-    """One SSE frame: the event's `seq` as the id (what `Last-Event-ID` carries back), its kind as the event name."""
-    return f"id: {event.seq}\nevent: {event.kind}\ndata: {json.dumps(asdict(event), ensure_ascii=False)}\n\n".encode()
+def frame(event: Event, *, with_id: bool = True) -> bytes:
+    """One SSE frame: the event's `seq` as the id (what `Last-Event-ID` carries back), its kind as the event name.
+
+    `with_id=False` omits the `id:` line, for an event that is not a position in the file -- a synthesized
+    `run_finished` -- so it can never become a client's resume cursor (`after` / `Last-Event-ID`).
+    """
+    id_line = f"id: {event.seq}\n" if with_id else ""
+    return f"{id_line}event: {event.kind}\ndata: {json.dumps(asdict(event), ensure_ascii=False)}\n\n".encode()
 
 
 def events(path: Path, parse: Callable[[str, str], list[Event]], *, after: int = 0, now: Callable[[], str],
@@ -126,6 +131,7 @@ def events(path: Path, parse: Callable[[str, str], list[Event]], *, after: int =
     last line, synthesizes the terminal event a Codex transcript never writes (spec 22's table leaves that to the
     reader), and ends the stream; anything else sends a comment heartbeat and keeps following.
     """
+    after = max(0, after)          # a negative after (a malformed Last-Event-ID) behaves like the default: full replay
     tail = Tail(path)
     replay = tail.read(parse, now())
     if after > len(replay):
@@ -152,9 +158,11 @@ def events(path: Path, parse: Callable[[str, str], list[Event]], *, after: int =
                         last_kind = ev.kind
                         yield frame(ev)
                     if last_kind not in TERMINAL_KINDS:
+                        # No id: this event was never a byte offset in the file, so it must not become the
+                        # client's resume cursor -- `seq` still orders it for display, inside the JSON body only.
                         yield frame(Event(seq=tail.seq + 1, at=now(), kind="run_finished",
                                           text="process exited; the transcript ends without a terminal event",
-                                          meta={"synthesized": True}))
+                                          meta={"synthesized": True}), with_id=False)
                     yield END
                     return
                 yield PING

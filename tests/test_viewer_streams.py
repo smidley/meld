@@ -145,7 +145,7 @@ def test_events_replays_then_follows_then_ends_when_the_writer_is_confirmed_gone
     texts = [(f.get("id"), f.get("event"), json.loads(f["data"])["text"] if "data" in f and f["event"] != "end" else None)
              for f in out if "comment" not in f]
     assert texts == [("1", "message", "one"), ("2", "message", "two"), ("3", "message", "three"), ("4", "message", "four"),
-                     ("5", "run_finished", "process exited; the transcript ends without a terminal event"), (None, "end", None)]
+                     (None, "run_finished", "process exited; the transcript ends without a terminal event"), (None, "end", None)]
     assert json.loads(out[-2]["data"])["meta"] == {"synthesized": True}
     assert [f for f in out if "comment" in f] == [{"comment": "ping"}, {"comment": "ping"}]   # one per idle check while alive
     assert appended == [0.5]
@@ -158,15 +158,25 @@ def test_events_resumes_after_a_seq_and_treats_a_shortfall_as_a_trim(tmp_path):
     kw = dict(now=lambda: NOW, writer=dead, sleep=lambda s: None, check_every=1, max_polls=1)
 
     resumed = frames(list(events(log, PARSE, after=1, **kw)))
-    assert [(f.get("id"), f.get("event")) for f in resumed] == [("2", "message"), ("3", "run_finished"), (None, "end")]
+    assert [(f.get("id"), f.get("event")) for f in resumed] == [("2", "message"), (None, "run_finished"), (None, "end")]
 
     nothing_new = frames(list(events(log, PARSE, after=2, **kw)))
-    assert [(f.get("id"), f.get("event")) for f in nothing_new] == [("3", "run_finished"), (None, "end")]
+    assert [(f.get("id"), f.get("event")) for f in nothing_new] == [(None, "run_finished"), (None, "end")]
 
     trimmed = frames(list(events(log, PARSE, after=9, **kw)))   # the client saw nine events; the file holds two
     assert [(f.get("id"), f.get("event")) for f in trimmed] == [("0", "log_truncated"), ("1", "message"), ("2", "message"),
-                                                                 ("3", "run_finished"), (None, "end")]
+                                                                 (None, "run_finished"), (None, "end")]
     assert "trimmed" in json.loads(trimmed[0]["data"])["text"]
+
+
+def test_events_treats_a_negative_after_like_zero_full_replay_no_trim(tmp_path):
+    log = tmp_path / "pm-1.log"
+    log.write_text("one\ntwo\n")
+    out = frames(list(events(log, PARSE, after=-1, now=lambda: NOW, writer=lambda: {"state": "dead"},
+                             sleep=lambda s: None, check_every=1, max_polls=1)))
+    assert [(f.get("id"), f.get("event")) for f in out] == [("1", "message"), ("2", "message"),
+                                                             (None, "run_finished"), (None, "end")]
+    assert not any(f.get("event") == "log_truncated" for f in out)
 
 
 def test_events_does_not_synthesize_an_end_the_transcript_already_has(tmp_path):

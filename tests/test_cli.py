@@ -92,7 +92,7 @@ class _ServerStandIn:
         self.closed = True
 
 
-def _watch(tmp_path, monkeypatch, args, env_extra=None):
+def _watch(tmp_path, monkeypatch, args, env_extra=None, bind_error: OSError | None = None):
     config = tmp_path / ".meld.toml"
     config.write_text(PROJECT_TOML)
     fake = FakeGh()
@@ -101,7 +101,10 @@ def _watch(tmp_path, monkeypatch, args, env_extra=None):
     seen = {}
 
     def fake_serve(viewer, *, host="127.0.0.1", port=0):
-        seen["viewer"], seen["port"], seen["server"] = viewer, port, _ServerStandIn()
+        seen["viewer"], seen["port"] = viewer, port
+        if bind_error is not None:
+            raise bind_error
+        seen["server"] = _ServerStandIn()
         viewer.port = 4321
         return seen["server"]
 
@@ -131,6 +134,16 @@ def test_watch_honours_port_and_open_flags(tmp_path, monkeypatch):
 def test_watch_is_refused_to_a_worker_like_every_other_verb(tmp_path, monkeypatch):
     result, seen, _ = _watch(tmp_path, monkeypatch, [], env_extra={"MELD_WORKER": "1"})
     assert result.exit_code != 0 and "viewer" not in seen
+
+
+def test_watch_reports_a_port_it_cannot_bind_as_a_click_error(tmp_path, monkeypatch):
+    """A port already taken is something the person fixes by naming another one, not a traceback to read."""
+    result, seen, opened = _watch(tmp_path, monkeypatch, ["--port", "4321"],
+                                  bind_error=OSError(48, "Address already in use"))
+    assert result.exit_code != 0
+    assert "cannot bind 127.0.0.1:4321" in result.output and "Address already in use" in result.output
+    assert "Traceback" not in result.output
+    assert "server" not in seen and opened == []       # nothing served, no browser opened
 
 
 def test_tail_with_follow_withholds_the_unterminated_last_line(tmp_path, monkeypatch):

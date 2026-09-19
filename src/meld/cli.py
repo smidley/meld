@@ -562,7 +562,13 @@ def watch(ctx: click.Context, port: int | None, open_browser: bool | None) -> No
     """
     c = _load(ctx)                                    # the human's context, and load_context's worker refusal
     viewer = Viewer(c, token=new_token(), port=0)
-    httpd = SERVE(viewer, port=port if port is not None else c.cfg.viewer_port)
+    wanted = port if port is not None else c.cfg.viewer_port
+    try:
+        httpd = SERVE(viewer, port=wanted)
+    except OSError as e:
+        # EADDRINUSE above all: a port already taken is something the person fixes by naming another one
+        # (or 0, and letting the OS choose), not a traceback to read.
+        raise click.ClickException(f"cannot bind 127.0.0.1:{wanted}: {e}")
     link = url(httpd, viewer.token)
     click.echo(link)                                  # the one line this prints to stdout
     wants_browser = c.cfg.viewer_open_browser if open_browser is None else open_browser

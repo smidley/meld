@@ -4,9 +4,12 @@
 const TOKEN = new URLSearchParams(location.search).get("t") || "";
 const KINDS = ["run_started", "message", "thinking", "tool_call", "tool_result", "usage", "run_finished",
                "usage_limit", "log_truncated", "cli_error", "raw"];
+const BADGE_STATES = ["alive", "dead", "unknown", "frozen", "waiting"];
 const STATE_EVERY_MS = 10000;
 const STREAMS_EVERY_MS = 5000;
-const columns = new Map();   // stream id -> {root, list, source}
+const MAX_SOURCES = 4;       // two connections stay free for the state/streams polls -- browsers cap ~6 per origin
+const SOURCE_PRIORITY = { alive: 0, dead: 1, unknown: 2 };
+const columns = new Map();   // stream id -> {root, list, live, why, source, liveness}
 
 function api(path, params) {
   const url = new URL(path, location.origin);
@@ -20,7 +23,11 @@ const el = (id) => document.getElementById(id);
 function text(node, value) { node.textContent = value == null ? "" : String(value); return node; }
 
 function badge(node, state, label) {
-  node.className = "badge " + state;
+  // classList, never className: className replaces the whole attribute, which would erase the static
+  // ".live" hook a later poll re-queries -- that erasure is what threw on the second poll of any column.
+  node.classList.remove(...BADGE_STATES);
+  node.classList.add("badge");
+  if (state) node.classList.add(state);   // classList.add("") throws; the phase badge passes state=""
   return text(node, label || state);
 }
 
@@ -95,10 +102,28 @@ function openStream(col, id) {
   // EventSource reconnects by itself and sends Last-Event-ID, so resumption needs nothing here.
   const source = new EventSource(api("/api/events", { stream: id }));
   for (const kind of KINDS) source.addEventListener(kind, (e) => appendEvent(col, JSON.parse(e.data)));
-  source.addEventListener("end", () => { col.root.classList.add("ended"); source.close(); });
+  source.addEventListener("end", () => { col.root.classList.add("ended"); source.close(); openWaiting(); });
   source.onerror = () => col.root.classList.add("reconnecting");
   source.onopen = () => col.root.classList.remove("reconnecting");
   col.source = source;
+}
+
+function openWaiting() {
+  // The only place that opens an EventSource: at most MAX_SOURCES at once, so the two polls always keep a
+  // free connection. A column with no source yet is waiting for a slot; one whose source is already
+  // closed has ended and is never reopened -- reopening would replay its whole transcript from the start.
+  let openCount = 0;
+  const waiting = [];
+  for (const [id, col] of columns) {
+    if (col.source == null) waiting.push([id, col]);
+    else if (col.source.readyState !== EventSource.CLOSED) openCount++;
+  }
+  waiting.sort((a, b) => (SOURCE_PRIORITY[a[1].liveness.state] ?? 3) - (SOURCE_PRIORITY[b[1].liveness.state] ?? 3));
+  for (const [id, col] of waiting) {
+    if (openCount >= MAX_SOURCES) break;
+    openStream(col, id);
+    openCount++;
+  }
 }
 
 function renderStreams(list) {
@@ -108,18 +133,22 @@ function renderStreams(list) {
     let col = columns.get(s.id);
     if (!col) {
       const root = el("column").content.firstElementChild.cloneNode(true);
-      col = { root, list: root.querySelector(".events"), source: null };
+      col = { root, list: root.querySelector(".events"), live: root.querySelector(".live"),
+              why: root.querySelector(".why"), source: null };
       const who = s.kind === "role" ? `${s.group} / ${s.role}` : `${s.group} / ${s.kind} #${s.issue}`;
       text(root.querySelector(".who"), who);
       el("streams").append(root);
       columns.set(s.id, col);
-      openStream(col, s.id);
     }
-    badge(col.root.querySelector(".live"), s.liveness.state);
-    text(col.root.querySelector(".why"), s.liveness.reason);
+    col.liveness = s.liveness;
   }
   for (const [id, col] of columns) {
     if (!seen.has(id)) { if (col.source) col.source.close(); col.root.remove(); columns.delete(id); }
+  }
+  openWaiting();
+  for (const col of columns.values()) {
+    badge(col.live, col.source ? col.liveness.state : "waiting");
+    text(col.why, col.liveness.reason);
   }
 }
 

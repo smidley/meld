@@ -150,6 +150,20 @@ def test_api_state_is_cached_single_flight_for_the_ttl_and_a_failure_is_not(tmp_
     assert get(v, "/api/state").status == 200 and len(calls) == 4      # the failure was not cached
 
 
+def test_api_state_answers_502_rather_than_a_traceback_when_gh_itself_is_missing(tmp_path, monkeypatch):
+    """`github._request` does not convert the FileNotFoundError a missing or mid-upgrade `gh` raises out of
+    subprocess; unhandled it escapes `handle`, drops the connection and prints a traceback every ten seconds."""
+    v, _, _ = viewer_for(tmp_path)
+
+    def no_gh(c, now=None):
+        raise FileNotFoundError(2, "No such file or directory", "gh")
+
+    monkeypatch.setattr(server, "build_status", no_gh)
+    resp = get(v, "/api/state")
+    assert resp.status == 502 and "gh" in body(resp)["error"]
+    assert get(v, "/api/state").status == 502                          # and, like the others, never cached
+
+
 def test_api_state_reports_an_unreadable_disk_as_null_rather_than_failing(tmp_path):
     def broken(p):
         raise OSError("statvfs")

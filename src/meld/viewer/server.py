@@ -1,7 +1,7 @@
 """The loopback viewer's server: the gate in front of every request, and the routes behind it (spec section 22).
 
 Every route is a method taking a plain `Request` and returning a plain `Response`, so the whole surface is driven
-in process by the tests; `_Handler` and `serve` (below, once they land) are the only code that touches a socket.
+in process by the tests; `_Handler` and `serve` (at the end of this module) are the only code that touches a socket.
 """
 from __future__ import annotations
 
@@ -169,7 +169,10 @@ class Viewer:
         now = datetime.strptime(self.now(), _ISO_FMT).replace(tzinfo=timezone.utc)
         try:
             status, _ = build_status(self.ctx, now=now)
-        except (GitHubError, BoardError) as e:
+        except (GitHubError, BoardError, OSError) as e:
+            # OSError is here for `gh` itself: a binary that is missing or mid-upgrade raises FileNotFoundError
+            # out of `subprocess`, which `github._request` does not convert, and unhandled it escapes `handle`,
+            # drops the connection and prints a traceback every ten seconds. 502 like the others, never cached.
             return _json(502, {"error": str(e)})
         supervisors = {g: liveness(read_record(supervisor_path(home, g)), alive=self.alive, start_of=self.start_of) for g in cfg.groups}
         frozen = {g: {r: read_record(freeze_path(home, g, r)) for r in ROLES} for g in cfg.groups}

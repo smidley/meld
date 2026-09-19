@@ -47,8 +47,13 @@ function renderState(state) {
   text(el("milestone"), s.milestone ? `milestone ${s.milestone}` : "");
   badge(el("phase"), "", s.phase || "");
   el("halted").classList.toggle("hidden", !s.halted);
-  const spent = Object.entries(s.budget.spent || {}).map(([k, v]) => `${k} ${v}`).join(", ");
-  text(el("budget"), spent ? `spent: ${spent}` : "");
+  // `spent` is Board.spend: group -> tier -> count, so it takes two levels of entries. One level stringified
+  // the inner object and the header read "spent: claude [object Object]" on any run that had dispatched a
+  // worker. The cap (tier -> ceiling) goes beside it, because a count means nothing without the number it is of.
+  const spent = Object.entries(s.budget.spent || {})
+    .flatMap(([group, tiers]) => Object.entries(tiers || {}).map(([tier, n]) => `${group}/${tier} ${n}`)).join(", ");
+  const cap = Object.entries(s.budget.cap || {}).map(([tier, n]) => `${tier} ${n}`).join(", ");
+  text(el("budget"), [spent && `spent: ${spent}`, cap && `cap: ${cap}`].filter(Boolean).join(" · "));
   const disk = state.disk.free_mb == null ? "disk: unreadable" : `disk: ${state.disk.free_mb} MB free`;
   text(el("disk"), disk).classList.toggle("bad", state.disk.free_mb != null && state.disk.free_mb < state.disk.warn_free_mb);
   text(el("logs"), `logs: ${state.logs.total_mb} MB`).classList.toggle("bad", state.logs.total_mb > state.logs.warn_total_mb);

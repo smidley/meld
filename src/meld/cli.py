@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import time
+import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -39,11 +40,13 @@ from meld.state import CHANGE_KINDS, StateStore, meld_home
 from meld.status import build_status
 from meld.tagging import tag as do_tag
 from meld.transcript import Tail, newest_log, render_line
+from meld.viewer.server import Viewer, new_token, serve, url
 from meld.waiting import wait_for_change
 
 RUN = subprocess.run  # tests monkeypatch this with a FakeGh
 ADAPTER_FOR = get_adapter
 SLEEP = time.sleep  # tests monkeypatch this so the suite never actually sleeps
+SERVE = serve  # tests monkeypatch this so no test binds a port through the CLI
 
 
 def emit(data: object, pretty: bool) -> None:
@@ -544,6 +547,33 @@ def tail(ctx: click.Context, target: str | None, issue: int | None, follow: bool
         except KeyboardInterrupt:
             click.echo("", err=True)
             return
+
+
+@main.command()
+@click.option("--port", type=int, default=None, help="Loopback port to bind (default: [viewer] port; 0 lets the OS choose).")
+@click.option("--open/--no-open", "open_browser", default=None,
+              help="Open the page in the default browser (default: [viewer] open_browser).")
+@click.pass_context
+def watch(ctx: click.Context, port: int | None, open_browser: bool | None) -> None:
+    """Serve the local viewer and print its URL; Ctrl-C stops it.
+
+    Binds 127.0.0.1 with a per-launch token in the URL. Reads only -- transcripts, board, state -- and posts
+    nothing; nothing in Meld depends on it running, and every verb it will offer already exists on the CLI.
+    """
+    c = _load(ctx)                                    # the human's context, and load_context's worker refusal
+    viewer = Viewer(c, token=new_token(), port=0)
+    httpd = SERVE(viewer, port=port if port is not None else c.cfg.viewer_port)
+    link = url(httpd, viewer.token)
+    click.echo(link)                                  # the one line this prints to stdout
+    wants_browser = c.cfg.viewer_open_browser if open_browser is None else open_browser
+    if wants_browser:
+        webbrowser.open(link)
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        httpd.server_close()
 
 
 if __name__ == "__main__":

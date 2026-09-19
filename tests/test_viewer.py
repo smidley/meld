@@ -1,5 +1,7 @@
+import http.client
 import json
 import os
+import threading
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -10,7 +12,7 @@ from meld.github import GitHubError
 from meld.runners import freeze_path, role_run_path, supervisor_path, write_record
 from meld.state import StateStore
 from meld.viewer import server
-from meld.viewer.server import LOOPBACK_HOSTS, Request, Response, Viewer, new_token
+from meld.viewer.server import LOOPBACK_HOSTS, Request, Response, Viewer, new_token, serve, url
 from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
 from tests.factories import mk_run
 from tests.fakeadapter import FakeAdapter
@@ -226,3 +228,48 @@ def test_the_page_references_nothing_off_the_machine_and_renders_text_as_text(tm
     for route in ("/api/state", "/api/streams", "/api/events"):
         assert route in js
     assert 'name="referrer" content="no-referrer"' in html
+
+
+def test_serve_binds_an_os_assigned_loopback_port_and_answers_over_a_socket(tmp_path):
+    """The one socket test: the wiring from bytes on a connection to `Viewer.handle` and back, including a
+    streaming body and the silenced request log."""
+    v, ctx, _ = viewer_for(tmp_path, alive=lambda pid: False)     # the writer is confirmed gone: the stream ends
+    home = ctx.store.home
+    log = home / "logs" / "claude" / "pm-1.log"
+    log.parent.mkdir(parents=True)
+    log.write_text("hello\n")
+    # Without a run record `record_for` answers None and `liveness` short-circuits to "unknown" without ever
+    # consulting `alive` -- the same pattern the sibling in-process test above uses to make the writer "dead".
+    write_record(role_run_path(home, "claude", "pm"),
+                 {"pid": 7, "started_at": NOW, "proc_start": "T0", "log_path": str(log), "reason": "start", "launch_no": 1})
+    httpd = serve(v, port=0)
+    try:
+        port = httpd.server_address[1]
+        assert httpd.server_address[0] == "127.0.0.1" and port > 0 and v.port == port
+        assert url(httpd, v.token) == f"http://127.0.0.1:{port}/?t={TOKEN}"
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+
+        def fetch(target, headers=None):
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            conn.request("GET", target, headers=headers or {})
+            resp = conn.getresponse()
+            data = resp.read()
+            conn.close()
+            return resp, data
+
+        resp, data = fetch(f"/api/streams?t={TOKEN}")
+        assert resp.status == 200 and resp.getheader("Content-Type") == "application/json; charset=utf-8"
+        assert json.loads(data)["streams"][0]["id"] == "claude/pm-1.log" and resp.getheader("Content-Length") == str(len(data))
+        resp, data = fetch("/api/streams")
+        assert (resp.status, data) == (403, b"")
+        resp, data = fetch(f"/?t={TOKEN}")
+        assert resp.status == 200 and data.lstrip().lower().startswith(b"<!doctype html>")
+        resp, data = fetch(f"/api/events?stream=claude/pm-1.log&t={TOKEN}")
+        assert resp.status == 200 and resp.getheader("Content-Type") == "text/event-stream; charset=utf-8"
+        assert data.startswith(b"id: 1\nevent: message\n") and data.endswith(b"event: end\ndata: {}\n\n")
+        resp, data = fetch(f"/api/streams?t={TOKEN}", headers={"Host": f"evil.example:{port}"})
+        assert (resp.status, data) == (403, b"")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()

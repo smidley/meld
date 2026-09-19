@@ -14,6 +14,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -201,3 +202,53 @@ class Viewer:
                          check_every=self.check_every, max_polls=self.max_polls,
                          writer=lambda: liveness(record, alive=self.alive, start_of=self.start_of))
         return Response(200, body, "text/event-stream; charset=utf-8", SECURITY_HEADERS + (("Connection", "close"),))
+
+
+class _Handler(BaseHTTPRequestHandler):
+    """Bytes on a connection in, `Viewer.handle` out. HTTP/1.0 on purpose: every response closes its connection,
+    so a streaming body needs no chunked encoding and an SSE client simply reconnects when the stream ends."""
+
+    def do_GET(self) -> None:
+        self._dispatch()
+
+    def do_POST(self) -> None:
+        self._dispatch()
+
+    def do_PUT(self) -> None:
+        self._dispatch()
+
+    def _dispatch(self) -> None:
+        resp = self.server.viewer.handle(Request.parse(self.command, self.path, self.headers))  # type: ignore[attr-defined]
+        self.send_response(resp.status)
+        self.send_header("Content-Type", resp.content_type)
+        for name, value in resp.headers:
+            self.send_header(name, value)
+        if not resp.streaming:
+            self.send_header("Content-Length", str(len(resp.body)))
+        self.end_headers()
+        try:
+            if resp.streaming:
+                for chunk in resp.body:
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+            else:
+                self.wfile.write(resp.body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass                                        # the tab was closed; nothing to do
+
+    def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+        """Silenced: the default prints the request line, token included, to stderr."""
+
+
+def serve(viewer: Viewer, *, host: str = "127.0.0.1", port: int = 0) -> ThreadingHTTPServer:
+    """Bind the viewer to loopback -- `port` 0 lets the OS choose -- and tell it the port it got, which its
+    `Host` check needs. The caller runs `serve_forever`."""
+    httpd = ThreadingHTTPServer((host, port), _Handler)
+    httpd.daemon_threads = True
+    httpd.viewer = viewer  # type: ignore[attr-defined]
+    viewer.port = httpd.server_address[1]
+    return httpd
+
+
+def url(httpd: ThreadingHTTPServer, token: str) -> str:
+    return f"http://127.0.0.1:{httpd.server_address[1]}/?t={token}"

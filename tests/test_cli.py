@@ -3,7 +3,8 @@ from click.testing import CliRunner
 import meld.cli as cli
 from meld.adapters import get_adapter
 from meld.cli import main
-from tests.conftest import PROJECT_TOML
+from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
+from tests.fakegh import FakeGh
 
 
 def test_version_flag_prints_version():
@@ -76,6 +77,60 @@ def test_tail_without_follow_renders_the_unterminated_last_line(tmp_path, monkey
     assert result.exit_code == 0
     assert "message  Checking the board first." in result.output
     assert 'raw      {"type":"assistant"' in result.output
+
+
+class _ServerStandIn:
+    server_address = ("127.0.0.1", 4321)
+
+    def __init__(self):
+        self.served = self.closed = False
+
+    def serve_forever(self):
+        self.served = True
+
+    def server_close(self):
+        self.closed = True
+
+
+def _watch(tmp_path, monkeypatch, args, env_extra=None):
+    config = tmp_path / ".meld.toml"
+    config.write_text(PROJECT_TOML)
+    fake = FakeGh()
+    load_board1_routes(fake)
+    monkeypatch.setattr(cli, "RUN", fake)
+    seen = {}
+
+    def fake_serve(viewer, *, host="127.0.0.1", port=0):
+        seen["viewer"], seen["port"], seen["server"] = viewer, port, _ServerStandIn()
+        viewer.port = 4321
+        return seen["server"]
+
+    monkeypatch.setattr(cli, "SERVE", fake_serve)
+    opened = []
+    monkeypatch.setattr(cli.webbrowser, "open", lambda link: opened.append(link) or True)
+    env = {**env_for(tmp_path, group=None), **(env_extra or {})}
+    result = CliRunner().invoke(main, ["--config", str(config), "watch", *args], env=env)
+    return result, seen, opened
+
+
+def test_watch_prints_exactly_the_url_with_a_fresh_token_and_serves_until_stopped(tmp_path, monkeypatch):
+    result, seen, opened = _watch(tmp_path, monkeypatch, [])
+    assert result.exit_code == 0, result.output
+    token = seen["viewer"].token
+    assert len(token) >= 43 and result.output == f"http://127.0.0.1:4321/?t={token}\n"
+    assert seen["port"] == 0                         # [viewer] port's default: the OS chooses
+    assert seen["server"].served and seen["server"].closed and opened == []
+
+
+def test_watch_honours_port_and_open_flags(tmp_path, monkeypatch):
+    result, seen, opened = _watch(tmp_path, monkeypatch, ["--port", "4321", "--open"])
+    assert result.exit_code == 0, result.output
+    assert seen["port"] == 4321 and opened == [result.output.strip()]
+
+
+def test_watch_is_refused_to_a_worker_like_every_other_verb(tmp_path, monkeypatch):
+    result, seen, _ = _watch(tmp_path, monkeypatch, [], env_extra={"MELD_WORKER": "1"})
+    assert result.exit_code != 0 and "viewer" not in seen
 
 
 def test_tail_with_follow_withholds_the_unterminated_last_line(tmp_path, monkeypatch):

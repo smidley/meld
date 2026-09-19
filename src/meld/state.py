@@ -164,6 +164,14 @@ class StateStore:
             worker=str(data.get("worker", "")), proc_start=str(data.get("proc_start", "")),
         )
 
+    def _note_error(self, note: str) -> None:
+        """One line per unreadable record, however often this store is read. A long-lived caller -- `meld wait`,
+        and the viewer, which holds one Context for the life of the process and rebuilds its status every few
+        seconds -- would otherwise grow `errors` (and the `state_errors` copied out of it) without bound off a
+        single corrupt file. Same reason `assemble._pull` dedupes its own notes."""
+        if note not in self.errors:
+            self.errors.append(note)
+
     def load_runs(self, alive: Callable[[int], bool] = pid_alive) -> dict[str, dict[int, RunRecord]]:
         out: dict[str, dict[int, RunRecord]] = {}
         if not self.runs_root.exists():
@@ -175,7 +183,7 @@ class StateStore:
                     rec = self._read_record(f, alive)
                     out[gdir.name][rec.issue] = rec
                 except (json.JSONDecodeError, KeyError, ValueError, OSError) as e:
-                    self.errors.append(f"{f}: {e.__class__.__name__}: {e}")
+                    self._note_error(f"{f}: {e.__class__.__name__}: {e}")
                     continue
         return out
 
@@ -193,7 +201,7 @@ class StateStore:
                         continue
                     counts[data["tier"]] = counts.get(data["tier"], 0) + 1
                 except (json.JSONDecodeError, KeyError, ValueError, OSError) as e:
-                    self.errors.append(f"{f}: {e.__class__.__name__}: {e}")
+                    self._note_error(f"{f}: {e.__class__.__name__}: {e}")
                     continue
             out[gdir.name] = counts
         return out

@@ -73,7 +73,20 @@ def test_corrupt_run_record_is_skipped_and_reported(tmp_path):
     assert sorted(runs["claude"]) == [1]
     assert len(store.errors) == 2 and str(bad) in store.errors[0]
     assert store.load_spend(3) == {"claude": {"medium": 1}}
-    assert len(store.errors) == 4  # load_spend reports the same two files again
+    # load_spend trips over the same two files, but a note already on the list is not recorded twice: its
+    # malformed-JSON line is word-for-word the one load_runs wrote, and only the KeyError differs ('tier', not 'pid').
+    assert len(store.errors) == 3 and "KeyError: 'tier'" in store.errors[2]
+
+
+def test_a_store_notes_an_unreadable_record_once_however_often_it_is_read(tmp_path):
+    """The viewer holds one Context for the life of the process and rebuilds its status every few seconds, so an
+    un-deduped note would grow `errors` -- and the `state_errors` copied out of it -- without bound."""
+    store = StateStore(tmp_path, "claude")
+    (tmp_path / "runs" / "claude").mkdir(parents=True)
+    (tmp_path / "runs" / "claude" / "99.json").write_text("{not json")
+    for _ in range(3):
+        assert store.load_runs(alive=lambda pid: False) == {"claude": {}}
+    assert len(store.errors) == 1
 
 
 def test_writes_are_atomic_and_pid_guard(tmp_path):

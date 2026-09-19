@@ -40,6 +40,7 @@ Design: `docs/superpowers/specs/2026-09-03-meld-design.md`. Plans: `docs/superpo
 | `meld roster` | List the worker types available to the calling party |
 | `meld run GROUP [--once]` | Supervise a group's orchestrator and PM as headless CLI sessions |
 | `meld tail [TARGET] [--run N] [--follow/--no-follow] [--width W] [--interval S]` | Render a run's transcript as it is written; TARGET is `<group>` or `<group>/<role-or-kind>`, defaulting to the newest log — reads local files only, nothing posted |
+| `meld watch [--port N] [--open/--no-open]` | Serve the local viewer on `127.0.0.1` and print its URL (a per-launch token is in it): every live role's and worker's transcript in its own column, the board, each supervisor's liveness (`alive`/`dead`/`unknown`, with the reason), each role's standing freeze, budget, free disk and log bytes. Reads local files and the board; posts nothing; Ctrl-C stops it |
 | `meld setup REPO --goal TEXT [--pr] [--app] [--allow-public] [--no-protection] [--force] [--milestone T] [--dir P]` | Bootstrap a product repo: labels, milestone, coordination issue, CODEOWNERS, `.meld/STANDARDS.md`, branch protection, and a starter `.meld.toml`; `--pr` opens the setup PR, `--app` writes the GitHub App form and prints the steps |
 | `meld doctor [--probe-status] [--sweep [--dry-run] [--older-than-days N]]` | Verify CLIs, credentials, identities, models, ceilings, and permissions (exit 1 on a failure); `--sweep` clears meld's scratch under `$MELD_HOME` |
 
@@ -50,6 +51,8 @@ Design: `docs/superpowers/specs/2026-09-03-meld-design.md`. Plans: `docs/superpo
 `meld run` starts the group's orchestrator and PM as headless CLI sessions with the packaged role prompts, relaunches them when they exit (at once after a clean exit, since a `-p` session ends whenever the model finishes its turn; with exponential backoff after a crash), recycles them every `runners.restart_hours`, and writes their logs under `$MELD_HOME/logs/<group>/`. Each launch tells the role its launch number and reason, so only the first launch announces `CONFIG` and `ROSTER` and only a crash or recycle posts `RESUMED`. Workers are separate processes started by the PM through `meld dispatch`; they run in `$MELD_HOME/worktrees/<group>/`, commit as the group's bot, receive no GitHub or git credentials (no token, an empty `GH_CONFIG_DIR`, credential helpers disabled), and end by writing `.meld-result.json`, which `meld collect` turns into a pushed branch and a pull request.
 
 Real-CLI smoke tests (they spend tokens): `task test:smoke`.
+
+**Watching a run.** `meld watch` (from the product clone, as the human) prints a `http://127.0.0.1:<port>/?t=<token>` URL; open it. The token is minted per launch and required on every request, so paste the whole URL. Nothing in Meld depends on the viewer running, and `meld tail <group>/<role>` remains the terminal view for a headless box. On this Mac the active `gh` account flips between two logins, and `/api/state` answers 502 with a GitHub 404 when it is not the smidley one — run `GH_TOKEN=$(gh auth token --user smidley) meld watch` from the product clone.
 
 ## Memory
 
@@ -119,6 +122,7 @@ Bootstrapping a fresh product repo, start to finish:
 5. `meld doctor` until it reports green.
 6. `task run GROUP=claude` and `task run GROUP=codex`, one per group.
 7. `meld chat`; when the plan appears, approve it with `/approve` (or `uv run meld plan approve`) — that adds `meld:plan-approved` *and* flips every planned issue to ready. Adding the label by hand does neither for the issues.
+8. `meld watch`, and open the URL it prints, to watch the roles and workers as they run.
 
 ## Known issue: macOS hidden `.pth` files
 

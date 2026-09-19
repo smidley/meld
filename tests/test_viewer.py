@@ -1,8 +1,6 @@
 import http.client
 import json
-import os
 import threading
-from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -10,11 +8,9 @@ import pytest
 from meld.context import load_context
 from meld.github import GitHubError
 from meld.runners import freeze_path, role_run_path, supervisor_path, write_record
-from meld.state import StateStore
 from meld.viewer import server
 from meld.viewer.server import LOOPBACK_HOSTS, Request, Response, Viewer, new_token, serve, url
 from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
-from tests.factories import mk_run
 from tests.fakeadapter import FakeAdapter
 from tests.fakegh import FakeGh
 

@@ -126,7 +126,10 @@ def events(path: Path, parse: Callable[[str, str], list[Event]], *, after: int =
 
     Resume is by count: a fresh `Tail` stamps the file's events 1..n, so the client gets `after+1..n`. A client
     whose `after` exceeds n was reading a log that has since been trimmed; it is told so with one `log_truncated`
-    frame and then the whole file. Then the log is followed. Every `check_every` idle polls the writer is asked
+    frame and then the whole file. A trim that lands *under* this connection is handled the same way, for the
+    same reason: the batch is discarded, the reader is rebuilt at offset 0, and the file is replayed from its
+    first event behind one `log_truncated` frame -- so `seq` is a position in the current file throughout, and
+    the count a later reconnect carries back means what this stream's ids meant. Every `check_every` idle polls the writer is asked
     after (`writer()` is `state.liveness` for its record, which may run `ps`): `dead` flushes the unterminated
     last line, synthesizes the terminal event a Codex transcript never writes (spec 22's table leaves that to the
     reader), and ends the stream; anything else sends a comment heartbeat and keeps following.
@@ -145,6 +148,16 @@ def events(path: Path, parse: Callable[[str, str], list[Event]], *, after: int =
     while max_polls is None or polls < max_polls:
         polls += 1
         fresh = tail.read(parse, now())
+        if any(ev.kind == "log_truncated" for ev in fresh):
+            # `Tail` keeps counting across a truncation -- its notice takes seq n+1 and the post-trim lines
+            # n+2.. -- while the fresh `Tail` a reconnect builds numbers those same lines 1..m. Left alone, the
+            # two numberings disagree and a reconnect resumes past events it never showed. So the batch is
+            # thrown away, the reader starts over with the file, and the client is told the count restarted.
+            tail = Tail(path)
+            fresh = tail.read(parse, now())
+            last_kind = None                           # the kinds before the trim are no longer in the file
+            yield frame(Event(seq=0, at=now(), kind="log_truncated",
+                              text=f"{path.name} was trimmed while this page was reading it; showing it from the start"))
         for ev in fresh:
             last_kind = ev.kind
             yield frame(ev)

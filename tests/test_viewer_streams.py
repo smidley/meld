@@ -169,6 +169,29 @@ def test_events_resumes_after_a_seq_and_treats_a_shortfall_as_a_trim(tmp_path):
     assert "trimmed" in json.loads(trimmed[0]["data"])["text"]
 
 
+def test_a_trim_under_an_open_stream_restarts_the_numbering_with_the_file(tmp_path):
+    """`Tail` numbers straight through a truncation, but the `Tail` a reconnect builds numbers the post-trim
+    file 1..m; if the open stream kept the higher count, the client's next `Last-Event-ID` would resume past
+    events it was never shown. So the stream restarts its count with the file and says so."""
+    log = tmp_path / "pm-1.log"
+    log.write_text("original1\noriginal2\noriginal3\n")          # 30 bytes; what replaces it below is 14
+    trims = []
+
+    def sleep(_seconds):
+        if not trims:                                            # the trim lands under the open connection
+            log.write_text("fresh1\nfresh2\n")
+            trims.append(1)
+
+    out = frames(list(events(log, PARSE, after=0, now=lambda: NOW, writer=lambda: {"state": "alive"},
+                             sleep=sleep, check_every=1000, max_polls=3)))
+    assert [(f.get("id"), f.get("event")) for f in out] == [
+        ("1", "message"), ("2", "message"), ("3", "message"),     # the file as it was
+        ("0", "log_truncated"), ("1", "message"), ("2", "message")]   # and the file as it is, counted afresh
+    texts = [json.loads(f["data"])["text"] for f in out]
+    assert texts[:3] == ["original1", "original2", "original3"] and texts[4:] == ["fresh1", "fresh2"]
+    assert texts[3] == "pm-1.log was trimmed while this page was reading it; showing it from the start"
+
+
 def test_events_treats_a_negative_after_like_zero_full_replay_no_trim(tmp_path):
     log = tmp_path / "pm-1.log"
     log.write_text("one\ntwo\n")

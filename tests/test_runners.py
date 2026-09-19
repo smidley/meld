@@ -804,12 +804,13 @@ def test_run_group_records_its_own_pid_and_each_role_launch(tmp_path):
 
 def test_a_relaunch_rewrites_the_role_record_with_its_new_launch(tmp_path):
     _, ctx, env = make(tmp_path)
-    adapter = FakeAdapter(script="import sys; sys.exit(1)")
+    adapter = RecordingAdapter(script="import sys; sys.exit(1)")
     clock = Clock()
+    wait = _wait_for(adapter)     # wait on the tiny real children, rather than betting 0.05s is enough for them
 
     def sleep(s):
         clock.sleep(s)
-        time.sleep(0.05)  # let the tiny real processes exit
+        wait(s)
 
     out = run_group(ctx, adapter=adapter, cycles=4, interval=0.01, sleep=sleep, clock=clock, base_env=env,
                     start_of=lambda pid: "born")

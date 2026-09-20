@@ -276,7 +276,11 @@ class Viewer:
             return _json(409, {"refused": str(e), "verb": e.refusal.verb.value, "target": e.refusal.target,
                                "rule": e.refusal.rule, "violation_posted": e.violation_posted})
         except PostError as e:
-            return _json(409, {"error": str(e)})
+            # A usage error, exactly as its own docstring says, so 400 -- the same answer as `BadRequest` above:
+            # a verb the party may not post, a framework-only or command verb, a missing ref, a body the grammar
+            # rejects. Every board-state case in `posting.post` goes through `_refuse` and arrives as `Refused`
+            # instead, so 409 stays the one status carrying a refusal (spec 22).
+            return _json(400, {"error": str(e)})
         except (GitHubError, BoardError, DispatchError, GitError, ResultsError, ConfigError, AppAuthError,
                 UnknownAdapter, OSError) as e:
             return _json(502, {"error": str(e)})

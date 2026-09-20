@@ -76,6 +76,11 @@ def test_the_viewer_refuses_to_act_as_a_group_even_when_the_body_says_human(tmp_
     ({"party": "human", "verb": "plan-ack"}, "non-empty 'ref'"),
     ({"party": "human", "verb": "tag", "number": 11, "skills": "qa"}, "list of strings"),
     ({"party": "human", "verb": "release", "number": 12, "force": "no"}, "boolean 'force'"),
+    # Not the coercion's own 400 but `PostError`'s: `posting.post` raises at its `allowed_verbs` check, because
+    # PROPOSE is an agreement verb a human may not post. A usage error, as its docstring says -- the call is
+    # malformed, not a legal call the rules refuse -- so it answers 400 like every row above it, and 409 stays
+    # the one status that carries a `Refused` (spec 22).
+    ({"party": "human", "verb": "post", "action": "PROPOSE", "ref": "ask-1", "text": "x"}, "not a verb"),
 ])
 def test_an_argument_the_verb_cannot_use_never_reaches_it(tmp_path, payload, wants):
     v, _, fake = viewer_for(tmp_path)

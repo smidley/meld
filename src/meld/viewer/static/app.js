@@ -160,28 +160,37 @@ async function runAction() {
   // `verb` key is the dispatch name (`post`, `challenge`), so a second meaning for it cannot fit in one object.
   if (wants.includes("verb")) payload.action = el("verb").value;
   showResult(`${action} …`, true);
-  let response;
+  // One request in flight at a time: two quick Enters on a form whose submit button was still live sent two
+  // identical `post`s, and a comment is not idempotent. Re-enabled in `finally`, so no failure -- a dropped
+  // fetch, an unreadable body -- can leave the person with a dead button and a page they have to reload.
+  const button = el("run");
+  button.disabled = true;
   try {
-    response = await fetch(api("/api/action"), {
-      method: "POST", cache: "no-store",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-  } catch (e) {
-    showResult(`${action}: ${e.message}`, false);
-    return;
-  }
-  let out = {};
-  try { out = await response.json(); } catch (e) { out = {}; }
-  if (response.ok) {
-    showResult(`${action} ok: ${JSON.stringify(out.result)}`, true);
-    pollState();                       // the server dropped its cached state; show the moved board at once
-  } else if (out.refused) {
-    // Verbatim, rule included: the rule is the whole content of a refusal, and summarising it would make the
-    // page a second authority on what is legal.
-    showResult(`refused ${out.verb} ${out.target}: ${out.rule}`, false);
-  } else {
-    showResult(`${action}: ${response.status} ${out.error || ""}`, false);
+    let response;
+    try {
+      response = await fetch(api("/api/action"), {
+        method: "POST", cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch (e) {
+      showResult(`${action}: ${e.message}`, false);
+      return;
+    }
+    let out = {};
+    try { out = await response.json(); } catch (e) { out = {}; }
+    if (response.ok) {
+      showResult(`${action} ok: ${JSON.stringify(out.result)}`, true);
+      pollState();                     // the server dropped its cached state; show the moved board at once
+    } else if (out.refused) {
+      // Verbatim, rule included: the rule is the whole content of a refusal, and summarising it would make the
+      // page a second authority on what is legal.
+      showResult(`refused ${out.verb} ${out.target}: ${out.rule}`, false);
+    } else {
+      showResult(`${action}: ${response.status} ${out.error || ""}`, false);
+    }
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -276,7 +285,13 @@ function openFeed() {
       appendEvent(columnFor(msg.stream), msg.event);
     });
   }
-  feed.addEventListener("end", (e) => columnFor(JSON.parse(e.data).stream).root.classList.add("ended"));
+  feed.addEventListener("end", (e) => {
+    // Mark a column that exists; never create one. `columnFor` would give a retired stream a fresh column --
+    // the trailing `end` frame of a log `discover` no longer lists, re-sent on every reconnect. `renderStreams`
+    // bounds that ghost to two polls; not making it at all is better than removing it a moment later.
+    const col = columns.get(JSON.parse(e.data).stream);
+    if (col) col.root.classList.add("ended");
+  });
   feed.onopen = () => badge(el("feed"), "alive", "feed live");
   feed.onerror = () => badge(el("feed"), "reconnecting", "feed reconnecting");
 }

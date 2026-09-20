@@ -19,14 +19,22 @@ from importlib import resources
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+from meld.actions import Refused
 from meld.adapters import UnknownAdapter
+from meld.appauth import AppAuthError
 from meld.assemble import BoardError
+from meld.config import ConfigError
+from meld.dispatch import DispatchError
 from meld.github import GitHubError
+from meld.gitops import GitError
+from meld.posting import PostError
 from meld.prompts import ROLES
+from meld.results import ResultsError
 from meld.runners import freeze_path, read_record, supervisor_path
 from meld.state import liveness, pid_alive, proc_start_of
 from meld.status import build_status
 from meld.transcript import total_bytes
+from meld.viewer import actions as va
 from meld.viewer import streams as st
 
 #: The only hosts a request may name (with the served port): what stops a page in the browser reaching the API
@@ -35,6 +43,9 @@ LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 #: How long one `/api/state` answer is reused: `build_status` is several paginated `gh` calls, and a page polling
 #: from two tabs would otherwise spend a real share of the token's rate limit on the same answer.
 STATE_TTL_SECONDS = 5.0
+#: The most a request body may be. A page's action is a few hundred bytes; this is the transport saying no to
+#: anything that is not one, before the gate and before anything is read.
+MAX_BODY_BYTES = 1 << 20
 SECURITY_HEADERS: tuple[tuple[str, str], ...] = (
     ("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff"), ("Referrer-Policy", "no-referrer"))
 _ISO_FMT = "%Y-%m-%dT%H:%M:%SZ"
@@ -55,12 +66,13 @@ class Request:
     path: str
     query: dict[str, list[str]]
     headers: dict[str, str]          # names lower-cased
+    body: bytes = b""
 
     @classmethod
-    def parse(cls, method: str, target: str, headers: Mapping[str, str]) -> Request:
+    def parse(cls, method: str, target: str, headers: Mapping[str, str], body: bytes = b"") -> Request:
         parts = urlsplit(target)
         return cls(method.upper(), parts.path or "/", parse_qs(parts.query, keep_blank_values=True),
-                   {k.lower(): v for k, v in headers.items()})
+                   {k.lower(): v for k, v in headers.items()}, body)
 
     def first(self, name: str) -> str:
         return (self.query.get(name) or [""])[0]
@@ -94,7 +106,10 @@ class Viewer:
     """One `meld watch`: its token, its port, and the routes. Reads only; posts nothing; holds no legality logic."""
 
     ROUTES: dict[str, str] = {"/": "page", "/static/app.css": "asset_css", "/static/app.js": "asset_js",
-                              "/api/state": "api_state", "/api/streams": "api_streams", "/api/events": "api_events"}
+                              "/api/state": "api_state", "/api/streams": "api_streams", "/api/events": "api_events",
+                              "/api/action": "api_action"}
+    #: The one route that writes is the one route that is not a GET.
+    METHODS: dict[str, str] = {"/api/action": "POST"}
 
     def __init__(self, ctx, *, token: str, port: int, now: Callable[[], str] = _iso_now, clock: Callable[[], float] = time.monotonic,
                  sleep: Callable[[float], None] = time.sleep, alive: Callable[[int], bool] = pid_alive,
@@ -130,7 +145,7 @@ class Viewer:
         name = self.ROUTES.get(req.path)
         if name is None:
             return _json(404, {"error": f"no route {req.path}"})
-        if req.method != "GET":
+        if req.method != self.METHODS.get(req.path, "GET"):
             return _json(405, {"error": f"{req.method} is not allowed on {req.path}"})
         return getattr(self, name)(req)
 
@@ -225,6 +240,49 @@ class Viewer:
                          check_every=self.check_every, max_polls=self.max_polls)
         return Response(200, body, "text/event-stream; charset=utf-8", SECURITY_HEADERS + (("Connection", "close"),))
 
+    def api_action(self, req: Request) -> Response:
+        """One human verb, run by the same function `meld` runs (spec 22).
+
+        The viewer decides nothing here: it coerces arguments, calls, and reports. A `Refused` comes back whole
+        -- the verb, the target, and the rule that named it -- because a person reading a refusal needs the rule,
+        not a summary of it. A human's refusal posts no PROTOCOL-VIOLATION (`actions.refuse` skips that for a
+        human), so a button pressed in error leaves nothing on the board.
+        """
+        try:
+            body = json.loads(req.body or b"")
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            return _json(400, {"error": f"the request body is not JSON: {e}"})
+        if not isinstance(body, dict):
+            return _json(400, {"error": "the request body must be a JSON object"})
+        if body.get("party") != "human":
+            # Spec 22: the page may post as no other party. The context this server holds is the human's anyway,
+            # so this is the page saying who it thinks it is and being held to it.
+            return _json(400, {"error": f"the viewer acts as the human party only, not {body.get('party')!r}"})
+        verb = body.get("verb")
+        run = va.VERBS.get(verb) if isinstance(verb, str) else None
+        if run is None:
+            return _json(400, {"error": f"unknown verb {verb!r}; the page offers: {', '.join(sorted(va.VERBS))}"})
+        try:
+            result = run(self.ctx, body)
+        except va.BadRequest as e:
+            return _json(400, {"error": str(e)})
+        except Refused as e:
+            return _json(409, {"refused": str(e), "verb": e.refusal.verb.value, "target": e.refusal.target,
+                               "rule": e.refusal.rule, "violation_posted": e.violation_posted})
+        except PostError as e:
+            return _json(409, {"error": str(e)})
+        except (GitHubError, BoardError, DispatchError, GitError, ResultsError, ConfigError, AppAuthError,
+                UnknownAdapter, OSError) as e:
+            return _json(502, {"error": str(e)})
+        except Exception as e:  # noqa: BLE001
+            # A long-lived local tool: an unhandled exception here drops the connection and prints a traceback in
+            # the person's terminal every time they press a button. A rendered 500 is strictly better, and
+            # `_StopRequested`/`KeyboardInterrupt` are BaseException, so a stop still propagates.
+            return _json(500, {"error": f"{type(e).__name__}: {e}"})
+        with self._lock:
+            self._state_cache = None      # the board has just moved; the next /api/state rebuilds rather than lying
+        return _json(200, {"ok": True, "verb": verb, "result": result})
+
 
 class _Handler(BaseHTTPRequestHandler):
     """Bytes on a connection in, `Viewer.handle` out. HTTP/1.0 on purpose: every response closes its connection,
@@ -240,7 +298,17 @@ class _Handler(BaseHTTPRequestHandler):
         self._dispatch()
 
     def _dispatch(self) -> None:
-        resp = self.server.viewer.handle(Request.parse(self.command, self.path, self.headers))  # type: ignore[attr-defined]
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if length < 0 or length > MAX_BODY_BYTES:
+            # Before the gate, like a malformed request line: nothing is read, so a hostile Content-Length
+            # cannot make this process wait on a body it will never accept.
+            self.send_error(413, "request body too large")
+            return
+        resp = self.server.viewer.handle(  # type: ignore[attr-defined]
+            Request.parse(self.command, self.path, self.headers, self.rfile.read(length) if length else b""))
         self.send_response(resp.status)
         self.send_header("Content-Type", resp.content_type)
         for name, value in resp.headers:

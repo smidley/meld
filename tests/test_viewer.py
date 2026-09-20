@@ -32,6 +32,11 @@ def viewer_for(tmp_path, **overrides):
     (tmp_path / ".meld.toml").write_text(PROJECT_TOML)
     fake = FakeGh()
     load_board1_routes(fake)
+    # load_board1_routes wires only the GETs it takes to assemble the board; a human's own coordination comment
+    # (plan 8c's /api/action, the first write the viewer suite makes) needs its own POST route, the same one
+    # test_posting.py's and test_actions.py's fixture-builders register for the same reason.
+    fake.route("POST", "repos/acme/widgets/issues/10/comments",
+               {"id": 555, "html_url": "https://github.com/acme/widgets/issues/10#issuecomment-555"})
     ctx = load_context(tmp_path / ".meld.toml", env=env_for(tmp_path, group=None), run=fake,
                        adapter_for=lambda name: FakeAdapter())
     kw = dict(token=TOKEN, port=8765, now=lambda: NOW, clock=Clock(), sleep=lambda s: None, alive=lambda pid: True,
@@ -97,8 +102,8 @@ def test_no_cors_header_is_ever_sent_and_the_security_headers_always_are(tmp_pat
 def test_unknown_routes_are_404_and_the_wrong_method_is_405_behind_the_gate(tmp_path):
     v, _, _ = viewer_for(tmp_path)
     assert get(v, "/nowhere").status == 404 and "no route" in body(get(v, "/nowhere"))["error"]
-    assert get(v, "/api/action", method="POST").status == 404       # plan 8c
     assert get(v, "/api/config", method="PUT").status == 404        # plan 8d
+    assert get(v, "/api/action").status == 405                      # POST only
     assert get(v, "/api/state", method="POST").status == 405
     assert get(v, "/nowhere", token=None).status == 403             # the gate comes first
 
@@ -294,6 +299,28 @@ def test_serve_binds_an_os_assigned_loopback_port_and_answers_over_a_socket(tmp_
         assert data.endswith(b'event: end\ndata: {"stream": "claude/pm-1.log"}\n\n')
         resp, data = fetch(f"/api/streams?t={TOKEN}", headers={"Host": f"evil.example:{port}"})
         assert (resp.status, data) == (403, b"")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_a_body_larger_than_the_cap_is_refused_at_the_transport(tmp_path):
+    """A Content-Length above the cap is answered 413 without reading the body, like a malformed request line."""
+    import http.client
+    v, _, _ = viewer_for(tmp_path)
+    httpd = serve(v, port=0)
+    try:
+        port = httpd.server_address[1]
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        conn.putrequest("POST", f"/api/action?t={TOKEN}")
+        conn.putheader("Content-Length", str(server.MAX_BODY_BYTES + 1))
+        conn.putheader("Content-Type", "application/json")
+        conn.endheaders()
+        resp = conn.getresponse()
+        assert resp.status == 413
+        conn.close()
     finally:
         httpd.shutdown()
         httpd.server_close()

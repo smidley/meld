@@ -13,6 +13,17 @@ const columns = new Map();   // stream id -> {root, list, live, why, listed, liv
 // page shows it as text rather than offering a button that would only ever be refused.
 const DRIVEABLE = new Set(["claim", "release", "post", "tag", "challenge", "decide", "remember",
                            "plan-approve", "plan-ack", "merge"]);
+// What each action needs from the bar: `ref`, free `text`, and a header `verb` for the two that carry one.
+// Anything an action does not name is hidden and not sent, so `post` never carries a stale `--supersedes`
+// and `plan-approve` never carries a ref.
+const FIELDS = {
+  "claim": ["ref"], "release": ["ref"], "merge": ["ref"], "decide": ["ref"],
+  "plan-ack": ["ref"], "plan-approve": [],
+  "remember": ["ref", "text"], "challenge": ["ref", "verb", "text"], "post": ["ref", "verb", "text"],
+};
+const POST_VERBS = ["ASK", "DIRECTIVE", "HALT", "RESUME", "REVERT", "PROVIDED", "RESOLVED", "ACK", "AMEND",
+                    "APPROVE", "NEEDS-HUMAN"];
+const CHALLENGE_ACTIONS = ["open", "evidence", "retract", "uphold", "dismiss"];
 
 function api(path, params) {
   const url = new URL(path, location.origin);
@@ -89,6 +100,68 @@ function renderBoard(s) {
   agreements.replaceChildren();
   for (const [ref, a] of Object.entries((s.coordination && s.coordination.agreements) || {})) {
     boardRow(agreements, ref, a.joint_verified ? `${a.status} (verified)` : a.status, a.legal, { ref });
+  }
+}
+
+function options(select, values) {
+  select.replaceChildren();
+  for (const v of values) {
+    const o = document.createElement("option");
+    o.value = v;
+    text(o, v);
+    select.append(o);
+  }
+}
+
+function showFields() {
+  const wants = FIELDS[el("action").value] || [];
+  for (const name of ["ref", "verb", "text"]) el(name).classList.toggle("hidden", !wants.includes(name));
+  if (wants.includes("verb")) options(el("verb"), el("action").value === "challenge" ? CHALLENGE_ACTIONS : POST_VERBS);
+}
+
+function showResult(message, ok) {
+  const node = el("result");
+  node.className = ok ? "ok" : "bad";
+  text(node, message);
+}
+
+async function runAction() {
+  const action = el("action").value;
+  const wants = FIELDS[action] || [];
+  const payload = { party: "human", verb: action };
+  if (wants.includes("ref")) {
+    const ref = el("ref").value.trim();
+    payload.ref = ref;
+    const n = /^#?(\d+)$/.exec(ref);
+    if (n) payload.number = Number(n[1]);
+  }
+  if (wants.includes("text")) payload.text = el("text").value;
+  // Both the header verb `post` carries and the five `challenge` actions travel as `action`: the body's own
+  // `verb` key is the dispatch name (`post`, `challenge`), so a second meaning for it cannot fit in one object.
+  if (wants.includes("verb")) payload.action = el("verb").value;
+  showResult(`${action} …`, true);
+  let response;
+  try {
+    response = await fetch(api("/api/action"), {
+      method: "POST", cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (e) {
+    showResult(`${action}: ${e.message}`, false);
+    return;
+  }
+  let out = {};
+  try { out = await response.json(); } catch (e) { out = {}; }
+  if (response.ok) {
+    showResult(`${action} ok: ${JSON.stringify(out.result)}`, true);
+    pollState();                       // the server dropped its cached state; show the moved board at once
+  } else if (out.refused) {
+    // Verbatim, rule included: the rule is the whole content of a refusal, and summarising it would make the
+    // page a second authority on what is legal.
+    showResult(`refused ${out.verb} ${out.target}: ${out.rule}`, false);
+  } else {
+    showResult(`${action}: ${response.status} ${out.error || ""}`, false);
   }
 }
 
@@ -212,15 +285,36 @@ function renderStreams(list) {
   }
 }
 
+let statePending = null;
 async function pollState() {
+  if (statePending) clearTimeout(statePending);
   try { renderState(await getJSON("/api/state")); } catch (e) { text(el("error"), e.message); }
-  setTimeout(pollState, STATE_EVERY_MS);
+  statePending = setTimeout(pollState, STATE_EVERY_MS);
 }
 
 async function pollStreams() {
   try { renderStreams((await getJSON("/api/streams")).streams); } catch (e) { text(el("error"), e.message); }
   setTimeout(pollStreams, STREAMS_EVERY_MS);
 }
+
+options(el("action"), Object.keys(FIELDS));
+showFields();
+el("action").addEventListener("change", showFields);
+el("bar").addEventListener("submit", (e) => { e.preventDefault(); runAction(); });
+// A row's button never acts: it fills the bar and hands the person the keyboard. One execution path, and a
+// merge is never one stray click away.
+el("board-panel").addEventListener("click", (e) => {
+  const b = e.target.closest("button.verb");
+  // DRIVEABLE (Task 5) keeps `tag` because the API runs it; FIELDS (this task) has no entry for it because the
+  // bar cannot spell its eight fields. A `tag` button therefore does render (DRIVEABLE, not FIELDS, gates
+  // verbControls), and without this guard it would set the action select to a value with no matching <option>,
+  // blanking every field. Do nothing for a verb the bar cannot run rather than hand it a broken selection.
+  if (!b || !FIELDS[b.dataset.action]) return;
+  el("action").value = b.dataset.action;
+  showFields();
+  el("ref").value = b.dataset.ref || "";
+  el(FIELDS[b.dataset.action]?.includes("text") ? "text" : "run").focus();
+});
 
 pollState();
 pollStreams();

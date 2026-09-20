@@ -31,6 +31,14 @@
   <div class="panel"><h2>Pull requests</h2><div id="pulls"></div></div>
   <div class="panel"><h2>Agreements</h2><div id="agreements"></div></div>
 </section>
+<form id="bar" autocomplete="off">
+  <select id="action" aria-label="action"></select>
+  <select id="verb" aria-label="header verb" class="hidden"></select>
+  <input id="ref" placeholder="ref (#13, plan-add-1)" aria-label="ref">
+  <input id="text" placeholder="message" aria-label="message">
+  <button id="run" type="submit">Run</button>
+  <span id="result" class="dim"></span>
+</form>
 <template id="row">
   <div class="brow">
     <span class="rid"></span>

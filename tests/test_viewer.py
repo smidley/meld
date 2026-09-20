@@ -290,6 +290,20 @@ def test_the_page_can_drive_exactly_the_verbs_the_api_implements(tmp_path):
     assert set(re.findall(r'"([^"]+)"', literal.group(1))) == set(VERBS)
 
 
+def test_the_page_has_one_action_bar_that_posts_and_renders_a_refusal_verbatim(tmp_path):
+    v, _, _ = viewer_for(tmp_path)
+    html, js = get(v, "/").body.decode(), get(v, "/static/app.js").body.decode()
+    assert 'id="bar"' in html and 'id="action"' in html and 'id="run"' in html and 'id="result"' in html
+    assert '"/api/action"' in js and 'method: "POST"' in js and 'party: "human"' in js
+    # every header verb a human may post is offered, and the command verbs are not (they go through challenge)
+    for verb in ("ASK", "DIRECTIVE", "HALT", "RESUME", "REVERT", "PROVIDED", "RESOLVED", "ACK", "AMEND",
+                 "APPROVE", "NEEDS-HUMAN"):
+        assert f'"{verb}"' in js
+    for verb in ("LEASE", "EXPIRED", "RELEASED", "LIMITED"):
+        assert f'"{verb}"' not in js
+    assert "refused" in js and "rule" in js and "innerHTML" not in js
+
+
 def test_serve_binds_an_os_assigned_loopback_port_and_answers_over_a_socket(tmp_path):
     """The one socket test: the wiring from bytes on a connection to `Viewer.handle` and back, including a
     streaming body and the silenced request log."""

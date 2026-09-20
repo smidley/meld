@@ -243,7 +243,10 @@ def test_the_page_references_nothing_off_the_machine_and_renders_text_as_text(tm
         assert "http://" not in text and "https://" not in text and "//cdn" not in text and "@import" not in text
     assert "innerHTML" not in js and "textContent" in js and "EventSource" in js
     assert 'className = "badge' not in js
-    assert "MAX_SOURCES" in js and "classList" in js
+    assert "classList" in js
+    assert "MAX_SOURCES" not in js and "openWaiting" not in js      # one connection now, so no cap and no queue
+    assert js.count("new EventSource") == 1
+    assert "msg.stream" in js and "feed" in js
     for route in ("/api/state", "/api/streams", "/api/events"):
         assert route in js
     assert 'name="referrer" content="no-referrer"' in html

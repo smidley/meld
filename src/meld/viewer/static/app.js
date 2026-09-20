@@ -4,12 +4,10 @@
 const TOKEN = new URLSearchParams(location.search).get("t") || "";
 const KINDS = ["run_started", "message", "thinking", "tool_call", "tool_result", "usage", "run_finished",
                "usage_limit", "log_truncated", "cli_error", "raw"];
-const BADGE_STATES = ["alive", "dead", "unknown", "frozen", "waiting"];
+const BADGE_STATES = ["alive", "dead", "unknown", "frozen", "reconnecting"];
 const STATE_EVERY_MS = 10000;
 const STREAMS_EVERY_MS = 5000;
-const MAX_SOURCES = 4;       // two connections stay free for the state/streams polls -- browsers cap ~6 per origin
-const SOURCE_PRIORITY = { alive: 0, dead: 1, unknown: 2 };
-const columns = new Map();   // stream id -> {root, list, live, why, source, liveness}
+const columns = new Map();   // stream id -> {root, list, live, why, listed, liveness}
 
 function api(path, params) {
   const url = new URL(path, location.origin);
@@ -103,56 +101,52 @@ function appendEvent(col, ev) {
   if (pinned) list.scrollTop = list.scrollHeight;
 }
 
-function openStream(col, id) {
-  // EventSource reconnects by itself and sends Last-Event-ID, so resumption needs nothing here.
-  const source = new EventSource(api("/api/events", { stream: id }));
-  for (const kind of KINDS) source.addEventListener(kind, (e) => appendEvent(col, JSON.parse(e.data)));
-  source.addEventListener("end", () => { col.root.classList.add("ended"); source.close(); openWaiting(); });
-  source.onerror = () => col.root.classList.add("reconnecting");
-  source.onopen = () => col.root.classList.remove("reconnecting");
-  col.source = source;
+function columnFor(id) {
+  // A frame can name a stream the five-second /api/streams poll has not listed yet; give it a column at once,
+  // titled by its id, and let the next poll replace the title and the badge. `listed` is what keeps that
+  // column alive: only a column a poll has named, and then stopped naming, is removed.
+  let col = columns.get(id);
+  if (!col) {
+    const root = el("column").content.firstElementChild.cloneNode(true);
+    col = { root, list: root.querySelector(".events"), live: root.querySelector(".live"),
+            why: root.querySelector(".why"), listed: false, liveness: { state: "unknown", reason: "not listed yet" } };
+    text(root.querySelector(".who"), id);
+    el("streams").append(root);
+    columns.set(id, col);
+  }
+  return col;
 }
 
-function openWaiting() {
-  // The only place that opens an EventSource: at most MAX_SOURCES at once, so the two polls always keep a
-  // free connection. A column with no source yet is waiting for a slot; one whose source is already
-  // closed has ended and is never reopened -- reopening would replay its whole transcript from the start.
-  let openCount = 0;
-  const waiting = [];
-  for (const [id, col] of columns) {
-    if (col.source == null) waiting.push([id, col]);
-    else if (col.source.readyState !== EventSource.CLOSED) openCount++;
+function openFeed() {
+  // One connection for every transcript (spec 22): a browser allows about six to an origin, and one source per
+  // column starved these two polls. EventSource reconnects by itself and sends Last-Event-ID, which carries
+  // every stream's position, so resumption needs nothing here.
+  const feed = new EventSource(api("/api/events"));
+  for (const kind of KINDS) {
+    feed.addEventListener(kind, (e) => {
+      const msg = JSON.parse(e.data);
+      appendEvent(columnFor(msg.stream), msg.event);
+    });
   }
-  waiting.sort((a, b) => (SOURCE_PRIORITY[a[1].liveness.state] ?? 3) - (SOURCE_PRIORITY[b[1].liveness.state] ?? 3));
-  for (const [id, col] of waiting) {
-    if (openCount >= MAX_SOURCES) break;
-    openStream(col, id);
-    openCount++;
-  }
+  feed.addEventListener("end", (e) => columnFor(JSON.parse(e.data).stream).root.classList.add("ended"));
+  feed.onopen = () => badge(el("feed"), "alive", "feed live");
+  feed.onerror = () => badge(el("feed"), "reconnecting", "feed reconnecting");
 }
 
 function renderStreams(list) {
   const seen = new Set();
   for (const s of list) {
     seen.add(s.id);
-    let col = columns.get(s.id);
-    if (!col) {
-      const root = el("column").content.firstElementChild.cloneNode(true);
-      col = { root, list: root.querySelector(".events"), live: root.querySelector(".live"),
-              why: root.querySelector(".why"), source: null };
-      const who = s.kind === "role" ? `${s.group} / ${s.role}` : `${s.group} / ${s.kind} #${s.issue}`;
-      text(root.querySelector(".who"), who);
-      el("streams").append(root);
-      columns.set(s.id, col);
-    }
+    const col = columnFor(s.id);
+    col.listed = true;
     col.liveness = s.liveness;
+    text(col.root.querySelector(".who"), s.kind === "role" ? `${s.group} / ${s.role}` : `${s.group} / ${s.kind} #${s.issue}`);
   }
   for (const [id, col] of columns) {
-    if (!seen.has(id)) { if (col.source) col.source.close(); col.root.remove(); columns.delete(id); }
+    if (col.listed && !seen.has(id)) { col.root.remove(); columns.delete(id); }
   }
-  openWaiting();
   for (const col of columns.values()) {
-    badge(col.live, col.source ? col.liveness.state : "waiting");
+    badge(col.live, col.liveness.state);
     text(col.why, col.liveness.reason);
   }
 }
@@ -169,3 +163,4 @@ async function pollStreams() {
 
 pollState();
 pollStreams();
+openFeed();

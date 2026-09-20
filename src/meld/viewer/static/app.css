@@ -17,7 +17,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg);
 .badge.dead { color: var(--bad); border-color: var(--bad); }
 .badge.unknown { color: var(--unknown); border-color: var(--unknown); }
 .badge.frozen { color: var(--warn); border-color: var(--warn); }
-.badge.waiting { color: var(--dim); border-color: var(--dim); }
+.badge.reconnecting { color: var(--warn); border-color: var(--warn); }
 #streams { display: flex; gap: 8px; padding: 8px; overflow-x: auto; height: calc(100vh - 110px); }
 .column { flex: 0 0 34rem; max-width: 46rem; display: flex; flex-direction: column; background: var(--panel);
   border: 1px solid var(--line); border-radius: 4px; min-height: 0; }

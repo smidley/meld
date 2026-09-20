@@ -59,8 +59,12 @@ function verbControls(into, legal, { ref, number }) {
 
 function boardRow(into, id, what, legal, keys) {
   const row = el("row").content.firstElementChild.cloneNode(true);
-  text(row.querySelector(".rid"), id);
-  text(row.querySelector(".rwhat"), what);
+  // Both tracks truncate: an agreement ref is a model-authored token of any length and a title can be long.
+  // The full text stays reachable on hover, which is what the freeze badge does with its reset instant.
+  const rid = text(row.querySelector(".rid"), id);
+  const rwhat = text(row.querySelector(".rwhat"), what);
+  rid.title = id;
+  rwhat.title = what;
   verbControls(row.querySelector(".rverbs"), legal, keys);
   into.append(row);
 }

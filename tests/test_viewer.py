@@ -1,5 +1,6 @@
 import http.client
 import json
+import re
 import threading
 from types import SimpleNamespace
 
@@ -269,7 +270,24 @@ def test_the_page_renders_the_board_and_offers_only_verbs_it_can_drive(tmp_path)
     for verb in ("claim", "release", "merge", "decide", "remember", "challenge", "post", "tag",
                  "plan-approve", "plan-ack"):
         assert f'"{verb}"' in js
-    assert "innerHTML" not in js
+    # "renderBoard(s)" alone would still match the function's own signature (`function renderBoard(s) {`) if the
+    # call site were deleted -- verified by experiment (see the fix-round report); the semicolon is what pins
+    # this to the call inside renderState.
+    assert "renderBoard(s);" in js
+    assert "dataset.ref" in js and "dataset.number" in js
+    assert "if (!DRIVEABLE.has(verb))" in js
+
+
+def test_the_page_can_drive_exactly_the_verbs_the_api_implements(tmp_path):
+    """`DRIVEABLE` is the page's list of verbs it has a control for; `VERBS` is what `/api/action` implements. A
+    verb in one and not the other is either a button that can only ever 500, or a capability with no way to reach
+    it — and this is the half of "offers only verbs it can drive" that Python can actually check."""
+    from meld.viewer.actions import VERBS
+    v, _, _ = viewer_for(tmp_path)
+    js = get(v, "/static/app.js").body.decode()
+    literal = re.search(r"const DRIVEABLE = new Set\(\[(.*?)\]\)", js, re.S)
+    assert literal, "DRIVEABLE is no longer where this test can read it"
+    assert set(re.findall(r'"([^"]+)"', literal.group(1))) == set(VERBS)
 
 
 def test_serve_binds_an_os_assigned_loopback_port_and_answers_over_a_socket(tmp_path):

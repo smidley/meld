@@ -144,7 +144,7 @@ and the tests:
 ```python
 def test_cursor_round_trips_and_ignores_anything_it_cannot_read():
     assert encode_cursor({"claude/b.log": 2, "claude/a.log": 7}) == "claude/a.log=7|claude/b.log=2"
-    assert encode_cursor({"claude/a.log": 0, "claude/b.log": 3}) == "claude/b.log=3"   # nothing sent, nothing carried
+    assert encode_cursor({"claude/a.log": 0, "claude/b.log": 3}) == "claude/a.log=0|claude/b.log=3"
     assert encode_cursor({}) == ""
     assert decode_cursor("claude/a.log=7|claude/b.log=2") == {"claude/a.log": 7, "claude/b.log": 2}
     assert decode_cursor("") == {} and decode_cursor("rubbish") == {} and decode_cursor("a.log=x") == {}
@@ -172,9 +172,9 @@ def test_events_interleaves_two_streams_and_the_cursor_names_both(tmp_path):
         ("message", "claude/orchestrator-1.log", "b1"),
         ("message", "claude/orchestrator-1.log", "b2"),
     ]
-    assert [f["id"] for f in out] == ["claude/pm-1.log=1",
-                                      "claude/pm-1.log=1|claude/orchestrator-1.log=1",
-                                      "claude/pm-1.log=1|claude/orchestrator-1.log=2"]
+    assert [f["id"] for f in out] == ["claude/orchestrator-1.log=0|claude/pm-1.log=1",   # encode_cursor sorts
+                                      "claude/orchestrator-1.log=1|claude/pm-1.log=1",
+                                      "claude/orchestrator-1.log=2|claude/pm-1.log=1"]
 
 
 def test_events_resumes_each_stream_from_the_cursor_it_was_given(tmp_path):
@@ -199,14 +199,16 @@ def test_events_ends_one_stream_without_ending_the_connection(tmp_path):
     a.write_text("a1\n")
     b.write_text("b1\n")
     states = iter(["dead", "alive", "alive", "alive"])
+    # Poll 1 replays both; poll 2's idle check ends pm; poll 3 is the idle round that proves the connection
+    # outlived it -- one heartbeat, orchestrator still open, pm never reopened.
     out = frames(list(events(only(src(a, lambda: {"state": next(states)}), src(b)),
-                             now=lambda: NOW, sleep=lambda s: None, check_every=1, max_polls=2)))
+                             now=lambda: NOW, sleep=lambda s: None, check_every=1, max_polls=3)))
     kinds = [(f.get("event"), json.loads(f["data"])["stream"] if "data" in f else None) for f in out if "comment" not in f]
     assert kinds == [("message", "claude/pm-1.log"), ("message", "claude/orchestrator-1.log"),
                      ("run_finished", "claude/pm-1.log"), ("end", "claude/pm-1.log")]
     assert json.loads([f for f in out if f.get("event") == "run_finished"][0]["data"])["event"]["meta"] == {"synthesized": True}
     assert "id" not in [f for f in out if f.get("event") == "run_finished"][0]        # synthesized: not a position
-    assert [f for f in out if "comment" in f] == [{"comment": "ping"}, {"comment": "ping"}]
+    assert [f for f in out if "comment" in f] == [{"comment": "ping"}]
 
 
 def test_events_does_not_reopen_a_stream_it_has_ended(tmp_path):
@@ -285,11 +287,13 @@ class _Reader:
 def encode_cursor(counts: Mapping[str, int]) -> str:
     """Every stream's position in one string, for the `id:` line: `<stream>=<count>`, joined by `|`.
 
-    A stream with nothing sent is left out, so a connection's first frames carry a short cursor. `Last-Event-ID`
-    is one opaque string and the browser hands it straight back on its own reconnect, which is the whole reason
-    the client needs no resume logic of its own.
+    Every stream the connection knows is named, a count of zero included: a cursor that omitted the zeros would
+    be empty on the frame that says a stream was trimmed, and an empty `Last-Event-ID` resets every other stream
+    to the start as well. It costs about 45 bytes per stream per frame on a loopback connection, which is the
+    price of the browser doing the reconnecting -- `Last-Event-ID` is one opaque string it hands straight back,
+    so the client needs no resume logic of its own.
     """
-    return "|".join(f"{stream}={n}" for stream, n in sorted(counts.items()) if n > 0)
+    return "|".join(f"{stream}={n}" for stream, n in sorted(counts.items()))
 
 
 def decode_cursor(text: str) -> dict[str, int]:
@@ -373,11 +377,15 @@ def events(sources: Callable[[], list[Source]], *, now: Callable[[], str], sleep
                 yield notice(r, "was trimmed while this page was reading it")
             elif r.first and r.sent > len(batch):
                 yield notice(r, "was trimmed since this page last read it")
+            if batch:
+                # The file's last kind, whether or not this client still needed those events: a caught-up client
+                # whose transcript already ends in `usage_limit` must not be handed a synthesized `run_finished`.
+                r.last_kind = batch[-1].kind
             if r.first:
                 batch = batch[r.sent:]
                 r.first = False
             for ev in batch:
-                r.last_kind, r.sent = ev.kind, ev.seq
+                r.sent = ev.seq
                 yield frame(r.src.stream, ev, cursor=cursor_now())
             wrote = wrote or bool(batch)
         if wrote:
@@ -385,9 +393,11 @@ def events(sources: Callable[[], list[Source]], *, now: Callable[[], str], sleep
         else:
             idle += 1
             if idle % check_every == 0:
+                said = False
                 for r in list(readers.values()):
                     if r.ended or r.src.writer().get("state") != "dead":
                         continue
+                    said = True
                     for ev in r.tail.flush(r.src.parse, now()):
                         r.last_kind, r.sent = ev.kind, ev.seq
                         yield frame(r.src.stream, ev, cursor=cursor_now())
@@ -399,7 +409,8 @@ def events(sources: Callable[[], list[Source]], *, now: Callable[[], str], sleep
                                                         meta={"synthesized": True}))
                     r.ended = True
                     yield end_frame(r.src.stream)
-                yield PING
+                if not said:
+                    yield PING          # a heartbeat is for a round that said nothing; an ending already did
         sleep(interval)
 ```
 
@@ -459,7 +470,8 @@ Delete the module constant `END`; `Mapping` joins the `collections.abc` import.
 
 ```python
 def test_api_events_streams_every_transcript_and_resumes_from_the_cursor(tmp_path):
-    v, ctx, _ = viewer_for(tmp_path, alive=lambda pid: False)     # the writer is confirmed gone: each stream ends
+    # max_polls=2: the replay happens inside the loop now, so the idle check that ends a stream is the second poll.
+    v, ctx, _ = viewer_for(tmp_path, alive=lambda pid: False, max_polls=2)   # the writer is confirmed gone
     home = ctx.store.home
     log = home / "logs" / "claude" / "pm-1.log"
     log.parent.mkdir(parents=True)
@@ -493,6 +505,21 @@ def test_api_events_with_no_stream_is_every_stream_not_an_error(tmp_path):
     (ctx.store.home / "logs" / "claude" / "pm-1.log").write_text("hi\n")
     assert get(v, "/api/events").status == 200 and get(v, "/api/events?stream=").status == 200
 ```
+
+- [ ] **Step 5b: Update the socket test's SSE assertions** in `tests/test_viewer.py`. `test_serve_binds_an_os_assigned_loopback_port_and_answers_over_a_socket` builds its viewer with `viewer_for(tmp_path, alive=lambda pid: False)`; give it `max_polls=2` as well, and replace its two SSE assertions
+
+```python
+        assert data.startswith(b"id: 1\nevent: message\n") and data.endswith(b"event: end\ndata: {}\n\n")
+```
+
+with
+
+```python
+        assert data.startswith(b"id: claude/pm-1.log=1\nevent: message\n")
+        assert data.endswith(b'event: end\ndata: {"stream": "claude/pm-1.log"}\n\n')
+```
+
+(the line's exact current text may differ; find it by `data.startswith(b"id: 1`).
 
 - [ ] **Step 6: Run the focused tests, then the suite.**
 

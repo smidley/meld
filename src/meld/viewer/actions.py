@@ -57,11 +57,23 @@ def _strings(body: Mapping, key: str, verb: str) -> tuple[str, ...] | None:
     return tuple(value) or None
 
 
+def _flag(body: Mapping, key: str, verb: str) -> bool:
+    if key not in body:
+        return False
+    value = body[key]
+    # Unlike every string field, a JSON body has a real boolean type -- so, unlike `_string`/`_optional`, this
+    # does not coerce: `"force": "no"` and `"force": "false"` are not falsy in Python (`bool("no") is True`),
+    # so accepting any truthy/falsy value here would silently force-release on a typo'd string.
+    if not isinstance(value, bool):
+        raise BadRequest(f"{verb} needs a boolean '{key}', got {value!r}")
+    return value
+
+
 #: Verb name (as the CLI spells it) to the call that runs it. Exactly the ten verbs section 22 grants the page:
 #: every other legal verb either dispatches a worker, acts as a reviewer, or belongs to a group.
 VERBS: dict[str, Callable[..., dict]] = {
     "claim": lambda ctx, b: claim(ctx, _number(b, "claim")),
-    "release": lambda ctx, b: release(ctx, _number(b, "release"), force=bool(b.get("force", False))),
+    "release": lambda ctx, b: release(ctx, _number(b, "release"), force=_flag(b, "force", "release")),
     # No `joint=`: [joint] is a party, and the page posts as the human and nothing else.
     # The header verb (ASK, HALT, ACK, ...) is carried in its own field, "action" -- not "verb" -- because
     # "verb" at the top level is already this very dispatch table's own key ("post"); reusing it here would

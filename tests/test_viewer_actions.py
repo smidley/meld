@@ -75,6 +75,7 @@ def test_the_viewer_refuses_to_act_as_a_group_even_when_the_body_says_human(tmp_
     ({"party": "human", "verb": "remember", "ref": "#13"}, "non-empty 'text'"),
     ({"party": "human", "verb": "plan-ack"}, "non-empty 'ref'"),
     ({"party": "human", "verb": "tag", "number": 11, "skills": "qa"}, "list of strings"),
+    ({"party": "human", "verb": "release", "number": 12, "force": "no"}, "boolean 'force'"),
 ])
 def test_an_argument_the_verb_cannot_use_never_reaches_it(tmp_path, payload, wants):
     v, _, fake = viewer_for(tmp_path)
@@ -119,3 +120,26 @@ def test_the_gate_comes_before_the_action(tmp_path):
     assert act(v, {"party": "human", "verb": "post", "ref": "ask-1", "text": "x"}, token="wrong").status == 403
     assert act(v, {"party": "human", "verb": "post", "ref": "ask-1", "text": "x"}, host="evil.example:8765").status == 403
     assert len(comments(fake)) == before
+
+
+@pytest.mark.parametrize("payload", [
+    {"verb": "claim", "number": 11},
+    {"verb": "release", "number": 12},
+    {"verb": "release", "number": 12, "force": True},
+    {"verb": "post", "action": "ASK", "ref": "ask-9", "text": "anyone?"},
+    {"verb": "tag", "number": 11, "worker": "backend", "model": "claude-sonnet-5", "effort": "high",
+     "size": "M", "skills": ["qa"], "scope": ["src/*.py"], "may_delete": ["old.py"], "held": ["delete"]},
+    {"verb": "challenge", "action": "open", "ref": "#13", "text": "the evidence does not show it"},
+    {"verb": "decide", "ref": "vehicle-1"},
+    {"verb": "remember", "ref": "#13", "text": "what went wrong"},
+    {"verb": "plan-approve"},
+    {"verb": "plan-ack", "ref": "plan-add-1"},
+    {"verb": "merge", "number": 14},
+])
+def test_every_verb_binds_the_arguments_its_own_function_takes(tmp_path, payload):
+    """Not about what the board allows -- about the call itself. A misspelled keyword or a swapped positional in
+    the dispatch table is a TypeError the coercion cannot see, and it would reach a person as a 500 with the
+    suite green. So: a valid body must never come back 400 (the coercion rejected it) or 500 (the call did)."""
+    v, _, _ = viewer_for(tmp_path)
+    resp = act(v, {"party": "human", **payload})
+    assert resp.status in (200, 409, 502), (payload, body(resp))

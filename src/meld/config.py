@@ -64,6 +64,14 @@ def _positive_int(value: Any, path: str) -> int:
     return value
 
 
+def _port(value: Any, path: str) -> int:
+    """A TCP port for `meld watch` to bind: a real TOML integer in 0..65535, where 0 lets the OS choose. `int()` would
+    quietly accept "8080", 1.5 and True (bool is an int subclass)."""
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 65535:
+        raise ConfigError(f"{path} must be an integer from 0 to 65535 (0 lets the OS choose), got {value!r}")
+    return value
+
+
 def _role(data: Mapping[str, Any], path: str) -> RoleConfig:
     return RoleConfig(model=str(_require(data, "model", path)), effort=str(_require(data, "effort", path)))
 
@@ -129,6 +137,8 @@ class Config:
     logs_warn_total_mb: int = 2048
     runners_limit_retry_minutes: int = 30
     logs_warn_free_mb: int = 2048
+    viewer_port: int = 0
+    viewer_open_browser: bool = False
 
     def timeout_seconds(self, size: str) -> int:
         if size not in self.timeouts:
@@ -198,6 +208,7 @@ class Config:
         lease = data.get("lease", {})
         audit = data.get("audit", {})
         logs = data.get("logs", {})
+        viewer = data.get("viewer", {})
         timeouts_cfg = {"S": str(timeouts.get("S", "20m")), "M": str(timeouts.get("M", "45m")), "L": str(timeouts.get("L", "90m"))}
         for size, value in timeouts_cfg.items():
             try:
@@ -241,6 +252,8 @@ class Config:
             runners_limit_retry_minutes=_at_least(runners.get("limit_retry_minutes", 30), RUNNERS_MIN_LIMIT_RETRY_MINUTES,
                                                   "runners.limit_retry_minutes", "minutes"),
             logs_warn_free_mb=_at_least(logs.get("warn_free_mb", 2048), LOGS_MIN_WARN_FREE_MB, "logs.warn_free_mb", "MB"),
+            viewer_port=_port(viewer.get("port", 0), "viewer.port"),
+            viewer_open_browser=bool(viewer.get("open_browser", False)),
         )
 
     @property

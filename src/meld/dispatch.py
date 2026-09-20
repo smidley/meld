@@ -42,7 +42,7 @@ from meld.notifier import notify
 from meld.results import cap_body, store_result
 from meld.roster import WorkerType, roster
 from meld.rules import Actor, Refusal, Verb, issue_refusal, pr_refusal, reap_rule, review_concern
-from meld.state import pid_alive
+from meld.state import pid_alive, proc_start_of
 from meld.status import build_status
 from meld.transcript import Tail, render, sweep_logs
 
@@ -454,7 +454,7 @@ def _dispatch_build(ctx, board: Board, actor: Actor, number: int, adapter: Adapt
     record = RunRecord(group=group.name, issue=number, kind="build", pr=None, pid=pid, started_at=_iso(when), worktree=str(wt),
                        log_path=str(log_path), model=issue.model or "", effort=issue.effort or "",
                        tier=ctx.models.tier_of(group.cli, issue.model or "") or "medium", milestone=board.milestone, alive=True,
-                       collected=False, deadline=_iso(deadline), branch=branch, worker=worker.name)
+                       collected=False, deadline=_iso(deadline), branch=branch, worker=worker.name, proc_start=proc_start_of(pid))
     ctx.store.write_run(record)
     until = _iso(deadline + timedelta(minutes=ctx.cfg.lease_grace_minutes))
     lease = ctx.gh.create_comment(board.coordination_issue, compose(Header(Party("pm", group.name), "LEASE", f"#{number}", None),
@@ -514,7 +514,7 @@ def _dispatch_pr(ctx, board: Board, actor: Actor, number: int, kind: str, adapte
     record = RunRecord(group=group.name, issue=number, kind=kind, pr=number, pid=pid, started_at=_iso(when), worktree=str(wt),
                        log_path=str(log_path), model=model, effort=effort, tier=ctx.models.tier_of(group.cli, model) or "medium",
                        milestone=board.milestone, alive=True, collected=False, deadline=_iso(deadline), branch=pr.head_ref,
-                       head_sha=pr.head_sha, worker=worker.name)
+                       head_sha=pr.head_sha, worker=worker.name, proc_start=proc_start_of(pid))
     ctx.store.write_run(record)
     where = f"merge commit `{pr.merge_commit_sha[:7]}`" if at_merge else f"head `{pr.head_sha[:7]}`"   # type: ignore[index]
     article = "an" if worker.name[0] in "aeiou" else "a"

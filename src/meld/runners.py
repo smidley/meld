@@ -18,6 +18,7 @@ from meld.dispatch import DispatchError
 from meld.github import GitHubError
 from meld.grammar import Header, compose
 from meld.prompts import ROLES, role_prompt
+from meld.state import proc_start_of
 from meld.transcript import Tail
 
 ROLE_MAX_TURNS = 10000
@@ -131,7 +132,18 @@ def freeze_path(home: Path, group: str, role: str) -> Path:
     return home / "state" / group / role / "limit.json"
 
 
-def read_freeze(path: Path) -> dict | None:
+def supervisor_path(home: Path, group: str) -> Path:
+    """Where a group's supervisor records itself: its pid and the instant the kernel started it (spec 22)."""
+    return home / "state" / group / "supervisor.json"
+
+
+def role_run_path(home: Path, group: str, role: str) -> Path:
+    """Where a role's current launch is recorded: pid, start time, the log it writes, launch number and reason."""
+    return home / "state" / group / role / "current.json"
+
+
+def read_record(path: Path) -> dict | None:
+    """A JSON object at `path`, or None when there is none, it is unreadable, or it is not an object."""
     try:
         data = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
@@ -139,9 +151,28 @@ def read_freeze(path: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def write_freeze(path: Path, payload: dict) -> None:
+def write_record(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     write_atomic(path, json.dumps(payload, indent=2) + "\n")
+
+
+# The freeze file is one such record; these names are what plan 9 and its tests call the same two functions.
+read_freeze = read_record
+write_freeze = write_record
+
+
+def _note(path: Path, payload: dict) -> None:
+    """Write a record about a process, and swallow the failure if the disk will not take it.
+
+    A record is evidence for `meld watch`, nothing more: no decision in this module reads one back. So a state
+    directory that cannot be written -- the full disk of 2026-09-12, a permission -- must not turn a launch that
+    succeeded into an exception, because the process is running whether or not it was written down, and a
+    `_try_launch` that raised after `adapter.launch` returned would leave it out of `procs` and launch it again.
+    """
+    try:
+        write_record(path, payload)
+    except OSError:
+        pass
 
 
 def limit_of(log_path: Path, adapter: Adapter, now: str) -> str | None | bool:
@@ -235,10 +266,11 @@ def _frozen(ctx, group: GroupConfig, role: str, *, now: str) -> str:
 
 def run_group(ctx, *, adapter: Adapter | None = None, once: bool = False, cycles: int | None = None, interval: float = 5.0,
               sleep=time.sleep, clock=time.monotonic, wall: Callable[[], str] = _iso_now,
-              base_env: dict | None = None) -> dict:
+              start_of: Callable[[int], str] = proc_start_of, base_env: dict | None = None) -> dict:
     """Keep a group's roles alive. Two clocks, for two jobs: `clock` is monotonic and drives the backoff and
     the restart schedule; `wall` answers what time it is, because a freeze deadline is a wall-clock instant a
-    CLI named and monotonic seconds cannot be compared with one. Both are injected so tests never wait."""
+    CLI named and monotonic seconds cannot be compared with one. Both are injected so tests never wait; `start_of`
+    reads a process's start time (`state.proc_start_of`) and is injected so tests never run `ps`."""
     group = ctx.cfg.groups[ctx.party.group]
     adp = adapter if adapter is not None else ctx.adapter()
     if adp is None:
@@ -264,6 +296,10 @@ def run_group(ctx, *, adapter: Adapter | None = None, once: bool = False, cycles
             state["sleeping"] = False
 
     previous = {sig: signal.signal(sig, on_signal) for sig in (signal.SIGTERM, signal.SIGINT)}
+    # Who this supervisor is, for `meld watch`'s liveness check (spec 22). Never removed: a dead pid in this file
+    # is "confirmed gone", which is more than a missing file can say, and the next supervisor overwrites it.
+    _note(supervisor_path(ctx.store.home, group.name),
+          {"pid": os.getpid(), "started_at": wall(), "proc_start": start_of(os.getpid())})
     procs: dict[str, RoleProcess | None] = {}   # None once a role's launch attempt failed: nothing to poll
     errors: dict[str, int] = {}                 # how many turns this role could not take at all
     failures: dict[str, str] = {}               # and what the last one said
@@ -301,6 +337,9 @@ def run_group(ctx, *, adapter: Adapter | None = None, once: bool = False, cycles
             _cannot(role, str(e))
             return None
         pending.pop(role, None)
+        _note(role_run_path(ctx.store.home, group.name, role),
+              {"pid": fresh.proc.pid, "started_at": wall(), "proc_start": start_of(fresh.proc.pid),
+               "log_path": str(fresh.log_path), "reason": reason, "launch_no": launch_no})
         fresh.restarts, fresh.last_exit = restarts, last_exit
         return fresh
 

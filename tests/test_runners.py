@@ -13,7 +13,7 @@ from meld.adapters.claude import ClaudeAdapter
 from meld.dispatch import DispatchError
 from meld.roster import WorkerType
 from meld.runners import (MAX_FREEZE_MINUTES, _StopRequested, freeze_path, launch_role, limit_of, read_freeze,
-                          role_env, run_group)
+                          read_record, role_env, role_run_path, run_group, supervisor_path)
 from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
 from tests.fakeadapter import FakeAdapter
 from tests.fakegh import FakeGh
@@ -783,3 +783,54 @@ def test_a_gh_that_vanished_mid_run_does_not_end_the_run(tmp_path):
     for role in ("orchestrator", "pm"):
         assert out["roles"][role]["launch_errors"] >= 1
         assert "No such file or directory" in out["roles"][role]["last_launch_error"]
+
+
+def test_run_group_records_its_own_pid_and_each_role_launch(tmp_path):
+    """The viewer's liveness evidence (spec 22): who the supervisor is, and which process is writing which log."""
+    _, ctx, env = make(tmp_path)
+    adapter = FakeAdapter(script="import sys; sys.exit(0)")
+    home = tmp_path / "home"
+    run_group(ctx, adapter=adapter, once=True, interval=0.05, base_env=env,
+              wall=lambda: "2026-09-18T12:00:00Z", start_of=lambda pid: f"born-{pid}")
+    assert read_record(supervisor_path(home, "claude")) == {
+        "pid": os.getpid(), "started_at": "2026-09-18T12:00:00Z", "proc_start": f"born-{os.getpid()}"}
+    pm = read_record(role_run_path(home, "claude", "pm"))
+    launched = next(s for s in adapter.launches if s.role == "pm")
+    assert pm["log_path"] == str(launched.log_path) and pm["reason"] == "start" and pm["launch_no"] == 1
+    assert pm["pid"] > 0 and pm["proc_start"] == f"born-{pm['pid']}" and pm["started_at"] == "2026-09-18T12:00:00Z"
+    # records outlive the run: a dead pid in one is "confirmed gone", which is more than "no record" can say
+    assert supervisor_path(home, "claude").exists() and role_run_path(home, "claude", "orchestrator").exists()
+
+
+def test_a_relaunch_rewrites_the_role_record_with_its_new_launch(tmp_path):
+    _, ctx, env = make(tmp_path)
+    adapter = RecordingAdapter(script="import sys; sys.exit(1)")
+    clock = Clock()
+    wait = _wait_for(adapter)     # wait on the tiny real children, rather than betting 0.05s is enough for them
+
+    def sleep(s):
+        clock.sleep(s)
+        wait(s)
+
+    out = run_group(ctx, adapter=adapter, cycles=4, interval=0.01, sleep=sleep, clock=clock, base_env=env,
+                    start_of=lambda pid: "born")
+    rec = read_record(role_run_path(tmp_path / "home", "claude", "orchestrator"))
+    assert rec["launch_no"] == out["roles"]["orchestrator"]["launches"] >= 2 and rec["reason"] == "crash"
+
+
+def test_a_record_that_cannot_be_written_never_costs_a_launch(tmp_path):
+    """Observability does not outrank the run: a launch that succeeded is tracked whatever happened to its record,
+    or the next cycle would launch the role a second time."""
+    _, ctx, env = make(tmp_path)
+    state_dir = tmp_path / "home" / "state" / "claude"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    state_dir.chmod(0o500)
+    try:
+        adapter = FakeAdapter(script="import sys; sys.exit(0)")
+        out = run_group(ctx, adapter=adapter, once=True, interval=0.05, base_env=env, start_of=lambda pid: "born")
+    finally:
+        state_dir.chmod(0o700)
+    assert out["roles"]["pm"]["launches"] == 1 and out["roles"]["orchestrator"]["launches"] == 1
+    assert len(adapter.launches) == 2                       # each role launched exactly once: no orphan, no duplicate
+    assert out["roles"]["pm"]["launch_errors"] == 0          # a record failing is not the role's cycle failing
+    assert read_record(supervisor_path(tmp_path / "home", "claude")) is None

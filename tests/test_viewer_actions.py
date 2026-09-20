@@ -53,6 +53,19 @@ def test_the_page_may_act_as_no_other_party(tmp_path):
     assert len(comments(fake)) == before
 
 
+def test_the_viewer_refuses_to_act_as_a_group_even_when_the_body_says_human(tmp_path):
+    """Fix round 1: the body's "party": "human" is the page's own claim; the process actually running as
+    `MELD_GROUP=claude` must be checked too, or a page served from a group's environment could post -- and be
+    refused -- as that group, PROTOCOL-VIOLATION included. Reproduces the reviewer's probe against `plan-8c`."""
+    v, _, fake = viewer_for(tmp_path, group="claude", role="orchestrator")
+    before = len(comments(fake))
+    resp = act(v, {"party": "human", "verb": "post", "action": "PROPOSE", "ref": "ask-1", "text": "who owns #13?"})
+    assert resp.status == 400 and "claude" in body(resp)["error"]
+    resp = act(v, {"party": "human", "verb": "claim", "number": 13})
+    assert resp.status == 400 and "claude" in body(resp)["error"]
+    assert len(comments(fake)) == before   # neither call reached the board -- no PROPOSE, no PROTOCOL-VIOLATION
+
+
 @pytest.mark.parametrize("payload, wants", [
     ({"party": "human", "verb": "nope"}, "unknown verb"),
     ({"party": "human", "verb": "claim"}, "integer 'number'"),

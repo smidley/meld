@@ -26,9 +26,10 @@ class Clock:
         return self.t
 
 
-def viewer_for(tmp_path, **overrides):
+def viewer_for(tmp_path, *, group: str | None = None, role: str = "pm", **overrides):
     """The human's context over the recorded board (PROJECT_TOML configures groups `claude` and `codex`), and a
-    Viewer with every seam injected."""
+    Viewer with every seam injected. `group=`/`role=` build a group's or PM's own context instead of the
+    human's -- used only by the test that pins the viewer's refusal to act as anything else."""
     (tmp_path / ".meld.toml").write_text(PROJECT_TOML)
     fake = FakeGh()
     load_board1_routes(fake)
@@ -37,7 +38,7 @@ def viewer_for(tmp_path, **overrides):
     # test_posting.py's and test_actions.py's fixture-builders register for the same reason.
     fake.route("POST", "repos/acme/widgets/issues/10/comments",
                {"id": 555, "html_url": "https://github.com/acme/widgets/issues/10#issuecomment-555"})
-    ctx = load_context(tmp_path / ".meld.toml", env=env_for(tmp_path, group=None), run=fake,
+    ctx = load_context(tmp_path / ".meld.toml", env=env_for(tmp_path, group=group, role=role), run=fake,
                        adapter_for=lambda name: FakeAdapter())
     kw = dict(token=TOKEN, port=8765, now=lambda: NOW, clock=Clock(), sleep=lambda s: None, alive=lambda pid: True,
               start_of=lambda pid: "T0", disk_usage=lambda p: SimpleNamespace(total=0, used=0, free=3 * 1024 ** 3),

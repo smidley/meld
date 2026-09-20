@@ -255,9 +255,15 @@ class Viewer:
         if not isinstance(body, dict):
             return _json(400, {"error": "the request body must be a JSON object"})
         if body.get("party") != "human":
-            # Spec 22: the page may post as no other party. The context this server holds is the human's anyway,
-            # so this is the page saying who it thinks it is and being held to it.
+            # Spec 22: the page may post as no other party. This is only the page's own JSON saying so, though --
+            # the check right below is what holds it to that against the party this process actually is.
             return _json(400, {"error": f"the viewer acts as the human party only, not {body.get('party')!r}"})
+        if not self.ctx.actor().is_human:
+            # Defence in depth behind `meld watch`'s own refusal to start as anything but the human (cli.py):
+            # the body's "party": "human" above is the page's claim, and this is the only place that can check
+            # it against the party this process actually is. Without this, a page served from a `MELD_GROUP`
+            # environment would post -- and be refused -- as that group, PROTOCOL-VIOLATION included.
+            return _json(400, {"error": f"this viewer runs as {self.ctx.actor().party.label}, not the human party"})
         verb = body.get("verb")
         run = va.VERBS.get(verb) if isinstance(verb, str) else None
         if run is None:

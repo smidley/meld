@@ -265,7 +265,9 @@ def test_the_page_renders_the_board_and_offers_only_verbs_it_can_drive(tmp_path)
     html, js = get(v, "/").body.decode(), get(v, "/static/app.js").body.decode()
     assert 'id="issues"' in html and 'id="pulls"' in html and 'id="agreements"' in html
     assert 'id="row"' in html                       # the row template the board clones
-    # The ten verbs the API offers are the ten the page may turn into buttons; anything else is shown as text.
+    # DRIVEABLE lists the ten verbs the API can run at all; the page turns one into a button only if FIELDS
+    # also has an entry for it -- a verb outside DRIVEABLE and a driveable one the bar can't spell (today just
+    # `tag`, still named here via DRIVEABLE) both render as text instead, each for its own stated reason.
     assert "DRIVEABLE" in js and "dataset.action" in js
     for verb in ("claim", "release", "merge", "decide", "remember", "challenge", "post", "tag",
                  "plan-approve", "plan-ack"):
@@ -275,7 +277,10 @@ def test_the_page_renders_the_board_and_offers_only_verbs_it_can_drive(tmp_path)
     # this to the call inside renderState.
     assert "renderBoard(s);" in js
     assert "dataset.ref" in js and "dataset.number" in js
-    assert "if (!DRIVEABLE.has(verb))" in js
+    # The button/text decision is the bar's own capability (FIELDS), not merely what the API can run
+    # (DRIVEABLE) -- that's the fix this round made, and it's what keeps a legal `tag` from being a button that
+    # silently does nothing.
+    assert "if (!FIELDS[verb])" in js
 
 
 def test_the_page_can_drive_exactly_the_verbs_the_api_implements(tmp_path):

@@ -58,7 +58,19 @@ async function getJSON(path) {
 function verbControls(into, legal, { ref, number }) {
   into.replaceChildren();
   for (const verb of legal || []) {
-    if (!DRIVEABLE.has(verb)) { into.append(cell("dim", verb)); continue; }
+    if (!FIELDS[verb]) {
+      // Legal, and shown for that reason -- but not something this page can run. Two different reasons, and
+      // the reader deserves to know which: a verb outside DRIVEABLE is a group's or a worker run's, and one
+      // inside it is a verb /api/action implements that this bar has no field for (tag, whose eight
+      // declarations belong to a form -- plan 8d). Either way it is text, never a button that does nothing.
+      const why = DRIVEABLE.has(verb)
+        ? `${verb} runs from the CLI: the page has no form for it yet`
+        : `${verb} belongs to a group or a worker run, not to you`;
+      const word = cell("dim", verb);
+      word.title = why;
+      into.append(word);
+      continue;
+    }
     const b = text(document.createElement("button"), verb);
     b.className = "verb";
     b.dataset.action = verb;
@@ -305,10 +317,9 @@ el("bar").addEventListener("submit", (e) => { e.preventDefault(); runAction(); }
 // merge is never one stray click away.
 el("board-panel").addEventListener("click", (e) => {
   const b = e.target.closest("button.verb");
-  // DRIVEABLE (Task 5) keeps `tag` because the API runs it; FIELDS (this task) has no entry for it because the
-  // bar cannot spell its eight fields. A `tag` button therefore does render (DRIVEABLE, not FIELDS, gates
-  // verbControls), and without this guard it would set the action select to a value with no matching <option>,
-  // blanking every field. Do nothing for a verb the bar cannot run rather than hand it a broken selection.
+  // Defence in depth, not the primary guard: verbControls (above) now renders a button only for a verb FIELDS
+  // has an entry for, so button.verb never carries an action this bar can't spell and this can't fire in
+  // practice. Kept so the two staying in sync is enforced twice, not assumed once.
   if (!b || !FIELDS[b.dataset.action]) return;
   el("action").value = b.dataset.action;
   showFields();

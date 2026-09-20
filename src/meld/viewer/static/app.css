@@ -18,7 +18,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg);
 .badge.unknown { color: var(--unknown); border-color: var(--unknown); }
 .badge.frozen { color: var(--warn); border-color: var(--warn); }
 .badge.reconnecting { color: var(--warn); border-color: var(--warn); }
-#streams { display: flex; gap: 8px; padding: 8px; overflow-x: auto; height: calc(100vh - 110px); }
+#streams { display: flex; gap: 8px; padding: 8px; overflow-x: auto; height: calc(100vh - 110px - 22vh); }
 .column { flex: 0 0 34rem; max-width: 46rem; display: flex; flex-direction: column; background: var(--panel);
   border: 1px solid var(--line); border-radius: 4px; min-height: 0; }
 .column.ended { opacity: 0.75; }
@@ -38,3 +38,17 @@ li.usage .text, li.run_started .text, li.run_finished .text { color: var(--usage
 li.log_truncated .text { color: var(--warn); }
 li.raw .text { color: var(--raw); }
 li.synthesized .text { color: var(--dim); font-style: italic; }
+
+#board-panel { display: flex; gap: 8px; padding: 8px 8px 0; align-items: flex-start; }
+.panel { flex: 1 1 0; min-width: 0; max-height: 22vh; overflow-y: auto; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 4px; }
+.panel h2 { margin: 0; padding: 6px 10px; font-size: 13px; border-bottom: 1px solid var(--line); }
+.brow { display: grid; grid-template-columns: 4.5rem 1fr auto; gap: 8px; padding: 2px 10px; align-items: baseline; }
+.brow:hover { background: #1d212b; }
+.rid { color: var(--accent); }
+.rwhat { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rverbs { display: flex; gap: 4px; flex-wrap: wrap; }
+button.verb { font: inherit; color: var(--fg); background: #222735; border: 1px solid var(--line);
+  border-radius: 3px; padding: 0 6px; cursor: pointer; }
+button.verb:hover { border-color: var(--accent); color: var(--accent); }
+.rverbs .dim { padding: 0 4px; }

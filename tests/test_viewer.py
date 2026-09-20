@@ -259,6 +259,19 @@ def test_the_page_references_nothing_off_the_machine_and_renders_text_as_text(tm
     assert 'name="referrer" content="no-referrer"' in html
 
 
+def test_the_page_renders_the_board_and_offers_only_verbs_it_can_drive(tmp_path):
+    v, _, _ = viewer_for(tmp_path)
+    html, js = get(v, "/").body.decode(), get(v, "/static/app.js").body.decode()
+    assert 'id="issues"' in html and 'id="pulls"' in html and 'id="agreements"' in html
+    assert 'id="row"' in html                       # the row template the board clones
+    # The ten verbs the API offers are the ten the page may turn into buttons; anything else is shown as text.
+    assert "DRIVEABLE" in js and "dataset.action" in js
+    for verb in ("claim", "release", "merge", "decide", "remember", "challenge", "post", "tag",
+                 "plan-approve", "plan-ack"):
+        assert f'"{verb}"' in js
+    assert "innerHTML" not in js
+
+
 def test_serve_binds_an_os_assigned_loopback_port_and_answers_over_a_socket(tmp_path):
     """The one socket test: the wiring from bytes on a connection to `Viewer.handle` and back, including a
     streaming body and the silenced request log."""

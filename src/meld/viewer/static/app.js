@@ -8,6 +8,11 @@ const BADGE_STATES = ["alive", "dead", "unknown", "frozen", "reconnecting"];
 const STATE_EVERY_MS = 10000;
 const STREAMS_EVERY_MS = 5000;
 const columns = new Map();   // stream id -> {root, list, live, why, listed, liveness}
+// The verbs the API can run (spec 22). A legal verb outside this set -- dispatch, collect, review, audit,
+// reopen, reap, plan-issues, approve, request-changes, push-fix -- belongs to a group or a worker run, so the
+// page shows it as text rather than offering a button that would only ever be refused.
+const DRIVEABLE = new Set(["claim", "release", "post", "tag", "challenge", "decide", "remember",
+                           "plan-approve", "plan-ack", "merge"]);
 
 function api(path, params) {
   const url = new URL(path, location.origin);
@@ -37,6 +42,50 @@ async function getJSON(path) {
     throw new Error(`${path}: ${response.status}${detail ? " " + detail : ""}`);
   }
   return response.json();
+}
+
+function verbControls(into, legal, { ref, number }) {
+  into.replaceChildren();
+  for (const verb of legal || []) {
+    if (!DRIVEABLE.has(verb)) { into.append(cell("dim", verb)); continue; }
+    const b = text(document.createElement("button"), verb);
+    b.className = "verb";
+    b.dataset.action = verb;
+    if (ref != null) b.dataset.ref = ref;
+    if (number != null) b.dataset.number = String(number);
+    into.append(b);
+  }
+}
+
+function boardRow(into, id, what, legal, keys) {
+  const row = el("row").content.firstElementChild.cloneNode(true);
+  text(row.querySelector(".rid"), id);
+  text(row.querySelector(".rwhat"), what);
+  verbControls(row.querySelector(".rverbs"), legal, keys);
+  into.append(row);
+}
+
+function renderBoard(s) {
+  const issues = el("issues");
+  issues.replaceChildren();
+  for (const i of s.issues || []) {
+    const held = [i.status, i.claimed_by && `claimed by ${i.claimed_by}`, i.worker, i.challenged && "challenged"];
+    boardRow(issues, `#${i.number}`, `${i.title} — ${held.filter(Boolean).join(", ")}`, i.legal,
+             { ref: `#${i.number}`, number: i.number });
+  }
+  const pulls = el("pulls");
+  pulls.replaceChildren();
+  for (const p of s.pulls || []) {
+    const how = [p.merged ? "merged" : p.state, p.issue && `closes #${p.issue}`,
+                 p.approvals.length && `approved by ${p.approvals.join(", ")}`,
+                 p.changes_requested.length && `changes requested by ${p.changes_requested.join(", ")}`];
+    boardRow(pulls, `#${p.number}`, how.filter(Boolean).join(", "), p.legal, { ref: `#${p.number}`, number: p.number });
+  }
+  const agreements = el("agreements");
+  agreements.replaceChildren();
+  for (const [ref, a] of Object.entries((s.coordination && s.coordination.agreements) || {})) {
+    boardRow(agreements, ref, a.joint_verified ? `${a.status} (verified)` : a.status, a.legal, { ref });
+  }
 }
 
 function renderState(state) {
@@ -81,6 +130,7 @@ function renderState(state) {
     line.className = "bad";
     nh.append(line);
   }
+  renderBoard(s);
 }
 
 function cell(className, value) {
@@ -148,7 +198,7 @@ function renderStreams(list) {
     // One poll of grace, not a permanent exemption: a column the feed created before the poll had listed its
     // stream survives to be listed next time, while a column rebuilt by the trailing frames of a stream that
     // has already left /api/streams -- a relaunched role's old log, re-ended on every feed reconnect -- is
-    // gone five seconds later instead of never. Both come from the same `discover` the feed reads, so a
+    // gone within two streams polls (up to ~10s) instead of never. Both come from the same `discover` the feed reads, so a
     // genuinely early column is always named by the following poll.
     if (col.listed) { col.root.remove(); columns.delete(id); } else { col.listed = true; }
   }

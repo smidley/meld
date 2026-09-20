@@ -304,6 +304,14 @@ def test_the_page_can_drive_exactly_the_verbs_the_api_implements(tmp_path):
     literal = re.search(r"const DRIVEABLE = new Set\(\[(.*?)\]\)", js, re.S)
     assert literal, "DRIVEABLE is no longer where this test can read it"
     assert set(re.findall(r'"([^"]+)"', literal.group(1))) == set(VERBS)
+    # And the half below it: `FIELDS` is what the bar can spell, and every button the board renders comes from
+    # a `FIELDS` entry. A key outside `VERBS` would therefore be a button that can only ever answer 400
+    # "unknown verb". Subset, not equality: `tag` is in `VERBS` with no `FIELDS` entry on purpose (its eight
+    # fields have no form yet), which is the case that renders as text instead.
+    fields = re.search(r"const FIELDS = \{(.*?)\};", js, re.S)
+    assert fields, "FIELDS is no longer where this test can read it"
+    keys = set(re.findall(r'"([^"]+)":', fields.group(1)))
+    assert keys and keys <= set(VERBS), sorted(keys - set(VERBS))
 
 
 def test_the_page_has_one_action_bar_that_posts_and_renders_a_refusal_verbatim(tmp_path):

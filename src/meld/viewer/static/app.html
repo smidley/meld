@@ -19,12 +19,33 @@
   <div id="machine" class="row">
     <span id="disk"></span>
     <span id="logs"></span>
+    <span id="feed" class="badge unknown">feed connecting</span>
     <span id="stamp" class="dim"></span>
     <span id="error" class="bad"></span>
   </div>
   <div id="supervisors" class="row"></div>
   <div id="needs-human" class="row"></div>
 </header>
+<section id="board-panel">
+  <div class="panel"><h2>Issues</h2><div id="issues"></div></div>
+  <div class="panel"><h2>Pull requests</h2><div id="pulls"></div></div>
+  <div class="panel"><h2>Agreements</h2><div id="agreements"></div></div>
+</section>
+<form id="bar" autocomplete="off">
+  <select id="action" aria-label="action"></select>
+  <select id="verb" aria-label="header verb" class="hidden"></select>
+  <input id="ref" placeholder="ref (#13, plan-add-1)" aria-label="ref">
+  <input id="text" placeholder="message" aria-label="message">
+  <button id="run" type="submit">Run</button>
+  <span id="result" class="dim"></span>
+</form>
+<template id="row">
+  <div class="brow">
+    <span class="rid"></span>
+    <span class="rwhat"></span>
+    <span class="rverbs"></span>
+  </div>
+</template>
 <main id="streams"></main>
 <template id="column">
   <section class="column">

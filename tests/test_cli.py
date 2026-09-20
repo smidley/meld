@@ -136,6 +136,13 @@ def test_watch_is_refused_to_a_worker_like_every_other_verb(tmp_path, monkeypatc
     assert result.exit_code != 0 and "viewer" not in seen
 
 
+def test_watch_is_the_humans_console_and_refuses_a_group_or_pm(tmp_path, monkeypatch):
+    """The page is the human's console end to end; a group party would read its own status and post as itself,
+    which section 22 forbids outright -- refused before a socket is ever bound."""
+    result, seen, _ = _watch(tmp_path, monkeypatch, [], env_extra={"MELD_GROUP": "claude", "MELD_ROLE": "orchestrator"})
+    assert result.exit_code != 0 and "human's console" in result.output and "viewer" not in seen
+
+
 def test_watch_reports_a_port_it_cannot_bind_as_a_click_error(tmp_path, monkeypatch):
     """A port already taken is something the person fixes by naming another one, not a traceback to read."""
     result, seen, opened = _watch(tmp_path, monkeypatch, ["--port", "4321"],

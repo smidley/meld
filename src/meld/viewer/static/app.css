@@ -6,6 +6,11 @@
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg);
   font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+/* The header, the board and (from task 6) the action bar are as tall as their content; the columns take the
+   rest. Subtracting fixed pixels and a `22vh` cap that `.panel` never actually fills left dead viewport under
+   the columns when the board was short, and overflowed the document by the panel's own padding when it was full. */
+body { display: flex; flex-direction: column; }
+body > * { flex: 0 0 auto; }
 #top { position: sticky; top: 0; padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line); z-index: 1; }
 .row { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline; margin: 2px 0; }
 .strong { font-weight: 600; }
@@ -17,12 +22,11 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg);
 .badge.dead { color: var(--bad); border-color: var(--bad); }
 .badge.unknown { color: var(--unknown); border-color: var(--unknown); }
 .badge.frozen { color: var(--warn); border-color: var(--warn); }
-.badge.waiting { color: var(--dim); border-color: var(--dim); }
-#streams { display: flex; gap: 8px; padding: 8px; overflow-x: auto; height: calc(100vh - 110px); }
+.badge.reconnecting { color: var(--warn); border-color: var(--warn); }
+#streams { display: flex; gap: 8px; padding: 8px; overflow-x: auto; flex: 1 1 auto; min-height: 0; }
 .column { flex: 0 0 34rem; max-width: 46rem; display: flex; flex-direction: column; background: var(--panel);
   border: 1px solid var(--line); border-radius: 4px; min-height: 0; }
 .column.ended { opacity: 0.75; }
-.column.reconnecting h2 { border-bottom-color: var(--warn); }
 .column h2 { margin: 0; padding: 6px 10px; font-size: 13px; border-bottom: 1px solid var(--line); }
 .events { list-style: none; margin: 0; padding: 4px 0; overflow-y: auto; flex: 1 1 auto; min-height: 0; }
 .events li { display: grid; grid-template-columns: 5.5rem 5rem 1fr; gap: 8px; padding: 2px 10px; white-space: pre-wrap;
@@ -39,3 +43,30 @@ li.usage .text, li.run_started .text, li.run_finished .text { color: var(--usage
 li.log_truncated .text { color: var(--warn); }
 li.raw .text { color: var(--raw); }
 li.synthesized .text { color: var(--dim); font-style: italic; }
+
+#board-panel { display: flex; gap: 8px; padding: 8px 8px 0; align-items: flex-start; }
+.panel { flex: 1 1 0; min-width: 0; max-height: 22vh; overflow-y: auto; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 4px; }
+.panel h2 { margin: 0; padding: 6px 10px; font-size: 13px; border-bottom: 1px solid var(--line); }
+.brow { display: grid; grid-template-columns: 4.5rem 1fr auto; gap: 8px; padding: 2px 10px; align-items: baseline; }
+.brow:hover { background: #1d212b; }
+.rid { color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rwhat { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rverbs { display: flex; gap: 4px; flex-wrap: wrap; }
+button.verb { font: inherit; color: var(--fg); background: #222735; border: 1px solid var(--line);
+  border-radius: 3px; padding: 0 6px; cursor: pointer; }
+button.verb:hover { border-color: var(--accent); color: var(--accent); }
+.rverbs .dim { padding: 0 4px; }
+
+#bar { display: flex; gap: 6px; align-items: center; padding: 6px 8px; background: var(--panel);
+  border-bottom: 1px solid var(--line); }
+#bar select, #bar input, #bar button { font: inherit; color: var(--fg); background: #222735;
+  border: 1px solid var(--line); border-radius: 3px; padding: 2px 6px; }
+#bar #text { flex: 1 1 auto; min-width: 8rem; }
+#bar button { cursor: pointer; }
+#bar button:hover { border-color: var(--accent); color: var(--accent); }
+/* Same treatment as .rid/.rwhat: a successful post's result can carry an unbreakable ~70-character html_url,
+   and #bar does not wrap, so without this the result line pushes the bar past the viewport instead of eliding. */
+#result { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#result.bad { color: var(--bad); }
+#result.ok { color: var(--ok); }

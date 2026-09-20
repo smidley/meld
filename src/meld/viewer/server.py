@@ -19,14 +19,22 @@ from importlib import resources
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+from meld.actions import Refused
 from meld.adapters import UnknownAdapter
+from meld.appauth import AppAuthError
 from meld.assemble import BoardError
+from meld.config import ConfigError
+from meld.dispatch import DispatchError
 from meld.github import GitHubError
+from meld.gitops import GitError
+from meld.posting import PostError
 from meld.prompts import ROLES
+from meld.results import ResultsError
 from meld.runners import freeze_path, read_record, supervisor_path
 from meld.state import liveness, pid_alive, proc_start_of
 from meld.status import build_status
 from meld.transcript import total_bytes
+from meld.viewer import actions as va
 from meld.viewer import streams as st
 
 #: The only hosts a request may name (with the served port): what stops a page in the browser reaching the API
@@ -35,6 +43,9 @@ LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 #: How long one `/api/state` answer is reused: `build_status` is several paginated `gh` calls, and a page polling
 #: from two tabs would otherwise spend a real share of the token's rate limit on the same answer.
 STATE_TTL_SECONDS = 5.0
+#: The most a request body may be. A page's action is a few hundred bytes; this is the transport saying no to
+#: anything that is not one, before the gate and before anything is read.
+MAX_BODY_BYTES = 1 << 20
 SECURITY_HEADERS: tuple[tuple[str, str], ...] = (
     ("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff"), ("Referrer-Policy", "no-referrer"))
 _ISO_FMT = "%Y-%m-%dT%H:%M:%SZ"
@@ -55,12 +66,13 @@ class Request:
     path: str
     query: dict[str, list[str]]
     headers: dict[str, str]          # names lower-cased
+    body: bytes = b""
 
     @classmethod
-    def parse(cls, method: str, target: str, headers: Mapping[str, str]) -> Request:
+    def parse(cls, method: str, target: str, headers: Mapping[str, str], body: bytes = b"") -> Request:
         parts = urlsplit(target)
         return cls(method.upper(), parts.path or "/", parse_qs(parts.query, keep_blank_values=True),
-                   {k.lower(): v for k, v in headers.items()})
+                   {k.lower(): v for k, v in headers.items()}, body)
 
     def first(self, name: str) -> str:
         return (self.query.get(name) or [""])[0]
@@ -86,22 +98,19 @@ def _empty(status: int) -> Response:
     return Response(status, b"", "text/plain; charset=utf-8")
 
 
-def _int(text: str) -> int:
-    try:
-        return max(0, int(text))
-    except (TypeError, ValueError):
-        return 0
-
-
 def _static(name: str) -> str:
     return resources.files("meld.viewer").joinpath("static", name).read_text(encoding="utf-8")
 
 
 class Viewer:
-    """One `meld watch`: its token, its port, and the routes. Reads only; posts nothing; holds no legality logic."""
+    """One `meld watch`: its token, its port, and the routes. Reads, and posts the one human verb `/api/action`
+    carries; holds no legality logic."""
 
     ROUTES: dict[str, str] = {"/": "page", "/static/app.css": "asset_css", "/static/app.js": "asset_js",
-                              "/api/state": "api_state", "/api/streams": "api_streams", "/api/events": "api_events"}
+                              "/api/state": "api_state", "/api/streams": "api_streams", "/api/events": "api_events",
+                              "/api/action": "api_action"}
+    #: The one route that writes is the one route that is not a GET.
+    METHODS: dict[str, str] = {"/api/action": "POST"}
 
     def __init__(self, ctx, *, token: str, port: int, now: Callable[[], str] = _iso_now, clock: Callable[[], float] = time.monotonic,
                  sleep: Callable[[float], None] = time.sleep, alive: Callable[[int], bool] = pid_alive,
@@ -137,7 +146,7 @@ class Viewer:
         name = self.ROUTES.get(req.path)
         if name is None:
             return _json(404, {"error": f"no route {req.path}"})
-        if req.method != "GET":
+        if req.method != self.METHODS.get(req.path, "GET"):
             return _json(405, {"error": f"{req.method} is not allowed on {req.path}"})
         return getattr(self, name)(req)
 
@@ -188,23 +197,102 @@ class Viewer:
     def api_streams(self, req: Request) -> Response:
         return _json(200, {"streams": st.discover(self.ctx.cfg, self.ctx.store.home, alive=self.alive, start_of=self.start_of)})
 
-    def api_events(self, req: Request) -> Response:
+    def _source(self, stream: str) -> st.Source | None:
+        """One transcript's reader, or None when `stream` names no log of a configured group. An adapter the
+        configuration names but this build does not have raises `UnknownAdapter`, which the caller decides about:
+        a stream the person asked for by name is a 502, one that merely turned up in `discover` is skipped."""
         home, cfg = self.ctx.store.home, self.ctx.cfg
-        stream = req.first("stream")
         path = st.stream_path(home / "logs", stream)
         group_cfg = cfg.groups.get(stream.partition("/")[0])
         if path is None or group_cfg is None:
-            return _json(404, {"error": f"no transcript {stream!r} of a configured group"})
-        try:
-            parse = self.ctx.adapter_for(group_cfg.cli).parse_events
-        except UnknownAdapter as e:
-            return _json(502, {"error": str(e)})
+            return None
+        parse = self.ctx.adapter_for(group_cfg.cli).parse_events
         record = st.record_for(cfg, home, path)
-        after = _int(req.headers.get("last-event-id") or req.first("after"))
-        body = st.events(path, parse, after=after, now=self.now, sleep=self.sleep, interval=self.interval,
-                         check_every=self.check_every, max_polls=self.max_polls,
+        return st.Source(stream=stream, path=path, parse=parse,
                          writer=lambda: liveness(record, alive=self.alive, start_of=self.start_of))
+
+    def api_events(self, req: Request) -> Response:
+        """Every transcript, or the ones `stream=` names, as one event stream (spec 22)."""
+        wanted = [s for s in req.query.get("stream", []) if s]
+        for stream in wanted:
+            try:
+                if self._source(stream) is None:
+                    return _json(404, {"error": f"no transcript {stream!r} of a configured group"})
+            except UnknownAdapter as e:
+                return _json(502, {"error": str(e)})
+
+        def sources() -> list[st.Source]:
+            # Re-read on every refresh, so a role that relaunched into a new log joins the connection and the
+            # record behind each writer check is the current one.
+            names = wanted or [s["id"] for s in st.discover(self.ctx.cfg, self.ctx.store.home,
+                                                            alive=self.alive, start_of=self.start_of)]
+            out = []
+            for stream in names:
+                try:
+                    source = self._source(stream)
+                except UnknownAdapter:
+                    continue                  # a group whose CLI this build cannot translate contributes nothing
+                if source is not None:
+                    out.append(source)
+            return out
+
+        body = st.events(sources, now=self.now, sleep=self.sleep, interval=self.interval,
+                         cursor=req.headers.get("last-event-id") or req.first("after"),
+                         check_every=self.check_every, max_polls=self.max_polls)
         return Response(200, body, "text/event-stream; charset=utf-8", SECURITY_HEADERS + (("Connection", "close"),))
+
+    def api_action(self, req: Request) -> Response:
+        """One human verb, run by the same function `meld` runs (spec 22).
+
+        The viewer decides nothing here: it coerces arguments, calls, and reports. A `Refused` comes back whole
+        -- the verb, the target, and the rule that named it -- because a person reading a refusal needs the rule,
+        not a summary of it. A human's refusal posts no PROTOCOL-VIOLATION (`actions.refuse` skips that for a
+        human), so a button pressed in error leaves nothing on the board.
+        """
+        try:
+            body = json.loads(req.body or b"")
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            return _json(400, {"error": f"the request body is not JSON: {e}"})
+        if not isinstance(body, dict):
+            return _json(400, {"error": "the request body must be a JSON object"})
+        if body.get("party") != "human":
+            # Spec 22: the page may post as no other party. This is only the page's own JSON saying so, though --
+            # the check right below is what holds it to that against the party this process actually is.
+            return _json(400, {"error": f"the viewer acts as the human party only, not {body.get('party')!r}"})
+        if not self.ctx.actor().is_human:
+            # Defence in depth behind `meld watch`'s own refusal to start as anything but the human (cli.py):
+            # the body's "party": "human" above is the page's claim, and this is the only place that can check
+            # it against the party this process actually is. Without this, a page served from a `MELD_GROUP`
+            # environment would post -- and be refused -- as that group, PROTOCOL-VIOLATION included.
+            return _json(400, {"error": f"this viewer runs as {self.ctx.actor().party.label}, not the human party"})
+        verb = body.get("verb")
+        run = va.VERBS.get(verb) if isinstance(verb, str) else None
+        if run is None:
+            return _json(400, {"error": f"unknown verb {verb!r}; the page offers: {', '.join(sorted(va.VERBS))}"})
+        try:
+            result = run(self.ctx, body)
+        except va.BadRequest as e:
+            return _json(400, {"error": str(e)})
+        except Refused as e:
+            return _json(409, {"refused": str(e), "verb": e.refusal.verb.value, "target": e.refusal.target,
+                               "rule": e.refusal.rule, "violation_posted": e.violation_posted})
+        except PostError as e:
+            # A usage error, exactly as its own docstring says, so 400 -- the same answer as `BadRequest` above:
+            # a verb the party may not post, a framework-only or command verb, a missing ref, a body the grammar
+            # rejects. Every board-state case in `posting.post` goes through `_refuse` and arrives as `Refused`
+            # instead, so 409 stays the one status carrying a refusal (spec 22).
+            return _json(400, {"error": str(e)})
+        except (GitHubError, BoardError, DispatchError, GitError, ResultsError, ConfigError, AppAuthError,
+                UnknownAdapter, OSError) as e:
+            return _json(502, {"error": str(e)})
+        except Exception as e:  # noqa: BLE001
+            # A long-lived local tool: an unhandled exception here drops the connection and prints a traceback in
+            # the person's terminal every time they press a button. A rendered 500 is strictly better, and
+            # `_StopRequested`/`KeyboardInterrupt` are BaseException, so a stop still propagates.
+            return _json(500, {"error": f"{type(e).__name__}: {e}"})
+        with self._lock:
+            self._state_cache = None      # the board has just moved; the next /api/state rebuilds rather than lying
+        return _json(200, {"ok": True, "verb": verb, "result": result})
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -221,7 +309,17 @@ class _Handler(BaseHTTPRequestHandler):
         self._dispatch()
 
     def _dispatch(self) -> None:
-        resp = self.server.viewer.handle(Request.parse(self.command, self.path, self.headers))  # type: ignore[attr-defined]
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if length < 0 or length > MAX_BODY_BYTES:
+            # Before the gate, like a malformed request line: nothing is read, so a hostile Content-Length
+            # cannot make this process wait on a body it will never accept.
+            self.send_error(413, "request body too large")
+            return
+        resp = self.server.viewer.handle(  # type: ignore[attr-defined]
+            Request.parse(self.command, self.path, self.headers, self.rfile.read(length) if length else b""))
         self.send_response(resp.status)
         self.send_header("Content-Type", resp.content_type)
         for name, value in resp.headers:

@@ -1,6 +1,6 @@
 import json
 import os
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from meld.config import load_config
@@ -8,7 +8,7 @@ from meld.runners import role_run_path, write_record
 from meld.state import StateStore
 from meld.transcript import Event
 from meld.viewer import streams
-from meld.viewer.streams import END, PING, discover, events, frame, record_for, stream_id, stream_path
+from meld.viewer.streams import Source, decode_cursor, discover, encode_cursor, end_frame, events, frame, record_for, stream_id, stream_path
 from tests.conftest import PROJECT_TOML
 from tests.factories import mk_run
 from tests.fakeadapter import FakeAdapter
@@ -122,103 +122,204 @@ def test_record_for_finds_the_role_record_or_the_worker_record_whose_log_this_is
     assert record_for(cfg, home, logs / "claude" / "nobody.log") is None
 
 
-def test_frame_is_one_sse_event_carrying_the_whole_event_as_json():
+def src(log, writer_state="alive", stream=None):
+    """One Source over a real file, with its writer's liveness injected as a fixed state or a callable."""
+    state = writer_state if callable(writer_state) else (lambda: {"state": writer_state})
+    return Source(stream=stream or f"claude/{log.name}", path=log, parse=PARSE, writer=state)
+
+
+def only(*sources):
+    return lambda: list(sources)
+
+
+def test_cursor_round_trips_and_ignores_anything_it_cannot_read():
+    assert encode_cursor({"claude/b.log": 2, "claude/a.log": 7}) == "claude/a.log=7|claude/b.log=2"
+    assert encode_cursor({"claude/a.log": 0, "claude/b.log": 3}) == "claude/a.log=0|claude/b.log=3"
+    assert encode_cursor({}) == ""
+    assert decode_cursor("claude/a.log=7|claude/b.log=2") == {"claude/a.log": 7, "claude/b.log": 2}
+    assert decode_cursor("") == {} and decode_cursor("rubbish") == {} and decode_cursor("a.log=x") == {}
+    assert decode_cursor("claude/a.log=-3") == {"claude/a.log": 0}                     # never a tail slice
+    assert decode_cursor(encode_cursor({"claude/a.log": 4})) == {"claude/a.log": 4}
+
+
+def test_frame_names_its_stream_and_carries_the_cursor_as_the_id():
     ev = Event(seq=3, at=NOW, kind="tool_call", text="ls", tool="Bash", ok=None, meta={"id": "toolu_01"})
-    assert frame(ev) == (b'id: 3\nevent: tool_call\ndata: {"seq": 3, "at": "2026-09-18T12:00:00Z", "kind": "tool_call", '
-                         b'"text": "ls", "tool": "Bash", "ok": null, "meta": {"id": "toolu_01"}}\n\n')
+    out = frame("claude/pm-1.log", ev, cursor="claude/pm-1.log=3").decode()
+    assert out.startswith("id: claude/pm-1.log=3\nevent: tool_call\ndata: {")
+    assert json.loads(out.split("data: ", 1)[1]) == {"stream": "claude/pm-1.log", "event": asdict(ev)}
+    assert frame("claude/pm-1.log", ev).decode().startswith("event: tool_call\n")       # no cursor, no id line
+    assert end_frame("claude/pm-1.log") == b'event: end\ndata: {"stream": "claude/pm-1.log"}\n\n'
 
 
-def test_events_replays_then_follows_then_ends_when_the_writer_is_confirmed_gone(tmp_path):
-    log = tmp_path / "pm-1.log"
-    log.write_text("one\ntwo\n")
-    states = iter(["alive", "alive", "dead"])
-    appended = []
+def test_events_interleaves_two_streams_and_the_cursor_names_both(tmp_path):
+    a, b = tmp_path / "pm-1.log", tmp_path / "orchestrator-1.log"
+    a.write_text("a1\n")
+    b.write_text("b1\nb2\n")
+    out = frames(list(events(only(src(a), src(b)), now=lambda: NOW, sleep=lambda s: None,
+                             check_every=99, max_polls=1)))
+    assert [(f["event"], json.loads(f["data"])["stream"], json.loads(f["data"])["event"]["text"]) for f in out] == [
+        ("message", "claude/pm-1.log", "a1"),
+        ("message", "claude/orchestrator-1.log", "b1"),
+        ("message", "claude/orchestrator-1.log", "b2"),
+    ]
+    assert [f["id"] for f in out] == ["claude/orchestrator-1.log=0|claude/pm-1.log=1",   # encode_cursor sorts
+                                      "claude/orchestrator-1.log=1|claude/pm-1.log=1",
+                                      "claude/orchestrator-1.log=2|claude/pm-1.log=1"]
+
+
+def test_events_resumes_each_stream_from_the_cursor_it_was_given(tmp_path):
+    a, b = tmp_path / "pm-1.log", tmp_path / "orchestrator-1.log"
+    a.write_text("a1\na2\n")
+    b.write_text("b1\nb2\n")
+    out = frames(list(events(only(src(a), src(b)), now=lambda: NOW, sleep=lambda s: None, check_every=99, max_polls=1,
+                             cursor="claude/pm-1.log=2|claude/orchestrator-1.log=1")))
+    assert [(json.loads(f["data"])["stream"], json.loads(f["data"])["event"]["text"]) for f in out] == [
+        ("claude/orchestrator-1.log", "b2")]     # pm caught up, orchestrator one behind
+    # a cursor past the end of one file is that file's trim notice and a full replay, and only that file's
+    out = frames(list(events(only(src(a)), now=lambda: NOW, sleep=lambda s: None, check_every=99, max_polls=1,
+                             cursor="claude/pm-1.log=9")))
+    assert [(f["event"], json.loads(f["data"])["event"]["text"]) for f in out] == [
+        ("log_truncated", "pm-1.log was trimmed since this page last read it; showing it from the start"),
+        ("message", "a1"), ("message", "a2")]
+    assert out[0]["id"] == "claude/pm-1.log=0"
+
+
+def test_events_ends_one_stream_without_ending_the_connection(tmp_path):
+    a, b = tmp_path / "pm-1.log", tmp_path / "orchestrator-1.log"
+    a.write_text("a1\n")
+    b.write_text("b1\n")
+    states = iter(["dead", "alive", "alive", "alive"])
+    # Poll 1 replays both; poll 2's idle check ends pm; poll 3 is the idle round that proves the connection
+    # outlived it -- one heartbeat, orchestrator still open, pm never reopened.
+    out = frames(list(events(only(src(a, lambda: {"state": next(states)}), src(b)),
+                             now=lambda: NOW, sleep=lambda s: None, check_every=1, max_polls=3)))
+    kinds = [(f.get("event"), json.loads(f["data"])["stream"] if "data" in f else None) for f in out if "comment" not in f]
+    assert kinds == [("message", "claude/pm-1.log"), ("message", "claude/orchestrator-1.log"),
+                     ("run_finished", "claude/pm-1.log"), ("end", "claude/pm-1.log")]
+    assert json.loads([f for f in out if f.get("event") == "run_finished"][0]["data"])["event"]["meta"] == {"synthesized": True}
+    assert "id" not in [f for f in out if f.get("event") == "run_finished"][0]        # synthesized: not a position
+    assert [f for f in out if "comment" in f] == [{"comment": "ping"}]
+
+
+def test_events_does_not_reopen_a_stream_it_has_ended(tmp_path):
+    a = tmp_path / "pm-1.log"
+    a.write_text("a1\n")
+    source = src(a, "dead")
+    out = frames(list(events(only(source), now=lambda: NOW, sleep=lambda s: None, check_every=1, max_polls=4)))
+    assert [f.get("event") for f in out if "comment" not in f] == ["message", "run_finished", "end"]
+
+
+def test_events_picks_up_a_stream_that_appears_after_the_connection_opened(tmp_path):
+    a, b = tmp_path / "pm-1.log", tmp_path / "orchestrator-1.log"
+    a.write_text("a1\n")
+    later = []
+
+    def sources():
+        if later:
+            return [src(a), src(b)]
+        b.write_text("b1\n")
+        later.append(True)
+        return [src(a)]
+
+    out = frames(list(events(sources, now=lambda: NOW, sleep=lambda s: None, check_every=1, max_polls=2)))
+    assert [json.loads(f["data"])["event"]["text"] for f in out if "comment" not in f] == ["a1", "b1"]
+
+
+def test_events_restarts_one_stream_numbering_on_a_trim_under_the_connection(tmp_path):
+    a = tmp_path / "pm-1.log"
+    a.write_text("original1\noriginal2\noriginal3\n")
+    trimmed = []
 
     def sleep(seconds):
-        if not appended:
-            with log.open("a") as f:
-                f.write("three\nfour")        # the fourth line unterminated: the writer died mid-write
-            appended.append(seconds)
+        if not trimmed:
+            a.write_text("fresh1\nfresh2\n")       # shorter: Tail sees the file shrink
+            trimmed.append(True)
 
-    out = frames(list(events(log, PARSE, after=0, now=lambda: NOW, writer=lambda: {"state": next(states)},
-                             sleep=sleep, interval=0.5, check_every=1, max_polls=10)))
-    texts = [(f.get("id"), f.get("event"), json.loads(f["data"])["text"] if "data" in f and f["event"] != "end" else None)
-             for f in out if "comment" not in f]
-    assert texts == [("1", "message", "one"), ("2", "message", "two"), ("3", "message", "three"), ("4", "message", "four"),
-                     (None, "run_finished", "process exited; the transcript ends without a terminal event"), (None, "end", None)]
-    assert json.loads(out[-2]["data"])["meta"] == {"synthesized": True}
-    assert [f for f in out if "comment" in f] == [{"comment": "ping"}, {"comment": "ping"}]   # one per idle check while alive
-    assert appended == [0.5]
+    out = frames(list(events(only(src(a)), now=lambda: NOW, sleep=sleep, check_every=99, max_polls=2)))
+    assert [(f.get("event"), f.get("id")) for f in out] == [
+        ("message", "claude/pm-1.log=1"), ("message", "claude/pm-1.log=2"), ("message", "claude/pm-1.log=3"),
+        ("log_truncated", "claude/pm-1.log=0"), ("message", "claude/pm-1.log=1"), ("message", "claude/pm-1.log=2")]
 
 
-def test_events_resumes_after_a_seq_and_treats_a_shortfall_as_a_trim(tmp_path):
-    log = tmp_path / "pm-1.log"
-    log.write_text("one\ntwo\n")
-    dead = lambda: {"state": "dead"}  # noqa: E731
-    kw = dict(now=lambda: NOW, writer=dead, sleep=lambda s: None, check_every=1, max_polls=1)
+def test_a_talkative_stream_does_not_delay_another_streams_end(tmp_path):
+    """Each stream's writer check is its own. One connection-wide idle counter meant a chatty orchestrator kept
+    a dead pm from ever being flushed, synthesized and ended -- the page would show it running for ever."""
+    a, b = tmp_path / "pm-1.log", tmp_path / "orchestrator-1.log"
+    a.write_text("a1\n")
+    lines = ["b1"]
+    b.write_text("b1\n")
 
-    resumed = frames(list(events(log, PARSE, after=1, **kw)))
-    assert [(f.get("id"), f.get("event")) for f in resumed] == [("2", "message"), (None, "run_finished"), (None, "end")]
+    def sleep(seconds):
+        lines.append(f"b{len(lines) + 1}")            # the orchestrator writes on every single poll
+        b.write_text("".join(f"{line}\n" for line in lines))
 
-    nothing_new = frames(list(events(log, PARSE, after=2, **kw)))
-    assert [(f.get("id"), f.get("event")) for f in nothing_new] == [(None, "run_finished"), (None, "end")]
-
-    trimmed = frames(list(events(log, PARSE, after=9, **kw)))   # the client saw nine events; the file holds two
-    assert [(f.get("id"), f.get("event")) for f in trimmed] == [("0", "log_truncated"), ("1", "message"), ("2", "message"),
-                                                                 (None, "run_finished"), (None, "end")]
-    assert "trimmed" in json.loads(trimmed[0]["data"])["text"]
-
-
-def test_a_trim_under_an_open_stream_restarts_the_numbering_with_the_file(tmp_path):
-    """`Tail` numbers straight through a truncation, but the `Tail` a reconnect builds numbers the post-trim
-    file 1..m; if the open stream kept the higher count, the client's next `Last-Event-ID` would resume past
-    events it was never shown. So the stream restarts its count with the file and says so."""
-    log = tmp_path / "pm-1.log"
-    log.write_text("original1\noriginal2\noriginal3\n")          # 30 bytes; what replaces it below is 14
-    trims = []
-
-    def sleep(_seconds):
-        if not trims:                                            # the trim lands under the open connection
-            log.write_text("fresh1\nfresh2\n")
-            trims.append(1)
-
-    out = frames(list(events(log, PARSE, after=0, now=lambda: NOW, writer=lambda: {"state": "alive"},
-                             sleep=sleep, check_every=1000, max_polls=3)))
-    assert [(f.get("id"), f.get("event")) for f in out] == [
-        ("1", "message"), ("2", "message"), ("3", "message"),     # the file as it was
-        ("0", "log_truncated"), ("1", "message"), ("2", "message")]   # and the file as it is, counted afresh
-    texts = [json.loads(f["data"])["text"] for f in out]
-    assert texts[:3] == ["original1", "original2", "original3"] and texts[4:] == ["fresh1", "fresh2"]
-    assert texts[3] == "pm-1.log was trimmed while this page was reading it; showing it from the start"
-
-
-def test_events_treats_a_negative_after_like_zero_full_replay_no_trim(tmp_path):
-    log = tmp_path / "pm-1.log"
-    log.write_text("one\ntwo\n")
-    out = frames(list(events(log, PARSE, after=-1, now=lambda: NOW, writer=lambda: {"state": "dead"},
-                             sleep=lambda s: None, check_every=1, max_polls=1)))
-    assert [(f.get("id"), f.get("event")) for f in out] == [("1", "message"), ("2", "message"),
-                                                             (None, "run_finished"), (None, "end")]
-    assert not any(f.get("event") == "log_truncated" for f in out)
+    out = frames(list(events(only(src(a, "dead"), src(b)), now=lambda: NOW, sleep=sleep,
+                             check_every=1, max_polls=4)))
+    kinds = [(f.get("event"), json.loads(f["data"])["stream"]) for f in out if "comment" not in f]
+    assert ("run_finished", "claude/pm-1.log") in kinds and ("end", "claude/pm-1.log") in kinds
+    assert kinds[-1][1] == "claude/orchestrator-1.log"       # and the connection kept carrying the live one
 
 
 def test_events_does_not_synthesize_an_end_the_transcript_already_has(tmp_path):
-    log = tmp_path / "pm-1.log"
-    log.write_text("working\nYou have hit your usage limit. Resets at 3pm.\n")   # FakeAdapter: a limit line -> usage_limit
-    out = frames(list(events(log, PARSE, now=lambda: NOW, writer=lambda: {"state": "dead"}, sleep=lambda s: None,
-                             check_every=1, max_polls=1)))
-    assert [f.get("event") for f in out] == ["message", "usage_limit", "end"]
+    a = tmp_path / "pm-1.log"
+    a.write_text("working\nYou have hit your usage limit. Resets at 3pm.\n")   # FakeAdapter: a limit -> usage_limit
+    out = frames(list(events(only(src(a, "dead")), now=lambda: NOW, sleep=lambda s: None,
+                             check_every=1, max_polls=2)))
+    assert [f.get("event") for f in out if "comment" not in f] == ["message", "usage_limit", "end"]
 
 
-def test_events_stays_open_on_an_unknown_writer_and_checks_it_only_every_check_every_polls(tmp_path):
-    log = tmp_path / "pm-1.log"
-    log.write_text("one\n")
+def test_a_caught_up_client_is_not_handed_an_end_the_file_never_had(tmp_path):
+    """`last_kind` comes from the file, not from what this client still needed."""
+    a = tmp_path / "pm-1.log"
+    a.write_text("working\nYou have hit your usage limit. Resets at 3pm.\n")
+    out = frames(list(events(only(src(a, "dead")), now=lambda: NOW, sleep=lambda s: None, check_every=1,
+                             max_polls=2, cursor="claude/pm-1.log=2")))
+    assert [f.get("event") for f in out if "comment" not in f] == ["end"]
+
+
+def test_events_flushes_an_unterminated_last_line_before_it_ends_a_stream(tmp_path):
+    a = tmp_path / "pm-1.log"
+    a.write_text("a1\ncrashed mid-writ")            # no newline: what a process that died mid-write leaves
+    out = frames(list(events(only(src(a, "dead")), now=lambda: NOW, sleep=lambda s: None,
+                             check_every=1, max_polls=2)))
+    assert [(f.get("event"), json.loads(f["data"]).get("event", {}).get("text")) for f in out if "comment" not in f] == [
+        ("message", "a1"), ("message", "crashed mid-writ"),
+        ("run_finished", "process exited; the transcript ends without a terminal event"), ("end", None)]
+
+
+def test_events_checks_a_quiet_stream_on_its_own_cadence_and_never_ends_an_unknown_one(tmp_path):
+    a = tmp_path / "pm-1.log"
+    a.write_text("a1\n")
     checks = []
 
     def writer():
         checks.append(1)
         return {"state": "unknown"}
 
-    out = frames(list(events(log, PARSE, now=lambda: NOW, writer=writer, sleep=lambda s: None, check_every=3, max_polls=7)))
-    assert [f.get("event") for f in out if "comment" not in f] == ["message"]          # no end, no synthesis
-    assert len([f for f in out if "comment" in f]) == 2 and len(checks) == 2           # polls 3 and 6 of 7
+    out = frames(list(events(only(src(a, writer)), now=lambda: NOW, sleep=lambda s: None,
+                             check_every=3, max_polls=7)))
+    assert [f.get("event") for f in out if "comment" not in f] == ["message"]      # no end, no synthesis
+    assert len(checks) == 2                                    # its third and sixth idle polls, not its every poll
+    assert len([f for f in out if "comment" in f]) == 2
+
+
+def test_events_forgets_a_stream_that_has_ended_and_is_no_longer_listed(tmp_path):
+    """The reader map and the cursor stay bounded over a long session: an ended stream `discover` has stopped
+    naming is dropped, and its count leaves the cursor with it."""
+    a, b = tmp_path / "pm-1.log", tmp_path / "orchestrator-1.log"
+    a.write_text("a1\n")
+    b.write_text("b1\n")
+    polls = []
+
+    def sources():
+        polls.append(1)
+        return [src(a, "dead"), src(b)] if len(polls) < 3 else [src(b)]
+
+    def sleep(seconds):
+        if len(polls) >= 3:
+            b.write_text("b1\nb2\n")
+
+    out = frames(list(events(sources, now=lambda: NOW, sleep=sleep, check_every=1, max_polls=4)))
+    ids = [f["id"] for f in out if "id" in f]
+    assert "claude/pm-1.log=1" in ids[0]                       # while it was listed, it was in the cursor
+    assert ids[-1] == "claude/orchestrator-1.log=2"            # after the drop, only the live stream remains

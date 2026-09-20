@@ -1,5 +1,6 @@
 import http.client
 import json
+import re
 import threading
 from types import SimpleNamespace
 
@@ -26,13 +27,19 @@ class Clock:
         return self.t
 
 
-def viewer_for(tmp_path, **overrides):
+def viewer_for(tmp_path, *, group: str | None = None, role: str = "pm", **overrides):
     """The human's context over the recorded board (PROJECT_TOML configures groups `claude` and `codex`), and a
-    Viewer with every seam injected."""
+    Viewer with every seam injected. `group=`/`role=` build a group's or PM's own context instead of the
+    human's -- used only by the test that pins the viewer's refusal to act as anything else."""
     (tmp_path / ".meld.toml").write_text(PROJECT_TOML)
     fake = FakeGh()
     load_board1_routes(fake)
-    ctx = load_context(tmp_path / ".meld.toml", env=env_for(tmp_path, group=None), run=fake,
+    # load_board1_routes wires only the GETs it takes to assemble the board; a human's own coordination comment
+    # (plan 8c's /api/action, the first write the viewer suite makes) needs its own POST route, the same one
+    # test_posting.py's and test_actions.py's fixture-builders register for the same reason.
+    fake.route("POST", "repos/acme/widgets/issues/10/comments",
+               {"id": 555, "html_url": "https://github.com/acme/widgets/issues/10#issuecomment-555"})
+    ctx = load_context(tmp_path / ".meld.toml", env=env_for(tmp_path, group=group, role=role), run=fake,
                        adapter_for=lambda name: FakeAdapter())
     kw = dict(token=TOKEN, port=8765, now=lambda: NOW, clock=Clock(), sleep=lambda s: None, alive=lambda pid: True,
               start_of=lambda pid: "T0", disk_usage=lambda p: SimpleNamespace(total=0, used=0, free=3 * 1024 ** 3),
@@ -97,8 +104,8 @@ def test_no_cors_header_is_ever_sent_and_the_security_headers_always_are(tmp_pat
 def test_unknown_routes_are_404_and_the_wrong_method_is_405_behind_the_gate(tmp_path):
     v, _, _ = viewer_for(tmp_path)
     assert get(v, "/nowhere").status == 404 and "no route" in body(get(v, "/nowhere"))["error"]
-    assert get(v, "/api/action", method="POST").status == 404       # plan 8c
     assert get(v, "/api/config", method="PUT").status == 404        # plan 8d
+    assert get(v, "/api/action").status == 405                      # POST only
     assert get(v, "/api/state", method="POST").status == 405
     assert get(v, "/nowhere", token=None).status == 403             # the gate comes first
 
@@ -180,8 +187,9 @@ def test_api_streams_lists_what_discover_finds(tmp_path):
     assert [(s["id"], s["kind"], s["liveness"]["state"]) for s in streams] == [("claude/pm-1.log", "role", "alive")]
 
 
-def test_api_events_streams_a_transcript_and_resumes_from_last_event_id(tmp_path):
-    v, ctx, _ = viewer_for(tmp_path, alive=lambda pid: False)     # the writer is confirmed gone: the stream ends
+def test_api_events_streams_every_transcript_and_resumes_from_the_cursor(tmp_path):
+    # max_polls=2: the replay happens inside the loop now, so the idle check that ends a stream is the second poll.
+    v, ctx, _ = viewer_for(tmp_path, alive=lambda pid: False, max_polls=2)   # the writer is confirmed gone
     home = ctx.store.home
     log = home / "logs" / "claude" / "pm-1.log"
     log.parent.mkdir(parents=True)
@@ -189,29 +197,37 @@ def test_api_events_streams_a_transcript_and_resumes_from_last_event_id(tmp_path
     write_record(role_run_path(home, "claude", "pm"),
                  {"pid": 7, "started_at": NOW, "proc_start": "T0", "log_path": str(log), "reason": "start", "launch_no": 1})
 
-    resp = get(v, "/api/events?stream=claude/pm-1.log")
+    resp = get(v, "/api/events")                                   # no stream=: everything discover finds
     assert resp.status == 200 and resp.content_type == "text/event-stream; charset=utf-8" and resp.streaming
     text = b"".join(resp.body).decode()
-    assert text.startswith("id: 1\nevent: message\n") and '"text": "two"' in text and text.endswith("event: end\ndata: {}\n\n")
-    assert 'event: run_finished' in text and '"synthesized": true' in text
+    assert text.startswith("id: claude/pm-1.log=1\nevent: message\n") and '"stream": "claude/pm-1.log"' in text
+    assert '"text": "two"' in text and 'event: run_finished' in text and '"synthesized": true' in text
+    assert text.endswith('event: end\ndata: {"stream": "claude/pm-1.log"}\n\n')
 
-    resumed = b"".join(get(v, "/api/events?stream=claude/pm-1.log", headers={"Last-Event-ID": "1"}).body).decode()
-    assert "id: 1\n" not in resumed and resumed.startswith("id: 2\nevent: message\n")
-    by_query = b"".join(get(v, "/api/events?stream=claude/pm-1.log&after=2").body).decode()
-    # Controller ruling R5/R7: Task 4's review made the synthesized `run_finished` frame carry no `id:` line (it
-    # is not a file position), so the resumed-past-everything case starts at the bare event line, not "id: 3\n".
+    named = b"".join(get(v, "/api/events?stream=claude/pm-1.log").body).decode()
+    assert named.startswith("id: claude/pm-1.log=1\n")
+    resumed = b"".join(get(v, "/api/events", headers={"Last-Event-ID": "claude/pm-1.log=1"}).body).decode()
+    assert '"text": "one"' not in resumed and '"text": "two"' in resumed
+    by_query = b"".join(get(v, "/api/events?after=claude%2Fpm-1.log%3D2").body).decode()
     assert "event: message" not in by_query and by_query.startswith("event: run_finished\n")
-    junk = b"".join(get(v, "/api/events?stream=claude/pm-1.log", headers={"Last-Event-ID": "seven"}).body).decode()
-    assert junk.startswith("id: 1\n")                                    # not an integer: from the start
+    junk = b"".join(get(v, "/api/events", headers={"Last-Event-ID": "seven"}).body).decode()
+    assert junk.startswith("id: claude/pm-1.log=1\n")               # unreadable cursor: from the start
 
 
-@pytest.mark.parametrize("stream", ["", "claude/nope.log", "../.meld.toml", "ghost/pm-1.log", "claude"])
+@pytest.mark.parametrize("stream", ["claude/nope.log", "../.meld.toml", "ghost/pm-1.log", "claude"])
 def test_api_events_answers_404_for_a_stream_that_is_not_a_log_of_a_configured_group(tmp_path, stream):
     v, ctx, _ = viewer_for(tmp_path)
     (ctx.store.home / "logs" / "ghost").mkdir(parents=True)
     (ctx.store.home / "logs" / "ghost" / "pm-1.log").write_text("x\n")   # exists on disk, but `ghost` is no group
     resp = get(v, f"/api/events?stream={stream}")
     assert resp.status == 404 and "error" in body(resp)
+
+
+def test_api_events_with_no_stream_is_every_stream_not_an_error(tmp_path):
+    v, ctx, _ = viewer_for(tmp_path, alive=lambda pid: False)
+    (ctx.store.home / "logs" / "claude").mkdir(parents=True)
+    (ctx.store.home / "logs" / "claude" / "pm-1.log").write_text("hi\n")
+    assert get(v, "/api/events").status == 200 and get(v, "/api/events?stream=").status == 200
 
 
 def test_the_page_and_its_assets_are_served_behind_the_gate_with_the_token_substituted(tmp_path):
@@ -234,16 +250,88 @@ def test_the_page_references_nothing_off_the_machine_and_renders_text_as_text(tm
         assert "http://" not in text and "https://" not in text and "//cdn" not in text and "@import" not in text
     assert "innerHTML" not in js and "textContent" in js and "EventSource" in js
     assert 'className = "badge' not in js
-    assert "MAX_SOURCES" in js and "classList" in js
+    assert "classList" in js
+    assert "MAX_SOURCES" not in js and "openWaiting" not in js      # one connection now, so no cap and no queue
+    assert js.count("new EventSource") == 1
+    assert "msg.stream" in js and "feed" in js
+    assert 'id="feed"' in html
     for route in ("/api/state", "/api/streams", "/api/events"):
         assert route in js
     assert 'name="referrer" content="no-referrer"' in html
 
 
+def test_the_page_renders_the_board_and_offers_only_verbs_it_can_drive(tmp_path):
+    v, _, _ = viewer_for(tmp_path)
+    html, js = get(v, "/").body.decode(), get(v, "/static/app.js").body.decode()
+    assert 'id="issues"' in html and 'id="pulls"' in html and 'id="agreements"' in html
+    assert 'id="row"' in html                       # the row template the board clones
+    # DRIVEABLE lists the ten verbs the API can run at all; the page turns one into a button only if FIELDS
+    # also has an entry for it -- a verb outside DRIVEABLE and a driveable one the bar can't spell (today just
+    # `tag`, still named here via DRIVEABLE) both render as text instead, each for its own stated reason.
+    assert "DRIVEABLE" in js and "dataset.action" in js
+    for verb in ("claim", "release", "merge", "decide", "remember", "challenge", "post", "tag",
+                 "plan-approve", "plan-ack"):
+        assert f'"{verb}"' in js
+    # "renderBoard(s)" alone would still match the function's own signature (`function renderBoard(s) {`) if the
+    # call site were deleted -- verified by experiment (see the fix-round report); the semicolon is what pins
+    # this to the call inside renderState.
+    assert "renderBoard(s);" in js
+    assert "dataset.ref" in js and "dataset.number" in js
+    # The button/text decision is the bar's own capability (FIELDS), not merely what the API can run
+    # (DRIVEABLE) -- that's the fix this round made, and it's what keeps a legal `tag` from being a button that
+    # silently does nothing.
+    assert "if (!FIELDS[verb])" in js
+    # Pinning the other half: DRIVEABLE must still be read (not dead code left over from the old branch), and
+    # the dim text's own title must never claim ownership of a verb -- rules.py, not this page, says whose
+    # verb it is (approve/request-changes/push-fix/reopen are all a human's, and none of them is DRIVEABLE).
+    assert "word.title = why" in js and "DRIVEABLE.has(verb)" in js
+    assert "not to you" not in js
+    # Nor may it claim a CLI path it does not have: `approve`, `request-changes` and `push-fix` are all legal
+    # for a human and none of them runs from any `meld` command (review.py refuses a non-PM actor outright), so
+    # the undriveable branch says only what this page lacks. "runs from the CLI" survives exactly twice -- the
+    # driveable branch's own true string, and the comment clause above it saying why that one is a fact.
+    assert "this page has no control for it" in js
+    assert js.count("runs from the CLI") == 2
+
+
+def test_the_page_can_drive_exactly_the_verbs_the_api_implements(tmp_path):
+    """`DRIVEABLE` is the page's list of verbs it has a control for; `VERBS` is what `/api/action` implements. A
+    verb in one and not the other is either a button that can only ever 500, or a capability with no way to reach
+    it — and this is the half of "offers only verbs it can drive" that Python can actually check."""
+    from meld.viewer.actions import VERBS
+    v, _, _ = viewer_for(tmp_path)
+    js = get(v, "/static/app.js").body.decode()
+    literal = re.search(r"const DRIVEABLE = new Set\(\[(.*?)\]\)", js, re.S)
+    assert literal, "DRIVEABLE is no longer where this test can read it"
+    assert set(re.findall(r'"([^"]+)"', literal.group(1))) == set(VERBS)
+    # And the half below it: `FIELDS` is what the bar can spell, and every button the board renders comes from
+    # a `FIELDS` entry. A key outside `VERBS` would therefore be a button that can only ever answer 400
+    # "unknown verb". Subset, not equality: `tag` is in `VERBS` with no `FIELDS` entry on purpose (its eight
+    # fields have no form yet), which is the case that renders as text instead.
+    fields = re.search(r"const FIELDS = \{(.*?)\};", js, re.S)
+    assert fields, "FIELDS is no longer where this test can read it"
+    keys = set(re.findall(r'"([^"]+)":', fields.group(1)))
+    assert keys and keys <= set(VERBS), sorted(keys - set(VERBS))
+
+
+def test_the_page_has_one_action_bar_that_posts_and_renders_a_refusal_verbatim(tmp_path):
+    v, _, _ = viewer_for(tmp_path)
+    html, js = get(v, "/").body.decode(), get(v, "/static/app.js").body.decode()
+    assert 'id="bar"' in html and 'id="action"' in html and 'id="run"' in html and 'id="result"' in html
+    assert '"/api/action"' in js and 'method: "POST"' in js and 'party: "human"' in js
+    # every header verb a human may post is offered, and the command verbs are not (they go through challenge)
+    for verb in ("ASK", "DIRECTIVE", "HALT", "RESUME", "REVERT", "PROVIDED", "RESOLVED", "ACK", "AMEND",
+                 "APPROVE", "NEEDS-HUMAN"):
+        assert f'"{verb}"' in js
+    for verb in ("LEASE", "EXPIRED", "RELEASED", "LIMITED"):
+        assert f'"{verb}"' not in js
+    assert "refused" in js and "rule" in js and "innerHTML" not in js
+
+
 def test_serve_binds_an_os_assigned_loopback_port_and_answers_over_a_socket(tmp_path):
     """The one socket test: the wiring from bytes on a connection to `Viewer.handle` and back, including a
     streaming body and the silenced request log."""
-    v, ctx, _ = viewer_for(tmp_path, alive=lambda pid: False)     # the writer is confirmed gone: the stream ends
+    v, ctx, _ = viewer_for(tmp_path, alive=lambda pid: False, max_polls=2)     # the writer is confirmed gone: the stream ends
     home = ctx.store.home
     log = home / "logs" / "claude" / "pm-1.log"
     log.parent.mkdir(parents=True)
@@ -277,9 +365,32 @@ def test_serve_binds_an_os_assigned_loopback_port_and_answers_over_a_socket(tmp_
         assert resp.status == 200 and data.lstrip().lower().startswith(b"<!doctype html>")
         resp, data = fetch(f"/api/events?stream=claude/pm-1.log&t={TOKEN}")
         assert resp.status == 200 and resp.getheader("Content-Type") == "text/event-stream; charset=utf-8"
-        assert data.startswith(b"id: 1\nevent: message\n") and data.endswith(b"event: end\ndata: {}\n\n")
+        assert data.startswith(b"id: claude/pm-1.log=1\nevent: message\n")
+        assert data.endswith(b'event: end\ndata: {"stream": "claude/pm-1.log"}\n\n')
         resp, data = fetch(f"/api/streams?t={TOKEN}", headers={"Host": f"evil.example:{port}"})
         assert (resp.status, data) == (403, b"")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_a_body_larger_than_the_cap_is_refused_at_the_transport(tmp_path):
+    """A Content-Length above the cap is answered 413 without reading the body, like a malformed request line."""
+    import http.client
+    v, _, _ = viewer_for(tmp_path)
+    httpd = serve(v, port=0)
+    try:
+        port = httpd.server_address[1]
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        conn.putrequest("POST", f"/api/action?t={TOKEN}")
+        conn.putheader("Content-Length", str(server.MAX_BODY_BYTES + 1))
+        conn.putheader("Content-Type", "application/json")
+        conn.endheaders()
+        resp = conn.getresponse()
+        assert resp.status == 413
+        conn.close()
     finally:
         httpd.shutdown()
         httpd.server_close()

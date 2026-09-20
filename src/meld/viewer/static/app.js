@@ -4,12 +4,28 @@
 const TOKEN = new URLSearchParams(location.search).get("t") || "";
 const KINDS = ["run_started", "message", "thinking", "tool_call", "tool_result", "usage", "run_finished",
                "usage_limit", "log_truncated", "cli_error", "raw"];
-const BADGE_STATES = ["alive", "dead", "unknown", "frozen", "waiting"];
+const BADGE_STATES = ["alive", "dead", "unknown", "frozen", "reconnecting"];
 const STATE_EVERY_MS = 10000;
 const STREAMS_EVERY_MS = 5000;
-const MAX_SOURCES = 4;       // two connections stay free for the state/streams polls -- browsers cap ~6 per origin
-const SOURCE_PRIORITY = { alive: 0, dead: 1, unknown: 2 };
-const columns = new Map();   // stream id -> {root, list, live, why, source, liveness}
+const columns = new Map();   // stream id -> {root, list, live, why, listed, liveness}
+// The verbs /api/action implements (spec 22): the routes this page has, which is a different axis from
+// legality. A legal verb outside this set -- dispatch, collect, review, audit, reopen, reap, plan-issues,
+// approve, request-changes, push-fix -- has no route here, and the page renders it as text rather than a
+// button. Where such a verb can be run instead -- the CLI, GitHub's own review UI -- is not something this
+// page knows, so it never says; see verbControls' tooltip below.
+const DRIVEABLE = new Set(["claim", "release", "post", "tag", "challenge", "decide", "remember",
+                           "plan-approve", "plan-ack", "merge"]);
+// What each action needs from the bar: `ref`, free `text`, and a header `verb` for the two that carry one.
+// Anything an action does not name is hidden and not sent, so `post` never carries a stale `--supersedes`
+// and `plan-approve` never carries a ref.
+const FIELDS = {
+  "claim": ["ref"], "release": ["ref"], "merge": ["ref"], "decide": ["ref"],
+  "plan-ack": ["ref"], "plan-approve": [],
+  "remember": ["ref", "text"], "challenge": ["ref", "verb", "text"], "post": ["ref", "verb", "text"],
+};
+const POST_VERBS = ["ASK", "DIRECTIVE", "HALT", "RESUME", "REVERT", "PROVIDED", "RESOLVED", "ACK", "AMEND",
+                    "APPROVE", "NEEDS-HUMAN"];
+const CHALLENGE_ACTIONS = ["open", "evidence", "retract", "uphold", "dismiss"];
 
 function api(path, params) {
   const url = new URL(path, location.origin);
@@ -39,6 +55,143 @@ async function getJSON(path) {
     throw new Error(`${path}: ${response.status}${detail ? " " + detail : ""}`);
   }
   return response.json();
+}
+
+function verbControls(into, legal, { ref, number }) {
+  into.replaceChildren();
+  for (const verb of legal || []) {
+    if (!FIELDS[verb]) {
+      // Both branches speak only about this page's own reach: legality lives in the `legal` list this row
+      // renders and in the refusal the bar shows verbatim (spec 22). `DRIVEABLE` is what /api/action
+      // implements, and spec 22 has every verb the page offers also existing as a `meld` command, so that
+      // branch may say a driveable verb runs from the CLI -- a fact about the set, not a claim about the verb.
+      // A legal verb outside the set gets no such sentence: where it can be run instead -- the CLI, GitHub's
+      // own review UI -- is not something this page knows or should say, only that it has no control for it.
+      const why = DRIVEABLE.has(verb)
+        ? `${verb} runs from the CLI: this page has no form for it yet`
+        : `${verb}: this page has no control for it`;
+      const word = cell("dim", verb);
+      word.title = why;
+      into.append(word);
+      continue;
+    }
+    const b = text(document.createElement("button"), verb);
+    b.className = "verb";
+    b.dataset.action = verb;
+    if (ref != null) b.dataset.ref = ref;
+    if (number != null) b.dataset.number = String(number);
+    into.append(b);
+  }
+}
+
+function boardRow(into, id, what, legal, keys) {
+  const row = el("row").content.firstElementChild.cloneNode(true);
+  // Both tracks truncate: an agreement ref is a model-authored token of any length and a title can be long.
+  // The full text stays reachable on hover, which is what the freeze badge does with its reset instant.
+  const rid = text(row.querySelector(".rid"), id);
+  const rwhat = text(row.querySelector(".rwhat"), what);
+  rid.title = id;
+  rwhat.title = what;
+  verbControls(row.querySelector(".rverbs"), legal, keys);
+  into.append(row);
+}
+
+function renderBoard(s) {
+  const issues = el("issues");
+  issues.replaceChildren();
+  for (const i of s.issues || []) {
+    const held = [i.status, i.claimed_by && `claimed by ${i.claimed_by}`, i.worker, i.challenged && "challenged"];
+    boardRow(issues, `#${i.number}`, `${i.title} — ${held.filter(Boolean).join(", ")}`, i.legal,
+             { ref: `#${i.number}`, number: i.number });
+  }
+  const pulls = el("pulls");
+  pulls.replaceChildren();
+  for (const p of s.pulls || []) {
+    const how = [p.merged ? "merged" : p.state, p.issue && `closes #${p.issue}`,
+                 p.approvals.length && `approved by ${p.approvals.join(", ")}`,
+                 p.changes_requested.length && `changes requested by ${p.changes_requested.join(", ")}`];
+    boardRow(pulls, `#${p.number}`, how.filter(Boolean).join(", "), p.legal, { ref: `#${p.number}`, number: p.number });
+  }
+  const agreements = el("agreements");
+  agreements.replaceChildren();
+  for (const [ref, a] of Object.entries((s.coordination && s.coordination.agreements) || {})) {
+    boardRow(agreements, ref, a.joint_verified ? `${a.status} (verified)` : a.status, a.legal, { ref });
+  }
+}
+
+function options(select, values) {
+  select.replaceChildren();
+  for (const v of values) {
+    const o = document.createElement("option");
+    o.value = v;
+    text(o, v);
+    select.append(o);
+  }
+}
+
+function showFields() {
+  const wants = FIELDS[el("action").value] || [];
+  for (const name of ["ref", "verb", "text"]) el(name).classList.toggle("hidden", !wants.includes(name));
+  if (wants.includes("verb")) options(el("verb"), el("action").value === "challenge" ? CHALLENGE_ACTIONS : POST_VERBS);
+}
+
+function showResult(message, ok) {
+  const node = el("result");
+  // classList, never className: className would drop app.html's static "dim" class (the resting look) the
+  // same way the comment on badge() above warns about -- this only ever adds/removes the two outcome classes.
+  node.classList.remove("ok", "bad");
+  node.classList.add(ok ? "ok" : "bad");
+  text(node, message);
+  node.title = message;   // the line truncates (app.css); the full answer stays reachable on hover
+}
+
+async function runAction() {
+  const action = el("action").value;
+  const wants = FIELDS[action] || [];
+  const payload = { party: "human", verb: action };
+  if (wants.includes("ref")) {
+    const ref = el("ref").value.trim();
+    payload.ref = ref;
+    const n = /^#?(\d+)$/.exec(ref);
+    if (n) payload.number = Number(n[1]);
+  }
+  if (wants.includes("text")) payload.text = el("text").value;
+  // Both the header verb `post` carries and the five `challenge` actions travel as `action`: the body's own
+  // `verb` key is the dispatch name (`post`, `challenge`), so a second meaning for it cannot fit in one object.
+  if (wants.includes("verb")) payload.action = el("verb").value;
+  showResult(`${action} …`, true);
+  // One request in flight at a time: two quick Enters on a form whose submit button was still live sent two
+  // identical `post`s, and a comment is not idempotent. Re-enabled in `finally`, so no failure -- a dropped
+  // fetch, an unreadable body -- can leave the person with a dead button and a page they have to reload.
+  const button = el("run");
+  button.disabled = true;
+  try {
+    let response;
+    try {
+      response = await fetch(api("/api/action"), {
+        method: "POST", cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch (e) {
+      showResult(`${action}: ${e.message}`, false);
+      return;
+    }
+    let out = {};
+    try { out = await response.json(); } catch (e) { out = {}; }
+    if (response.ok) {
+      showResult(`${action} ok: ${JSON.stringify(out.result)}`, true);
+      pollState();                     // the server dropped its cached state; show the moved board at once
+    } else if (out.refused) {
+      // Verbatim, rule included: the rule is the whole content of a refusal, and summarising it would make the
+      // page a second authority on what is legal.
+      showResult(`refused ${out.verb} ${out.target}: ${out.rule}`, false);
+    } else {
+      showResult(`${action}: ${response.status} ${out.error || ""}`, false);
+    }
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function renderState(state) {
@@ -83,6 +236,7 @@ function renderState(state) {
     line.className = "bad";
     nh.append(line);
   }
+  renderBoard(s);
 }
 
 function cell(className, value) {
@@ -103,63 +257,74 @@ function appendEvent(col, ev) {
   if (pinned) list.scrollTop = list.scrollHeight;
 }
 
-function openStream(col, id) {
-  // EventSource reconnects by itself and sends Last-Event-ID, so resumption needs nothing here.
-  const source = new EventSource(api("/api/events", { stream: id }));
-  for (const kind of KINDS) source.addEventListener(kind, (e) => appendEvent(col, JSON.parse(e.data)));
-  source.addEventListener("end", () => { col.root.classList.add("ended"); source.close(); openWaiting(); });
-  source.onerror = () => col.root.classList.add("reconnecting");
-  source.onopen = () => col.root.classList.remove("reconnecting");
-  col.source = source;
+function columnFor(id) {
+  // A frame can name a stream the five-second /api/streams poll has not listed yet; give it a column at once,
+  // titled by its id, and let the next poll replace the title and the badge. `listed` is what keeps that
+  // column alive: only a column a poll has named, and then stopped naming, is removed.
+  let col = columns.get(id);
+  if (!col) {
+    const root = el("column").content.firstElementChild.cloneNode(true);
+    col = { root, list: root.querySelector(".events"), live: root.querySelector(".live"),
+            why: root.querySelector(".why"), who: root.querySelector(".who"),
+            listed: false, liveness: { state: "unknown", reason: "not listed yet" } };
+    text(col.who, id);
+    el("streams").append(root);
+    columns.set(id, col);
+  }
+  return col;
 }
 
-function openWaiting() {
-  // The only place that opens an EventSource: at most MAX_SOURCES at once, so the two polls always keep a
-  // free connection. A column with no source yet is waiting for a slot; one whose source is already
-  // closed has ended and is never reopened -- reopening would replay its whole transcript from the start.
-  let openCount = 0;
-  const waiting = [];
-  for (const [id, col] of columns) {
-    if (col.source == null) waiting.push([id, col]);
-    else if (col.source.readyState !== EventSource.CLOSED) openCount++;
+function openFeed() {
+  // One connection for every transcript (spec 22): a browser allows about six to an origin, and one source per
+  // column starved these two polls. EventSource reconnects by itself and sends Last-Event-ID, which carries
+  // every stream's position, so resumption needs nothing here.
+  const feed = new EventSource(api("/api/events"));
+  for (const kind of KINDS) {
+    feed.addEventListener(kind, (e) => {
+      const msg = JSON.parse(e.data);
+      appendEvent(columnFor(msg.stream), msg.event);
+    });
   }
-  waiting.sort((a, b) => (SOURCE_PRIORITY[a[1].liveness.state] ?? 3) - (SOURCE_PRIORITY[b[1].liveness.state] ?? 3));
-  for (const [id, col] of waiting) {
-    if (openCount >= MAX_SOURCES) break;
-    openStream(col, id);
-    openCount++;
-  }
+  feed.addEventListener("end", (e) => {
+    // Mark a column that exists; never create one. `columnFor` would give a retired stream a fresh column --
+    // the trailing `end` frame of a log `discover` no longer lists, re-sent on every reconnect. `renderStreams`
+    // bounds that ghost to two polls; not making it at all is better than removing it a moment later.
+    const col = columns.get(JSON.parse(e.data).stream);
+    if (col) col.root.classList.add("ended");
+  });
+  feed.onopen = () => badge(el("feed"), "alive", "feed live");
+  feed.onerror = () => badge(el("feed"), "reconnecting", "feed reconnecting");
 }
 
 function renderStreams(list) {
   const seen = new Set();
   for (const s of list) {
     seen.add(s.id);
-    let col = columns.get(s.id);
-    if (!col) {
-      const root = el("column").content.firstElementChild.cloneNode(true);
-      col = { root, list: root.querySelector(".events"), live: root.querySelector(".live"),
-              why: root.querySelector(".why"), source: null };
-      const who = s.kind === "role" ? `${s.group} / ${s.role}` : `${s.group} / ${s.kind} #${s.issue}`;
-      text(root.querySelector(".who"), who);
-      el("streams").append(root);
-      columns.set(s.id, col);
-    }
+    const col = columnFor(s.id);
+    col.listed = true;
     col.liveness = s.liveness;
+    text(col.who, s.kind === "role" ? `${s.group} / ${s.role}` : `${s.group} / ${s.kind} #${s.issue}`);
   }
   for (const [id, col] of columns) {
-    if (!seen.has(id)) { if (col.source) col.source.close(); col.root.remove(); columns.delete(id); }
+    if (seen.has(id)) continue;
+    // One poll of grace, not a permanent exemption: a column the feed created before the poll had listed its
+    // stream survives to be listed next time, while a column rebuilt by the trailing frames of a stream that
+    // has already left /api/streams -- a relaunched role's old log, re-ended on every feed reconnect -- is
+    // gone within two streams polls (up to ~10s) instead of never. Both come from the same `discover` the feed reads, so a
+    // genuinely early column is always named by the following poll.
+    if (col.listed) { col.root.remove(); columns.delete(id); } else { col.listed = true; }
   }
-  openWaiting();
   for (const col of columns.values()) {
-    badge(col.live, col.source ? col.liveness.state : "waiting");
+    badge(col.live, col.liveness.state);
     text(col.why, col.liveness.reason);
   }
 }
 
+let statePending = null;
 async function pollState() {
+  if (statePending) clearTimeout(statePending);
   try { renderState(await getJSON("/api/state")); } catch (e) { text(el("error"), e.message); }
-  setTimeout(pollState, STATE_EVERY_MS);
+  statePending = setTimeout(pollState, STATE_EVERY_MS);
 }
 
 async function pollStreams() {
@@ -167,5 +332,24 @@ async function pollStreams() {
   setTimeout(pollStreams, STREAMS_EVERY_MS);
 }
 
+options(el("action"), Object.keys(FIELDS));
+showFields();
+el("action").addEventListener("change", showFields);
+el("bar").addEventListener("submit", (e) => { e.preventDefault(); runAction(); });
+// A row's button never acts: it fills the bar and hands the person the keyboard. One execution path, and a
+// merge is never one stray click away.
+el("board-panel").addEventListener("click", (e) => {
+  const b = e.target.closest("button.verb");
+  // Defence in depth, not the primary guard: verbControls (above) now renders a button only for a verb FIELDS
+  // has an entry for, so button.verb never carries an action this bar can't spell and this can't fire in
+  // practice. Kept so the two staying in sync is enforced twice, not assumed once.
+  if (!b || !FIELDS[b.dataset.action]) return;
+  el("action").value = b.dataset.action;
+  showFields();
+  el("ref").value = b.dataset.ref || "";
+  el(FIELDS[b.dataset.action]?.includes("text") ? "text" : "run").focus();
+});
+
 pollState();
 pollStreams();
+openFeed();

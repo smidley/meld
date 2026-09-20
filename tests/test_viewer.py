@@ -286,6 +286,12 @@ def test_the_page_renders_the_board_and_offers_only_verbs_it_can_drive(tmp_path)
     # verb it is (approve/request-changes/push-fix/reopen are all a human's, and none of them is DRIVEABLE).
     assert "word.title = why" in js and "DRIVEABLE.has(verb)" in js
     assert "not to you" not in js
+    # Nor may it claim a CLI path it does not have: `approve`, `request-changes` and `push-fix` are all legal
+    # for a human and none of them runs from any `meld` command (review.py refuses a non-PM actor outright), so
+    # the undriveable branch says only what this page lacks. "runs from the CLI" survives exactly twice -- the
+    # driveable branch's own true string, and the comment clause above it saying why that one is a fact.
+    assert "this page has no control for it" in js
+    assert js.count("runs from the CLI") == 2
 
 
 def test_the_page_can_drive_exactly_the_verbs_the_api_implements(tmp_path):

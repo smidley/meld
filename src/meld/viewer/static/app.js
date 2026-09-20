@@ -8,11 +8,11 @@ const BADGE_STATES = ["alive", "dead", "unknown", "frozen", "reconnecting"];
 const STATE_EVERY_MS = 10000;
 const STREAMS_EVERY_MS = 5000;
 const columns = new Map();   // stream id -> {root, list, live, why, listed, liveness}
-// The verbs /api/action implements (spec 22) -- what this page can run, which is a different axis from whose
-// verb it is. A legal verb outside this set (dispatch, collect, review, audit, reopen, reap, plan-issues,
-// approve, request-changes, push-fix) simply has no route here yet -- approve, request-changes, push-fix and
-// reopen are a human's to run today, just from the CLI, not because rules.py refuses them to this page. The
-// page shows an undriveable legal verb as text instead of a button; see verbControls' tooltip below for why.
+// The verbs /api/action implements (spec 22): the routes this page has, which is a different axis from
+// legality. A legal verb outside this set -- dispatch, collect, review, audit, reopen, reap, plan-issues,
+// approve, request-changes, push-fix -- has no route here, and the page renders it as text rather than a
+// button. Where such a verb can be run instead -- the CLI, GitHub's own review UI -- is not something this
+// page knows, so it never says; see verbControls' tooltip below.
 const DRIVEABLE = new Set(["claim", "release", "post", "tag", "challenge", "decide", "remember",
                            "plan-approve", "plan-ack", "merge"]);
 // What each action needs from the bar: `ref`, free `text`, and a header `verb` for the two that carry one.
@@ -61,13 +61,15 @@ function verbControls(into, legal, { ref, number }) {
   into.replaceChildren();
   for (const verb of legal || []) {
     if (!FIELDS[verb]) {
-      // Both branches speak only about this page's own reach, never about who may run the verb: legality lives
-      // in the `legal` list this row renders and in the refusal the bar shows verbatim (spec 22). `DRIVEABLE`
-      // is what /api/action implements, which is a different axis from whose verb it is -- `approve`,
-      // `request-changes`, `push-fix` and `reopen` are all a human's to run, and none of them is ours to offer.
+      // Both branches speak only about this page's own reach: legality lives in the `legal` list this row
+      // renders and in the refusal the bar shows verbatim (spec 22). `DRIVEABLE` is what /api/action
+      // implements, and spec 22 has every verb the page offers also existing as a `meld` command, so that
+      // branch may say a driveable verb runs from the CLI -- a fact about the set, not a claim about the verb.
+      // A legal verb outside the set gets no such sentence: where it can be run instead -- the CLI, GitHub's
+      // own review UI -- is not something this page knows or should say, only that it has no control for it.
       const why = DRIVEABLE.has(verb)
         ? `${verb} runs from the CLI: this page has no form for it yet`
-        : `${verb} runs from the CLI: this page has no control for it`;
+        : `${verb}: this page has no control for it`;
       const word = cell("dim", verb);
       word.title = why;
       into.append(word);

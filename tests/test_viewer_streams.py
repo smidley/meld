@@ -239,3 +239,87 @@ def test_events_restarts_one_stream_numbering_on_a_trim_under_the_connection(tmp
     assert [(f.get("event"), f.get("id")) for f in out] == [
         ("message", "claude/pm-1.log=1"), ("message", "claude/pm-1.log=2"), ("message", "claude/pm-1.log=3"),
         ("log_truncated", "claude/pm-1.log=0"), ("message", "claude/pm-1.log=1"), ("message", "claude/pm-1.log=2")]
+
+
+def test_a_talkative_stream_does_not_delay_another_streams_end(tmp_path):
+    """Each stream's writer check is its own. One connection-wide idle counter meant a chatty orchestrator kept
+    a dead pm from ever being flushed, synthesized and ended -- the page would show it running for ever."""
+    a, b = tmp_path / "pm-1.log", tmp_path / "orchestrator-1.log"
+    a.write_text("a1\n")
+    lines = ["b1"]
+    b.write_text("b1\n")
+
+    def sleep(seconds):
+        lines.append(f"b{len(lines) + 1}")            # the orchestrator writes on every single poll
+        b.write_text("".join(f"{line}\n" for line in lines))
+
+    out = frames(list(events(only(src(a, "dead"), src(b)), now=lambda: NOW, sleep=sleep,
+                             check_every=1, max_polls=4)))
+    kinds = [(f.get("event"), json.loads(f["data"])["stream"]) for f in out if "comment" not in f]
+    assert ("run_finished", "claude/pm-1.log") in kinds and ("end", "claude/pm-1.log") in kinds
+    assert kinds[-1][1] == "claude/orchestrator-1.log"       # and the connection kept carrying the live one
+
+
+def test_events_does_not_synthesize_an_end_the_transcript_already_has(tmp_path):
+    a = tmp_path / "pm-1.log"
+    a.write_text("working\nYou have hit your usage limit. Resets at 3pm.\n")   # FakeAdapter: a limit -> usage_limit
+    out = frames(list(events(only(src(a, "dead")), now=lambda: NOW, sleep=lambda s: None,
+                             check_every=1, max_polls=2)))
+    assert [f.get("event") for f in out if "comment" not in f] == ["message", "usage_limit", "end"]
+
+
+def test_a_caught_up_client_is_not_handed_an_end_the_file_never_had(tmp_path):
+    """`last_kind` comes from the file, not from what this client still needed."""
+    a = tmp_path / "pm-1.log"
+    a.write_text("working\nYou have hit your usage limit. Resets at 3pm.\n")
+    out = frames(list(events(only(src(a, "dead")), now=lambda: NOW, sleep=lambda s: None, check_every=1,
+                             max_polls=2, cursor="claude/pm-1.log=2")))
+    assert [f.get("event") for f in out if "comment" not in f] == ["end"]
+
+
+def test_events_flushes_an_unterminated_last_line_before_it_ends_a_stream(tmp_path):
+    a = tmp_path / "pm-1.log"
+    a.write_text("a1\ncrashed mid-writ")            # no newline: what a process that died mid-write leaves
+    out = frames(list(events(only(src(a, "dead")), now=lambda: NOW, sleep=lambda s: None,
+                             check_every=1, max_polls=2)))
+    assert [(f.get("event"), json.loads(f["data"]).get("event", {}).get("text")) for f in out if "comment" not in f] == [
+        ("message", "a1"), ("message", "crashed mid-writ"),
+        ("run_finished", "process exited; the transcript ends without a terminal event"), ("end", None)]
+
+
+def test_events_checks_a_quiet_stream_on_its_own_cadence_and_never_ends_an_unknown_one(tmp_path):
+    a = tmp_path / "pm-1.log"
+    a.write_text("a1\n")
+    checks = []
+
+    def writer():
+        checks.append(1)
+        return {"state": "unknown"}
+
+    out = frames(list(events(only(src(a, writer)), now=lambda: NOW, sleep=lambda s: None,
+                             check_every=3, max_polls=7)))
+    assert [f.get("event") for f in out if "comment" not in f] == ["message"]      # no end, no synthesis
+    assert len(checks) == 2                                    # its third and sixth idle polls, not its every poll
+    assert len([f for f in out if "comment" in f]) == 2
+
+
+def test_events_forgets_a_stream_that_has_ended_and_is_no_longer_listed(tmp_path):
+    """The reader map and the cursor stay bounded over a long session: an ended stream `discover` has stopped
+    naming is dropped, and its count leaves the cursor with it."""
+    a, b = tmp_path / "pm-1.log", tmp_path / "orchestrator-1.log"
+    a.write_text("a1\n")
+    b.write_text("b1\n")
+    polls = []
+
+    def sources():
+        polls.append(1)
+        return [src(a, "dead"), src(b)] if len(polls) < 3 else [src(b)]
+
+    def sleep(seconds):
+        if len(polls) >= 3:
+            b.write_text("b1\nb2\n")
+
+    out = frames(list(events(sources, now=lambda: NOW, sleep=sleep, check_every=1, max_polls=4)))
+    ids = [f["id"] for f in out if "id" in f]
+    assert "claude/pm-1.log=1" in ids[0]                       # while it was listed, it was in the cursor
+    assert ids[-1] == "claude/orchestrator-1.log=2"            # after the drop, only the live stream remains

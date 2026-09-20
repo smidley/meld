@@ -129,6 +129,7 @@ class _Reader:
     last_kind: str | None = None
     first: bool = True
     ended: bool = False
+    idle: int = 0
 
 
 def encode_cursor(counts: Mapping[str, int]) -> str:
@@ -192,7 +193,7 @@ def events(sources: Callable[[], list[Source]], *, now: Callable[[], str], sleep
     """
     seen = decode_cursor(cursor)
     readers: dict[str, _Reader] = {}
-    polls = idle = 0
+    polls = quiet = 0
 
     def cursor_now() -> str:
         return encode_cursor({stream: r.sent for stream, r in readers.items()})
@@ -211,7 +212,7 @@ def events(sources: Callable[[], list[Source]], *, now: Callable[[], str], sleep
                 if stream not in readers:
                     readers[stream] = _Reader(src=source, tail=Tail(source.path), sent=seen.get(stream, 0))
         polls += 1
-        wrote = False
+        said = False
         for r in list(readers.values()):
             if r.ended:
                 continue
@@ -222,8 +223,10 @@ def events(sources: Callable[[], list[Source]], *, now: Callable[[], str], sleep
                 r.tail = Tail(r.src.path)
                 batch = r.tail.read(r.src.parse, now())
                 yield notice(r, "was trimmed while this page was reading it")
+                said = True
             elif r.first and r.sent > len(batch):
                 yield notice(r, "was trimmed since this page last read it")
+                said = True
             if batch:
                 # The file's last kind, whether or not this client still needed those events: a caught-up client
                 # whose transcript already ends in `usage_limit` must not be handed a synthesized `run_finished`.
@@ -234,28 +237,31 @@ def events(sources: Callable[[], list[Source]], *, now: Callable[[], str], sleep
             for ev in batch:
                 r.sent = ev.seq
                 yield frame(r.src.stream, ev, cursor=cursor_now())
-            wrote = wrote or bool(batch)
-        if wrote:
-            idle = 0
+                said = True
+            if batch:
+                r.idle = 0          # it spoke this poll, so its writer plainly still has something to say
+                continue
+            # Each stream counts its own quiet polls: one connection-wide counter let a talkative transcript
+            # keep a dead one from ever being flushed, synthesized and ended (spec 22 states this per stream).
+            r.idle += 1
+            if r.idle % check_every or r.src.writer().get("state") != "dead":
+                continue
+            for ev in r.tail.flush(r.src.parse, now()):
+                r.last_kind, r.sent = ev.kind, ev.seq
+                yield frame(r.src.stream, ev, cursor=cursor_now())
+            if r.last_kind not in TERMINAL_KINDS:
+                # No id: this event was never a position in the file, so it must not become the client's resume
+                # cursor -- `seq` still orders it for display, inside the JSON body only.
+                yield frame(r.src.stream, Event(seq=r.tail.seq + 1, at=now(), kind="run_finished",
+                                                text="process exited; the transcript ends without a terminal event",
+                                                meta={"synthesized": True}))
+            r.ended = True
+            yield end_frame(r.src.stream)
+            said = True
+        if said:
+            quiet = 0
         else:
-            idle += 1
-            if idle % check_every == 0:
-                said = False
-                for r in list(readers.values()):
-                    if r.ended or r.src.writer().get("state") != "dead":
-                        continue
-                    said = True
-                    for ev in r.tail.flush(r.src.parse, now()):
-                        r.last_kind, r.sent = ev.kind, ev.seq
-                        yield frame(r.src.stream, ev, cursor=cursor_now())
-                    if r.last_kind not in TERMINAL_KINDS:
-                        # No id: this event was never a position in the file, so it must not become the client's
-                        # resume cursor -- `seq` still orders it for display, inside the JSON body only.
-                        yield frame(r.src.stream, Event(seq=r.tail.seq + 1, at=now(), kind="run_finished",
-                                                        text="process exited; the transcript ends without a terminal event",
-                                                        meta={"synthesized": True}))
-                    r.ended = True
-                    yield end_frame(r.src.stream)
-                if not said:
-                    yield PING          # a heartbeat is for a round that said nothing; an ending already did
+            quiet += 1
+            if quiet % check_every == 0:
+                yield PING          # a heartbeat is for a round that said nothing at all
         sleep(interval)

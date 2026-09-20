@@ -1,15 +1,17 @@
-"""Which transcripts the viewer can show, and one of them as a stream of server-sent events (spec section 22).
+"""Which transcripts the viewer can show, and one connection carrying all of them as server-sent events (spec
+section 22).
 
 A stream is a log file under `$MELD_HOME/logs`, named by its path there. Discovery pairs each one with the record
 of the process that wrote it, so the page can say whether the writer is alive, dead, or unknown; the event stream
-is plan 8a's `Tail` framed as SSE, replaying from the `seq` a client last saw and ending only when the writer is
-confirmed gone.
+is plan 8a's `Tail` framed as SSE, one reader per stream sharing a connection, each frame naming its stream and
+resumed by a cursor naming every stream's own count -- so a writer confirmed gone ends only its own stream, never
+the connection, which keeps carrying whatever else is still live.
 """
 from __future__ import annotations
 
 import json
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from meld.config import Config
@@ -20,7 +22,8 @@ from meld.transcript import Event, Tail, newest_log, sweep_logs
 
 #: A transcript ending in one of these needs no synthesized end: the CLI said how it ended.
 TERMINAL_KINDS = ("run_finished", "usage_limit", "cli_error")
-#: Idle polls between writer checks (and heartbeats): the check may run `ps`, and six seconds is prompt enough.
+#: Idle polls between one stream's own writer check (and the connection's heartbeat) -- and, measured in polls
+#: rather than idle counts, how often `sources()` is refreshed. The check may run `ps`; six seconds is prompt enough.
 CHECK_EVERY = 6
 PING = b": ping\n\n"
 

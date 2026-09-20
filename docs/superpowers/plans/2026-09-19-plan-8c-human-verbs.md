@@ -1069,7 +1069,7 @@ def test_the_page_renders_the_board_and_offers_only_verbs_it_can_drive(tmp_path)
     assert 'id="issues"' in html and 'id="pulls"' in html and 'id="agreements"' in html
     assert 'id="row"' in html                       # the row template the board clones
     # The ten verbs the API offers are the ten the page may turn into buttons; anything else is shown as text.
-    assert "DRIVEABLE" in js and "data-action" in js
+    assert "DRIVEABLE" in js and "dataset.action" in js
     for verb in ("claim", "release", "merge", "decide", "remember", "challenge", "post", "tag",
                  "plan-approve", "plan-ack"):
         assert f'"{verb}"' in js
@@ -1211,7 +1211,7 @@ def test_the_page_has_one_action_bar_that_posts_and_renders_a_refusal_verbatim(t
     v, _, _ = viewer_for(tmp_path)
     html, js = get(v, "/").body.decode(), get(v, "/static/app.js").body.decode()
     assert 'id="bar"' in html and 'id="action"' in html and 'id="run"' in html and 'id="result"' in html
-    assert '"/api/action"' in js and 'method: "POST"' in js and '"party": "human"' in js
+    assert '"/api/action"' in js and 'method: "POST"' in js and 'party: "human"' in js
     # every header verb a human may post is offered, and the command verbs are not (they go through challenge)
     for verb in ("ASK", "DIRECTIVE", "HALT", "RESUME", "REVERT", "PROVIDED", "RESOLVED", "ACK", "AMEND",
                  "APPROVE", "NEEDS-HUMAN"):
@@ -1271,7 +1271,7 @@ const POST_VERBS = ["ASK", "DIRECTIVE", "HALT", "RESUME", "REVERT", "PROVIDED", 
 const CHALLENGE_ACTIONS = ["open", "evidence", "retract", "uphold", "dismiss"];
 ```
 
-`tag` is deliberately absent from `FIELDS`: it takes eight independent fields and belongs to a form, not a bar. Its button still prefills (the action select simply has no entry, so the button is not rendered — `DRIVEABLE` keeps `tag` because the API runs it, and `FIELDS` is what the bar can spell). **Add `"tag": ["ref"]` only if the reviewer's task says to; do not improvise a tag control.**
+`tag` is deliberately absent from `FIELDS`: it takes eight independent fields and belongs to a form, not a bar. `DRIVEABLE` (Task 5) keeps `tag` because the API runs it, and `FIELDS` is what the bar can spell — so no `tag` button is rendered and the action select has no `tag` entry. **Do not add one, and do not improvise a tag control.**
 
 Then the bar itself, after `renderBoard`:
 
@@ -1309,7 +1309,9 @@ async function runAction() {
     if (n) payload.number = Number(n[1]);
   }
   if (wants.includes("text")) payload.text = el("text").value;
-  if (wants.includes("verb")) payload[action === "challenge" ? "action" : "verb"] = el("verb").value;
+  // Both the header verb `post` carries and the five `challenge` actions travel as `action`: the body's own
+  // `verb` key is the dispatch name (`post`, `challenge`), so a second meaning for it cannot fit in one object.
+  if (wants.includes("verb")) payload.action = el("verb").value;
   showResult(`${action} …`, true);
   let response;
   try {

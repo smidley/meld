@@ -8,9 +8,11 @@ const BADGE_STATES = ["alive", "dead", "unknown", "frozen", "reconnecting"];
 const STATE_EVERY_MS = 10000;
 const STREAMS_EVERY_MS = 5000;
 const columns = new Map();   // stream id -> {root, list, live, why, listed, liveness}
-// The verbs the API can run (spec 22). A legal verb outside this set -- dispatch, collect, review, audit,
-// reopen, reap, plan-issues, approve, request-changes, push-fix -- belongs to a group or a worker run, so the
-// page shows it as text rather than offering a button that would only ever be refused.
+// The verbs /api/action implements (spec 22) -- what this page can run, which is a different axis from whose
+// verb it is. A legal verb outside this set (dispatch, collect, review, audit, reopen, reap, plan-issues,
+// approve, request-changes, push-fix) simply has no route here yet -- approve, request-changes, push-fix and
+// reopen are a human's to run today, just from the CLI, not because rules.py refuses them to this page. The
+// page shows an undriveable legal verb as text instead of a button; see verbControls' tooltip below for why.
 const DRIVEABLE = new Set(["claim", "release", "post", "tag", "challenge", "decide", "remember",
                            "plan-approve", "plan-ack", "merge"]);
 // What each action needs from the bar: `ref`, free `text`, and a header `verb` for the two that carry one.

@@ -180,8 +180,9 @@ def test_api_streams_lists_what_discover_finds(tmp_path):
     assert [(s["id"], s["kind"], s["liveness"]["state"]) for s in streams] == [("claude/pm-1.log", "role", "alive")]
 
 
-def test_api_events_streams_a_transcript_and_resumes_from_last_event_id(tmp_path):
-    v, ctx, _ = viewer_for(tmp_path, alive=lambda pid: False)     # the writer is confirmed gone: the stream ends
+def test_api_events_streams_every_transcript_and_resumes_from_the_cursor(tmp_path):
+    # max_polls=2: the replay happens inside the loop now, so the idle check that ends a stream is the second poll.
+    v, ctx, _ = viewer_for(tmp_path, alive=lambda pid: False, max_polls=2)   # the writer is confirmed gone
     home = ctx.store.home
     log = home / "logs" / "claude" / "pm-1.log"
     log.parent.mkdir(parents=True)
@@ -189,29 +190,37 @@ def test_api_events_streams_a_transcript_and_resumes_from_last_event_id(tmp_path
     write_record(role_run_path(home, "claude", "pm"),
                  {"pid": 7, "started_at": NOW, "proc_start": "T0", "log_path": str(log), "reason": "start", "launch_no": 1})
 
-    resp = get(v, "/api/events?stream=claude/pm-1.log")
+    resp = get(v, "/api/events")                                   # no stream=: everything discover finds
     assert resp.status == 200 and resp.content_type == "text/event-stream; charset=utf-8" and resp.streaming
     text = b"".join(resp.body).decode()
-    assert text.startswith("id: 1\nevent: message\n") and '"text": "two"' in text and text.endswith("event: end\ndata: {}\n\n")
-    assert 'event: run_finished' in text and '"synthesized": true' in text
+    assert text.startswith("id: claude/pm-1.log=1\nevent: message\n") and '"stream": "claude/pm-1.log"' in text
+    assert '"text": "two"' in text and 'event: run_finished' in text and '"synthesized": true' in text
+    assert text.endswith('event: end\ndata: {"stream": "claude/pm-1.log"}\n\n')
 
-    resumed = b"".join(get(v, "/api/events?stream=claude/pm-1.log", headers={"Last-Event-ID": "1"}).body).decode()
-    assert "id: 1\n" not in resumed and resumed.startswith("id: 2\nevent: message\n")
-    by_query = b"".join(get(v, "/api/events?stream=claude/pm-1.log&after=2").body).decode()
-    # Controller ruling R5/R7: Task 4's review made the synthesized `run_finished` frame carry no `id:` line (it
-    # is not a file position), so the resumed-past-everything case starts at the bare event line, not "id: 3\n".
+    named = b"".join(get(v, "/api/events?stream=claude/pm-1.log").body).decode()
+    assert named.startswith("id: claude/pm-1.log=1\n")
+    resumed = b"".join(get(v, "/api/events", headers={"Last-Event-ID": "claude/pm-1.log=1"}).body).decode()
+    assert '"text": "one"' not in resumed and '"text": "two"' in resumed
+    by_query = b"".join(get(v, "/api/events?after=claude%2Fpm-1.log%3D2").body).decode()
     assert "event: message" not in by_query and by_query.startswith("event: run_finished\n")
-    junk = b"".join(get(v, "/api/events?stream=claude/pm-1.log", headers={"Last-Event-ID": "seven"}).body).decode()
-    assert junk.startswith("id: 1\n")                                    # not an integer: from the start
+    junk = b"".join(get(v, "/api/events", headers={"Last-Event-ID": "seven"}).body).decode()
+    assert junk.startswith("id: claude/pm-1.log=1\n")               # unreadable cursor: from the start
 
 
-@pytest.mark.parametrize("stream", ["", "claude/nope.log", "../.meld.toml", "ghost/pm-1.log", "claude"])
+@pytest.mark.parametrize("stream", ["claude/nope.log", "../.meld.toml", "ghost/pm-1.log", "claude"])
 def test_api_events_answers_404_for_a_stream_that_is_not_a_log_of_a_configured_group(tmp_path, stream):
     v, ctx, _ = viewer_for(tmp_path)
     (ctx.store.home / "logs" / "ghost").mkdir(parents=True)
     (ctx.store.home / "logs" / "ghost" / "pm-1.log").write_text("x\n")   # exists on disk, but `ghost` is no group
     resp = get(v, f"/api/events?stream={stream}")
     assert resp.status == 404 and "error" in body(resp)
+
+
+def test_api_events_with_no_stream_is_every_stream_not_an_error(tmp_path):
+    v, ctx, _ = viewer_for(tmp_path, alive=lambda pid: False)
+    (ctx.store.home / "logs" / "claude").mkdir(parents=True)
+    (ctx.store.home / "logs" / "claude" / "pm-1.log").write_text("hi\n")
+    assert get(v, "/api/events").status == 200 and get(v, "/api/events?stream=").status == 200
 
 
 def test_the_page_and_its_assets_are_served_behind_the_gate_with_the_token_substituted(tmp_path):
@@ -243,7 +252,7 @@ def test_the_page_references_nothing_off_the_machine_and_renders_text_as_text(tm
 def test_serve_binds_an_os_assigned_loopback_port_and_answers_over_a_socket(tmp_path):
     """The one socket test: the wiring from bytes on a connection to `Viewer.handle` and back, including a
     streaming body and the silenced request log."""
-    v, ctx, _ = viewer_for(tmp_path, alive=lambda pid: False)     # the writer is confirmed gone: the stream ends
+    v, ctx, _ = viewer_for(tmp_path, alive=lambda pid: False, max_polls=2)     # the writer is confirmed gone: the stream ends
     home = ctx.store.home
     log = home / "logs" / "claude" / "pm-1.log"
     log.parent.mkdir(parents=True)
@@ -277,7 +286,8 @@ def test_serve_binds_an_os_assigned_loopback_port_and_answers_over_a_socket(tmp_
         assert resp.status == 200 and data.lstrip().lower().startswith(b"<!doctype html>")
         resp, data = fetch(f"/api/events?stream=claude/pm-1.log&t={TOKEN}")
         assert resp.status == 200 and resp.getheader("Content-Type") == "text/event-stream; charset=utf-8"
-        assert data.startswith(b"id: 1\nevent: message\n") and data.endswith(b"event: end\ndata: {}\n\n")
+        assert data.startswith(b"id: claude/pm-1.log=1\nevent: message\n")
+        assert data.endswith(b'event: end\ndata: {"stream": "claude/pm-1.log"}\n\n')
         resp, data = fetch(f"/api/streams?t={TOKEN}", headers={"Host": f"evil.example:{port}"})
         assert (resp.status, data) == (403, b"")
     finally:

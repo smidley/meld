@@ -8,8 +8,8 @@ confirmed gone.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterator
-from dataclasses import asdict
+from collections.abc import Callable, Iterator, Mapping
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from meld.config import Config
@@ -22,7 +22,6 @@ from meld.transcript import Event, Tail, newest_log, sweep_logs
 TERMINAL_KINDS = ("run_finished", "usage_limit", "cli_error")
 #: Idle polls between writer checks (and heartbeats): the check may run `ps`, and six seconds is prompt enough.
 CHECK_EVERY = 6
-END = b"event: end\ndata: {}\n\n"
 PING = b": ping\n\n"
 
 
@@ -109,74 +108,154 @@ def discover(cfg: Config, home: Path, *, alive: Callable[[int], bool] = pid_aliv
     return sorted(out, key=lambda s: (s["group"], s["kind"] != "role", s["role"] or "", s["issue"] or 0))
 
 
-def frame(event: Event, *, with_id: bool = True) -> bytes:
-    """One SSE frame: the event's `seq` as the id (what `Last-Event-ID` carries back), its kind as the event name.
+#: One transcript inside a connection. `writer` is called to ask whether its process is still alive, so a
+#: pid that dies mid-connection is noticed; `parse` is its group's adapter's, because only an adapter knows
+#: how its CLI talks.
+@dataclass(frozen=True)
+class Source:
+    stream: str
+    path: Path
+    parse: Callable[[str, str], list[Event]]
+    writer: Callable[[], dict]
 
-    `with_id=False` omits the `id:` line, for an event that is not a position in the file -- a synthesized
-    `run_finished` -- so it can never become a client's resume cursor (`after` / `Last-Event-ID`).
+
+@dataclass
+class _Reader:
+    """What one connection remembers about one transcript: where its reader is, how much the client has, and
+    whether the stream has said its last word."""
+    src: Source
+    tail: Tail
+    sent: int = 0
+    last_kind: str | None = None
+    first: bool = True
+    ended: bool = False
+
+
+def encode_cursor(counts: Mapping[str, int]) -> str:
+    """Every stream's position in one string, for the `id:` line: `<stream>=<count>`, joined by `|`.
+
+    Every stream the connection knows is named, a count of zero included: a cursor that omitted the zeros would
+    be empty on the frame that says a stream was trimmed, and an empty `Last-Event-ID` resets every other stream
+    to the start as well. It costs about 45 bytes per stream per frame on a loopback connection, which is the
+    price of the browser doing the reconnecting -- `Last-Event-ID` is one opaque string it hands straight back,
+    so the client needs no resume logic of its own.
     """
-    id_line = f"id: {event.seq}\n" if with_id else ""
-    return f"{id_line}event: {event.kind}\ndata: {json.dumps(asdict(event), ensure_ascii=False)}\n\n".encode()
+    return "|".join(f"{stream}={n}" for stream, n in sorted(counts.items()))
 
 
-def events(path: Path, parse: Callable[[str, str], list[Event]], *, after: int = 0, now: Callable[[], str],
-           writer: Callable[[], dict], sleep: Callable[[float], None], interval: float = 1.0,
-           check_every: int = CHECK_EVERY, max_polls: int | None = None) -> Iterator[bytes]:
-    """One transcript as SSE frames, from `after` onwards, until its writer is confirmed gone.
+def decode_cursor(text: str) -> dict[str, int]:
+    """`encode_cursor` read back. Anything unreadable is dropped rather than guessed: a client that sends
+    nonsense is resumed from the start of whatever it did not name, which shows too much, never too little."""
+    out: dict[str, int] = {}
+    for part in (text or "").split("|"):
+        stream, sep, count = part.rpartition("=")
+        if not sep or not stream:
+            continue
+        try:
+            out[stream] = max(0, int(count))
+        except ValueError:
+            continue
+    return out
 
-    Resume is by count: a fresh `Tail` stamps the file's events 1..n, so the client gets `after+1..n`. A client
-    whose `after` exceeds n was reading a log that has since been trimmed; it is told so with one `log_truncated`
-    frame and then the whole file. A trim that lands *under* this connection is handled the same way, for the
-    same reason: the batch is discarded, the reader is rebuilt at offset 0, and the file is replayed from its
-    first event behind one `log_truncated` frame -- so `seq` is a position in the current file throughout, and
-    the count a later reconnect carries back means what this stream's ids meant. Every `check_every` idle polls the writer is asked
-    after (`writer()` is `state.liveness` for its record, which may run `ps`): `dead` flushes the unterminated
-    last line, synthesizes the terminal event a Codex transcript never writes (spec 22's table leaves that to the
-    reader), and ends the stream; anything else sends a comment heartbeat and keeps following.
+
+def frame(stream: str, event: Event, *, cursor: str | None = None) -> bytes:
+    """One SSE frame: the kind as the event name, the stream and the event as the data, the cursor as the id.
+
+    `cursor=None` omits the `id:` line, for an event that is no position in any file -- a synthesized
+    `run_finished` -- so it can never become a client's resume point.
     """
-    after = max(0, after)          # a negative after (a malformed Last-Event-ID) behaves like the default: full replay
-    tail = Tail(path)
-    replay = tail.read(parse, now())
-    if after > len(replay):
-        yield frame(Event(seq=0, at=now(), kind="log_truncated",
-                          text=f"{path.name} was trimmed since this page last read it; showing it from the start"))
-        after = 0
-    last_kind = replay[-1].kind if replay else None
-    for ev in replay[after:]:
-        yield frame(ev)
-    idle = polls = 0
+    id_line = f"id: {cursor}\n" if cursor is not None else ""
+    payload = {"stream": stream, "event": asdict(event)}
+    return f"{id_line}event: {event.kind}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n".encode()
+
+
+def end_frame(stream: str) -> bytes:
+    """One stream has said its last word. No id: an ending is not a position, and the connection lives on."""
+    return f"event: end\ndata: {json.dumps({'stream': stream})}\n\n".encode()
+
+
+def events(sources: Callable[[], list[Source]], *, now: Callable[[], str], sleep: Callable[[float], None],
+           cursor: str = "", interval: float = 1.0, check_every: int = CHECK_EVERY,
+           max_polls: int | None = None) -> Iterator[bytes]:
+    """Every transcript `sources()` names, as one stream of server-sent events.
+
+    One connection carries them all, because a browser allows about six to an origin and a page that opened one
+    per transcript starved its own polls. Each frame names its stream and carries the whole cursor, so the
+    browser's own reconnect resumes every stream at once.
+
+    Per stream, everything plan 8a and 8b established still holds: a fresh `Tail` numbers the file 1..n; a
+    client that has seen more than the file holds is told the log was trimmed and shown it from the start; a
+    trim that lands under the connection restarts that stream's count the same way; and a writer confirmed dead
+    has its unterminated last line flushed, a `run_finished` synthesized when the transcript names no end (a
+    Codex run ends at `usage`), and one `end` frame. The connection itself does not end when a stream does: a
+    role relaunches into a new log, and the next refresh picks it up.
+    """
+    seen = decode_cursor(cursor)
+    readers: dict[str, _Reader] = {}
+    polls = idle = 0
+
+    def cursor_now() -> str:
+        return encode_cursor({stream: r.sent for stream, r in readers.items()})
+
+    def notice(r: _Reader, why: str) -> bytes:
+        r.sent, r.last_kind = 0, None
+        return frame(r.src.stream, Event(seq=0, at=now(), kind="log_truncated",
+                                         text=f"{r.src.path.name} {why}; showing it from the start"), cursor=cursor_now())
+
     while max_polls is None or polls < max_polls:
+        if polls % check_every == 0:          # the first pass, then on the writer-check cadence
+            current = {s.stream: s for s in sources()}
+            for stream in [s for s, r in readers.items() if r.ended and s not in current]:
+                del readers[stream]           # ended and no longer listed: its count can never matter again
+            for stream, source in current.items():
+                if stream not in readers:
+                    readers[stream] = _Reader(src=source, tail=Tail(source.path), sent=seen.get(stream, 0))
         polls += 1
-        fresh = tail.read(parse, now())
-        if any(ev.kind == "log_truncated" for ev in fresh):
-            # `Tail` keeps counting across a truncation -- its notice takes seq n+1 and the post-trim lines
-            # n+2.. -- while the fresh `Tail` a reconnect builds numbers those same lines 1..m. Left alone, the
-            # two numberings disagree and a reconnect resumes past events it never showed. So the batch is
-            # thrown away, the reader starts over with the file, and the client is told the count restarted.
-            tail = Tail(path)
-            fresh = tail.read(parse, now())
-            last_kind = None                           # the kinds before the trim are no longer in the file
-            yield frame(Event(seq=0, at=now(), kind="log_truncated",
-                              text=f"{path.name} was trimmed while this page was reading it; showing it from the start"))
-        for ev in fresh:
-            last_kind = ev.kind
-            yield frame(ev)
-        if fresh:
+        wrote = False
+        for r in list(readers.values()):
+            if r.ended:
+                continue
+            batch = r.tail.read(r.src.parse, now())
+            if any(ev.kind == "log_truncated" for ev in batch):
+                # `Tail` keeps counting across a truncation while the reader a reconnect builds numbers the same
+                # post-trim lines from 1. Throw the batch away, start the reader over with the file, and say so.
+                r.tail = Tail(r.src.path)
+                batch = r.tail.read(r.src.parse, now())
+                yield notice(r, "was trimmed while this page was reading it")
+            elif r.first and r.sent > len(batch):
+                yield notice(r, "was trimmed since this page last read it")
+            if batch:
+                # The file's last kind, whether or not this client still needed those events: a caught-up client
+                # whose transcript already ends in `usage_limit` must not be handed a synthesized `run_finished`.
+                r.last_kind = batch[-1].kind
+            if r.first:
+                batch = batch[r.sent:]
+                r.first = False
+            for ev in batch:
+                r.sent = ev.seq
+                yield frame(r.src.stream, ev, cursor=cursor_now())
+            wrote = wrote or bool(batch)
+        if wrote:
             idle = 0
         else:
             idle += 1
             if idle % check_every == 0:
-                if writer().get("state") == "dead":
-                    for ev in tail.flush(parse, now()):
-                        last_kind = ev.kind
-                        yield frame(ev)
-                    if last_kind not in TERMINAL_KINDS:
-                        # No id: this event was never a byte offset in the file, so it must not become the
-                        # client's resume cursor -- `seq` still orders it for display, inside the JSON body only.
-                        yield frame(Event(seq=tail.seq + 1, at=now(), kind="run_finished",
-                                          text="process exited; the transcript ends without a terminal event",
-                                          meta={"synthesized": True}), with_id=False)
-                    yield END
-                    return
-                yield PING
+                said = False
+                for r in list(readers.values()):
+                    if r.ended or r.src.writer().get("state") != "dead":
+                        continue
+                    said = True
+                    for ev in r.tail.flush(r.src.parse, now()):
+                        r.last_kind, r.sent = ev.kind, ev.seq
+                        yield frame(r.src.stream, ev, cursor=cursor_now())
+                    if r.last_kind not in TERMINAL_KINDS:
+                        # No id: this event was never a position in the file, so it must not become the client's
+                        # resume cursor -- `seq` still orders it for display, inside the JSON body only.
+                        yield frame(r.src.stream, Event(seq=r.tail.seq + 1, at=now(), kind="run_finished",
+                                                        text="process exited; the transcript ends without a terminal event",
+                                                        meta={"synthesized": True}))
+                    r.ended = True
+                    yield end_frame(r.src.stream)
+                if not said:
+                    yield PING          # a heartbeat is for a round that said nothing; an ending already did
         sleep(interval)

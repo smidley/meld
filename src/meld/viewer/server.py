@@ -86,13 +86,6 @@ def _empty(status: int) -> Response:
     return Response(status, b"", "text/plain; charset=utf-8")
 
 
-def _int(text: str) -> int:
-    try:
-        return max(0, int(text))
-    except (TypeError, ValueError):
-        return 0
-
-
 def _static(name: str) -> str:
     return resources.files("meld.viewer").joinpath("static", name).read_text(encoding="utf-8")
 
@@ -188,22 +181,48 @@ class Viewer:
     def api_streams(self, req: Request) -> Response:
         return _json(200, {"streams": st.discover(self.ctx.cfg, self.ctx.store.home, alive=self.alive, start_of=self.start_of)})
 
-    def api_events(self, req: Request) -> Response:
+    def _source(self, stream: str) -> st.Source | None:
+        """One transcript's reader, or None when `stream` names no log of a configured group. An adapter the
+        configuration names but this build does not have raises `UnknownAdapter`, which the caller decides about:
+        a stream the person asked for by name is a 502, one that merely turned up in `discover` is skipped."""
         home, cfg = self.ctx.store.home, self.ctx.cfg
-        stream = req.first("stream")
         path = st.stream_path(home / "logs", stream)
         group_cfg = cfg.groups.get(stream.partition("/")[0])
         if path is None or group_cfg is None:
-            return _json(404, {"error": f"no transcript {stream!r} of a configured group"})
-        try:
-            parse = self.ctx.adapter_for(group_cfg.cli).parse_events
-        except UnknownAdapter as e:
-            return _json(502, {"error": str(e)})
+            return None
+        parse = self.ctx.adapter_for(group_cfg.cli).parse_events
         record = st.record_for(cfg, home, path)
-        after = _int(req.headers.get("last-event-id") or req.first("after"))
-        body = st.events(path, parse, after=after, now=self.now, sleep=self.sleep, interval=self.interval,
-                         check_every=self.check_every, max_polls=self.max_polls,
+        return st.Source(stream=stream, path=path, parse=parse,
                          writer=lambda: liveness(record, alive=self.alive, start_of=self.start_of))
+
+    def api_events(self, req: Request) -> Response:
+        """Every transcript, or the ones `stream=` names, as one event stream (spec 22)."""
+        wanted = [s for s in req.query.get("stream", []) if s]
+        for stream in wanted:
+            try:
+                if self._source(stream) is None:
+                    return _json(404, {"error": f"no transcript {stream!r} of a configured group"})
+            except UnknownAdapter as e:
+                return _json(502, {"error": str(e)})
+
+        def sources() -> list[st.Source]:
+            # Re-read on every refresh, so a role that relaunched into a new log joins the connection and the
+            # record behind each writer check is the current one.
+            names = wanted or [s["id"] for s in st.discover(self.ctx.cfg, self.ctx.store.home,
+                                                            alive=self.alive, start_of=self.start_of)]
+            out = []
+            for stream in names:
+                try:
+                    source = self._source(stream)
+                except UnknownAdapter:
+                    continue                  # a group whose CLI this build cannot translate contributes nothing
+                if source is not None:
+                    out.append(source)
+            return out
+
+        body = st.events(sources, now=self.now, sleep=self.sleep, interval=self.interval,
+                         cursor=req.headers.get("last-event-id") or req.first("after"),
+                         check_every=self.check_every, max_polls=self.max_polls)
         return Response(200, body, "text/event-stream; charset=utf-8", SECURITY_HEADERS + (("Connection", "close"),))
 
 

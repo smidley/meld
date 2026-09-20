@@ -247,6 +247,7 @@ def test_the_page_references_nothing_off_the_machine_and_renders_text_as_text(tm
     assert "MAX_SOURCES" not in js and "openWaiting" not in js      # one connection now, so no cap and no queue
     assert js.count("new EventSource") == 1
     assert "msg.stream" in js and "feed" in js
+    assert 'id="feed"' in html
     for route in ("/api/state", "/api/streams", "/api/events"):
         assert route in js
     assert 'name="referrer" content="no-referrer"' in html

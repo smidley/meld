@@ -109,8 +109,9 @@ function columnFor(id) {
   if (!col) {
     const root = el("column").content.firstElementChild.cloneNode(true);
     col = { root, list: root.querySelector(".events"), live: root.querySelector(".live"),
-            why: root.querySelector(".why"), listed: false, liveness: { state: "unknown", reason: "not listed yet" } };
-    text(root.querySelector(".who"), id);
+            why: root.querySelector(".why"), who: root.querySelector(".who"),
+            listed: false, liveness: { state: "unknown", reason: "not listed yet" } };
+    text(col.who, id);
     el("streams").append(root);
     columns.set(id, col);
   }
@@ -140,10 +141,16 @@ function renderStreams(list) {
     const col = columnFor(s.id);
     col.listed = true;
     col.liveness = s.liveness;
-    text(col.root.querySelector(".who"), s.kind === "role" ? `${s.group} / ${s.role}` : `${s.group} / ${s.kind} #${s.issue}`);
+    text(col.who, s.kind === "role" ? `${s.group} / ${s.role}` : `${s.group} / ${s.kind} #${s.issue}`);
   }
   for (const [id, col] of columns) {
-    if (col.listed && !seen.has(id)) { col.root.remove(); columns.delete(id); }
+    if (seen.has(id)) continue;
+    // One poll of grace, not a permanent exemption: a column the feed created before the poll had listed its
+    // stream survives to be listed next time, while a column rebuilt by the trailing frames of a stream that
+    // has already left /api/streams -- a relaunched role's old log, re-ended on every feed reconnect -- is
+    // gone five seconds later instead of never. Both come from the same `discover` the feed reads, so a
+    // genuinely early column is always named by the following poll.
+    if (col.listed) { col.root.remove(); columns.delete(id); } else { col.listed = true; }
   }
   for (const col of columns.values()) {
     badge(col.live, col.liveness.state);

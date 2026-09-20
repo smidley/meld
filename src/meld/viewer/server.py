@@ -103,7 +103,8 @@ def _static(name: str) -> str:
 
 
 class Viewer:
-    """One `meld watch`: its token, its port, and the routes. Reads only; posts nothing; holds no legality logic."""
+    """One `meld watch`: its token, its port, and the routes. Reads, and posts the one human verb `/api/action`
+    carries; holds no legality logic."""
 
     ROUTES: dict[str, str] = {"/": "page", "/static/app.css": "asset_css", "/static/app.js": "asset_js",
                               "/api/state": "api_state", "/api/streams": "api_streams", "/api/events": "api_events",

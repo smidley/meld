@@ -557,8 +557,9 @@ def tail(ctx: click.Context, target: str | None, issue: int | None, follow: bool
 def watch(ctx: click.Context, port: int | None, open_browser: bool | None) -> None:
     """Serve the local viewer and print its URL; Ctrl-C stops it.
 
-    Binds 127.0.0.1 with a per-launch token in the URL. Reads only -- transcripts, board, state -- and posts
-    nothing; nothing in Meld depends on it running, and every verb it will offer already exists on the CLI.
+    Binds 127.0.0.1 with a per-launch token in the URL. Reads transcripts, the board and local state, and runs
+    the human verbs -- `rules.py` decides each one, exactly as it does for the same verb typed at the CLI, and a
+    refusal is shown with the rule that named it. Nothing else in Meld depends on it running.
     """
     c = _load(ctx)                                    # the human's context, and load_context's worker refusal
     if not c.actor().is_human:

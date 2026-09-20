@@ -59,13 +59,13 @@ function verbControls(into, legal, { ref, number }) {
   into.replaceChildren();
   for (const verb of legal || []) {
     if (!FIELDS[verb]) {
-      // Legal, and shown for that reason -- but not something this page can run. Two different reasons, and
-      // the reader deserves to know which: a verb outside DRIVEABLE is a group's or a worker run's, and one
-      // inside it is a verb /api/action implements that this bar has no field for (tag, whose eight
-      // declarations belong to a form -- plan 8d). Either way it is text, never a button that does nothing.
+      // Both branches speak only about this page's own reach, never about who may run the verb: legality lives
+      // in the `legal` list this row renders and in the refusal the bar shows verbatim (spec 22). `DRIVEABLE`
+      // is what /api/action implements, which is a different axis from whose verb it is -- `approve`,
+      // `request-changes`, `push-fix` and `reopen` are all a human's to run, and none of them is ours to offer.
       const why = DRIVEABLE.has(verb)
-        ? `${verb} runs from the CLI: the page has no form for it yet`
-        : `${verb} belongs to a group or a worker run, not to you`;
+        ? `${verb} runs from the CLI: this page has no form for it yet`
+        : `${verb} runs from the CLI: this page has no control for it`;
       const word = cell("dim", verb);
       word.title = why;
       into.append(word);
@@ -133,8 +133,12 @@ function showFields() {
 
 function showResult(message, ok) {
   const node = el("result");
-  node.className = ok ? "ok" : "bad";
+  // classList, never className: className would drop app.html's static "dim" class (the resting look) the
+  // same way the comment on badge() above warns about -- this only ever adds/removes the two outcome classes.
+  node.classList.remove("ok", "bad");
+  node.classList.add(ok ? "ok" : "bad");
   text(node, message);
+  node.title = message;   // the line truncates (app.css); the full answer stays reachable on hover
 }
 
 async function runAction() {

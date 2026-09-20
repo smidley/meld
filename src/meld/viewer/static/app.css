@@ -65,5 +65,8 @@ button.verb:hover { border-color: var(--accent); color: var(--accent); }
 #bar #text { flex: 1 1 auto; min-width: 8rem; }
 #bar button { cursor: pointer; }
 #bar button:hover { border-color: var(--accent); color: var(--accent); }
+/* Same treatment as .rid/.rwhat: a successful post's result can carry an unbreakable ~70-character html_url,
+   and #bar does not wrap, so without this the result line pushes the bar past the viewport instead of eliding. */
+#result { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #result.bad { color: var(--bad); }
 #result.ok { color: var(--ok); }

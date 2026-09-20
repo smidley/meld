@@ -281,6 +281,11 @@ def test_the_page_renders_the_board_and_offers_only_verbs_it_can_drive(tmp_path)
     # (DRIVEABLE) -- that's the fix this round made, and it's what keeps a legal `tag` from being a button that
     # silently does nothing.
     assert "if (!FIELDS[verb])" in js
+    # Pinning the other half: DRIVEABLE must still be read (not dead code left over from the old branch), and
+    # the dim text's own title must never claim ownership of a verb -- rules.py, not this page, says whose
+    # verb it is (approve/request-changes/push-fix/reopen are all a human's, and none of them is DRIVEABLE).
+    assert "word.title = why" in js and "DRIVEABLE.has(verb)" in js
+    assert "not to you" not in js
 
 
 def test_the_page_can_drive_exactly_the_verbs_the_api_implements(tmp_path):

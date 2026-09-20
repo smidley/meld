@@ -1253,7 +1253,8 @@ Expected: FAIL — `assert 'id="bar"' in html`.
 #result.ok { color: var(--ok); }
 ```
 
-and change `#streams`'s height declaration to `height: calc(100vh - 110px - 22vh - 36px);`.
+Task 5's fix round replaced `#streams`'s fixed-height arithmetic with a flex column on `body`, so **this task
+changes no height at all** — `#bar` is matched by that rule's `body > *` and sizes itself.
 
 - [ ] **Step 5: `app.js`.** Add near the constants:
 

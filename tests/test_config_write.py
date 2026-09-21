@@ -2,7 +2,7 @@ import tomllib
 
 import pytest
 
-from meld.config import Config, ConfigError, dumps, load_config, unknown_keys
+from meld.config import KNOWN, Config, dumps, load_config, unknown_keys
 from tests.test_config import MINIMAL
 
 
@@ -71,8 +71,14 @@ def minimal() -> dict:
 def full() -> dict:
     """Every table set, and a group carrying every optional field. Built by editing the parsed minimal file
     rather than by appending TOML text: `MINIMAL` already declares `[groups.claude]`, and TOML forbids a table
-    being declared twice, so a second block would not even parse."""
+    being declared twice, so a second block would not even parse.
+
+    `repo.default_branch` and `repo.private` are pinned away from the parser's own defaults ("main", True): a
+    renderer that forgot to emit either line would go undetected if the reparsed value only ever happened to
+    match the default `from_dict` fills in for an absent key."""
     data = tomllib.loads(MINIMAL + TABLES)
+    data["repo"]["default_branch"] = "trunk"
+    data["repo"]["private"] = False
     data["groups"]["claude"].update({"concurrency": 3, "review_concurrency": 1,
                                      "git_name": 'a "quoted" \\ name', "git_email": "claude@example.invalid"})
     return data
@@ -88,13 +94,26 @@ def app() -> dict:
     return data
 
 
+def app_env() -> dict:
+    """The codex group in App form using the *other* key setting: `private_key_env` rather than
+    `private_key_file`. An App group sets exactly one of the two, so `app()` alone never exercises this one --
+    without this fixture, dropping `private_key_env` from `dumps` would go undetected."""
+    data = tomllib.loads(MINIMAL)
+    data["groups"]["codex"] = {**data["groups"]["codex"], "bot": "meld-codex[bot]", "auth": "app",
+                               "app_id": 4911515, "installation_id": 160922345,
+                               "private_key_env": "MELD_APP_KEY_CODEX"}
+    data["groups"]["codex"].pop("token_env", None)
+    return data
+
+
 def roundtrip(data: dict) -> tuple[Config, Config]:
     """The config a parsed file describes, and the config its canonical rendering describes."""
     first = Config.from_dict(data)
     return first, Config.from_dict(tomllib.loads(dumps(first)))
 
 
-@pytest.mark.parametrize("build, what", [(minimal, "a minimal file"), (full, "every field set"), (app, "an App group")])
+@pytest.mark.parametrize("build, what", [(minimal, "a minimal file"), (full, "every field set"), (app, "an App group"),
+                                          (app_env, "an App group using private_key_env")])
 def test_a_rendered_config_parses_back_into_an_equal_one(build, what):
     first, second = roundtrip(build())
     assert first == second, what
@@ -189,3 +208,19 @@ def test_a_pat_group_carrying_app_settings_round_trips_them_unchanged():
     assert second.groups["codex"].installation_id == 160922345
     assert second.groups["codex"].private_key_file == "~/.meld/keys/meld-codex.pem"
     assert first == second
+
+
+def test_every_key_the_schema_knows_is_a_key_the_renderer_writes():
+    """`KNOWN`, `from_dict`'s reads and `dumps`'s emitters are three copies of one schema. This pins the third
+    against the first, so a field added to `Config` and to `KNOWN` but forgotten in `dumps` -- which would be
+    silently reset to its default on the next save -- fails here instead of in somebody's file."""
+    rendered = tomllib.loads(dumps(Config.from_dict(full())))
+    for table, keys in KNOWN.items():
+        assert set(rendered[table]) == set(keys), table
+
+
+def test_unknown_keys_does_not_mistake_a_malformed_table_for_an_unknown_key():
+    """A `groups` that is not a table, or a group that is not a table, is a shape problem for `Config.from_dict`
+    to report -- not a name `unknown_keys` should invent."""
+    assert unknown_keys({"groups": 5}) == []
+    assert unknown_keys({"groups": {"claude": 5}}) == []

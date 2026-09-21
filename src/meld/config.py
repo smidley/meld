@@ -157,12 +157,13 @@ def unknown_keys(data: Mapping[str, Any]) -> list[str]:
     for table, value in data.items():
         if table == "groups":
             if not isinstance(value, Mapping):
-                out.append("groups")
+                # A shape problem, not a name problem: "groups" is the one table the schema is surest of, so
+                # reporting it as an *unknown key* would tell a person "unknown key: groups" about a table
+                # they spelled correctly. Leave it for `Config.from_dict` to raise the shape error instead.
                 continue
             for name, group in value.items():
                 if not isinstance(group, Mapping):
-                    out.append(f"groups.{name}")
-                    continue
+                    continue    # ditto, one level down: a malformed group is not an unknown key either
                 for key, sub in group.items():
                     if key in ("orchestrator", "pm"):
                         if isinstance(sub, Mapping):

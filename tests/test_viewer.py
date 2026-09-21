@@ -442,6 +442,30 @@ def test_a_get_of_a_file_with_a_bare_toml_date_answers_rather_than_raising(tmp_p
     assert "error" in body(resp) and "date" in body(resp)["error"].lower()
 
 
+def _reject_nonstandard_json(token: str):
+    raise ValueError(f"not strict JSON: {token}")
+
+
+def test_a_get_of_a_file_with_a_bare_toml_nan_or_inf_answers_500_not_unparseable_json(tmp_path):
+    """TOML float syntax allows a bare inf/nan/+nan/-inf literal anywhere; `json.dumps`'s default would
+    silently emit the matching non-standard NaN/Infinity token (valid Python, not valid JSON) instead of
+    raising, so `_read_config`'s `allow_nan=False` is what turns this into the same clean 500 the date case
+    gets, rather than a 200 a browser's `JSON.parse` would choke on. The control check is the real pin: an
+    ordinary, successful GET's body must itself survive a strict parse, proving the happy path never depended
+    on the leniency this scoped change turns off.
+    """
+    v, _, _ = viewer_for(tmp_path)
+    control = get(v, "/api/config")
+    assert control.status == 200
+    json.loads(control.body, parse_constant=_reject_nonstandard_json)   # raises if the body isn't strict JSON
+
+    config_path = tmp_path / ".meld.toml"
+    config_path.write_text(config_path.read_text() + "\n[notes]\nspend_variance = nan\nceiling = inf\n")
+    resp = get(v, "/api/config")
+    assert resp.status == 500
+    assert "error" in body(resp)
+
+
 def test_a_put_reports_a_render_that_cannot_reproduce_its_own_input_as_a_500(tmp_path, monkeypatch):
     """A render that cannot reproduce its own input is `dumps`'s bug, not the candidate's -- reported as one,
     with the fields that differ, and nothing is written."""

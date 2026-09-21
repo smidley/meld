@@ -93,8 +93,8 @@ class Response:
         return not isinstance(self.body, (bytes, bytearray))
 
 
-def _json(status: int, payload: object) -> Response:
-    return Response(status, json.dumps(payload, ensure_ascii=False).encode())
+def _json(status: int, payload: object, *, allow_nan: bool = True) -> Response:
+    return Response(status, json.dumps(payload, ensure_ascii=False, allow_nan=allow_nan).encode())
 
 
 def _empty(status: int) -> Response:
@@ -374,7 +374,13 @@ class Viewer:
                             for s in self.ctx.models.for_adapter(adapter)]
                   for adapter in self.ctx.models.adapters}
         payload = {"path": str(self.config_path), "config": parsed, "models": models, "note": self.CONFIG_NOTE}
-        return _json(200, {**payload, "ok": True} if ok else payload)
+        # allow_nan=False, scoped to this one return: `parsed` is tomllib's raw parse of the whole file, and
+        # TOML float syntax allows a bare inf/nan/+nan/-inf literal anywhere -- json.dumps's default would
+        # silently emit the non-standard tokens NaN/Infinity, valid Python but not valid JSON, which a browser's
+        # JSON.parse rejects. Refusing to serialize one turns it into the same clean 500 the catch-all above
+        # already gives a bare TOML date -- not a global default, since the other four routes' 200s sit outside
+        # any catch-all and a raise there would drop the connection instead.
+        return _json(200, {**payload, "ok": True} if ok else payload, allow_nan=False)
 
 
 class _Handler(BaseHTTPRequestHandler):

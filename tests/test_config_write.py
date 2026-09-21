@@ -2,7 +2,7 @@ import tomllib
 
 import pytest
 
-from meld.config import KNOWN, Config, ConfigError, dumps, load_config, unknown_keys
+from meld.config import KNOWN, KNOWN_GROUP, KNOWN_ROLE, Config, ConfigError, dumps, load_config, unknown_keys
 from tests.test_config import MINIMAL
 
 
@@ -103,6 +103,21 @@ def app_env() -> dict:
                                "app_id": 4911515, "installation_id": 160922345,
                                "private_key_env": "MELD_APP_KEY_CODEX"}
     data["groups"]["codex"].pop("token_env", None)
+    return data
+
+
+def pat_with_all_group_fields() -> dict:
+    """One PAT group carrying every `KNOWN_GROUP` field at once, including *both* private_key_env and
+    private_key_file. Legal because the App-only rules -- "exactly one key setting", app_id/installation_id
+    required, bot ends with "[bot]" -- all live inside `if auth == "app":` and never fire while auth stays
+    "pat" (the default). No App-form fixture could carry both key settings or leave auth unvalidated, so
+    this is the one fixture that can pin every group and role key against `dumps` at once."""
+    data = tomllib.loads(MINIMAL)
+    data["groups"]["claude"].update({
+        "concurrency": 3, "review_concurrency": 1, "git_name": "Nightly Bot", "git_email": "nightly@example.invalid",
+        "app_id": 4911515, "installation_id": 160922345,
+        "private_key_env": "MELD_APP_KEY_CLAUDE", "private_key_file": "~/.meld/keys/meld-claude.pem",
+    })
     return data
 
 
@@ -211,12 +226,20 @@ def test_a_pat_group_carrying_app_settings_round_trips_them_unchanged():
 
 
 def test_every_key_the_schema_knows_is_a_key_the_renderer_writes():
-    """`KNOWN`, `from_dict`'s reads and `dumps`'s emitters are three copies of one schema. This pins the third
-    against the first, so a field added to `Config` and to `KNOWN` but forgotten in `dumps` -- which would be
-    silently reset to its default on the next save -- fails here instead of in somebody's file."""
+    """`KNOWN`/`KNOWN_GROUP`/`KNOWN_ROLE`, `from_dict`'s reads and `dumps`'s emitters are three copies of one
+    schema. This pins the third against the first, so a field added to the schema but forgotten in `dumps`
+    -- which would be silently reset to its default (or dropped) on the next save -- fails here instead of
+    in somebody's file. Table keys and group/role keys need different fixtures: no single group can be both
+    "pat" and "app", but a PAT group is free to carry every optional field at once (the App-only rules never
+    fire), so `pat_with_all_group_fields` alone covers all 48 keys between it and `full()`."""
     rendered = tomllib.loads(dumps(Config.from_dict(full())))
     for table, keys in KNOWN.items():
         assert set(rendered[table]) == set(keys), table
+
+    group_rendered = tomllib.loads(dumps(Config.from_dict(pat_with_all_group_fields())))["groups"]["claude"]
+    assert set(group_rendered) - {"orchestrator", "pm"} == set(KNOWN_GROUP)
+    assert set(group_rendered["orchestrator"]) == set(KNOWN_ROLE)
+    assert set(group_rendered["pm"]) == set(KNOWN_ROLE)
 
 
 def test_unknown_keys_does_not_mistake_a_malformed_table_for_an_unknown_key():

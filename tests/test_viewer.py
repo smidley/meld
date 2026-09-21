@@ -851,6 +851,46 @@ def test_a_put_reports_a_render_that_cannot_reproduce_its_own_input_as_a_500(tmp
     assert (tmp_path / ".meld.toml").read_text() == before
 
 
+def test_the_config_route_answers_502_when_the_viewer_has_no_configuration_file(tmp_path):
+    """`meld watch` always passes one, so this is the guard rather than a reachable state -- but it is the
+    first line of the route and nothing exercised it, which is how a guard quietly stops guarding."""
+    v, _, _ = viewer_for(tmp_path, config_path=None)
+    for resp in (get(v, "/api/config"), raw_put(v, {"config": {"repo": {"name": "a/b"}}, "version": "x"})):
+        assert resp.status == 502
+        assert "without a configuration file" in body(resp)["error"]
+
+
+def test_a_write_that_fails_answers_502_and_leaves_the_file_untouched(tmp_path, monkeypatch):
+    """The last rung of the refusal ladder, and the only one that runs after every check has passed: a full
+    disk or a read-only directory must come back as the 502 it is rather than a traceback. The stand-in
+    below fails the way `write_atomic` actually fails on a full disk -- the sidecar written, the
+    `os.replace` never reached -- because a stub that raised before touching anything would leave the
+    "untouched" half of this test proving nothing. (The abandoned sidecar is not cleaned up; `atomic.py`
+    is a shared helper with other callers and is out of this branch's scope.)"""
+    v, _, _ = viewer_for(tmp_path)
+    path = tmp_path / ".meld.toml"
+    before = path.read_text()
+    out = body(get(v, "/api/config"))
+    current = out["config"]
+    current["budget"] = {**current["budget"], "large": 24}
+    # PROJECT_TOML's codex model is the deliberately-invalid "gpt-x" (see the sibling write test): without
+    # this the 409 from config_checks would come first and the write would never be attempted at all.
+    current["groups"]["codex"]["orchestrator"]["model"] = current["groups"]["codex"]["pm"]["model"] = "gpt-5.6-sol"
+
+    def full_disk(target, text):
+        target.with_suffix(target.suffix + ".tmp").write_text(text)     # as far as write_atomic gets
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(server, "write_atomic", full_disk)
+    resp = put(v, {"config": current, "version": out["version"]})
+    assert resp.status == 502
+    assert "No space left on device" in body(resp)["error"] and str(path) in body(resp)["error"]
+    assert path.read_text() == before                        # the target itself never moved
+    monkeypatch.undo()
+    assert put(v, {"config": current, "version": out["version"]}).status == 200   # the real writer still works
+    assert load_config(path).budget["large"] == 24
+
+
 def test_the_config_route_is_behind_the_gate_and_takes_only_get_and_put(tmp_path):
     v, _, _ = viewer_for(tmp_path)
     assert get(v, "/api/config", token=None).status == 403

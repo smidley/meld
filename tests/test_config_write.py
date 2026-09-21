@@ -1,7 +1,11 @@
+import ast
+import inspect
+import textwrap
 import tomllib
 
 import pytest
 
+from meld import config as config_module
 from meld.config import (KNOWN, KNOWN_GROUP, KNOWN_ROLE, Config, ConfigError, dotted_key, dumps, load_config,
                          unknown_keys)
 from tests.test_config import MINIMAL
@@ -279,3 +283,57 @@ def test_unknown_keys_keeps_a_quoted_key_that_contains_a_dot_in_one_piece():
     data["review"]["a.b"] = 1
     assert unknown_keys(data) == [("review", "a.b")]
     assert dotted_key(("review", "a.b")) == "review.a.b"     # ambiguous, which is why it is display-only
+
+
+def _reads_of(source: str) -> dict[str, set[str]]:
+    """`{local name: {the literal string keys read off it}}` for `x.get("k", ...)`, `x["k"]` and
+    `_require(x, "k", ...)` anywhere in `source`. A static read of how the parser reaches into a parsed
+    file, so the pin below can compare it against the schema table `unknown_keys` walks."""
+    out: dict[str, set[str]] = {}
+    for node in ast.walk(ast.parse(textwrap.dedent(source))):
+        target = key = None
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get" \
+                and isinstance(node.func.value, ast.Name) and node.args and isinstance(node.args[0], ast.Constant):
+            target, key = node.func.value.id, node.args[0].value
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "_require" \
+                and len(node.args) >= 2 and isinstance(node.args[0], ast.Name) and isinstance(node.args[1], ast.Constant):
+            target, key = node.args[0].id, node.args[1].value
+        elif isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) \
+                and isinstance(node.slice, ast.Constant):
+            target, key = node.value.id, node.slice.value
+        if target is not None and isinstance(key, str):
+            out.setdefault(target, set()).add(key)
+    return out
+
+
+def test_every_key_from_dict_reads_is_a_key_the_schema_knows():
+    """The other direction from the sibling test above, and the one with teeth for the form. `unknown_keys`
+    refuses, by name, every key in a candidate that `KNOWN`/`KNOWN_GROUP`/`KNOWN_ROLE` does not list -- so a
+    setting `from_dict` reads but the schema table forgot would be refused on `PUT` even though it is
+    perfectly legal, and the round trip would fail on a file `meld` itself considers valid. Nothing else
+    would catch that: `dumps` would not write the field either, so the render comparison stays equal and
+    every other test passes.
+
+    Static, over `from_dict`'s own source, because there is no runtime signal for "a key the parser looked
+    for and did not find" -- `.get` with a default is indistinguishable from never asking."""
+    reads = _reads_of(inspect.getsource(Config.from_dict))
+
+    # The local each table is bound to (`review = data.get("review", {})`); anything else reading string
+    # keys off a bare name in `from_dict` is a table this test does not know about, which is the point.
+    tables = {name: name for name in KNOWN}
+    assert set(reads) <= set(tables) | {"data", "g"}, sorted(set(reads) - set(tables) - {"data", "g"})
+
+    # every table pulled off the parsed file is one `KNOWN` holds -- and every one it holds is read
+    assert reads["data"] == set(KNOWN) | {"groups"}      # `groups` is keyed by names the product chooses
+
+    for local, table in tables.items():
+        extra = reads.get(local, set()) - set(KNOWN[table])
+        assert not extra, f"{table}: read by from_dict, missing from KNOWN: {sorted(extra)}"
+
+    # a group's own fields. `orchestrator`/`pm` are legal without being in `KNOWN_GROUP` because
+    # `unknown_keys` matches them by name and then walks them against `KNOWN_ROLE`.
+    extra = reads["g"] - set(KNOWN_GROUP) - {"orchestrator", "pm"}
+    assert not extra, f"groups.<g>: read by from_dict, missing from KNOWN_GROUP: {sorted(extra)}"
+
+    role = _reads_of(inspect.getsource(config_module._role))
+    assert role["data"] == set(KNOWN_ROLE)

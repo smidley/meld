@@ -557,6 +557,40 @@ def test_a_get_names_the_two_states_that_block_every_save(tmp_path):
     assert "budget" not in out["config"]                        # the raw-parse fallback -- which now says so
 
 
+def test_a_file_that_fails_a_floor_can_be_fixed_in_the_form_and_saved(tmp_path):
+    """R44, and the reason the fallback line had to be reworded. Twenty-four settings can now fail to parse
+    on a value the raw parse still renders perfectly well, so the common way to reach `_canonical_config`'s
+    fallback is no longer a structurally sparser file -- it is one number out of range, sitting in a box
+    the form is already showing. Typing a legal value into that box and saving works, which is exactly
+    what the old status line said was impossible.
+
+    Contrast the sibling case: a *missing* required key has no box to type into, because the raw parse has
+    no field for a key the file never wrote, and that one really does need the file opened by hand. The
+    line now names both and asserts neither."""
+    v, _, _ = viewer_for(tmp_path)
+    path = tmp_path / ".meld.toml"
+    path.write_text(PROJECT_TOML + "\n[review]\nquorum = 0\n")
+    out = body(get(v, "/api/config"))
+    assert "review.quorum must be an integer of at least 1" in out["error"]      # the fallback, diagnosed
+    assert out["config"]["review"]["quorum"] == 0                                # ... and still editable
+
+    current = out["config"]
+    current["review"]["quorum"] = 2                                              # fixed in the form alone
+    # PROJECT_TOML's codex model is the deliberately-invalid "gpt-x" (see the sibling write test).
+    current["groups"]["codex"]["orchestrator"]["model"] = current["groups"]["codex"]["pm"]["model"] = "gpt-5.6-sol"
+    resp = put(v, {"config": current, "version": out["version"]})
+    assert resp.status == 200, body(resp)
+    assert load_config(path).review_quorum == 2
+    after = body(resp)
+    assert "error" not in after and after["config"]["review"]["quorum"] == 2     # and the panel is clean now
+
+    # the other shape, for contrast: no field to type into, so the file really must be opened
+    path.write_text(PROJECT_TOML.replace('cli = "claude"\n', ""))
+    out = body(get(v, "/api/config"))
+    assert "missing required setting groups.claude.cli" in out["error"]
+    assert "cli" not in out["config"]["groups"]["claude"]
+
+
 def test_a_put_ignores_the_read_side_keys_the_way_it_already_ignores_the_others(tmp_path):
     """`unknown` and `error` are diagnosis, not settings: `PUT` re-derives the unknown keys from the
     candidate itself, so a body that omits them, or lies about them, changes nothing -- exactly as it
@@ -586,6 +620,13 @@ def test_the_config_form_shows_the_diagnosis_the_form_itself_cannot(tmp_path):
             "    if (trouble) showConfigResult(`${configState.path} — ${trouble}`, false);\n"
             "    else showConfigResult(`${configState.path} — ${configState.note}`, true);") in js
     assert "if (configState.error) {" in js                     # the fallback state
+    # R44. The line here used to promise "every save is refused until it is hand-edited", which the
+    # sibling test below proves false. Both halves are pinned: the dead claim must not come back, and the
+    # honest one -- which says where the fix may be, rather than asserting it cannot be made here -- must
+    # survive. Each is contiguous inside a single template literal, so neither can be half-removed.
+    assert "every save is refused until it is hand-edited" not in js
+    assert "a save is refused until the problem is fixed: ${configState.error}" in js
+    assert " — change it here if the form shows that field, or edit the file by hand if it does not" in js
     assert "no save can pass while the file carries" in js      # the unknown-key state
     assert 'labelEl.classList.add("unknown");' in js            # marked in the form, not only in the line
     # an unknown *table* is reported as the table, so its fields are unknown by inheritance -- a bare

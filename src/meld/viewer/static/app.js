@@ -386,8 +386,16 @@ function configTrouble() {
   // letting the first Save be where a person discovers the file has to be hand-edited first.
   const out = [];
   if (configState.error) {
-    out.push(`this file does not parse (${configState.error}), so the form below is the raw file and every `
-             + `save is refused until it is hand-edited`);
+    // This used to promise that no save could succeed until the file itself was opened and corrected by
+    // hand, which is false: it was written when reaching this fallback meant a structurally sparser file,
+    // and since every numeric setting gained a floor, nearly every way to reach it is a value out of range
+    // on a field the raw parse still renders -- so the person can very often fix it right here and save.
+    // Promise only what is true: a save is refused until the problem is fixed, wherever that turns out to
+    // be. (The negative pin in the viewer suite keeps the dead wording from coming back, so do not quote
+    // it here.)
+    out.push(`this file does not parse, so the form below is the raw file rather than the full schema`
+             + `, and a save is refused until the problem is fixed: ${configState.error}`
+             + ` — change it here if the form shows that field, or edit the file by hand if it does not`);
   }
   const unknown = configState.unknown || [];
   if (unknown.length) {

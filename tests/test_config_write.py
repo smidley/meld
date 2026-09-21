@@ -172,3 +172,20 @@ def test_every_control_character_survives_the_round_trip():
         cfg = Config.from_dict(data)
         back = Config.from_dict(tomllib.loads(dumps(cfg)))
         assert back.groups["claude"].git_name == cfg.groups["claude"].git_name, hex(code)
+
+
+def test_a_pat_group_carrying_app_settings_round_trips_them_unchanged():
+    """A half-finished App migration leaves app_id/installation_id/a key setting sitting in a group whose auth
+    is still "pat" (setup.starter_toml ships exactly this shape as a commented block to uncomment). These four
+    fields are inert while auth is "pat" -- nothing reads them unless is_app -- but the file must still come
+    back with them intact rather than silently deleting them on the first save."""
+    data = minimal()
+    data["groups"]["codex"]["app_id"] = 4911515
+    data["groups"]["codex"]["installation_id"] = 160922345
+    data["groups"]["codex"]["private_key_file"] = "~/.meld/keys/meld-codex.pem"
+    first, second = roundtrip(data)
+    assert second.groups["codex"].auth == "pat"
+    assert second.groups["codex"].app_id == 4911515
+    assert second.groups["codex"].installation_id == 160922345
+    assert second.groups["codex"].private_key_file == "~/.meld/keys/meld-codex.pem"
+    assert first == second

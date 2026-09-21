@@ -64,6 +64,17 @@ def _positive_int(value: Any, path: str) -> int:
     return value
 
 
+def _loose_int(value: Any) -> int | None:
+    """`value` as an int if it is cleanly one, else `None` -- never raises. Used to read a group's App
+    settings when auth is not "app": the field is inert there (nothing reads it unless `is_app`), so a
+    stray non-numeric leftover from a half-finished migration must not crash the parser. An App group's
+    own read (`_positive_int` on the raw value, not on this) is what actually enforces the shape."""
+    try:
+        return None if value is None else int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _port(value: Any, path: str) -> int:
     """A TCP port for `meld watch` to bind: a real TOML integer in 0..65535, where 0 lets the OS choose. `int()` would
     quietly accept "8080", 1.5 and True (bool is an int subclass)."""
@@ -328,16 +339,19 @@ class Config:
             token_env = str(g["token_env"]) if g.get("token_env") else None
             if auth == "pat" and not token_env:
                 raise ConfigError(f"missing required setting {path}.token_env (or set auth = \"app\")")
-            app_id = installation_id = None
-            key_env = key_file = None
+            # Read whenever present, not only when auth == "app": a PAT group carrying leftover App settings
+            # from a half-finished migration must round-trip them unchanged, not lose them on the next save.
+            app_id = _loose_int(g.get("app_id"))
+            installation_id = _loose_int(g.get("installation_id"))
+            key_env = str(g["private_key_env"]) if g.get("private_key_env") else None
+            key_file = str(g["private_key_file"]) if g.get("private_key_file") else None
             bot = str(_require(g, "bot", path))
             if auth == "app":
                 # _require's own ConfigError (missing key) must propagate as-is, not be relabeled
-                # "must be a positive integer" -- so the lookup happens outside _positive_int.
+                # "must be a positive integer" -- so the lookup happens outside _positive_int. This re-read
+                # replaces the loose one above with the strict one App auth actually needs.
                 app_id = _positive_int(_require(g, "app_id", path), f"{path}.app_id")
                 installation_id = _positive_int(_require(g, "installation_id", path), f"{path}.installation_id")
-                key_env = str(g["private_key_env"]) if g.get("private_key_env") else None
-                key_file = str(g["private_key_file"]) if g.get("private_key_file") else None
                 if bool(key_env) == bool(key_file):
                     raise ConfigError(f"{path}: an App group needs exactly one of private_key_env or private_key_file")
                 if not bot.endswith("[bot]"):

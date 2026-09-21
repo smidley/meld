@@ -62,7 +62,6 @@ def body(resp: Response) -> dict:
 
 
 def put(v, payload, **kw):
-    from meld.viewer.server import Request
     target = f"/api/config?t={kw.pop('token', TOKEN)}"
     headers = {"Host": kw.pop("host", "127.0.0.1:8765"), "Content-Type": "application/json"}
     return v.handle(Request.parse("PUT", target, headers, json.dumps(payload).encode()))
@@ -402,11 +401,12 @@ def test_a_put_refuses_a_config_the_doctor_checks_reject(tmp_path):
 
 def test_a_put_needs_a_json_object_with_a_config(tmp_path):
     v, _, _ = viewer_for(tmp_path)
+    before = (tmp_path / ".meld.toml").read_text()
     for payload in ({}, {"config": None}, {"config": []}, {"config": {}}):
         assert put(v, payload).status == 400, payload
-    from meld.viewer.server import Request
     bad = v.handle(Request.parse("PUT", f"/api/config?t={TOKEN}", {"Host": "127.0.0.1:8765"}, b"not json"))
     assert bad.status == 400
+    assert (tmp_path / ".meld.toml").read_text() == before
 
 
 @pytest.mark.parametrize("mutate, expect", [
@@ -440,6 +440,20 @@ def test_a_get_of_a_file_with_a_bare_toml_date_answers_rather_than_raising(tmp_p
     resp = get(v, "/api/config")
     assert resp.status == 500
     assert "error" in body(resp) and "date" in body(resp)["error"].lower()
+
+
+def test_a_put_reports_a_render_that_cannot_reproduce_its_own_input_as_a_500(tmp_path, monkeypatch):
+    """A render that cannot reproduce its own input is `dumps`'s bug, not the candidate's -- reported as one,
+    with the fields that differ, and nothing is written."""
+    v, _, _ = viewer_for(tmp_path)
+    current = body(get(v, "/api/config"))["config"]
+    before = (tmp_path / ".meld.toml").read_text()
+    real = server.dumps
+    monkeypatch.setattr(server, "dumps", lambda cfg: real(cfg).replace("large = 20", "large = 99"))
+    resp = put(v, {"config": current})
+    assert resp.status == 500
+    assert body(resp)["differs"] == ["budget"]
+    assert (tmp_path / ".meld.toml").read_text() == before
 
 
 def test_the_config_route_is_behind_the_gate_and_takes_only_get_and_put(tmp_path):

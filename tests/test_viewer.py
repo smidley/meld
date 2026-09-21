@@ -530,6 +530,70 @@ def test_a_get_survives_a_quoted_key_that_contains_a_dot_inside_a_known_table(tm
     assert refusal.status == 400 and "review.a.b" in body(refusal)["error"]
 
 
+def test_a_get_names_the_two_states_that_block_every_save(tmp_path):
+    """R36. Both behaviours are spec-mandated and correctly implemented; what was missing is the diagnosis
+    alongside. (a) A hand-added unknown key renders as an ordinary editable field, so a person learned only
+    on Save -- `400 unknown setting(s): notes.kept` -- that *nothing* could be written until they hand-edit
+    the file, and that blanking the box does not remove the key. (b) When `Config.from_dict` raises and the
+    read falls back to the raw parse, the body carried no sign of it at all: a sparser form than usual, and
+    every save refused by a parser message the person was never shown."""
+    v, _, _ = viewer_for(tmp_path)
+    path = tmp_path / ".meld.toml"
+    clean = body(get(v, "/api/config"))
+    assert clean["unknown"] == [] and "error" not in clean      # a clean file says so rather than staying silent
+
+    path.write_text(path.read_text() + '\n[notes]\nkept = "hand-added"\n')
+    out = body(get(v, "/api/config"))
+    # a whole unknown *table* is reported as the table, the same word the route's own 400 already uses
+    assert out["unknown"] == ["notes"] and "error" not in out
+    assert out["config"]["notes"]["kept"] == "hand-added"       # still carried over verbatim, as spec 22 wants
+
+    path.write_text(path.read_text() + "\n[review]\nquorumm = 9\n")     # and a key inside a table it knows
+    assert body(get(v, "/api/config"))["unknown"] == ["notes", "review.quorumm"]
+
+    path.write_text(PROJECT_TOML.replace('cli = "claude"\n', ""))     # claude's group no longer parses
+    out = body(get(v, "/api/config"))
+    assert "missing required setting groups.claude.cli" in out["error"]
+    assert "budget" not in out["config"]                        # the raw-parse fallback -- which now says so
+
+
+def test_a_put_ignores_the_read_side_keys_the_way_it_already_ignores_the_others(tmp_path):
+    """`unknown` and `error` are diagnosis, not settings: `PUT` re-derives the unknown keys from the
+    candidate itself, so a body that omits them, or lies about them, changes nothing -- exactly as it
+    already ignores `path`, `models` and `note`."""
+    v, _, _ = viewer_for(tmp_path)
+    out = body(get(v, "/api/config"))
+    current = out["config"]
+    # PROJECT_TOML's codex model is the deliberately-invalid "gpt-x" (see the sibling write test).
+    current["groups"]["codex"]["orchestrator"]["model"] = current["groups"]["codex"]["pm"]["model"] = "gpt-5.6-sol"
+    resp = put(v, {"config": current, "version": out["version"], "unknown": ["review.nonsense"],
+                   "error": "invented", "path": "/somewhere/else", "models": {}, "note": "ignored"})
+    assert resp.status == 200, body(resp)
+    answered = body(resp)
+    assert answered["path"] == str(tmp_path / ".meld.toml") and answered["unknown"] == []
+    assert "error" not in answered and answered["note"] == server.Viewer.CONFIG_NOTE
+
+
+def test_the_config_form_shows_the_diagnosis_the_form_itself_cannot(tmp_path):
+    """R36 on the page. The line on open is refusal-coloured and names the blocker, instead of the green
+    note over a form whose every save is already doomed; and each unknown key is marked where it sits, so
+    it is findable in a grid of forty fields."""
+    v, _, _ = viewer_for(tmp_path)
+    js, css = get(v, "/static/app.js").body.decode(), get(v, "/static/app.css").body.decode()
+    # the branch itself, pinned contiguously: a `configTrouble` that is defined and never consulted, or
+    # consulted and still painted green, has to fail here.
+    assert ("const trouble = configTrouble();\n"
+            "    if (trouble) showConfigResult(`${configState.path} — ${trouble}`, false);\n"
+            "    else showConfigResult(`${configState.path} — ${configState.note}`, true);") in js
+    assert "if (configState.error) {" in js                     # the fallback state
+    assert "no save can pass while the file carries" in js      # the unknown-key state
+    assert 'labelEl.classList.add("unknown");' in js            # marked in the form, not only in the line
+    # an unknown *table* is reported as the table, so its fields are unknown by inheritance -- a bare
+    # set-membership test would mark `review.quorumm` and leave `notes.kept` looking like a real setting
+    assert "for (let i = 1; i <= parts.length; i++) if (unknown.has(parts.slice(0, i).join(\".\"))) return true;" in js
+    assert "#config-fields label.unknown > span" in css         # ... and the mark is visible
+
+
 def test_a_put_writes_the_file_canonically_and_answers_with_what_it_wrote(tmp_path):
     v, _, _ = viewer_for(tmp_path)
     current = body(get(v, "/api/config"))["config"]

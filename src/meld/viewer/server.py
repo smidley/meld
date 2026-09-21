@@ -123,9 +123,10 @@ def config_version(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def _canonical_config(parsed: dict) -> dict:
-    """What `GET /api/config` shows: every field the schema defines, at its effective (default-filled) value,
-    plus any key `unknown_keys` names, carried over verbatim from the raw parse (spec 22).
+def _canonical_config(parsed: dict) -> tuple[dict, str | None]:
+    """What `GET /api/config` shows -- every field the schema defines, at its effective (default-filled) value,
+    plus any key `unknown_keys` names, carried over verbatim from the raw parse (spec 22) -- and the parser's
+    own complaint when the file was too broken to canonicalise, else `None`.
 
     `dumps` already writes every field the schema defines, defaults included, and says why: "a form that shows
     a field and then does not write it is lying... a round trip is only exact if nothing is omitted." The same
@@ -143,7 +144,9 @@ def _canonical_config(parsed: dict) -> dict:
 
     A file too broken for `Config.from_dict` to parse at all (the same exception family the `PUT` path already
     catches around the same call) falls back to the raw parse whole, so it can still be seen -- and fixed --
-    rather than turning a bad hand-edit into a `GET` that cannot answer.
+    rather than turning a bad hand-edit into a `GET` that cannot answer. The complaint comes back with it:
+    the fallback is otherwise invisible in the body, and a person would see only a sparser-than-usual form
+    and then have every save refused by a parser they were never shown.
 
     Only that one call is caught. Rendering the `Config` and reading it back is ours, not the file's, and
     `tomllib.TOMLDecodeError` is a subclass of `ValueError`: catching it here would turn a `dumps` that emits
@@ -152,8 +155,8 @@ def _canonical_config(parsed: dict) -> dict:
     """
     try:
         cfg = Config.from_dict(parsed)
-    except (ValueError, AttributeError, TypeError, OverflowError):
-        return parsed
+    except (ValueError, AttributeError, TypeError, OverflowError) as e:
+        return parsed, f"{type(e).__name__}: {e}"
     canonical = tomllib.loads(dumps(cfg))
     for parts in unknown_keys(parsed):
         src = parsed
@@ -163,7 +166,7 @@ def _canonical_config(parsed: dict) -> dict:
         for part in parts[:-1]:
             dst = dst.setdefault(part, {})
         dst[parts[-1]] = src[parts[-1]]
-    return canonical
+    return canonical, None
 
 
 class Viewer:
@@ -465,8 +468,19 @@ class Viewer:
         models = {adapter: [{"id": s.id, "efforts": list(s.efforts), "tier": s.tier, "context_class": s.context_class}
                             for s in self.ctx.models.for_adapter(adapter)]
                   for adapter in self.ctx.models.adapters}
-        payload = {"path": str(self.config_path), "config": _canonical_config(parsed), "models": models,
-                   "note": self.CONFIG_NOTE, "version": config_version(raw)}
+        config, error = _canonical_config(parsed)
+        # The two states that block every save, said on the read rather than only on the person's first
+        # attempt. `unknown` names each key the schema does not define -- rendered as an ordinary editable
+        # field otherwise, so a person learns on Save that nothing can be written until they hand-edit the
+        # file, and that blanking the box does not remove the key. `error` is the parser's own complaint
+        # when `_canonical_config` fell back to the raw parse, which is otherwise invisible in the body.
+        # Both are diagnosis, not settings: `PUT` ignores them exactly as it ignores `path`, `models`,
+        # `note` and `version`, and `unknown_keys` is re-derived from the candidate on the way in.
+        payload = {"path": str(self.config_path), "config": config, "models": models,
+                   "note": self.CONFIG_NOTE, "version": config_version(raw),
+                   "unknown": [dotted_key(k) for k in unknown_keys(parsed)]}
+        if error is not None:
+            payload["error"] = error
         # allow_nan=False, scoped to this one return: `parsed` is tomllib's raw parse of the whole file, and
         # TOML float syntax allows a bare inf/nan/+nan/-inf literal anywhere -- json.dumps's default would
         # silently emit the non-standard tokens NaN/Infinity, valid Python but not valid JSON, which a browser's

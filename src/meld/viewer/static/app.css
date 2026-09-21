@@ -85,6 +85,10 @@ button.verb:hover { border-color: var(--accent); color: var(--accent); }
 #config-fields input, #config-fields select { font: inherit; color: var(--fg); background: #222735;
   border: 1px solid var(--line); border-radius: 3px; padding: 1px 4px; min-width: 0; }
 #config-fields input[readonly] { color: var(--dim); background: transparent; border-color: transparent; }
+/* A field GET named as a key the schema does not define: it blocks every save until it is removed from the
+   file by hand, so it is marked here rather than sitting among the settings looking editable. */
+#config-fields label.unknown > span { color: var(--bad); }
+#config-fields label.unknown input, #config-fields label.unknown select { border-color: var(--bad); }
 #config-result.bad { color: var(--bad); }
 #config-result.ok { color: var(--ok); }
 /* #bar button is scoped to #bar; without its own rule #config-save rendered as a plain native button on an

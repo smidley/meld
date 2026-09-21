@@ -32,7 +32,7 @@ const CHALLENGE_ACTIONS = ["open", "evidence", "retract", "uphold", "dismiss"];
 const READONLY_TABLES = ["repo", "humans"];
 const READONLY_GROUP_FIELDS = ["cli", "bot", "auth", "token_env", "app_id", "installation_id",
                                "private_key_env", "private_key_file"];
-let configState = null;     // {path, config, models, note} as last read, and the inputs' backing store
+let configState = null;     // the GET payload as last read, and the inputs' backing store
 
 function api(path, params) {
   const url = new URL(path, location.origin);
@@ -207,6 +207,24 @@ function isTable(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function unknownPaths() {
+  // The dotted paths GET named as keys the schema does not define. Every save is refused until they are
+  // gone from the *file* -- blanking the box does not remove a key -- so the form marks them rather than
+  // rendering them as ordinary settings a person could reasonably expect to be able to fix here.
+  return new Set(configState && configState.unknown ? configState.unknown : []);
+}
+
+function isUnknownPath(path) {
+  // A whole table the schema does not know is reported as the table (`notes`), not key by key -- the same
+  // word the server's own 400 uses -- so a field inside one is unknown by inheritance: `notes.kept` is
+  // marked because `notes` is. Splitting the field's own dotted path is safe enough for a visual mark
+  // (`field` built it by joining in the first place); nothing is walked or written from it.
+  const unknown = unknownPaths();
+  const parts = path.split(".");
+  for (let i = 1; i <= parts.length; i++) if (unknown.has(parts.slice(0, i).join("."))) return true;
+  return false;
+}
+
 function field(into, path, value, { readonly = false, choices = null, label = path } = {}) {
   // One control per scalar, generated from the payload: a field the schema gains appears here without a line
   // of JavaScript. A list becomes a comma-separated text box; a table is walked, never rendered as a value --
@@ -245,6 +263,11 @@ function field(into, path, value, { readonly = false, choices = null, label = pa
   input.dataset.path = path;
   input.dataset.kind = Array.isArray(value) ? "list" : typeof value;
   if (readonly) { input.readOnly = true; input.disabled = choices != null || typeof value === "boolean"; }
+  if (isUnknownPath(path)) {
+    // Findable, and honest about why: this one is the reason the whole form refuses to save.
+    labelEl.classList.add("unknown");
+    span.title = `${path} — not a setting meld knows; remove it from the file by hand, or no save can pass`;
+  }
   labelEl.append(input);
   into.append(labelEl);
   return input;
@@ -357,11 +380,31 @@ function showConfigResult(message, ok) {
   node.title = message;
 }
 
+function configTrouble() {
+  // The two states GET now reports that block every save, whatever the person changes. Both are
+  // spec-mandated behaviour correctly implemented -- what was missing is saying so on the read, instead of
+  // letting the first Save be where a person discovers the file has to be hand-edited first.
+  const out = [];
+  if (configState.error) {
+    out.push(`this file does not parse (${configState.error}), so the form below is the raw file and every `
+             + `save is refused until it is hand-edited`);
+  }
+  const unknown = configState.unknown || [];
+  if (unknown.length) {
+    out.push(`no save can pass while the file carries ${unknown.length === 1 ? "a setting" : "settings"} `
+             + `meld does not know: ${unknown.join(", ")} — remove ${unknown.length === 1 ? "it" : "them"} `
+             + `from the file by hand; clearing the box here does not`);
+  }
+  return out.join("; ");
+}
+
 async function loadConfig() {
   try {
     configState = await getJSON("/api/config");
     renderConfig();
-    showConfigResult(`${configState.path} — ${configState.note}`, true);
+    const trouble = configTrouble();
+    if (trouble) showConfigResult(`${configState.path} — ${trouble}`, false);
+    else showConfigResult(`${configState.path} — ${configState.note}`, true);
   } catch (e) {
     showConfigResult(e.message, false);
   }

@@ -468,17 +468,31 @@ def test_a_get_of_a_file_with_a_bare_toml_nan_or_inf_answers_500_not_unparseable
     gets, rather than a 200 a browser's `JSON.parse` would choke on. The control check is the real pin: an
     ordinary, successful GET's body must itself survive a strict parse, proving the happy path never depended
     on the leniency this scoped change turns off.
+
+    `nan` and `inf` are exercised one at a time rather than in one shared file: `json.dumps` aborts at the
+    first non-compliant float it meets, so a file carrying both at once only ever proves the first of them
+    (whichever key order puts first) triggers this -- the other would sit unreached, tested in appearance only.
+    Each case gets its own 500 and, matching the sibling date test's own pin of "date", its own message
+    naming the value that caused it -- "a regression that kept the 500 but swapped in an uninformative
+    message" (the gap a prior round of review found) would fail either one.
     """
     v, _, _ = viewer_for(tmp_path)
+    config_path = tmp_path / ".meld.toml"
+    base = config_path.read_text()
+
     control = get(v, "/api/config")
     assert control.status == 200
     json.loads(control.body, parse_constant=_reject_nonstandard_json)   # raises if the body isn't strict JSON
 
-    config_path = tmp_path / ".meld.toml"
-    config_path.write_text(config_path.read_text() + "\n[notes]\nspend_variance = nan\nceiling = inf\n")
+    config_path.write_text(base + "\n[notes]\nspend_variance = nan\n")
     resp = get(v, "/api/config")
     assert resp.status == 500
-    assert "error" in body(resp)
+    assert "nan" in body(resp)["error"].lower()
+
+    config_path.write_text(base + "\n[notes]\nceiling = inf\n")
+    resp = get(v, "/api/config")
+    assert resp.status == 500
+    assert "inf" in body(resp)["error"].lower()
 
 
 def test_a_put_reports_a_render_that_cannot_reproduce_its_own_input_as_a_500(tmp_path, monkeypatch):

@@ -25,7 +25,7 @@ from meld.adapters import UnknownAdapter
 from meld.appauth import AppAuthError
 from meld.assemble import BoardError
 from meld.atomic import write_atomic
-from meld.config import Config, ConfigError, dumps, unknown_keys
+from meld.config import Config, ConfigError, dotted_key, dumps, unknown_keys
 from meld.dispatch import DispatchError
 from meld.doctor import config_checks
 from meld.github import GitHubError
@@ -118,8 +118,10 @@ def _canonical_config(parsed: dict) -> dict:
     contradicted each other until this canonicalises before showing.
 
     Canonicalising alone would break the *other* half of spec 22 -- an unknown key refused by name on `PUT` --
-    by silently dropping it from `GET` first, unseen. So every dotted path `unknown_keys(parsed)` names is
-    copied back in from the raw parse afterward, verbatim, creating whatever intermediate tables it needs.
+    by silently dropping it from `GET` first, unseen. So every path `unknown_keys(parsed)` names is copied back
+    in from the raw parse afterward, verbatim, creating whatever intermediate tables it needs. It is walked as
+    the tuple `unknown_keys` returns, never re-split from a dotted string: a quoted TOML key may itself contain
+    a `.` (`[review]` with `"a.b" = 1`), and splitting that one made this walk answer 500 `KeyError: 'a'`.
 
     A file too broken for `Config.from_dict` to parse at all (the same exception family the `PUT` path already
     catches around the same call) falls back to the raw parse whole, so it can still be seen -- and fixed --
@@ -135,8 +137,7 @@ def _canonical_config(parsed: dict) -> dict:
     except (ValueError, AttributeError, TypeError, OverflowError):
         return parsed
     canonical = tomllib.loads(dumps(cfg))
-    for path in unknown_keys(parsed):
-        parts = path.split(".")
+    for parts in unknown_keys(parsed):
         src = parsed
         for part in parts[:-1]:
             src = src[part]
@@ -370,7 +371,7 @@ class Viewer:
             unknown = unknown_keys(candidate)
             if unknown:
                 # `from_dict` would ignore these; a form must not swallow a field somebody typed.
-                return _json(400, {"error": f"unknown setting(s): {', '.join(unknown)}"})
+                return _json(400, {"error": f"unknown setting(s): {', '.join(dotted_key(k) for k in unknown)}"})
             try:
                 cfg = Config.from_dict(candidate)
             except (ValueError, AttributeError, TypeError, OverflowError) as e:

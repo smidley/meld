@@ -472,6 +472,24 @@ def test_a_get_reports_a_serializer_bug_as_a_500_rather_than_silently_falling_ba
     assert "TOMLDecodeError" in body(resp)["error"]
 
 
+def test_a_get_survives_a_quoted_key_that_contains_a_dot_inside_a_known_table(tmp_path):
+    """R37.2 at the route. `[review]` with `"a.b" = 1` is one unknown key two levels deep, not a three-level
+    one -- but the walk that copies an unknown key back into the canonical config split its dotted rendering
+    and indexed `parsed["review"]["a"]`, so `GET` answered 500 `KeyError: 'a'` and the whole form was
+    unavailable for that file. Everything else on this route works hard to make sure `GET` answers."""
+    v, _, _ = viewer_for(tmp_path)
+    path = tmp_path / ".meld.toml"
+    path.write_text(path.read_text() + '\n[review]\n"a.b" = 1\n')
+    resp = get(v, "/api/config")
+    assert resp.status == 200, body(resp)
+    cfg = body(resp)["config"]
+    assert cfg["review"]["a.b"] == 1        # carried over verbatim, beside a fully canonical [review]
+    assert cfg["review"]["quorum"] == 2
+    # and still refused by name on PUT, where the dotted rendering is all a message needs
+    refusal = put(v, {"config": cfg})
+    assert refusal.status == 400 and "review.a.b" in body(refusal)["error"]
+
+
 def test_a_put_writes_the_file_canonically_and_answers_with_what_it_wrote(tmp_path):
     v, _, _ = viewer_for(tmp_path)
     current = body(get(v, "/api/config"))["config"]

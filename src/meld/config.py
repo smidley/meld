@@ -165,12 +165,24 @@ KNOWN_GROUP = ("cli", "bot", "token_env", "concurrency", "review_concurrency", "
 KNOWN_ROLE = ("model", "effort")
 
 
-def unknown_keys(data: Mapping[str, Any]) -> list[str]:
-    """Dotted paths for every key in a parsed `.meld.toml` the schema does not define, sorted.
+def dotted_key(path: tuple[str, ...]) -> str:
+    """One `unknown_keys` path as the dotted string a message shows. **For display only.** TOML lets a quoted
+    key carry a literal `.` (`[review]` with `"a.b" = 1`), so the dotted form is ambiguous and splitting it
+    back apart is not the inverse of building it -- which is exactly how the viewer's `GET` came to answer
+    500 `KeyError: 'a'` on such a file, making the whole form unavailable for it. Callers that need to walk
+    to the key walk the tuple."""
+    return ".".join(path)
+
+
+def unknown_keys(data: Mapping[str, Any]) -> list[tuple[str, ...]]:
+    """One path tuple per key in a parsed `.meld.toml` the schema does not define, sorted.
+
+    Tuples rather than dotted strings because a caller that walks to the key must not have to re-split a
+    name that may itself contain a `.`; `dotted_key` renders one for a message. See its own docstring.
 
     A group's *name* is the product's to choose, so `groups.<anything>` is legal and only its fields are checked.
     """
-    out: list[str] = []
+    out: list[tuple[str, ...]] = []
     for table, value in data.items():
         if table == "groups":
             if not isinstance(value, Mapping):
@@ -187,16 +199,16 @@ def unknown_keys(data: Mapping[str, Any]) -> list[str]:
                 for key, sub in group.items():
                     if key in ("orchestrator", "pm"):
                         if isinstance(sub, Mapping):
-                            out += [f"groups.{name}.{key}.{k}" for k in sub if k not in KNOWN_ROLE]
+                            out += [("groups", name, key, k) for k in sub if k not in KNOWN_ROLE]
                         continue
                     if key not in KNOWN_GROUP:
-                        out.append(f"groups.{name}.{key}")
+                        out.append(("groups", name, key))
             continue
         if table not in KNOWN:
-            out.append(table)
+            out.append((table,))
             continue
         if isinstance(value, Mapping):
-            out += [f"{table}.{k}" for k in value if k not in KNOWN[table]]
+            out += [(table, k) for k in value if k not in KNOWN[table]]
     return sorted(out)
 
 

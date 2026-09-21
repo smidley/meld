@@ -2,7 +2,8 @@ import tomllib
 
 import pytest
 
-from meld.config import KNOWN, KNOWN_GROUP, KNOWN_ROLE, Config, ConfigError, dumps, load_config, unknown_keys
+from meld.config import (KNOWN, KNOWN_GROUP, KNOWN_ROLE, Config, ConfigError, dotted_key, dumps, load_config,
+                         unknown_keys)
 from tests.test_config import MINIMAL
 
 
@@ -178,8 +179,12 @@ def test_unknown_keys_names_what_the_schema_does_not_define():
     data["nonsense"] = {"a": 1}
     data["groups"]["claude"]["concurency"] = 4
     data["groups"]["claude"]["orchestrator"]["modell"] = "x"
-    assert unknown_keys(data) == ["groups.claude.concurency", "groups.claude.orchestrator.modell",
-                                  "nonsense", "review.quorumm"]
+    assert unknown_keys(data) == [("groups", "claude", "concurency"), ("groups", "claude", "orchestrator", "modell"),
+                                  ("nonsense",), ("review", "quorumm")]
+    # a dotted string is what a message shows, and only that: see `dotted_key`, and the sibling test below
+    assert [dotted_key(k) for k in unknown_keys(data)] == ["groups.claude.concurency",
+                                                           "groups.claude.orchestrator.modell",
+                                                           "nonsense", "review.quorumm"]
 
 
 def test_unknown_keys_does_not_mistake_a_group_name_for_an_unknown_key():
@@ -262,3 +267,15 @@ def test_an_infinite_app_id_is_a_config_error_not_a_crash():
     pat_data = minimal()
     pat_data["groups"]["codex"]["app_id"] = float("inf")
     Config.from_dict(pat_data)     # must not raise -- auth stays "pat", so app_id is inert
+
+
+def test_unknown_keys_keeps_a_quoted_key_that_contains_a_dot_in_one_piece():
+    """R37.2. TOML lets a quoted key carry a literal `.`, so a dotted string is a lossy rendering of a path
+    and re-splitting one is not its inverse. `[review]` with `"a.b" = 1` is a single unknown key two levels
+    deep, not a three-level one: the viewer walks this tuple to copy the value across, and splitting the
+    dotted form instead is what made `GET /api/config` answer 500 `KeyError: 'a'` -- the whole form
+    unavailable for that file, against everything else the route does to make sure `GET` answers."""
+    data = full()
+    data["review"]["a.b"] = 1
+    assert unknown_keys(data) == [("review", "a.b")]
+    assert dotted_key(("review", "a.b")) == "review.a.b"     # ambiguous, which is why it is display-only

@@ -457,6 +457,21 @@ def test_api_config_get_falls_back_to_the_raw_parse_when_it_cannot_be_canonicali
     assert "budget" not in cfg                                  # the fallback is the bare file, not filled in
 
 
+def test_a_get_reports_a_serializer_bug_as_a_500_rather_than_silently_falling_back(tmp_path, monkeypatch):
+    """R37.1. `_canonical_config` catches a bad *file* and falls back to the raw parse -- but `tomllib`'s own
+    `TOMLDecodeError` is a subclass of `ValueError`, so the one clause used to swallow a `dumps` that emits
+    unparseable TOML as well, and `GET` answered 200 with the raw parse while `PUT` reported the identical
+    bug as a 500. Rendering and reading back is the serializer's business, not the file's: only
+    `Config.from_dict` is inside the `try` now."""
+    v, _, _ = viewer_for(tmp_path)
+    before = body(get(v, "/api/config"))["config"]
+    assert "budget" in before                                  # canonicalised, so the fallback is visible
+    monkeypatch.setattr(server, "dumps", lambda cfg: "this is = = not toml\n")
+    resp = get(v, "/api/config")
+    assert resp.status == 500
+    assert "TOMLDecodeError" in body(resp)["error"]
+
+
 def test_a_put_writes_the_file_canonically_and_answers_with_what_it_wrote(tmp_path):
     v, _, _ = viewer_for(tmp_path)
     current = body(get(v, "/api/config"))["config"]

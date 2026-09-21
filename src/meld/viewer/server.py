@@ -124,11 +124,17 @@ def _canonical_config(parsed: dict) -> dict:
     A file too broken for `Config.from_dict` to parse at all (the same exception family the `PUT` path already
     catches around the same call) falls back to the raw parse whole, so it can still be seen -- and fixed --
     rather than turning a bad hand-edit into a `GET` that cannot answer.
+
+    Only that one call is caught. Rendering the `Config` and reading it back is ours, not the file's, and
+    `tomllib.TOMLDecodeError` is a subclass of `ValueError`: catching it here would turn a `dumps` that emits
+    unparseable TOML into a silent fallback to the raw parse, while `PUT` reported the very same bug honestly
+    as a 500. It is left to propagate to the route's catch-all, which says so.
     """
     try:
-        canonical = tomllib.loads(dumps(Config.from_dict(parsed)))
+        cfg = Config.from_dict(parsed)
     except (ValueError, AttributeError, TypeError, OverflowError):
         return parsed
+    canonical = tomllib.loads(dumps(cfg))
     for path in unknown_keys(parsed):
         parts = path.split(".")
         src = parsed

@@ -6,11 +6,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from meld.config import load_config
 from meld.context import load_context
 from meld.github import GitHubError
 from meld.runners import freeze_path, role_run_path, supervisor_path, write_record
 from meld.viewer import server
-from meld.viewer.server import LOOPBACK_HOSTS, Request, Response, Viewer, new_token, serve, url
+from meld.viewer.server import (LOOPBACK_HOSTS, Request, Response, Viewer, config_version, new_token, serve,
+                                url)
 from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
 from tests.fakeadapter import FakeAdapter
 from tests.fakegh import FakeGh
@@ -41,7 +43,8 @@ def viewer_for(tmp_path, *, group: str | None = None, role: str = "pm", **overri
                {"id": 555, "html_url": "https://github.com/acme/widgets/issues/10#issuecomment-555"})
     ctx = load_context(tmp_path / ".meld.toml", env=env_for(tmp_path, group=group, role=role), run=fake,
                        adapter_for=lambda name: FakeAdapter())
-    kw = dict(token=TOKEN, port=8765, now=lambda: NOW, clock=Clock(), sleep=lambda s: None, alive=lambda pid: True,
+    kw = dict(token=TOKEN, port=8765, config_path=tmp_path / ".meld.toml", now=lambda: NOW, clock=Clock(),
+              sleep=lambda s: None, alive=lambda pid: True,
               start_of=lambda pid: "T0", disk_usage=lambda p: SimpleNamespace(total=0, used=0, free=3 * 1024 ** 3),
               check_every=1, max_polls=1)
     kw.update(overrides)
@@ -57,6 +60,22 @@ def get(v: Viewer, path: str, *, token: str | None = TOKEN, host: str = "127.0.0
 def body(resp: Response) -> dict:
     assert not resp.streaming
     return json.loads(resp.body)
+
+
+def put(v, payload, **kw):
+    """`PUT /api/config`. A payload that carries a `config` but no `version` key gets the file's current one,
+    so the tests that are not about R34's stale-save check do not have to restate it; the ones that *are*
+    pass their own (a wrong one, an empty one, or the key left out entirely, which `raw_put` below sends)."""
+    if isinstance(payload, dict) and "config" in payload and "version" not in payload:
+        payload = {**payload, "version": config_version(v.config_path.read_text())}
+    return raw_put(v, payload, **kw)
+
+
+def raw_put(v, payload, **kw):
+    """`PUT /api/config` with the body exactly as given -- no version filled in."""
+    target = f"/api/config?t={kw.pop('token', TOKEN)}"
+    headers = {"Host": kw.pop("host", "127.0.0.1:8765"), "Content-Type": "application/json"}
+    return v.handle(Request.parse("PUT", target, headers, json.dumps(payload).encode()))
 
 
 def test_request_parse_splits_the_target_and_lower_cases_header_names():
@@ -104,7 +123,7 @@ def test_no_cors_header_is_ever_sent_and_the_security_headers_always_are(tmp_pat
 def test_unknown_routes_are_404_and_the_wrong_method_is_405_behind_the_gate(tmp_path):
     v, _, _ = viewer_for(tmp_path)
     assert get(v, "/nowhere").status == 404 and "no route" in body(get(v, "/nowhere"))["error"]
-    assert get(v, "/api/config", method="PUT").status == 404        # plan 8d
+    assert get(v, "/api/config", method="DELETE").status == 405     # plan 8d: only GET and PUT
     assert get(v, "/api/action").status == 405                      # POST only
     assert get(v, "/api/state", method="POST").status == 405
     assert get(v, "/nowhere", token=None).status == 403             # the gate comes first
@@ -326,6 +345,633 @@ def test_the_page_has_one_action_bar_that_posts_and_renders_a_refusal_verbatim(t
     for verb in ("LEASE", "EXPIRED", "RELEASED", "LIMITED"):
         assert f'"{verb}"' not in js
     assert "refused" in js and "rule" in js and "innerHTML" not in js
+
+
+def test_the_page_has_a_config_form_that_reads_and_writes_the_known_schema(tmp_path):
+    v, _, _ = viewer_for(tmp_path)
+    html, js = get(v, "/").body.decode(), get(v, "/static/app.js").body.decode()
+    assert 'id="config"' in html and 'id="config-fields"' in html and 'id="config-save"' in html
+    assert '"/api/config"' in js and 'method: "PUT"' in js
+    # identity is shown and not editable (spec 22): the form never turns these into inputs
+    assert "READONLY_TABLES" in js and '"repo"' in js and '"humans"' in js
+    assert "READONLY_GROUP_FIELDS" in js
+    for field in ("bot", "auth", "token_env", "app_id", "installation_id", "private_key_env", "private_key_file"):
+        assert f'"{field}"' in js
+    # the form is generated, not hand-written: no per-field id list
+    assert "configState.models" in js                            # model choices come from the catalogue (R14)
+    assert "innerHTML" not in js
+    # R22 (correcting R21's own pin): a bare "isTable" in js is vacuous -- the name also occurs in the
+    # definition and in both of collectConfig's own guards, so deleting *just* the two render guards below
+    # (the actual R15/R21 behaviour: a table value must never reach field()) left the substring in place and
+    # this test passing at 51/51. renderConfig's two guards are the predicate "!isTable(value)" inside a
+    # `.filter()` (one per loop, over `values`/`group`'s own entries -- both destructure their pair as
+    # `value`); collectConfig's two guards are the differently-named "!isTable(node)" and can't be confused
+    # with these. Pinning the exact count catches either one being deleted. Still only a source-string check
+    # -- it proves the two call sites are still in the file's bytes, not that they run correctly.
+    assert js.count("!isTable(value)") == 2
+    # R25: the visible label is relative to its heading (e.g. "orchestrator.model" under [groups.claude]),
+    # so two sibling fields that only differ in their last segment don't both truncate to the same text; the
+    # full dotted path stays in the title and in dataset.path, which collectConfig still walks unchanged.
+    assert "field(into, `groups.${name}.${role}.model`" in js and "label: `${role}.model`" in js
+
+
+def test_the_config_form_does_not_write_a_silent_zero_and_keeps_effort_choices_in_sync(tmp_path):
+    """R18/R19/R23, all found by a real Chrome driving the real page -- Python can only pin the source, not
+    drive a browser, so these are string/regex checks on the shipped fix rather than a behavioural test.
+    R23 found that two of these bit nothing: `"effortChoices" in js` and `addEventListener("change"` in js
+    are both satisfied by code that predates this round (the catalogue lookup; the action bar's own
+    listener), and a bare `"linkModelAndEffort" in js` pins the function's *definition*, not that anything
+    calls it. Each assertion below is written to actually die when the fix it names is undone.
+
+    R18: `Number("")` is `0`, and Chrome's own `<input type=number>` also hands back `""` for typed garbage
+    ("26x") -- so a cleared or mistyped number field must never be collected as a silent 0; it must be
+    refused locally, before anything is sent -- and the refusal must actually stop the save, not just show a
+    message and send the request anyway. R19: changing a model <select> must repopulate its sibling effort
+    <select>, or the pair can silently fall out of sync and the server 409s on a combination this page itself
+    offered."""
+    v, _, _ = viewer_for(tmp_path)
+    js = get(v, "/static/app.js").body.decode()
+    assert "Number.isFinite" in js and 'input.value.trim() === ""' in js
+    assert "fix before saving" in js
+    # R23: the refusal's `return;` -- not just its message -- must survive. Pinned as one contiguous piece of
+    # text, so removing only the `return;` (leaving showConfigResult in place) breaks this too.
+    assert 'showConfigResult(`fix before saving -- not a number: ${invalid.join(", ")}`, false);\n      return;' in js
+    # R23: "linkModelAndEffort(" appears twice when the fix is wired up -- once for the function's own
+    # declaration, once more for a real call site. 1 occurrence means it was defined but never called.
+    assert js.count("linkModelAndEffort(") >= 2
+    # "saving ..." is in progress, not a success -- must not be painted green.
+    assert 'showConfigResult("saving …", null)' in js
+    # R33: a number input carries the weakest floor any field has and an integer step, so the spinner cannot
+    # walk a setting into a fraction. Pinned as one contiguous block, because neither line is worth anything
+    # without the other and because the surrounding comment mentions `min` and `step` on their own.
+    assert 'input.min = "0";\n      input.step = "1";' in js
+
+
+def test_the_config_form_sends_back_the_version_it_was_given(tmp_path):
+    """R34. Without it the server cannot tell a stale form from a current one, and the save silently
+    reverts whatever the file gained since this panel read it. Pinned as the whole `body:` expression:
+    `configState.version` occurs nowhere else, and removing just the version -- leaving the fetch intact --
+    has to fail here too."""
+    v, _, _ = viewer_for(tmp_path)
+    js = get(v, "/static/app.js").body.decode()
+    assert "body: JSON.stringify({ config, version: configState.version })," in js
+
+
+def test_api_config_returns_the_file_the_path_and_the_model_catalogue(tmp_path):
+    v, ctx, _ = viewer_for(tmp_path)
+    out = body(get(v, "/api/config"))
+    assert out["path"] == str(tmp_path / ".meld.toml")
+    assert out["config"]["repo"]["name"] == ctx.cfg.repo_name
+    assert out["config"]["groups"]["claude"]["orchestrator"]["model"] == ctx.cfg.groups["claude"].orchestrator.model
+    assert out["models"]["claude"] and all({"id", "efforts", "tier"} <= set(m) for m in out["models"]["claude"])
+    assert "note" in out                                   # a write reconfigures nothing already running
+    assert out["version"] == config_version((tmp_path / ".meld.toml").read_text())   # R34: what PUT must name
+
+
+def test_the_config_note_says_what_a_write_does_not_that_one_has_happened(tmp_path):
+    """R35. `loadConfig` paints this note green the moment the panel opens, and the note began "saved to the
+    file; ..." -- so the first thing a person saw on a panel they had not touched was their own path
+    followed by a claim that something had been saved, and after an actual save it read "saved -- saved to
+    the file; ...". The note is a statement about what writing does; the page's own prefix supplies the
+    tense, on both lines."""
+    v, _, _ = viewer_for(tmp_path)
+    note = body(get(v, "/api/config"))["note"]
+    js = get(v, "/static/app.js").body.decode()
+    # the two lines the page composes from it, quoted from app.js so a reworded prefix has to come back here
+    assert "showConfigResult(`${configState.path} — ${configState.note}`, true)" in js
+    assert "showConfigResult(`saved — ${out.note}`, true)" in js
+    assert "saved" not in note and "wrote" not in note, note
+    assert f"{tmp_path / '.meld.toml'} — {note}".startswith(
+        f"{tmp_path / '.meld.toml'} — writing it reconfigures nothing already running")
+    assert f"saved — {note}".startswith("saved — writing it reconfigures nothing already running")
+
+
+def test_api_config_get_canonicalises_a_starter_file_and_still_names_unknown_keys(tmp_path):
+    """R20: a fresh `meld setup` file has no [budget]/[polling]/[runners]/[timeouts]/[logs]/[viewer] table at
+    all, yet spec 22 promises the form every one of those settings -- the raw parse alone cannot show a field
+    the file never wrote. `GET` must show the schema's effective values (what `dumps`/`Config.from_dict`
+    agree the file means), not the bare file, while still surfacing -- and still refusing by name on `PUT` --
+    a key the schema does not know, so canonicalising never becomes a second, silent way to drop one.
+
+    R24: every value asserted below is deliberately steered away from its own schema default (branch "main",
+    private true, quorum 2) or has no default at all (`notify`'s webhook env is `None` when unset, which
+    `dumps` omits as a line entirely rather than writing some other value) -- a canonicaliser that silently
+    discarded `[review]`/`[notify]`/[repo]'s own overrides and fell back to computed defaults would satisfy
+    the *previous* version of this test just as well as a correct one; it cannot satisfy this one.
+    """
+    from meld.models import ModelRegistry
+    from meld.setup import starter_toml
+    v, _, _ = viewer_for(tmp_path)
+    registry = ModelRegistry.load()
+    text = starter_toml("acme/widgets", "develop", "empowerScott", ["claude", "codex"], registry)
+    text = text.replace("private = true", "private = false").replace("quorum = 2", "quorum = 5")
+    text += '\n[notes]\nkept = "hand-added, unknown to the schema"\n'
+    (tmp_path / ".meld.toml").write_text(text)
+
+    cfg = body(get(v, "/api/config"))["config"]
+    # every table spec 22 names, though the starter file itself never wrote one of them
+    for table in ("budget", "polling", "runners", "timeouts", "logs", "viewer"):
+        assert table in cfg, f"{table} missing from a starter file's GET"
+    # values the file set, each one chosen to differ from its own schema default (or to have none at all)
+    assert cfg["repo"] == {"name": "acme/widgets", "default_branch": "develop", "private": False}
+    assert cfg["review"]["quorum"] == 5
+    assert cfg["notify"]["slack_dm_webhook_env"] == "MELD_SLACK_DM_WEBHOOK"
+    # an unknown key still rides along, visible -- and is still refused by name on a PUT
+    assert cfg["notes"]["kept"] == "hand-added, unknown to the schema"
+    resp = put(v, {"config": cfg})
+    assert resp.status == 400 and "notes" in body(resp)["error"]
+
+
+def test_api_config_get_falls_back_to_the_raw_parse_when_it_cannot_be_canonicalised(tmp_path):
+    """A file too broken for `Config.from_dict` to parse (here: `claude`'s group is missing its required
+    `cli`) must still answer with *something* a person can read and fix, rather than GET failing just because
+    canonicalising it turned out to be impossible."""
+    v, _, _ = viewer_for(tmp_path)
+    config_path = tmp_path / ".meld.toml"
+    config_path.write_text(PROJECT_TOML.replace('cli = "claude"\n', ""))   # claude's group no longer parses
+    resp = get(v, "/api/config")
+    assert resp.status == 200
+    cfg = body(resp)["config"]
+    assert "cli" not in cfg["groups"]["claude"]                 # the raw parse, verbatim -- not canonicalised
+    assert cfg["groups"]["codex"]["bot"] == "meld-codex-bot"    # the rest of the raw file is still legible
+    assert "budget" not in cfg                                  # the fallback is the bare file, not filled in
+
+
+def test_a_get_reports_a_serializer_bug_as_a_500_rather_than_silently_falling_back(tmp_path, monkeypatch):
+    """R37.1. `_canonical_config` catches a bad *file* and falls back to the raw parse -- but `tomllib`'s own
+    `TOMLDecodeError` is a subclass of `ValueError`, so the one clause used to swallow a `dumps` that emits
+    unparseable TOML as well, and `GET` answered 200 with the raw parse while `PUT` reported the identical
+    bug as a 500. Rendering and reading back is the serializer's business, not the file's: only
+    `Config.from_dict` is inside the `try` now."""
+    v, _, _ = viewer_for(tmp_path)
+    before = body(get(v, "/api/config"))["config"]
+    assert "budget" in before                                  # canonicalised, so the fallback is visible
+    monkeypatch.setattr(server, "dumps", lambda cfg: "this is = = not toml\n")
+    resp = get(v, "/api/config")
+    assert resp.status == 500
+    assert "TOMLDecodeError" in body(resp)["error"]
+
+
+def test_a_get_survives_a_quoted_key_that_contains_a_dot_inside_a_known_table(tmp_path):
+    """R37.2 at the route. `[review]` with `"a.b" = 1` is one unknown key two levels deep, not a three-level
+    one -- but the walk that copies an unknown key back into the canonical config split its dotted rendering
+    and indexed `parsed["review"]["a"]`, so `GET` answered 500 `KeyError: 'a'` and the whole form was
+    unavailable for that file. Everything else on this route works hard to make sure `GET` answers."""
+    v, _, _ = viewer_for(tmp_path)
+    path = tmp_path / ".meld.toml"
+    path.write_text(path.read_text() + '\n[review]\n"a.b" = 1\n')
+    resp = get(v, "/api/config")
+    assert resp.status == 200, body(resp)
+    cfg = body(resp)["config"]
+    assert cfg["review"]["a.b"] == 1        # carried over verbatim, beside a fully canonical [review]
+    assert cfg["review"]["quorum"] == 2
+    # and still refused by name on PUT, where the dotted rendering is all a message needs
+    refusal = put(v, {"config": cfg})
+    assert refusal.status == 400 and "review.a.b" in body(refusal)["error"]
+
+
+def test_a_get_names_the_two_states_that_block_every_save(tmp_path):
+    """R36. Both behaviours are spec-mandated and correctly implemented; what was missing is the diagnosis
+    alongside. (a) A hand-added unknown key renders as an ordinary editable field, so a person learned only
+    on Save -- `400 unknown setting(s): notes.kept` -- that *nothing* could be written until they hand-edit
+    the file, and that blanking the box does not remove the key. (b) When `Config.from_dict` raises and the
+    read falls back to the raw parse, the body carried no sign of it at all: a sparser form than usual, and
+    every save refused by a parser message the person was never shown."""
+    v, _, _ = viewer_for(tmp_path)
+    path = tmp_path / ".meld.toml"
+    clean = body(get(v, "/api/config"))
+    assert clean["unknown"] == [] and "error" not in clean      # a clean file says so rather than staying silent
+
+    path.write_text(path.read_text() + '\n[notes]\nkept = "hand-added"\n')
+    out = body(get(v, "/api/config"))
+    # a whole unknown *table* is reported as the table, the same word the route's own 400 already uses
+    assert out["unknown"] == ["notes"] and "error" not in out
+    assert out["config"]["notes"]["kept"] == "hand-added"       # still carried over verbatim, as spec 22 wants
+
+    path.write_text(path.read_text() + "\n[review]\nquorumm = 9\n")     # and a key inside a table it knows
+    assert body(get(v, "/api/config"))["unknown"] == ["notes", "review.quorumm"]
+
+    path.write_text(PROJECT_TOML.replace('cli = "claude"\n', ""))     # claude's group no longer parses
+    out = body(get(v, "/api/config"))
+    assert "missing required setting groups.claude.cli" in out["error"]
+    assert "budget" not in out["config"]                        # the raw-parse fallback -- which now says so
+
+
+def test_a_file_that_fails_a_floor_can_be_fixed_in_the_form_and_saved(tmp_path):
+    """R44, and the reason the fallback line had to be reworded. Twenty-four settings can now fail to parse
+    on a value the raw parse still renders perfectly well, so the common way to reach `_canonical_config`'s
+    fallback is no longer a structurally sparser file -- it is one number out of range, sitting in a box
+    the form is already showing. Typing a legal value into that box and saving works, which is exactly
+    what the old status line said was impossible.
+
+    Contrast the sibling case: a *missing* required key has no box to type into, because the raw parse has
+    no field for a key the file never wrote, and that one really does need the file opened by hand. The
+    line now names both and asserts neither."""
+    v, _, _ = viewer_for(tmp_path)
+    path = tmp_path / ".meld.toml"
+    path.write_text(PROJECT_TOML + "\n[review]\nquorum = 0\n")
+    out = body(get(v, "/api/config"))
+    assert "review.quorum must be an integer of at least 1" in out["error"]      # the fallback, diagnosed
+    assert out["config"]["review"]["quorum"] == 0                                # ... and still editable
+
+    current = out["config"]
+    current["review"]["quorum"] = 2                                              # fixed in the form alone
+    # PROJECT_TOML's codex model is the deliberately-invalid "gpt-x" (see the sibling write test).
+    current["groups"]["codex"]["orchestrator"]["model"] = current["groups"]["codex"]["pm"]["model"] = "gpt-5.6-sol"
+    resp = put(v, {"config": current, "version": out["version"]})
+    assert resp.status == 200, body(resp)
+    assert load_config(path).review_quorum == 2
+    after = body(resp)
+    assert "error" not in after and after["config"]["review"]["quorum"] == 2     # and the panel is clean now
+
+    # the other shape, for contrast: no field to type into, so the file really must be opened
+    path.write_text(PROJECT_TOML.replace('cli = "claude"\n', ""))
+    out = body(get(v, "/api/config"))
+    assert "missing required setting groups.claude.cli" in out["error"]
+    assert "cli" not in out["config"]["groups"]["claude"]
+
+
+def test_a_put_ignores_the_read_side_keys_the_way_it_already_ignores_the_others(tmp_path):
+    """`unknown` and `error` are diagnosis, not settings: `PUT` re-derives the unknown keys from the
+    candidate itself, so a body that omits them, or lies about them, changes nothing -- exactly as it
+    already ignores `path`, `models` and `note`."""
+    v, _, _ = viewer_for(tmp_path)
+    out = body(get(v, "/api/config"))
+    current = out["config"]
+    # PROJECT_TOML's codex model is the deliberately-invalid "gpt-x" (see the sibling write test).
+    current["groups"]["codex"]["orchestrator"]["model"] = current["groups"]["codex"]["pm"]["model"] = "gpt-5.6-sol"
+    resp = put(v, {"config": current, "version": out["version"], "unknown": ["review.nonsense"],
+                   "error": "invented", "path": "/somewhere/else", "models": {}, "note": "ignored"})
+    assert resp.status == 200, body(resp)
+    answered = body(resp)
+    assert answered["path"] == str(tmp_path / ".meld.toml") and answered["unknown"] == []
+    assert "error" not in answered and answered["note"] == server.Viewer.CONFIG_NOTE
+
+
+def test_the_config_form_shows_the_diagnosis_the_form_itself_cannot(tmp_path):
+    """R36 on the page. The line on open is refusal-coloured and names the blocker, instead of the green
+    note over a form whose every save is already doomed; and each unknown key is marked where it sits, so
+    it is findable in a grid of forty fields."""
+    v, _, _ = viewer_for(tmp_path)
+    js, css = get(v, "/static/app.js").body.decode(), get(v, "/static/app.css").body.decode()
+    # the branch itself, pinned contiguously: a `configTrouble` that is defined and never consulted, or
+    # consulted and still painted green, has to fail here.
+    assert ("const trouble = configTrouble();\n"
+            "    if (trouble) showConfigResult(`${configState.path} — ${trouble}`, false);\n"
+            "    else showConfigResult(`${configState.path} — ${configState.note}`, true);") in js
+    assert "if (configState.error) {" in js                     # the fallback state
+    # R44. The line here used to promise "every save is refused until it is hand-edited", which the
+    # sibling test below proves false. Both halves are pinned: the dead claim must not come back, and the
+    # honest one -- which says where the fix may be, rather than asserting it cannot be made here -- must
+    # survive. Each is contiguous inside a single template literal, so neither can be half-removed.
+    assert "every save is refused until it is hand-edited" not in js
+    assert "a save is refused until the problem is fixed: ${configState.error}" in js
+    assert " — change it here if the form shows that field, or edit the file by hand if it does not" in js
+    assert "no save can pass while the file carries" in js      # the unknown-key state
+    assert 'labelEl.classList.add("unknown");' in js            # marked in the form, not only in the line
+    # an unknown *table* is reported as the table, so its fields are unknown by inheritance -- a bare
+    # set-membership test would mark `review.quorumm` and leave `notes.kept` looking like a real setting
+    assert "for (let i = 1; i <= parts.length; i++) if (unknown.has(parts.slice(0, i).join(\".\"))) return true;" in js
+    assert "#config-fields label.unknown > span" in css         # ... and the mark is visible
+
+
+def test_a_put_writes_the_file_canonically_and_answers_with_what_it_wrote(tmp_path):
+    v, _, _ = viewer_for(tmp_path)
+    current = body(get(v, "/api/config"))["config"]
+    # `.get("budget", {})` is now just habit, not defence (R26): since R20, GET's config is canonicalised, so
+    # `current["budget"]` always exists already -- PROJECT_TOML itself still carries no [budget] table, but
+    # that no longer means anything is missing by the time it reaches here.
+    current["budget"] = {**current.get("budget", {}), "large": 26}
+    # PROJECT_TOML's codex model is the deliberately-invalid "gpt-x" (test_doctor.py's VALID_MODELS_TOML swaps
+    # it the same way): config_checks would 409 on it against the real catalogue regardless of this test's own
+    # change, which is not what this test is about.
+    current["groups"]["codex"]["orchestrator"]["model"] = current["groups"]["codex"]["pm"]["model"] = "gpt-5.6-sol"
+    resp = put(v, {"config": current})
+    assert resp.status == 200, body(resp)
+    written = (tmp_path / ".meld.toml").read_text()
+    assert written.startswith("#") and "large = 26" in written
+    assert load_config(tmp_path / ".meld.toml").budget["large"] == 26
+    assert body(resp)["config"]["budget"]["large"] == 26       # the answer is the file, re-read
+    assert body(get(v, "/api/config"))["config"]["budget"]["large"] == 26
+
+
+def test_a_put_from_a_stale_form_is_refused_rather_than_reverting_the_hand_edit(tmp_path):
+    """R34. `GET`, hand-edit a value on disk, `PUT` the form you were already holding: that answered 200 and
+    the hand edit was simply gone. `loadConfig` re-reads only when `configState` is null, so a panel opened
+    an hour ago still holds the hour-old copy -- and re-reading on every panel open is deliberately *not*
+    the fix, because closing and reopening the <details> would then discard a person's in-progress edits,
+    trading a rare clobber for a frequent one. The version `GET` returns is what closes it instead."""
+    v, _, _ = viewer_for(tmp_path)
+    path = tmp_path / ".meld.toml"
+    first = body(get(v, "/api/config"))
+    stale = first["config"]
+    # PROJECT_TOML's codex model is the deliberately-invalid "gpt-x", which config_checks would 409 on
+    # regardless of this test's own change (see the sibling write test).
+    stale["groups"]["codex"]["orchestrator"]["model"] = stale["groups"]["codex"]["pm"]["model"] = "gpt-5.6-sol"
+
+    path.write_text(path.read_text() + "\n[lease]\ngrace_minutes = 42\n")      # the hand edit this panel never saw
+    hand_edited = path.read_text()
+
+    refusal = put(v, {"config": stale, "version": first["version"]})
+    assert refusal.status == 409
+    assert "changed on disk" in body(refusal)["error"]
+    assert path.read_text() == hand_edited                       # the hand edit is still there
+
+    # the version the refusal names is the file's current one, and a reload makes the same save work
+    fresh = body(get(v, "/api/config"))
+    assert body(refusal)["version"] == fresh["version"] != first["version"]
+    assert fresh["config"]["lease"]["grace_minutes"] == 42
+    current = fresh["config"]
+    current["groups"]["codex"]["orchestrator"]["model"] = current["groups"]["codex"]["pm"]["model"] = "gpt-5.6-sol"
+    ok = put(v, {"config": current, "version": fresh["version"]})
+    assert ok.status == 200, body(ok)
+    assert load_config(path).lease_grace_minutes == 42            # and it survives the save that follows
+
+
+def test_a_put_needs_the_version_its_get_returned(tmp_path):
+    """The key itself is required, not merely honoured when present: a client that never learned about it
+    would otherwise keep the old, silently-clobbering behaviour."""
+    v, _, _ = viewer_for(tmp_path)
+    current = body(get(v, "/api/config"))["config"]
+    before = (tmp_path / ".meld.toml").read_text()
+    for payload in ({"config": current},                                   # omitted
+                    {"config": current, "version": None},                  # null
+                    {"config": current, "version": ""},                    # empty
+                    {"config": current, "version": 7}):                    # not a string
+        resp = raw_put(v, payload)
+        assert resp.status == 400, payload
+        assert "version" in body(resp)["error"], payload
+    assert (tmp_path / ".meld.toml").read_text() == before
+
+
+def test_a_successful_put_answers_with_a_version_the_next_save_can_use(tmp_path):
+    """The page re-renders from the answer, so the panel that just saved must come back current rather than
+    instantly stale against the file it wrote itself."""
+    v, _, _ = viewer_for(tmp_path)
+    first = body(get(v, "/api/config"))
+    current = first["config"]
+    current["budget"] = {**current["budget"], "large": 23}
+    current["groups"]["codex"]["orchestrator"]["model"] = current["groups"]["codex"]["pm"]["model"] = "gpt-5.6-sol"
+    saved = body(put(v, {"config": current, "version": first["version"]}))
+    assert saved["ok"] is True
+    assert saved["version"] == config_version((tmp_path / ".meld.toml").read_text()) != first["version"]
+    again = put(v, {"config": saved["config"], "version": saved["version"]})
+    assert again.status == 200, body(again)
+
+
+def test_a_put_refuses_a_key_the_schema_does_not_know_and_names_it(tmp_path):
+    v, _, _ = viewer_for(tmp_path)
+    current = body(get(v, "/api/config"))["config"]
+    before = (tmp_path / ".meld.toml").read_text()
+    # `.get("review", {})` is the same now-just-habit pattern as the budget test above (R26): since R20,
+    # `current["review"]` always exists already (canonicalised, defaults filled in), so the {} fallback can
+    # never actually be reached -- kept anyway, matching the sibling test's idiom, rather than a bare
+    # current["review"][...] that would depend on that continuing to be true.
+    current["review"] = {**current.get("review", {}), "quorumm": 9}
+    resp = put(v, {"config": current})
+    assert resp.status == 400 and "review.quorumm" in body(resp)["error"]
+    assert (tmp_path / ".meld.toml").read_text() == before      # the original is untouched
+
+
+def test_a_put_refuses_a_config_the_parser_rejects(tmp_path):
+    v, _, _ = viewer_for(tmp_path)
+    current = body(get(v, "/api/config"))["config"]
+    before = (tmp_path / ".meld.toml").read_text()
+    del current["groups"]["claude"]["cli"]
+    resp = put(v, {"config": current})
+    assert resp.status == 400 and "cli" in body(resp)["error"]
+    assert (tmp_path / ".meld.toml").read_text() == before
+
+
+def test_a_put_refuses_a_config_the_doctor_checks_reject(tmp_path):
+    v, _, _ = viewer_for(tmp_path)
+    current = body(get(v, "/api/config"))["config"]
+    before = (tmp_path / ".meld.toml").read_text()
+    current["groups"]["claude"]["orchestrator"]["model"] = "gpt-imaginary"
+    resp = put(v, {"config": current})
+    assert resp.status == 409
+    out = body(resp)
+    assert any(c["name"] == "models:claude" and c["ok"] is False for c in out["checks"])
+    assert "gpt-imaginary" in json.dumps(out["checks"])
+    assert (tmp_path / ".meld.toml").read_text() == before
+
+
+def test_a_put_needs_a_json_object_with_a_config(tmp_path):
+    v, _, _ = viewer_for(tmp_path)
+    before = (tmp_path / ".meld.toml").read_text()
+    for payload in ({}, {"config": None}, {"config": []}, {"config": {}}):
+        assert put(v, payload).status == 400, payload
+    bad = v.handle(Request.parse("PUT", f"/api/config?t={TOKEN}", {"Host": "127.0.0.1:8765"}, b"not json"))
+    assert bad.status == 400
+    assert (tmp_path / ".meld.toml").read_text() == before
+
+
+@pytest.mark.parametrize("mutate, expect", [
+    # A cleared number field. Since R33 every numeric read goes through `_at_least`, so the refusal names the
+    # *setting* as well as the value -- `int()`'s own "invalid literal for int() with base 10: ''" named
+    # nothing a person could locate on the page.
+    (lambda c: c.setdefault("review", {}).update(quorum=""),
+     "review.quorum must be an integer of at least 1 approving groups, got ''"),
+    # a non-numeric string in a group setting, one level deeper
+    (lambda c: c["groups"]["claude"].update(concurrency="lots"),
+     "groups.claude.concurrency must be an integer of at least 1 concurrent dispatches, got 'lots'"),
+    # json.loads accepts the non-standard Infinity/NaN literals as floats. They used to reach `int()` and
+    # raise OverflowError/ValueError from deep inside it; `_at_least` refuses them as the non-integers they
+    # are, before any conversion. The except clause still widens past ConfigError for the shapes that get
+    # past the guards entirely (`review = 5` -> AttributeError).
+    (lambda c: c.setdefault("budget", {}).update(large=float("inf")),
+     "budget.large must be an integer of at least 0 runs, got inf"),
+    (lambda c: c.setdefault("budget", {}).update(large=float("nan")),
+     "budget.large must be an integer of at least 0 runs, got nan"),
+    # R33, the three the form itself can produce and every one of which used to answer 200. A zero
+    # concurrency refuses every dispatch for that group (`rules.py`'s `n >= group.concurrency`); a zero poll
+    # interval is `waiting.py`'s backoff, starting at 0.0 and doubling to 0.0 forever; a fractional review
+    # concurrency was silently truncated by `int()` and re-rendered as the truncation with no sign of it.
+    (lambda c: c["groups"]["claude"].update(concurrency=0),
+     "groups.claude.concurrency must be an integer of at least 1 concurrent dispatches, got 0"),
+    (lambda c: c.setdefault("polling", {}).update(interval_seconds=-5),
+     "polling.interval_seconds must be an integer of at least 1 seconds, got -5"),
+    (lambda c: c["groups"]["claude"].update(review_concurrency=2.5),
+     "groups.claude.review_concurrency must be an integer of at least 1 concurrent reviews, got 2.5"),
+    # and the one place a zero is still legal, for contrast: it is the *negative* that is refused.
+    (lambda c: c.setdefault("lease", {}).update(grace_minutes=-1),
+     "lease.grace_minutes must be an integer of at least 0 minutes, got -1"),
+    # R41. Not a number but a duration, and the same failure: `dispatch` sets a worker's deadline to
+    # `when + timeout_seconds(size)`, so a zero launches one already past it -- a paid CLI session per
+    # launch. Every size shares one read site; `tests/test_config.py` covers all three and every spelling
+    # of zero, this pins that the form's own route refuses one.
+    (lambda c: c.setdefault("timeouts", {}).update(S="0m"),
+     "timeouts.S must be a duration greater than zero, got '0m'"),
+    (lambda c: c.setdefault("timeouts", {}).update(L=0),
+     "timeouts.L must be a duration greater than zero, got '0'"),
+], ids=["cleared-number", "non-numeric-string", "infinity", "nan",
+        "zero-concurrency", "negative-interval", "fractional-concurrency", "negative-grace",
+        "zero-timeout", "bare-zero-timeout"])
+def test_a_put_refuses_an_unparseable_number_with_400_not_a_traceback(tmp_path, mutate, expect):
+    v, _, _ = viewer_for(tmp_path)
+    current = body(get(v, "/api/config"))["config"]
+    before = (tmp_path / ".meld.toml").read_text()
+    mutate(current)
+    resp = put(v, {"config": current})
+    assert resp.status == 400
+    assert expect in body(resp)["error"]
+    assert (tmp_path / ".meld.toml").read_text() == before
+
+
+def test_a_put_still_accepts_a_zero_where_zero_is_the_setting(tmp_path):
+    """The other half of R33, and the rule stated: a floor goes on a field where `0` is a lie, not on every
+    field. A budget of 0 ("no runs of this tier"), a lease grace of 0 ("the lease expires at the
+    deadline"), an amend cap of 0 ("propose, then AGREE or DISSENT") and an audit batch of 0 hours ("do not
+    wait on age; audit as soon as anything is pending") each mean exactly what they say, and a parser that
+    refused them would be taking away a usable policy for no gain.
+
+    Its counterpart is the `zero-concurrency` case in the parametrized refusal above, and the sharpest
+    contrast is inside `[audit]` itself: `batch_hours = 0` is kept here while `batch_merges = 0` is
+    refused, because `audit.due` guards both with `bool(pending)` and a batch of nothing can only mean 1."""
+    v, _, _ = viewer_for(tmp_path)
+    current = body(get(v, "/api/config"))["config"]
+    current["budget"] = {**current["budget"], "large": 0, "wallclock_hours": 0}
+    current["lease"] = {**current["lease"], "grace_minutes": 0}
+    current["agreement"] = {**current["agreement"], "amend_cap": 0}
+    current["audit"] = {**current["audit"], "batch_hours": 0}
+    # PROJECT_TOML's codex model is the deliberately-invalid "gpt-x"; config_checks would 409 on it
+    # regardless of this test's own change (see the sibling write test).
+    current["groups"]["codex"]["orchestrator"]["model"] = current["groups"]["codex"]["pm"]["model"] = "gpt-5.6-sol"
+    resp = put(v, {"config": current})
+    assert resp.status == 200, body(resp)
+    written = load_config(tmp_path / ".meld.toml")
+    assert (written.budget["large"], written.budget_wallclock_hours) == (0, 0)
+    assert (written.lease_grace_minutes, written.amend_cap, written.audit_batch_hours) == (0, 0, 0)
+    assert written.audit_batch_merges == 5      # ... while its sibling in the same table keeps its floor
+
+
+def test_a_get_of_a_file_with_a_bare_toml_date_answers_rather_than_raising(tmp_path):
+    """`load_config` accepts a bare TOML date/time/datetime anywhere without complaint (nothing in the schema
+    uses one, so nothing refuses it either); `tomllib` hands it back as a real `datetime.date`, which `json.dumps`
+    cannot serialize. GET must answer, not drop the connection with a traceback."""
+    v, _, _ = viewer_for(tmp_path)
+    config_path = tmp_path / ".meld.toml"
+    config_path.write_text(config_path.read_text() + "\n[notes]\nlast_reviewed = 2026-09-01\n")
+    resp = get(v, "/api/config")
+    assert resp.status == 500
+    assert "error" in body(resp) and "date" in body(resp)["error"].lower()
+
+
+def _reject_nonstandard_json(token: str):
+    raise ValueError(f"not strict JSON: {token}")
+
+
+def test_a_get_of_a_file_with_a_bare_toml_nan_or_inf_answers_500_not_unparseable_json(tmp_path):
+    """TOML float syntax allows a bare inf/nan/+nan/-inf literal anywhere; `json.dumps`'s default would
+    silently emit the matching non-standard NaN/Infinity token (valid Python, not valid JSON) instead of
+    raising, so `_read_config`'s `allow_nan=False` is what turns this into the same clean 500 the date case
+    gets, rather than a 200 a browser's `JSON.parse` would choke on. The control check is the real pin: an
+    ordinary, successful GET's body must itself survive a strict parse, proving the happy path never depended
+    on the leniency this scoped change turns off.
+
+    `nan` and `inf` are exercised one at a time rather than in one shared file: `json.dumps` aborts at the
+    first non-compliant float it meets, so a file carrying both at once only ever proves the first of them
+    (whichever key order puts first) triggers this -- the other would sit unreached, tested in appearance only.
+    Each case gets its own 500 and, matching the sibling date test's own pin of "date", its own message
+    naming the value that caused it -- "a regression that kept the 500 but swapped in an uninformative
+    message" (the gap a prior round of review found) would fail either one.
+    """
+    v, _, _ = viewer_for(tmp_path)
+    config_path = tmp_path / ".meld.toml"
+    base = config_path.read_text()
+
+    control = get(v, "/api/config")
+    assert control.status == 200
+    json.loads(control.body, parse_constant=_reject_nonstandard_json)   # raises if the body isn't strict JSON
+
+    config_path.write_text(base + "\n[notes]\nspend_variance = nan\n")
+    resp = get(v, "/api/config")
+    assert resp.status == 500
+    assert "nan" in body(resp)["error"].lower()
+
+    config_path.write_text(base + "\n[notes]\nceiling = inf\n")
+    resp = get(v, "/api/config")
+    assert resp.status == 500
+    assert "inf" in body(resp)["error"].lower()
+
+
+def test_a_put_reports_a_render_that_cannot_reproduce_its_own_input_as_a_500(tmp_path, monkeypatch):
+    """A render that cannot reproduce its own input is `dumps`'s bug, not the candidate's -- reported as one,
+    with the fields that differ, and nothing is written."""
+    v, _, _ = viewer_for(tmp_path)
+    current = body(get(v, "/api/config"))["config"]
+    before = (tmp_path / ".meld.toml").read_text()
+    real = server.dumps
+    monkeypatch.setattr(server, "dumps", lambda cfg: real(cfg).replace("large = 20", "large = 99"))
+    resp = put(v, {"config": current})
+    assert resp.status == 500
+    assert body(resp)["differs"] == ["budget"]
+    assert (tmp_path / ".meld.toml").read_text() == before
+
+
+def test_the_config_route_answers_502_when_the_viewer_has_no_configuration_file(tmp_path):
+    """`meld watch` always passes one, so this is the guard rather than a reachable state -- but it is the
+    first line of the route and nothing exercised it, which is how a guard quietly stops guarding."""
+    v, _, _ = viewer_for(tmp_path, config_path=None)
+    for resp in (get(v, "/api/config"), raw_put(v, {"config": {"repo": {"name": "a/b"}}, "version": "x"})):
+        assert resp.status == 502
+        assert "without a configuration file" in body(resp)["error"]
+
+
+def test_a_write_that_fails_answers_502_and_leaves_the_file_untouched(tmp_path, monkeypatch):
+    """The last rung of the refusal ladder, and the only one that runs after every check has passed: a full
+    disk or a read-only directory must come back as the 502 it is rather than a traceback. The stand-in
+    below fails the way `write_atomic` actually fails on a full disk -- the sidecar written, the
+    `os.replace` never reached -- because a stub that raised before touching anything would leave the
+    "untouched" half of this test proving nothing. (The abandoned sidecar is not cleaned up; `atomic.py`
+    is a shared helper with other callers and is out of this branch's scope.)"""
+    v, _, _ = viewer_for(tmp_path)
+    path = tmp_path / ".meld.toml"
+    before = path.read_text()
+    out = body(get(v, "/api/config"))
+    current = out["config"]
+    current["budget"] = {**current["budget"], "large": 24}
+    # PROJECT_TOML's codex model is the deliberately-invalid "gpt-x" (see the sibling write test): without
+    # this the 409 from config_checks would come first and the write would never be attempted at all.
+    current["groups"]["codex"]["orchestrator"]["model"] = current["groups"]["codex"]["pm"]["model"] = "gpt-5.6-sol"
+
+    def full_disk(target, text):
+        target.with_suffix(target.suffix + ".tmp").write_text(text)     # as far as write_atomic gets
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(server, "write_atomic", full_disk)
+    resp = put(v, {"config": current, "version": out["version"]})
+    assert resp.status == 502
+    assert "No space left on device" in body(resp)["error"] and str(path) in body(resp)["error"]
+    assert path.read_text() == before                        # the target itself never moved
+    monkeypatch.undo()
+    assert put(v, {"config": current, "version": out["version"]}).status == 200   # the real writer still works
+    assert load_config(path).budget["large"] == 24
+
+
+def test_the_config_route_is_behind_the_gate_and_takes_only_get_and_put(tmp_path):
+    v, _, _ = viewer_for(tmp_path)
+    assert get(v, "/api/config", token=None).status == 403
+    assert get(v, "/api/config", host="evil.example:8765").status == 403
+    assert get(v, "/api/config", method="POST").status == 405
+    assert get(v, "/api/config").status == 200
+
+
+def test_a_successful_put_drops_the_cached_state(tmp_path):
+    """Which is a provable no-op today, and the point of pinning it is that it stays one deliberately. The
+    numbers `/api/state` derives from the configuration come from `ctx.cfg`, what this process loaded at
+    launch, and a write to the file cannot change them -- plan decision 6 makes that staleness the decision
+    rather than a bug. This test pins the drop, not a change in the answer, and an earlier version of this
+    comment claimed the second."""
+    v, _, _ = viewer_for(tmp_path)
+    assert get(v, "/api/state").status == 200 and v._state_cache is not None
+    current = body(get(v, "/api/config"))["config"]
+    current["budget"] = {**current.get("budget", {}), "large": 21}
+    # See the sibling write test: PROJECT_TOML's codex model is deliberately-invalid "gpt-x", which config_checks
+    # would otherwise 409 on regardless of this test's own change.
+    current["groups"]["codex"]["orchestrator"]["model"] = current["groups"]["codex"]["pm"]["model"] = "gpt-5.6-sol"
+    assert put(v, {"config": current}).status == 200
+    assert v._state_cache is None
 
 
 def test_serve_binds_an_os_assigned_loopback_port_and_answers_over_a_socket(tmp_path):

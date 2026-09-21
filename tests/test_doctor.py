@@ -27,6 +27,11 @@ def cfg():
     return Config.from_dict(tomllib.loads(PROJECT_TOML))
 
 
+# config_checks needs a config where every model is valid, unlike PROJECT_TOML's deliberately-invalid codex
+# "gpt-x" (see test_doctor_passes_a_healthy_setup) -- swap in real catalogue models for that baseline.
+VALID_MODELS_TOML = PROJECT_TOML.replace('"gpt-x"', '"gpt-5.6-sol"')
+
+
 def fakes(*, claude_login="meld-claude-bot", codex_login="meld-codex-bot", human="empowerScott", statuses_ok=True):
     by_token: dict[str | None, FakeGh] = {}
     for token, login in ((None, human), ("tok-c", claude_login), ("tok-x", codex_login)):
@@ -473,6 +478,62 @@ def test_doctor_flags_check_names_the_flags_the_cli_no_longer_lists(tmp_path):
     assert checks["cli-flags:claude"].ok is True and "all 3 flags" in checks["cli-flags:claude"].detail
     assert checks["cli-flags:codex"].ok is False and "-a, --ephemeral" in checks["cli-flags:codex"].detail
     assert "cli-flags:codex" in [c.name for c in run(tmp_path, fakes(), adapters=adapters) if not c.ok]
+
+
+def test_config_checks_are_the_subset_that_needs_no_network_or_binary():
+    """The form runs these against a candidate file, so they must not touch gh, a CLI, a token or the machine --
+    and they must be the same checks `meld doctor` runs, not a second opinion."""
+    from meld.doctor import config_checks
+    checks = config_checks(Config.from_dict(tomllib.loads(VALID_MODELS_TOML)), ModelRegistry.load(),
+                           adapter_for=lambda name: FakeAdapter())
+    assert [c.name for c in checks] == ["models:claude", "timeout-ceiling:claude", "models:codex", "timeout-ceiling:codex"]
+    assert all(c.ok is not False for c in checks)
+
+
+def test_config_checks_catch_a_model_the_catalogue_does_not_have():
+    from meld.doctor import config_checks
+    data = tomllib.loads(VALID_MODELS_TOML)
+    data["groups"]["claude"]["orchestrator"]["model"] = "gpt-imaginary"
+    checks = by_name(config_checks(Config.from_dict(data), ModelRegistry.load(), adapter_for=lambda name: FakeAdapter()))
+    assert checks["models:claude"].ok is False and "gpt-imaginary" in checks["models:claude"].detail
+
+
+def test_config_checks_catch_a_wait_timeout_above_the_cli_ceiling():
+    from meld.doctor import config_checks
+    data = tomllib.loads(VALID_MODELS_TOML)
+    data["polling"] = {"wait_timeout_seconds": 99999}
+    checks = by_name(config_checks(Config.from_dict(data), ModelRegistry.load(), adapter_for=lambda name: FakeAdapter()))
+    assert checks["timeout-ceiling:claude"].ok is False
+
+
+def test_config_checks_skip_a_cli_with_no_adapter_rather_than_failing():
+    """An unknown adapter is a `cli:` problem, which is `meld doctor`'s to report; the configuration subset says
+    'skipped' so a form cannot refuse a budget change over a CLI this build cannot load."""
+    from meld.doctor import config_checks
+
+    def missing(name):
+        raise UnknownAdapter(name)
+
+    checks = by_name(config_checks(Config.from_dict(tomllib.loads(VALID_MODELS_TOML)), ModelRegistry.load(), adapter_for=missing))
+    assert checks["timeout-ceiling:claude"].ok is None and "skipped" in checks["timeout-ceiling:claude"].detail
+    assert checks["models:claude"].ok is True          # the catalogue still knows the model
+
+
+def test_run_checks_reports_the_same_configuration_checks_the_form_runs(tmp_path):
+    """`meld doctor` and `meld watch`'s configuration form must not drift into two opinions about the same settled
+    question: for the same cfg, registry and adapter_for, run_checks's models:<group> and timeout-ceiling:<group>
+    Checks must equal what config_checks computes for it -- Check is a frozen dataclass, so `==` compares name,
+    ok, detail and fix at once. Built with explicit registry/adapters (rather than through `run`'s own defaults)
+    so both calls are provably fed the same objects, not merely equal-looking ones."""
+    from meld.doctor import config_checks
+    registry = ModelRegistry.load()
+    adapters = {"claude": FakeAdapter(ceiling=600, name="claude"), "codex": FakeAdapter(ceiling=600, name="codex")}
+    checks = by_name(run(tmp_path, fakes(), registry=registry, adapters=adapters))
+    expected = by_name(config_checks(cfg(), registry, adapter_for=lambda name: adapters[name]))
+    for group in cfg().group_names:
+        for prefix in ("models:", "timeout-ceiling:"):
+            name = f"{prefix}{group}"
+            assert checks[name] == expected[name], name
 
 
 def test_missing_flags_matches_whole_tokens_only():

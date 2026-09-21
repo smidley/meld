@@ -1,3 +1,6 @@
+import copy
+import inspect
+import re
 import tomllib
 from pathlib import Path
 
@@ -241,7 +244,7 @@ def test_logs_table_has_defaults_and_is_overridable():
 
 
 def test_logs_table_refuses_a_size_that_would_destroy_every_log():
-    """`[logs]` is hand-edited (and a later plan puts it in a form). `max_bytes_per_run = 0` or a negative
+    """`[logs]` is hand-edited, and `meld watch`'s form now writes it too. `max_bytes_per_run = 0` or a negative
     makes every tick trim every log -- an empty `.1` over the previous one and the original zeroed, each
     cycle -- so one typo is silent, total log destruction. It is a config error instead."""
     base = {
@@ -294,3 +297,115 @@ def test_viewer_port_must_be_a_tcp_port_number(bad):
     base = tomllib.loads(MINIMAL)
     with pytest.raises(ConfigError, match="viewer.port"):
         Config.from_dict({**base, "viewer": {"port": bad}})
+
+
+#: Every numeric setting `from_dict` reads, with the floor the parser holds it to. The rule is whether `0`
+#: is a lie: `1` where `0` cannot mean what it says, because the code coerces it or acts on it in a way the
+#: word does not describe; `0` where it means something, and only a negative is nonsense. A second, narrower
+#: clause floors a `0` that is a runaway even where it is honest -- `polling.interval_seconds`, and
+#: `notify.repeat_after_minutes`, which is the marginal call of the set. See `config.py`'s own note above
+#: `LOGS_MIN_BYTES_PER_RUN` for the worked cases. Written out here rather than derived from
+#: the source, because the interesting claim is *which* floor each field gets, and a table that derived
+#: itself from the code could not be wrong about it. (`logs.*`, `runners.limit_retry_minutes` and
+#: `viewer.port` have their own tests above; their floors are not 0 or 1.)
+FLOORS = [
+    ("groups.claude.concurrency", 1),
+    ("groups.claude.review_concurrency", 1),
+    ("review.quorum", 1),
+    ("review.pingpong_cap", 1),
+    ("agreement.amend_cap", 0),
+    ("polling.interval_seconds", 1),
+    ("polling.wait_timeout_seconds", 1),
+    ("runners.restart_hours", 1),
+    ("runners.roster_refresh_minutes", 1),
+    ("runners.silence_grace_minutes", 1),
+    ("runners.summary_cadence_minutes", 1),
+    ("budget.small", 0),
+    ("budget.medium", 0),
+    ("budget.large", 0),
+    ("budget.wallclock_hours", 0),
+    ("notify.repeat_after_minutes", 1),
+    ("worker.log_tail_lines", 1),
+    ("worker.max_turns", 1),
+    ("lease.grace_minutes", 0),
+    ("audit.batch_merges", 1),          # cannot mean a batch of nothing, so it can only mean 1 -- a lie
+    ("audit.batch_hours", 0),           # "do not wait on age": real, distinct, and nothing degenerates
+]
+
+
+def _at(data: dict, dotted: str, value) -> dict:
+    """`data` with `dotted` set to `value`, deeply copied, creating any table on the way."""
+    out = copy.deepcopy(data)
+    node = out
+    parts = dotted.split(".")
+    for part in parts[:-1]:
+        node = node.setdefault(part, {})
+    node[parts[-1]] = value
+    return out
+
+
+@pytest.mark.parametrize("path, floor", FLOORS, ids=[p for p, _ in FLOORS])
+def test_every_numeric_setting_has_the_floor_its_meaning_calls_for(path, floor):
+    """The form `meld watch` serves can write any of these, so the parser is what stands between a typo and a
+    zero-sleep poll loop, a relaunch every cycle, a dispatch that is never legal, or a `lines[-0:]` that
+    posts a whole transcript to GitHub. Each field is legal *at* its floor and refused below it; a float and
+    a bool are refused at any value, which is what closes the silent `int(2.5) == 2` truncation as well."""
+    base = tomllib.loads(MINIMAL)
+    assert isinstance(Config.from_dict(_at(base, path, floor)), Config)     # the floor itself is legal
+    for bad in (floor - 1, floor - 10, 2.5, True, False, "4"):
+        with pytest.raises(ConfigError, match=rf"{re.escape(path)} must be an integer of at least {floor} "):
+            Config.from_dict(_at(base, path, bad))
+
+
+def test_no_numeric_setting_is_read_with_a_bare_int():
+    """`int()` quietly accepts "12", truncates 12.5 to 12, and turns True into 1 -- and accepts 0 and every
+    negative besides. Every numeric read in `from_dict` therefore goes through `_at_least`, `_positive_int`,
+    `_loose_int` or `_port`. This pins the absence, so a numeric field added later with a bare `int()` --
+    the way all twenty-one of the fields above were once read -- fails here rather than in somebody's file.
+    A source check, so it proves the call is not written, not that the field behaves; the floors above are
+    what test the behaviour."""
+    source = inspect.getsource(Config.from_dict)
+    bare = [line.strip() for line in source.splitlines() if re.search(r"(?<![_A-Za-z])int\(", line)]
+    assert bare == [], bare
+
+
+@pytest.mark.parametrize("size", ["S", "M", "L"])
+@pytest.mark.parametrize("bad", ["0m", "0", "0s", "0h", 0], ids=["0m", "0", "0s", "0h", "bare-int-0"])
+def test_a_worker_timeout_of_zero_is_refused(size, bad):
+    """R41, the duration-shaped member of the same family as the numeric floors. `dispatch` sets a worker's
+    deadline to `when + timeout_seconds(size)`, so a zero launches a worker already past its deadline --
+    one paid CLI session per launch, which is `runners.restart_hours = 0` in different clothes. Every
+    spelling of zero the grammar admits is covered, including the bare integer a TOML `S = 0` produces,
+    and all three sizes, because they share one read site and a floor applied to only one of them would
+    be worse than none.
+
+    The floor lives at that read site, not inside `parse_duration`: zero is a well-formed duration and
+    the helper's contract belongs to its other callers."""
+    base = tomllib.loads(MINIMAL)
+    timeouts = {"S": "20m", "M": "45m", "L": "90m"} | {size: bad}
+    with pytest.raises(ConfigError, match=rf"timeouts\.{size} must be a duration greater than zero"):
+        Config.from_dict({**base, "timeouts": timeouts})
+
+
+@pytest.mark.parametrize("size", ["S", "M", "L"])
+def test_a_negative_worker_timeout_never_reaches_the_floor(size):
+    """`_DURATION_RE` matches digits and nothing else, so `-5m` is refused as an invalid duration before
+    the floor is consulted. Pinned so a later widening of the pattern to accept a sign cannot quietly open
+    a hole underneath the zero check above."""
+    base = tomllib.loads(MINIMAL)
+    timeouts = {"S": "20m", "M": "45m", "L": "90m"} | {size: "-5m"}
+    with pytest.raises(ConfigError, match=rf"timeouts\.{size}: invalid duration"):
+        Config.from_dict({**base, "timeouts": timeouts})
+
+
+def test_the_smallest_usable_worker_timeout_is_still_legal():
+    """The floor is zero, not a judgement about how short a run may be: one second parses and is kept."""
+    base = tomllib.loads(MINIMAL)
+    cfg = Config.from_dict({**base, "timeouts": {"S": "1s", "M": "1", "L": "1h"}})
+    assert (cfg.timeout_seconds("S"), cfg.timeout_seconds("M"), cfg.timeout_seconds("L")) == (1, 1, 3600)
+
+
+def test_parse_duration_itself_still_accepts_zero():
+    """The helper's contract is unchanged -- zero is a well-formed duration and its other callers are not
+    under this plan's change. Pinned so the floor cannot be "tidied up" into `parse_duration` later."""
+    assert parse_duration("0m") == 0 and parse_duration("0") == 0

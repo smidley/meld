@@ -26,6 +26,13 @@ const FIELDS = {
 const POST_VERBS = ["ASK", "DIRECTIVE", "HALT", "RESUME", "REVERT", "PROVIDED", "RESOLVED", "ACK", "AMEND",
                     "APPROVE", "NEEDS-HUMAN"];
 const CHALLENGE_ACTIONS = ["open", "evidence", "retract", "uphold", "dismiss"];
+// Identity is `meld setup`'s, not a running page's: changing a repo, a human, or a group's bot/auth mid-milestone
+// orphans that group's claims and its open PRs. Shown, never editable (spec 22). The API still accepts them, so
+// what the form sends back is what it was given, with only the editable values replaced.
+const READONLY_TABLES = ["repo", "humans"];
+const READONLY_GROUP_FIELDS = ["cli", "bot", "auth", "token_env", "app_id", "installation_id",
+                               "private_key_env", "private_key_file"];
+let configState = null;     // the GET payload as last read, and the inputs' backing store
 
 function api(path, params) {
   const url = new URL(path, location.origin);
@@ -194,6 +201,273 @@ async function runAction() {
   }
 }
 
+function isTable(value) {
+  // A TOML sub-table, as tomllib hands it back: a plain object, never an array (a list is a scalar value here,
+  // not a table) and never null (TOML has no null, but a stray JS null must not be walked as if it were one).
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function unknownPaths() {
+  // The dotted paths GET named as keys the schema does not define. Every save is refused until they are
+  // gone from the *file* -- blanking the box does not remove a key -- so the form marks them rather than
+  // rendering them as ordinary settings a person could reasonably expect to be able to fix here.
+  return new Set(configState && configState.unknown ? configState.unknown : []);
+}
+
+function isUnknownPath(path) {
+  // A whole table the schema does not know is reported as the table (`notes`), not key by key -- the same
+  // word the server's own 400 uses -- so a field inside one is unknown by inheritance: `notes.kept` is
+  // marked because `notes` is. Splitting the field's own dotted path is safe enough for a visual mark
+  // (`field` built it by joining in the first place); nothing is walked or written from it.
+  const unknown = unknownPaths();
+  const parts = path.split(".");
+  for (let i = 1; i <= parts.length; i++) if (unknown.has(parts.slice(0, i).join("."))) return true;
+  return false;
+}
+
+function field(into, path, value, { readonly = false, choices = null, label = path } = {}) {
+  // One control per scalar, generated from the payload: a field the schema gains appears here without a line
+  // of JavaScript. A list becomes a comma-separated text box; a table is walked, never rendered as a value --
+  // enforced by renderConfig's own guard below, since by the time a value reaches here it is never a table.
+  // `label` is what's shown -- relative to the heading above it (renderConfig passes it), so two sibling
+  // fields that only differ in their last segment (groups.claude.orchestrator.model vs .effort) don't both
+  // truncate to the same visible text. `path`, the full dotted form, is unaffected: it is still what's in
+  // dataset.path (collectConfig's own walk) and in the title (the full path stays reachable on hover).
+  const labelEl = document.createElement("label");
+  const span = text(document.createElement("span"), label);
+  span.title = path;
+  labelEl.append(span);
+  let input;
+  if (choices) {
+    input = document.createElement("select");
+    options(input, choices.includes(value) ? choices : [value, ...choices]);
+    input.value = value;
+  } else if (typeof value === "boolean") {
+    input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = value;
+  } else {
+    input = document.createElement("input");
+    input.type = typeof value === "number" ? "number" : "text";
+    if (input.type === "number") {
+      // For the person's sake only -- `config.py`'s floors are the authority, and they differ per field (0
+      // for an allowance like a budget or a lease grace, 1 for anything the framework counts by). `min` is
+      // therefore the weakest floor any field has rather than a guess at this one's: a value below its own
+      // floor still comes back named, from the parser. `step` is what keeps the spinner from walking a
+      // setting into a fraction, which `int()` used to truncate silently and the parser now refuses.
+      input.min = "0";
+      input.step = "1";
+    }
+    input.value = Array.isArray(value) ? value.join(", ") : String(value);
+  }
+  input.dataset.path = path;
+  input.dataset.kind = Array.isArray(value) ? "list" : typeof value;
+  if (readonly) { input.readOnly = true; input.disabled = choices != null || typeof value === "boolean"; }
+  if (isUnknownPath(path)) {
+    // Findable, and honest about why: this one is the reason the whole form refuses to save.
+    labelEl.classList.add("unknown");
+    span.title = `${path} — not a setting meld knows; remove it from the file by hand, or no save can pass`;
+  }
+  labelEl.append(input);
+  into.append(labelEl);
+  return input;
+}
+
+function modelChoices(cli) {
+  const specs = (configState.models || {})[cli] || [];
+  return specs.map((s) => s.id);
+}
+
+function effortChoices(cli, model) {
+  const spec = ((configState.models || {})[cli] || []).find((s) => s.id === model);
+  return spec ? spec.efforts : [];
+}
+
+function linkModelAndEffort(modelInput, effortInput, cli) {
+  // spec 22: "model and effort choices that cannot be wrong rather than rejecting them afterwards" -- a model
+  // change must refresh its sibling effort choices too, or the two fall out of sync (the effort stays valid
+  // for the *old* model) and config_checks 409s on a combination this page itself just offered.
+  modelInput.addEventListener("change", () => {
+    const choices = effortChoices(cli, modelInput.value);
+    // an unrecognised model (e.g. "gpt-x") has no efforts to offer -- keep the current value, which is all
+    // there is, exactly as the initial render already falls back for an unrecognised model or effort.
+    const keep = choices.length === 0 ? effortInput.value
+      : choices.includes(effortInput.value) ? effortInput.value : choices[0];
+    options(effortInput, choices.includes(keep) ? choices : [keep, ...choices]);
+    effortInput.value = keep;
+  });
+}
+
+function renderConfig() {
+  const into = el("config-fields");
+  into.replaceChildren();
+  const cfg = configState.config;
+  for (const [table, values] of Object.entries(cfg)) {
+    if (table === "groups") continue;
+    // an unknown table that holds nothing but sub-tables (e.g. a hand-added [notes.today]) renders no fields
+    // below -- a heading over nothing is worse than no heading, so it is skipped too.
+    const entries = Object.entries(values).filter(([, value]) => !isTable(value));
+    if (!entries.length) continue;
+    into.append(text(document.createElement("h3"), `[${table}]`));
+    for (const [key, value] of entries) {
+      // The heading above already names the table, so the label shows only the key -- see field()'s own
+      // `label` option. `path` (below) still carries the full dotted form for dataset.path and the title.
+      field(into, `${table}.${key}`, value, { readonly: READONLY_TABLES.includes(table), label: key });
+    }
+  }
+  for (const [name, group] of Object.entries(cfg.groups || {})) {
+    const entries = Object.entries(group).filter(([key, value]) => key !== "orchestrator" && key !== "pm" && !isTable(value));
+    const roles = ["orchestrator", "pm"].filter((role) => group[role]);
+    if (!entries.length && !roles.length) continue;   // ditto, one level down: a group with nothing to show
+    into.append(text(document.createElement("h3"), `[groups.${name}]`));
+    for (const [key, value] of entries) {
+      field(into, `groups.${name}.${key}`, value, { readonly: READONLY_GROUP_FIELDS.includes(key), label: key });
+    }
+    for (const role of roles) {
+      const r = group[role];
+      // Relative to [groups.<name>], not to the role: "orchestrator.model" and "orchestrator.effort" are
+      // still distinct after truncation, which "groups.claude.orche…" for both was not (R25).
+      const modelInput = field(into, `groups.${name}.${role}.model`, r.model,
+        { choices: modelChoices(group.cli), label: `${role}.model` });
+      const effortInput = field(into, `groups.${name}.${role}.effort`, r.effort,
+        { choices: effortChoices(group.cli, r.model), label: `${role}.effort` });
+      linkModelAndEffort(modelInput, effortInput, group.cli);
+    }
+  }
+}
+
+function collectConfig() {
+  // Start from what the server gave us and replace only what the form shows, so a table the form does not
+  // render -- today none, tomorrow whatever the schema gains before this page does -- rides through untouched.
+  const out = JSON.parse(JSON.stringify(configState.config));
+  const invalid = [];
+  for (const input of el("config-fields").querySelectorAll("[data-path]")) {
+    if (input.readOnly || input.disabled) continue;
+    const parts = input.dataset.path.split(".");
+    let node = out;
+    for (const part of parts.slice(0, -1)) {
+      if (!isTable(node)) { node = undefined; break; }
+      node = node[part];
+    }
+    if (!isTable(node)) continue;    // a quoted TOML key containing a literal "." does not shape-match its
+                                      // dotted path -- skip this one field rather than break every other.
+    const key = parts[parts.length - 1];
+    if (input.dataset.kind === "boolean") node[key] = input.checked;
+    else if (input.dataset.kind === "number") {
+      // Number("") is 0, not NaN, and Chrome hands back "" from <input type=number> for typed garbage
+      // ("26x") too -- so neither a cleared field nor a mistyped one is caught by Number.isFinite alone.
+      // Both must be checked, and neither is an edit: writing 0 for either would be a silent, dangerous
+      // guess (a zeroed concurrency stops all dispatch; a zeroed poll interval is a zero-sleep loop).
+      // Left untouched here -- saveConfig refuses the whole save locally rather than send either one.
+      const n = Number(input.value);
+      if (input.value.trim() === "" || !Number.isFinite(n)) { invalid.push(input.dataset.path); continue; }
+      node[key] = n;
+    }
+    else if (input.dataset.kind === "list") node[key] = input.value.split(",").map((s) => s.trim()).filter(Boolean);
+    else node[key] = input.value;
+  }
+  return { config: out, invalid };
+}
+
+function showConfigResult(message, ok) {
+  // ok is true (success, green), false (refusal, red), or null (in progress -- neither, so "saving …" is not
+  // painted as if it had already succeeded).
+  const node = el("config-result");
+  node.classList.remove("ok", "bad");
+  if (ok === true) node.classList.add("ok");
+  else if (ok === false) node.classList.add("bad");
+  text(node, message);
+  node.title = message;
+}
+
+function configTrouble() {
+  // The two states GET now reports that block every save, whatever the person changes. Both are
+  // spec-mandated behaviour correctly implemented -- what was missing is saying so on the read, instead of
+  // letting the first Save be where a person discovers the file has to be hand-edited first.
+  const out = [];
+  if (configState.error) {
+    // This used to promise that no save could succeed until the file itself was opened and corrected by
+    // hand, which is false: it was written when reaching this fallback meant a structurally sparser file,
+    // and since every numeric setting gained a floor, nearly every way to reach it is a value out of range
+    // on a field the raw parse still renders -- so the person can very often fix it right here and save.
+    // Promise only what is true: a save is refused until the problem is fixed, wherever that turns out to
+    // be. (The negative pin in the viewer suite keeps the dead wording from coming back, so do not quote
+    // it here.)
+    out.push(`this file does not parse, so the form below is the raw file rather than the full schema`
+             + `, and a save is refused until the problem is fixed: ${configState.error}`
+             + ` — change it here if the form shows that field, or edit the file by hand if it does not`);
+  }
+  const unknown = configState.unknown || [];
+  if (unknown.length) {
+    out.push(`no save can pass while the file carries ${unknown.length === 1 ? "a setting" : "settings"} `
+             + `meld does not know: ${unknown.join(", ")} — remove ${unknown.length === 1 ? "it" : "them"} `
+             + `from the file by hand; clearing the box here does not`);
+  }
+  return out.join("; ");
+}
+
+async function loadConfig() {
+  try {
+    configState = await getJSON("/api/config");
+    renderConfig();
+    const trouble = configTrouble();
+    if (trouble) showConfigResult(`${configState.path} — ${trouble}`, false);
+    else showConfigResult(`${configState.path} — ${configState.note}`, true);
+  } catch (e) {
+    showConfigResult(e.message, false);
+  }
+}
+
+async function saveConfig() {
+  if (!configState) return;
+  const button = el("config-save");
+  button.disabled = true;
+  showConfigResult("saving …", null);
+  try {
+    const { config, invalid } = collectConfig();
+    if (invalid.length) {
+      // Not an edit (see collectConfig): refused here, before anything is sent, so a blank or mistyped
+      // number field never becomes a silent 0 on the file.
+      showConfigResult(`fix before saving -- not a number: ${invalid.join(", ")}`, false);
+      return;
+    }
+    const response = await fetch(api("/api/config"), {
+      method: "PUT", cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      // The version GET gave us: the server refuses the save with a 409 if the file has changed since,
+      // rather than reverting a hand edit this panel never saw. A successful save re-renders from the
+      // answer, which carries the new version, so the next save from the same panel is current again.
+      body: JSON.stringify({ config, version: configState.version }),
+    });
+    let out = {};
+    try { out = await response.json(); } catch (e) { out = {}; }
+    if (response.ok) {
+      // Render the new state before committing it: a 200 with an unexpected body (not reachable through the
+      // real server today, but cheap to guard) must not leave configState pointing at something renderConfig
+      // cannot show -- that combination is what previously left the form blank until a full page reload.
+      const next = out;
+      try {
+        configState = next;
+        renderConfig();
+      } catch (e) {
+        configState = null;   // reopening the panel now reloads instead of showing a permanently blank form
+        throw e;
+      }
+      showConfigResult(`saved — ${out.note}`, true);
+      pollState();
+    } else if (out.checks) {
+      const bad = out.checks.filter((c) => c.ok === false).map((c) => `${c.name}: ${c.detail}`).join("; ");
+      showConfigResult(`refused — ${bad}`, false);
+    } else {
+      showConfigResult(`${response.status} ${out.error || ""}`, false);
+    }
+  } catch (e) {
+    showConfigResult(e.message, false);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function renderState(state) {
   const s = state.status;
   text(el("repo"), s.repo);
@@ -349,6 +623,8 @@ el("board-panel").addEventListener("click", (e) => {
   el("ref").value = b.dataset.ref || "";
   el(FIELDS[b.dataset.action]?.includes("text") ? "text" : "run").focus();
 });
+el("config").addEventListener("toggle", () => { if (el("config").open && !configState) loadConfig(); });
+el("config-save").addEventListener("click", saveConfig);
 
 pollState();
 pollStreams();

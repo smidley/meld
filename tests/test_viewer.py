@@ -358,6 +358,10 @@ def test_the_page_has_a_config_form_that_reads_and_writes_the_known_schema(tmp_p
     # with these. Pinning the exact count catches either one being deleted. Still only a source-string check
     # -- it proves the two call sites are still in the file's bytes, not that they run correctly.
     assert js.count("!isTable(value)") == 2
+    # R25: the visible label is relative to its heading (e.g. "orchestrator.model" under [groups.claude]),
+    # so two sibling fields that only differ in their last segment don't both truncate to the same text; the
+    # full dotted path stays in the title and in dataset.path, which collectConfig still walks unchanged.
+    assert "field(into, `groups.${name}.${role}.model`" in js and "label: `${role}.model`" in js
 
 
 def test_the_config_form_does_not_write_a_silent_zero_and_keeps_effort_choices_in_sync(tmp_path):

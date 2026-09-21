@@ -207,14 +207,18 @@ function isTable(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function field(into, path, value, { readonly = false, choices = null } = {}) {
+function field(into, path, value, { readonly = false, choices = null, label = path } = {}) {
   // One control per scalar, generated from the payload: a field the schema gains appears here without a line
   // of JavaScript. A list becomes a comma-separated text box; a table is walked, never rendered as a value --
   // enforced by renderConfig's own guard below, since by the time a value reaches here it is never a table.
-  const label = document.createElement("label");
-  const span = text(document.createElement("span"), path);
-  span.title = path;   // the column is narrow and elides long paths (app.css); the full path stays on hover
-  label.append(span);
+  // `label` is what's shown -- relative to the heading above it (renderConfig passes it), so two sibling
+  // fields that only differ in their last segment (groups.claude.orchestrator.model vs .effort) don't both
+  // truncate to the same visible text. `path`, the full dotted form, is unaffected: it is still what's in
+  // dataset.path (collectConfig's own walk) and in the title (the full path stays reachable on hover).
+  const labelEl = document.createElement("label");
+  const span = text(document.createElement("span"), label);
+  span.title = path;
+  labelEl.append(span);
   let input;
   if (choices) {
     input = document.createElement("select");
@@ -232,8 +236,8 @@ function field(into, path, value, { readonly = false, choices = null } = {}) {
   input.dataset.path = path;
   input.dataset.kind = Array.isArray(value) ? "list" : typeof value;
   if (readonly) { input.readOnly = true; input.disabled = choices != null || typeof value === "boolean"; }
-  label.append(input);
-  into.append(label);
+  labelEl.append(input);
+  into.append(labelEl);
   return input;
 }
 
@@ -274,7 +278,9 @@ function renderConfig() {
     if (!entries.length) continue;
     into.append(text(document.createElement("h3"), `[${table}]`));
     for (const [key, value] of entries) {
-      field(into, `${table}.${key}`, value, { readonly: READONLY_TABLES.includes(table) });
+      // The heading above already names the table, so the label shows only the key -- see field()'s own
+      // `label` option. `path` (below) still carries the full dotted form for dataset.path and the title.
+      field(into, `${table}.${key}`, value, { readonly: READONLY_TABLES.includes(table), label: key });
     }
   }
   for (const [name, group] of Object.entries(cfg.groups || {})) {
@@ -283,12 +289,16 @@ function renderConfig() {
     if (!entries.length && !roles.length) continue;   // ditto, one level down: a group with nothing to show
     into.append(text(document.createElement("h3"), `[groups.${name}]`));
     for (const [key, value] of entries) {
-      field(into, `groups.${name}.${key}`, value, { readonly: READONLY_GROUP_FIELDS.includes(key) });
+      field(into, `groups.${name}.${key}`, value, { readonly: READONLY_GROUP_FIELDS.includes(key), label: key });
     }
     for (const role of roles) {
       const r = group[role];
-      const modelInput = field(into, `groups.${name}.${role}.model`, r.model, { choices: modelChoices(group.cli) });
-      const effortInput = field(into, `groups.${name}.${role}.effort`, r.effort, { choices: effortChoices(group.cli, r.model) });
+      // Relative to [groups.<name>], not to the role: "orchestrator.model" and "orchestrator.effort" are
+      // still distinct after truncation, which "groups.claude.orche…" for both was not (R25).
+      const modelInput = field(into, `groups.${name}.${role}.model`, r.model,
+        { choices: modelChoices(group.cli), label: `${role}.model` });
+      const effortInput = field(into, `groups.${name}.${role}.effort`, r.effort,
+        { choices: effortChoices(group.cli, r.model), label: `${role}.effort` });
       linkModelAndEffort(modelInput, effortInput, group.cli);
     }
   }

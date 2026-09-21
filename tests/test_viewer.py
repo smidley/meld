@@ -349,26 +349,41 @@ def test_the_page_has_a_config_form_that_reads_and_writes_the_known_schema(tmp_p
     # the form is generated, not hand-written: no per-field id list
     assert "configState.models" in js                            # model choices come from the catalogue (R14)
     assert "innerHTML" not in js
-    # R21: a hand-added sub-table (e.g. [notes.today]) must be skipped, not rendered as "[object Object]" --
-    # the reviewer deleted this guard and the suite still passed, so it needs its own pin. "isTable" appears
-    # nowhere else in the file.
-    assert "isTable" in js
+    # R22 (correcting R21's own pin): a bare "isTable" in js is vacuous -- the name also occurs in the
+    # definition and in both of collectConfig's own guards, so deleting *just* the two render guards below
+    # (the actual R15/R21 behaviour: a table value must never reach field()) left the substring in place and
+    # this test passing at 51/51. renderConfig's two guards are the predicate "!isTable(value)" inside a
+    # `.filter()` (one per loop, over `values`/`group`'s own entries -- both destructure their pair as
+    # `value`); collectConfig's two guards are the differently-named "!isTable(node)" and can't be confused
+    # with these. Pinning the exact count catches either one being deleted. Still only a source-string check
+    # -- it proves the two call sites are still in the file's bytes, not that they run correctly.
+    assert js.count("!isTable(value)") == 2
 
 
 def test_the_config_form_does_not_write_a_silent_zero_and_keeps_effort_choices_in_sync(tmp_path):
-    """R18/R19, both found by a real Chrome driving the real page -- Python can only pin the source, not
-    drive a browser, so these are string checks on the shipped fix rather than a behavioural test.
+    """R18/R19/R23, all found by a real Chrome driving the real page -- Python can only pin the source, not
+    drive a browser, so these are string/regex checks on the shipped fix rather than a behavioural test.
+    R23 found that two of these bit nothing: `"effortChoices" in js` and `addEventListener("change"` in js
+    are both satisfied by code that predates this round (the catalogue lookup; the action bar's own
+    listener), and a bare `"linkModelAndEffort" in js` pins the function's *definition*, not that anything
+    calls it. Each assertion below is written to actually die when the fix it names is undone.
 
     R18: `Number("")` is `0`, and Chrome's own `<input type=number>` also hands back `""` for typed garbage
-    ("26x") -- so a cleared or mistyped number field must never be collected as a silent 0; it must be refused
-    locally, before anything is sent. R19: changing a model <select> must repopulate its sibling effort
+    ("26x") -- so a cleared or mistyped number field must never be collected as a silent 0; it must be
+    refused locally, before anything is sent -- and the refusal must actually stop the save, not just show a
+    message and send the request anyway. R19: changing a model <select> must repopulate its sibling effort
     <select>, or the pair can silently fall out of sync and the server 409s on a combination this page itself
     offered."""
     v, _, _ = viewer_for(tmp_path)
     js = get(v, "/static/app.js").body.decode()
     assert "Number.isFinite" in js and 'input.value.trim() === ""' in js
     assert "fix before saving" in js
-    assert "linkModelAndEffort" in js and 'addEventListener("change"' in js and "effortChoices" in js
+    # R23: the refusal's `return;` -- not just its message -- must survive. Pinned as one contiguous piece of
+    # text, so removing only the `return;` (leaving showConfigResult in place) breaks this too.
+    assert 'showConfigResult(`fix before saving -- not a number: ${invalid.join(", ")}`, false);\n      return;' in js
+    # R23: "linkModelAndEffort(" appears twice when the fix is wired up -- once for the function's own
+    # declaration, once more for a real call site. 1 occurrence means it was defined but never called.
+    assert js.count("linkModelAndEffort(") >= 2
     # "saving ..." is in progress, not a success -- must not be painted green.
     assert 'showConfigResult("saving …", null)' in js
 
@@ -388,12 +403,20 @@ def test_api_config_get_canonicalises_a_starter_file_and_still_names_unknown_key
     all, yet spec 22 promises the form every one of those settings -- the raw parse alone cannot show a field
     the file never wrote. `GET` must show the schema's effective values (what `dumps`/`Config.from_dict`
     agree the file means), not the bare file, while still surfacing -- and still refusing by name on `PUT` --
-    a key the schema does not know, so canonicalising never becomes a second, silent way to drop one."""
+    a key the schema does not know, so canonicalising never becomes a second, silent way to drop one.
+
+    R24: every value asserted below is deliberately steered away from its own schema default (branch "main",
+    private true, quorum 2) or has no default at all (`notify`'s webhook env is `None` when unset, which
+    `dumps` omits as a line entirely rather than writing some other value) -- a canonicaliser that silently
+    discarded `[review]`/`[notify]`/[repo]'s own overrides and fell back to computed defaults would satisfy
+    the *previous* version of this test just as well as a correct one; it cannot satisfy this one.
+    """
     from meld.models import ModelRegistry
     from meld.setup import starter_toml
     v, _, _ = viewer_for(tmp_path)
     registry = ModelRegistry.load()
-    text = starter_toml("acme/widgets", "main", "empowerScott", ["claude", "codex"], registry)
+    text = starter_toml("acme/widgets", "develop", "empowerScott", ["claude", "codex"], registry)
+    text = text.replace("private = true", "private = false").replace("quorum = 2", "quorum = 5")
     text += '\n[notes]\nkept = "hand-added, unknown to the schema"\n'
     (tmp_path / ".meld.toml").write_text(text)
 
@@ -401,9 +424,10 @@ def test_api_config_get_canonicalises_a_starter_file_and_still_names_unknown_key
     # every table spec 22 names, though the starter file itself never wrote one of them
     for table in ("budget", "polling", "runners", "timeouts", "logs", "viewer"):
         assert table in cfg, f"{table} missing from a starter file's GET"
-    # a value the file did set survives the canonicalisation
-    assert cfg["repo"] == {"name": "acme/widgets", "default_branch": "main", "private": True}
-    assert cfg["review"]["quorum"] == 2                             # starter_toml's own literal
+    # values the file set, each one chosen to differ from its own schema default (or to have none at all)
+    assert cfg["repo"] == {"name": "acme/widgets", "default_branch": "develop", "private": False}
+    assert cfg["review"]["quorum"] == 5
+    assert cfg["notify"]["slack_dm_webhook_env"] == "MELD_SLACK_DM_WEBHOOK"
     # an unknown key still rides along, visible -- and is still refused by name on a PUT
     assert cfg["notes"]["kept"] == "hand-added, unknown to the schema"
     resp = put(v, {"config": cfg})
@@ -428,6 +452,9 @@ def test_api_config_get_falls_back_to_the_raw_parse_when_it_cannot_be_canonicali
 def test_a_put_writes_the_file_canonically_and_answers_with_what_it_wrote(tmp_path):
     v, _, _ = viewer_for(tmp_path)
     current = body(get(v, "/api/config"))["config"]
+    # `.get("budget", {})` is now just habit, not defence (R26): since R20, GET's config is canonicalised, so
+    # `current["budget"]` always exists already -- PROJECT_TOML itself still carries no [budget] table, but
+    # that no longer means anything is missing by the time it reaches here.
     current["budget"] = {**current.get("budget", {}), "large": 26}
     # PROJECT_TOML's codex model is the deliberately-invalid "gpt-x" (test_doctor.py's VALID_MODELS_TOML swaps
     # it the same way): config_checks would 409 on it against the real catalogue regardless of this test's own
@@ -446,9 +473,10 @@ def test_a_put_refuses_a_key_the_schema_does_not_know_and_names_it(tmp_path):
     v, _, _ = viewer_for(tmp_path)
     current = body(get(v, "/api/config"))["config"]
     before = (tmp_path / ".meld.toml").read_text()
-    # PROJECT_TOML carries no [review] table at all (it leans on defaults), so this must not clobber -- the
-    # same current.get(..., {}) pattern the budget test above uses, not a bare current["review"][...] which
-    # would KeyError on a table the base fixture never wrote.
+    # `.get("review", {})` is the same now-just-habit pattern as the budget test above (R26): since R20,
+    # `current["review"]` always exists already (canonicalised, defaults filled in), so the {} fallback can
+    # never actually be reached -- kept anyway, matching the sibling test's idiom, rather than a bare
+    # current["review"][...] that would depend on that continuing to be true.
     current["review"] = {**current.get("review", {}), "quorumm": 9}
     resp = put(v, {"config": current})
     assert resp.status == 400 and "review.quorumm" in body(resp)["error"]

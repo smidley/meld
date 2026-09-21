@@ -361,6 +361,48 @@ def test_api_config_returns_the_file_the_path_and_the_model_catalogue(tmp_path):
     assert "note" in out                                   # a write reconfigures nothing already running
 
 
+def test_api_config_get_canonicalises_a_starter_file_and_still_names_unknown_keys(tmp_path):
+    """R20: a fresh `meld setup` file has no [budget]/[polling]/[runners]/[timeouts]/[logs]/[viewer] table at
+    all, yet spec 22 promises the form every one of those settings -- the raw parse alone cannot show a field
+    the file never wrote. `GET` must show the schema's effective values (what `dumps`/`Config.from_dict`
+    agree the file means), not the bare file, while still surfacing -- and still refusing by name on `PUT` --
+    a key the schema does not know, so canonicalising never becomes a second, silent way to drop one."""
+    from meld.models import ModelRegistry
+    from meld.setup import starter_toml
+    v, _, _ = viewer_for(tmp_path)
+    registry = ModelRegistry.load()
+    text = starter_toml("acme/widgets", "main", "empowerScott", ["claude", "codex"], registry)
+    text += '\n[notes]\nkept = "hand-added, unknown to the schema"\n'
+    (tmp_path / ".meld.toml").write_text(text)
+
+    cfg = body(get(v, "/api/config"))["config"]
+    # every table spec 22 names, though the starter file itself never wrote one of them
+    for table in ("budget", "polling", "runners", "timeouts", "logs", "viewer"):
+        assert table in cfg, f"{table} missing from a starter file's GET"
+    # a value the file did set survives the canonicalisation
+    assert cfg["repo"] == {"name": "acme/widgets", "default_branch": "main", "private": True}
+    assert cfg["review"]["quorum"] == 2                             # starter_toml's own literal
+    # an unknown key still rides along, visible -- and is still refused by name on a PUT
+    assert cfg["notes"]["kept"] == "hand-added, unknown to the schema"
+    resp = put(v, {"config": cfg})
+    assert resp.status == 400 and "notes" in body(resp)["error"]
+
+
+def test_api_config_get_falls_back_to_the_raw_parse_when_it_cannot_be_canonicalised(tmp_path):
+    """A file too broken for `Config.from_dict` to parse (here: `claude`'s group is missing its required
+    `cli`) must still answer with *something* a person can read and fix, rather than GET failing just because
+    canonicalising it turned out to be impossible."""
+    v, _, _ = viewer_for(tmp_path)
+    config_path = tmp_path / ".meld.toml"
+    config_path.write_text(PROJECT_TOML.replace('cli = "claude"\n', ""))   # claude's group no longer parses
+    resp = get(v, "/api/config")
+    assert resp.status == 200
+    cfg = body(resp)["config"]
+    assert "cli" not in cfg["groups"]["claude"]                 # the raw parse, verbatim -- not canonicalised
+    assert cfg["groups"]["codex"]["bot"] == "meld-codex-bot"    # the rest of the raw file is still legible
+    assert "budget" not in cfg                                  # the fallback is the bare file, not filled in
+
+
 def test_a_put_writes_the_file_canonically_and_answers_with_what_it_wrote(tmp_path):
     v, _, _ = viewer_for(tmp_path)
     current = body(get(v, "/api/config"))["config"]

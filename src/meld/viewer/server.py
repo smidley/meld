@@ -105,6 +105,42 @@ def _static(name: str) -> str:
     return resources.files("meld.viewer").joinpath("static", name).read_text(encoding="utf-8")
 
 
+def _canonical_config(parsed: dict) -> dict:
+    """What `GET /api/config` shows: every field the schema defines, at its effective (default-filled) value,
+    plus any key `unknown_keys` names, carried over verbatim from the raw parse (spec 22).
+
+    `dumps` already writes every field the schema defines, defaults included, and says why: "a form that shows
+    a field and then does not write it is lying... a round trip is only exact if nothing is omitted." The same
+    logic binds the read. A fresh `meld setup` file has no `[budget]`/`[polling]`/`[runners]`/`[timeouts]`/
+    `[logs]`/`[viewer]` table at all -- nothing is wrong with it, `Config.from_dict` fills every one of those
+    from its own defaults -- but the raw parse alone cannot show a field that was never written, so a bare
+    file and "the form offers the budgets, the timeouts, the polling and runner intervals..." (spec 22)
+    contradicted each other until this canonicalises before showing.
+
+    Canonicalising alone would break the *other* half of spec 22 -- an unknown key refused by name on `PUT` --
+    by silently dropping it from `GET` first, unseen. So every dotted path `unknown_keys(parsed)` names is
+    copied back in from the raw parse afterward, verbatim, creating whatever intermediate tables it needs.
+
+    A file too broken for `Config.from_dict` to parse at all (the same exception family the `PUT` path already
+    catches around the same call) falls back to the raw parse whole, so it can still be seen -- and fixed --
+    rather than turning a bad hand-edit into a `GET` that cannot answer.
+    """
+    try:
+        canonical = tomllib.loads(dumps(Config.from_dict(parsed)))
+    except (ValueError, AttributeError, TypeError, OverflowError):
+        return parsed
+    for path in unknown_keys(parsed):
+        parts = path.split(".")
+        src = parsed
+        for part in parts[:-1]:
+            src = src[part]
+        dst = canonical
+        for part in parts[:-1]:
+            dst = dst.setdefault(part, {})
+        dst[parts[-1]] = src[parts[-1]]
+    return canonical
+
+
 class Viewer:
     """One `meld watch`: its token, its port, and the routes. Reads, and posts the one human verb `/api/action`
     carries; holds no legality logic."""
@@ -377,7 +413,7 @@ class Viewer:
         models = {adapter: [{"id": s.id, "efforts": list(s.efforts), "tier": s.tier, "context_class": s.context_class}
                             for s in self.ctx.models.for_adapter(adapter)]
                   for adapter in self.ctx.models.adapters}
-        payload = {"path": str(self.config_path), "config": parsed, "models": models, "note": self.CONFIG_NOTE}
+        payload = {"path": str(self.config_path), "config": _canonical_config(parsed), "models": models, "note": self.CONFIG_NOTE}
         # allow_nan=False, scoped to this one return: `parsed` is tomllib's raw parse of the whole file, and
         # TOML float syntax allows a bare inf/nan/+nan/-inf literal anywhere -- json.dumps's default would
         # silently emit the non-standard tokens NaN/Infinity, valid Python but not valid JSON, which a browser's

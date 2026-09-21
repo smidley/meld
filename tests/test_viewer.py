@@ -409,6 +409,39 @@ def test_a_put_needs_a_json_object_with_a_config(tmp_path):
     assert bad.status == 400
 
 
+@pytest.mark.parametrize("mutate, expect", [
+    # a cleared number field: from_dict's own `int(review.get("quorum", 2))` is unguarded.
+    (lambda c: c.setdefault("review", {}).update(quorum=""), "invalid literal for int() with base 10: ''"),
+    # a non-numeric string in a group setting: same unguarded int(), one level deeper.
+    (lambda c: c["groups"]["claude"].update(concurrency="lots"), "invalid literal for int() with base 10: 'lots'"),
+    # json.loads accepts the non-standard Infinity/NaN literals as floats; int() on them raises OverflowError/
+    # ValueError rather than the ValueError a bad string gives, which is why the except had to widen past ConfigError.
+    (lambda c: c.setdefault("budget", {}).update(large=float("inf")), "cannot convert float infinity to integer"),
+    (lambda c: c.setdefault("budget", {}).update(large=float("nan")), "cannot convert float NaN to integer"),
+], ids=["cleared-number", "non-numeric-string", "infinity", "nan"])
+def test_a_put_refuses_an_unparseable_number_with_400_not_a_traceback(tmp_path, mutate, expect):
+    v, _, _ = viewer_for(tmp_path)
+    current = body(get(v, "/api/config"))["config"]
+    before = (tmp_path / ".meld.toml").read_text()
+    mutate(current)
+    resp = put(v, {"config": current})
+    assert resp.status == 400
+    assert expect in body(resp)["error"]
+    assert (tmp_path / ".meld.toml").read_text() == before
+
+
+def test_a_get_of_a_file_with_a_bare_toml_date_answers_rather_than_raising(tmp_path):
+    """`load_config` accepts a bare TOML date/time/datetime anywhere without complaint (nothing in the schema
+    uses one, so nothing refuses it either); `tomllib` hands it back as a real `datetime.date`, which `json.dumps`
+    cannot serialize. GET must answer, not drop the connection with a traceback."""
+    v, _, _ = viewer_for(tmp_path)
+    config_path = tmp_path / ".meld.toml"
+    config_path.write_text(config_path.read_text() + "\n[notes]\nlast_reviewed = 2026-09-01\n")
+    resp = get(v, "/api/config")
+    assert resp.status == 500
+    assert "error" in body(resp) and "date" in body(resp)["error"].lower()
+
+
 def test_the_config_route_is_behind_the_gate_and_takes_only_get_and_put(tmp_path):
     v, _, _ = viewer_for(tmp_path)
     assert get(v, "/api/config", token=None).status == 403

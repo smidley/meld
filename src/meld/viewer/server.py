@@ -313,44 +313,57 @@ class Viewer:
         """
         if self.config_path is None:
             return _json(502, {"error": "this viewer was started without a configuration file"})
-        if req.method == "GET":
-            return self._read_config()
         try:
-            body = json.loads(req.body or b"")
-        except (json.JSONDecodeError, UnicodeDecodeError) as e:
-            return _json(400, {"error": f"the request body is not JSON: {e}"})
-        candidate = body.get("config") if isinstance(body, dict) else None
-        if not isinstance(candidate, dict) or not candidate:
-            return _json(400, {"error": "the request body must be a JSON object with a non-empty 'config'"})
-        unknown = unknown_keys(candidate)
-        if unknown:
-            # `from_dict` would ignore these; a form must not swallow a field somebody typed.
-            return _json(400, {"error": f"unknown setting(s): {', '.join(unknown)}"})
-        try:
-            cfg = Config.from_dict(candidate)
-        except (ConfigError, AttributeError, TypeError) as e:
-            # AttributeError/TypeError: a "table" that is not one (`review = 5`) makes `from_dict`'s own `.get`
-            # raise rather than refuse. `unknown_keys` cannot see it either, since it only walks mappings. It is
-            # still the candidate's problem, so it is a 400 naming what went wrong, never a traceback.
-            return _json(400, {"error": f"{type(e).__name__}: {e}"})
-        text = dumps(cfg)
-        try:
-            reparsed = Config.from_dict(tomllib.loads(text))
-        except (ConfigError, tomllib.TOMLDecodeError) as e:
-            return _json(500, {"error": f"the rendered file does not parse: {e}"})
-        if reparsed != cfg:
-            differs = sorted(f for f in cfg.__dataclass_fields__ if getattr(cfg, f) != getattr(reparsed, f))
-            return _json(500, {"error": "the rendered file does not describe the same configuration", "differs": differs})
-        checks = config_checks(cfg, self.ctx.models, self.ctx.adapter_for)
-        if any(c.ok is False for c in checks):
-            return _json(409, {"error": "meld doctor's configuration checks refuse this", "checks": [asdict(c) for c in checks]})
-        try:
-            write_atomic(self.config_path, text)
-        except OSError as e:
-            return _json(502, {"error": f"cannot write {self.config_path}: {e}"})
-        with self._lock:
-            self._state_cache = None      # the numbers /api/state derives from the old config are stale now
-        return self._read_config(ok=True)
+            if req.method == "GET":
+                return self._read_config()
+            try:
+                body = json.loads(req.body or b"")
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                return _json(400, {"error": f"the request body is not JSON: {e}"})
+            candidate = body.get("config") if isinstance(body, dict) else None
+            if not isinstance(candidate, dict) or not candidate:
+                return _json(400, {"error": "the request body must be a JSON object with a non-empty 'config'"})
+            unknown = unknown_keys(candidate)
+            if unknown:
+                # `from_dict` would ignore these; a form must not swallow a field somebody typed.
+                return _json(400, {"error": f"unknown setting(s): {', '.join(unknown)}"})
+            try:
+                cfg = Config.from_dict(candidate)
+            except (ValueError, AttributeError, TypeError, OverflowError) as e:
+                # ValueError subsumes ConfigError (its base class) as well as a bare int() that from_dict calls
+                # unguarded on ~20 settings -- a cleared field ("") or a non-numeric string ("26x") raises
+                # ValueError, and json.loads accepts the non-standard Infinity/NaN literals as floats, whose
+                # own int() conversion raises ValueError (nan) or OverflowError (inf). AttributeError/TypeError:
+                # a "table" that is not one (`review = 5`) makes `from_dict`'s own `.get` raise rather than
+                # refuse. `unknown_keys` cannot see any of this either, since it only walks mappings. It is
+                # still the candidate's problem, so it is a 400 naming what went wrong, never a traceback.
+                return _json(400, {"error": f"{type(e).__name__}: {e}"})
+            text = dumps(cfg)
+            try:
+                reparsed = Config.from_dict(tomllib.loads(text))
+            except (ConfigError, tomllib.TOMLDecodeError) as e:
+                return _json(500, {"error": f"the rendered file does not parse: {e}"})
+            if reparsed != cfg:
+                differs = sorted(f for f in cfg.__dataclass_fields__ if getattr(cfg, f) != getattr(reparsed, f))
+                return _json(500, {"error": "the rendered file does not describe the same configuration", "differs": differs})
+            checks = config_checks(cfg, self.ctx.models, self.ctx.adapter_for)
+            if any(c.ok is False for c in checks):
+                return _json(409, {"error": "meld doctor's configuration checks refuse this", "checks": [asdict(c) for c in checks]})
+            try:
+                write_atomic(self.config_path, text)
+            except OSError as e:
+                return _json(502, {"error": f"cannot write {self.config_path}: {e}"})
+            with self._lock:
+                self._state_cache = None      # the numbers /api/state derives from the old config are stale now
+            return self._read_config(ok=True)
+        except Exception as e:  # noqa: BLE001
+            # Same reasoning as api_action: a long-lived local tool must answer even when the answer is that
+            # something unforeseen broke. The case that motivated this: a `.meld.toml` carrying a bare TOML
+            # date/time/datetime (`load_config` accepts one happily; `json.dumps` cannot serialize one) makes
+            # `_read_config` raise, reached from GET as well as from a successful write's own re-read below --
+            # which is why this wraps the whole method rather than only the PUT-parsing middle.
+            # `_StopRequested`/`KeyboardInterrupt` are BaseException, so a stop still propagates.
+            return _json(500, {"error": f"{type(e).__name__}: {e}"})
 
     def _read_config(self, *, ok: bool = False) -> Response:
         try:

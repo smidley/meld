@@ -419,12 +419,18 @@ class Viewer:
             try:
                 cfg = Config.from_dict(candidate)
             except (ValueError, AttributeError, TypeError, OverflowError) as e:
-                # ValueError subsumes ConfigError (its base class) as well as a bare int() that from_dict calls
-                # unguarded on ~20 settings -- a cleared field ("") or a non-numeric string ("26x") raises
-                # ValueError, and json.loads accepts the non-standard Infinity/NaN literals as floats, whose
-                # own int() conversion raises ValueError (nan) or OverflowError (inf). AttributeError/TypeError:
+                # ValueError is the one that does the work: ConfigError is a subclass, and since every
+                # numeric setting gained a floor there is no unguarded `int()` left in `from_dict` for
+                # anything to escape from -- `test_no_numeric_setting_is_read_with_a_bare_int` pins that
+                # absence. So a cleared field (""), a non-numeric string ("26x"), and the non-standard
+                # Infinity/NaN literals `json.loads` accepts as floats all arrive here as the ConfigError
+                # `_at_least` raises, naming the setting as well as the value. AttributeError/TypeError:
                 # a "table" that is not one (`review = 5`) makes `from_dict`'s own `.get` raise rather than
-                # refuse. `unknown_keys` cannot see any of this either, since it only walks mappings. It is
+                # refuse. OverflowError is unreachable today for exactly the reason above -- `_at_least`
+                # rejects `inf` as the non-integer it is, before any conversion -- and is kept only so that
+                # re-introducing an arithmetic read cannot turn a bad candidate into a dropped connection;
+                # it costs nothing and this clause must not be the thing that needs remembering.
+                # `unknown_keys` cannot see any of this either, since it only walks mappings. It is
                 # still the candidate's problem, so it is a 400 naming what went wrong, never a traceback.
                 return _json(400, {"error": f"{type(e).__name__}: {e}"})
             text = dumps(cfg)

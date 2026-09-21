@@ -5,6 +5,7 @@ in process by the tests; `_Handler` and `serve` (at the end of this module) are 
 """
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import secrets
@@ -103,6 +104,23 @@ def _empty(status: int) -> Response:
 
 def _static(name: str) -> str:
     return resources.files("meld.viewer").joinpath("static", name).read_text(encoding="utf-8")
+
+
+def config_version(text: str) -> str:
+    """A version tag for the `.meld.toml` a `GET` showed, so a `PUT` can say which file it was editing.
+
+    A digest of the content rather than `st_mtime_ns`, for three reasons. It answers the actual question --
+    "are these still the bytes I was shown?" -- so a hand edit that rewrites the file to the same content is
+    not a collision, where every mtime scheme would call it one. It has no filesystem-resolution floor: two
+    saves inside one timestamp tick are distinct here and indistinguishable there, and `write_atomic`'s
+    `os.replace` of a fresh temp file is exactly the shape that makes near-simultaneous writes plausible.
+    And it keeps the payload free of wall-clock: a test can build one from a string, with no clock to inject
+    and no filesystem timestamp to depend on.
+
+    Taken over the text as the route reads it, not the raw bytes, so both sides of the comparison decode
+    the same way and the route's encoding stays the one question it already was.
+    """
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 def _canonical_config(parsed: dict) -> dict:
@@ -355,6 +373,10 @@ class Viewer:
         The viewer decides nothing about validity: `Config.from_dict` decides whether a candidate parses,
         `doctor.config_checks` decides whether it is sane, and this reports what they said. Every refusal happens
         before `write_atomic`, so a rejected write leaves the file exactly as it was.
+
+        A `PUT` must also name the `version` the `GET` it came from returned, or it is refused: a form held
+        open while the file changed underneath it would otherwise save the copy it is still holding, quietly
+        reverting whatever the file gained meanwhile.
         """
         if self.config_path is None:
             return _json(502, {"error": "this viewer was started without a configuration file"})
@@ -368,6 +390,22 @@ class Viewer:
             candidate = body.get("config") if isinstance(body, dict) else None
             if not isinstance(candidate, dict) or not candidate:
                 return _json(400, {"error": "the request body must be a JSON object with a non-empty 'config'"})
+            # The one read-side key `PUT` does not ignore. A panel the page opened an hour ago still holds the
+            # hour-old copy -- `loadConfig` re-reads only when `configState` is null -- so without this a save
+            # from it answered 200 and silently reverted every hand edit made to the file since. Checked here,
+            # ahead of the content ladder: if the document being edited is no longer the document on disk,
+            # that is the first thing worth saying, and "reload" is the answer to all of it.
+            version = body.get("version")
+            if not isinstance(version, str) or not version:
+                return _json(400, {"error": "the request body must carry the 'version' the GET it came from returned"})
+            try:
+                current = config_version(self.config_path.read_text())
+            except OSError as e:
+                return _json(502, {"error": f"cannot read {self.config_path}: {e}"})
+            if version != current:
+                return _json(409, {"error": f"{self.config_path} changed on disk since this form was loaded; "
+                                            "reload it before saving, or the change already there is lost",
+                                   "version": current})
             unknown = unknown_keys(candidate)
             if unknown:
                 # `from_dict` would ignore these; a form must not swallow a field somebody typed.
@@ -414,13 +452,18 @@ class Viewer:
 
     def _read_config(self, *, ok: bool = False) -> Response:
         try:
-            parsed = tomllib.loads(self.config_path.read_text())
-        except (OSError, tomllib.TOMLDecodeError) as e:
+            raw = self.config_path.read_text()
+        except OSError as e:
+            return _json(502, {"error": f"cannot read {self.config_path}: {e}"})
+        try:
+            parsed = tomllib.loads(raw)
+        except tomllib.TOMLDecodeError as e:
             return _json(502, {"error": f"cannot read {self.config_path}: {e}"})
         models = {adapter: [{"id": s.id, "efforts": list(s.efforts), "tier": s.tier, "context_class": s.context_class}
                             for s in self.ctx.models.for_adapter(adapter)]
                   for adapter in self.ctx.models.adapters}
-        payload = {"path": str(self.config_path), "config": _canonical_config(parsed), "models": models, "note": self.CONFIG_NOTE}
+        payload = {"path": str(self.config_path), "config": _canonical_config(parsed), "models": models,
+                   "note": self.CONFIG_NOTE, "version": config_version(raw)}
         # allow_nan=False, scoped to this one return: `parsed` is tomllib's raw parse of the whole file, and
         # TOML float syntax allows a bare inf/nan/+nan/-inf literal anywhere -- json.dumps's default would
         # silently emit the non-standard tokens NaN/Infinity, valid Python but not valid JSON, which a browser's

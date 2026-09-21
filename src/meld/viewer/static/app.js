@@ -383,7 +383,10 @@ async function saveConfig() {
     const response = await fetch(api("/api/config"), {
       method: "PUT", cache: "no-store",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ config }),
+      // The version GET gave us: the server refuses the save with a 409 if the file has changed since,
+      // rather than reverting a hand edit this panel never saw. A successful save re-renders from the
+      // answer, which carries the new version, so the next save from the same panel is current again.
+      body: JSON.stringify({ config, version: configState.version }),
     });
     let out = {};
     try { out = await response.json(); } catch (e) { out = {}; }

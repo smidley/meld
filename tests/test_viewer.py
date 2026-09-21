@@ -11,7 +11,8 @@ from meld.context import load_context
 from meld.github import GitHubError
 from meld.runners import freeze_path, role_run_path, supervisor_path, write_record
 from meld.viewer import server
-from meld.viewer.server import LOOPBACK_HOSTS, Request, Response, Viewer, new_token, serve, url
+from meld.viewer.server import (LOOPBACK_HOSTS, Request, Response, Viewer, config_version, new_token, serve,
+                                url)
 from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
 from tests.fakeadapter import FakeAdapter
 from tests.fakegh import FakeGh
@@ -62,6 +63,16 @@ def body(resp: Response) -> dict:
 
 
 def put(v, payload, **kw):
+    """`PUT /api/config`. A payload that carries a `config` but no `version` key gets the file's current one,
+    so the tests that are not about R34's stale-save check do not have to restate it; the ones that *are*
+    pass their own (a wrong one, an empty one, or the key left out entirely, which `raw_put` below sends)."""
+    if isinstance(payload, dict) and "config" in payload and "version" not in payload:
+        payload = {**payload, "version": config_version(v.config_path.read_text())}
+    return raw_put(v, payload, **kw)
+
+
+def raw_put(v, payload, **kw):
+    """`PUT /api/config` with the body exactly as given -- no version filled in."""
     target = f"/api/config?t={kw.pop('token', TOKEN)}"
     headers = {"Host": kw.pop("host", "127.0.0.1:8765"), "Content-Type": "application/json"}
     return v.handle(Request.parse("PUT", target, headers, json.dumps(payload).encode()))
@@ -396,6 +407,16 @@ def test_the_config_form_does_not_write_a_silent_zero_and_keeps_effort_choices_i
     assert 'input.min = "0";\n      input.step = "1";' in js
 
 
+def test_the_config_form_sends_back_the_version_it_was_given(tmp_path):
+    """R34. Without it the server cannot tell a stale form from a current one, and the save silently
+    reverts whatever the file gained since this panel read it. Pinned as the whole `body:` expression:
+    `configState.version` occurs nowhere else, and removing just the version -- leaving the fetch intact --
+    has to fail here too."""
+    v, _, _ = viewer_for(tmp_path)
+    js = get(v, "/static/app.js").body.decode()
+    assert "body: JSON.stringify({ config, version: configState.version })," in js
+
+
 def test_api_config_returns_the_file_the_path_and_the_model_catalogue(tmp_path):
     v, ctx, _ = viewer_for(tmp_path)
     out = body(get(v, "/api/config"))
@@ -404,6 +425,7 @@ def test_api_config_returns_the_file_the_path_and_the_model_catalogue(tmp_path):
     assert out["config"]["groups"]["claude"]["orchestrator"]["model"] == ctx.cfg.groups["claude"].orchestrator.model
     assert out["models"]["claude"] and all({"id", "efforts", "tier"} <= set(m) for m in out["models"]["claude"])
     assert "note" in out                                   # a write reconfigures nothing already running
+    assert out["version"] == config_version((tmp_path / ".meld.toml").read_text())   # R34: what PUT must name
 
 
 def test_api_config_get_canonicalises_a_starter_file_and_still_names_unknown_keys(tmp_path):
@@ -508,6 +530,70 @@ def test_a_put_writes_the_file_canonically_and_answers_with_what_it_wrote(tmp_pa
     assert load_config(tmp_path / ".meld.toml").budget["large"] == 26
     assert body(resp)["config"]["budget"]["large"] == 26       # the answer is the file, re-read
     assert body(get(v, "/api/config"))["config"]["budget"]["large"] == 26
+
+
+def test_a_put_from_a_stale_form_is_refused_rather_than_reverting_the_hand_edit(tmp_path):
+    """R34. `GET`, hand-edit a value on disk, `PUT` the form you were already holding: that answered 200 and
+    the hand edit was simply gone. `loadConfig` re-reads only when `configState` is null, so a panel opened
+    an hour ago still holds the hour-old copy -- and re-reading on every panel open is deliberately *not*
+    the fix, because closing and reopening the <details> would then discard a person's in-progress edits,
+    trading a rare clobber for a frequent one. The version `GET` returns is what closes it instead."""
+    v, _, _ = viewer_for(tmp_path)
+    path = tmp_path / ".meld.toml"
+    first = body(get(v, "/api/config"))
+    stale = first["config"]
+    # PROJECT_TOML's codex model is the deliberately-invalid "gpt-x", which config_checks would 409 on
+    # regardless of this test's own change (see the sibling write test).
+    stale["groups"]["codex"]["orchestrator"]["model"] = stale["groups"]["codex"]["pm"]["model"] = "gpt-5.6-sol"
+
+    path.write_text(path.read_text() + "\n[lease]\ngrace_minutes = 42\n")      # the hand edit this panel never saw
+    hand_edited = path.read_text()
+
+    refusal = put(v, {"config": stale, "version": first["version"]})
+    assert refusal.status == 409
+    assert "changed on disk" in body(refusal)["error"]
+    assert path.read_text() == hand_edited                       # the hand edit is still there
+
+    # the version the refusal names is the file's current one, and a reload makes the same save work
+    fresh = body(get(v, "/api/config"))
+    assert body(refusal)["version"] == fresh["version"] != first["version"]
+    assert fresh["config"]["lease"]["grace_minutes"] == 42
+    current = fresh["config"]
+    current["groups"]["codex"]["orchestrator"]["model"] = current["groups"]["codex"]["pm"]["model"] = "gpt-5.6-sol"
+    ok = put(v, {"config": current, "version": fresh["version"]})
+    assert ok.status == 200, body(ok)
+    assert load_config(path).lease_grace_minutes == 42            # and it survives the save that follows
+
+
+def test_a_put_needs_the_version_its_get_returned(tmp_path):
+    """The key itself is required, not merely honoured when present: a client that never learned about it
+    would otherwise keep the old, silently-clobbering behaviour."""
+    v, _, _ = viewer_for(tmp_path)
+    current = body(get(v, "/api/config"))["config"]
+    before = (tmp_path / ".meld.toml").read_text()
+    for payload in ({"config": current},                                   # omitted
+                    {"config": current, "version": None},                  # null
+                    {"config": current, "version": ""},                    # empty
+                    {"config": current, "version": 7}):                    # not a string
+        resp = raw_put(v, payload)
+        assert resp.status == 400, payload
+        assert "version" in body(resp)["error"], payload
+    assert (tmp_path / ".meld.toml").read_text() == before
+
+
+def test_a_successful_put_answers_with_a_version_the_next_save_can_use(tmp_path):
+    """The page re-renders from the answer, so the panel that just saved must come back current rather than
+    instantly stale against the file it wrote itself."""
+    v, _, _ = viewer_for(tmp_path)
+    first = body(get(v, "/api/config"))
+    current = first["config"]
+    current["budget"] = {**current["budget"], "large": 23}
+    current["groups"]["codex"]["orchestrator"]["model"] = current["groups"]["codex"]["pm"]["model"] = "gpt-5.6-sol"
+    saved = body(put(v, {"config": current, "version": first["version"]}))
+    assert saved["ok"] is True
+    assert saved["version"] == config_version((tmp_path / ".meld.toml").read_text()) != first["version"]
+    again = put(v, {"config": saved["config"], "version": saved["version"]})
+    assert again.status == 200, body(again)
 
 
 def test_a_put_refuses_a_key_the_schema_does_not_know_and_names_it(tmp_path):

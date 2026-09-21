@@ -443,7 +443,14 @@ class Viewer:
             except OSError as e:
                 return _json(502, {"error": f"cannot write {self.config_path}: {e}"})
             with self._lock:
-                self._state_cache = None      # the numbers /api/state derives from the old config are stale now
+                # A provable no-op today, and kept deliberately. `/api/state`'s config-derived numbers -- the
+                # budget cap, the warn thresholds -- come from `ctx.cfg` (`status.py`), the configuration this
+                # process loaded at launch, which a write to the *file* does not touch: plan decision 6 says
+                # a write reconfigures nothing already running, and that staleness is the decision, not a bug
+                # this line fixes. It stays because every mutating route drops the cache, and because a future
+                # `/api/state` that read the file rather than `ctx.cfg` would then be correct by default
+                # rather than by someone remembering to add it back.
+                self._state_cache = None
             return self._read_config(ok=True)
         except Exception as e:  # noqa: BLE001
             # Same reasoning as api_action: a long-lived local tool must answer even when the answer is that

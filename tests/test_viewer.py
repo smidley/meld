@@ -860,6 +860,11 @@ def test_the_config_route_is_behind_the_gate_and_takes_only_get_and_put(tmp_path
 
 
 def test_a_successful_put_drops_the_cached_state(tmp_path):
+    """Which is a provable no-op today, and the point of pinning it is that it stays one deliberately. The
+    numbers `/api/state` derives from the configuration come from `ctx.cfg`, what this process loaded at
+    launch, and a write to the file cannot change them -- plan decision 6 makes that staleness the decision
+    rather than a bug. This test pins the drop, not a change in the answer, and an earlier version of this
+    comment claimed the second."""
     v, _, _ = viewer_for(tmp_path)
     assert get(v, "/api/state").status == 200 and v._state_cache is not None
     current = body(get(v, "/api/config"))["config"]

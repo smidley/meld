@@ -301,8 +301,10 @@ def test_viewer_port_must_be_a_tcp_port_number(bad):
 
 #: Every numeric setting `from_dict` reads, with the floor the parser holds it to. The rule is whether `0`
 #: is a lie: `1` where `0` cannot mean what it says, because the code coerces it or acts on it in a way the
-#: word does not describe; `0` where it means something, and only a negative is nonsense. See `config.py`'s
-#: own note above `LOGS_MIN_BYTES_PER_RUN` for the worked cases. Written out here rather than derived from
+#: word does not describe; `0` where it means something, and only a negative is nonsense. A second, narrower
+#: clause floors a `0` that is a runaway even where it is honest -- `polling.interval_seconds`, and
+#: `notify.repeat_after_minutes`, which is the marginal call of the set. See `config.py`'s own note above
+#: `LOGS_MIN_BYTES_PER_RUN` for the worked cases. Written out here rather than derived from
 #: the source, because the interesting claim is *which* floor each field gets, and a table that derived
 #: itself from the code could not be wrong about it. (`logs.*`, `runners.limit_retry_minutes` and
 #: `viewer.port` have their own tests above; their floors are not 0 or 1.)

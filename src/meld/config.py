@@ -110,9 +110,20 @@ def _role(data: Mapping[str, Any], path: str) -> RoleConfig:
 #: `lines[-0:]` is every line. Keep `0` where it means something, and there only a negative is nonsense:
 #: no budget of that tier, no grace on a lease, no amendment round, no waiting on age before an audit.
 #:
-#: The rule is about lying rather than about harm, deliberately. Silently not doing what a field says is
-#: the failure this whole surface exists to prevent, so an honest `0` stays even when it is drastic, and a
-#: dishonest one goes even when -- as with `review.quorum` -- the clamp meant nothing was misbehaving.
+#: That first clause is about lying rather than about harm, deliberately. Silently not doing what a field
+#: says is the failure this whole surface exists to prevent, so an honest `0` stays even when it is
+#: drastic, and a dishonest one goes even when -- as with `review.quorum` -- the clamp meant nothing was
+#: misbehaving.
+#:
+#: **There is a second clause, and it is narrower: floor a `0` that is a runaway, even where it is
+#: honest.** A zero poll interval reads as exactly what it does and still never stops.
+#: `notify.repeat_after_minutes = 0` is the cleanest case of the clause standing on its own: by the
+#: letter it is honest -- it means "repeat every pass", and `notifier.py` does that -- but what it
+#: repeats is a nudge posted to a Slack workspace the person running meld may not even own, so the loop
+#: runs away at something outside meld and at other people's attention. The test is not cost; an honest
+#: `0` that is merely expensive stays. It is the absence of a stopping condition, pointed outward.
+#: `notify.repeat_after_minutes` is a marginal call and is recorded as one in `docs/HANDOFF.md`'s
+#: decisions for the owner, with the one character that reverses it.
 #:
 #: `_at_least` refuses a bool and a float as well as a number below the floor, so a form's
 #: `review_concurrency = 2.5` is named rather than silently truncated to 2 by a bare `int()`. A group's
@@ -497,7 +508,10 @@ class Config:
             },
             budget_wallclock_hours=_at_least(budget.get("wallclock_hours", 72), 0, "budget.wallclock_hours", "hours"),
             notify_webhook_env=notify.get("slack_dm_webhook_env"),
-            # A repeat window of 0 makes every pass due again: the same nudge, re-posted to GitHub every tick.
+            # Honest but a runaway -- the rule's second clause above, and its marginal case. A repeat
+            # window of 0 makes every pass due again, so `notifier` re-posts the same nudge through
+            # the Slack webhook each tick: an external service, and other people's attention. (The
+            # `meld:nudged` label on GitHub is what gates a repeat, not where the nudge lands.)
             notify_repeat_after_minutes=_at_least(notify.get("repeat_after_minutes", 120), 1,
                                                   "notify.repeat_after_minutes", "minutes"),
             # `tail_lines` is `lines[-n:]`, and `lines[-0:]` is the *whole* file -- so a 0 here does the exact

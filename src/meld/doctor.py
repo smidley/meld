@@ -27,7 +27,7 @@ from meld.adapters import UnknownAdapter
 from meld.adapters.base import SCRUBBED_EXACT, SCRUBBED_PREFIXES
 from meld.appauth import AppAuthError, app_slug, load_pem, mint_installation_token
 from meld.atomic import write_atomic
-from meld.config import Config
+from meld.config import Config, GroupConfig
 from meld.github import GitHub, GitHubError
 from meld.gitops import GitError, git, noreply_email, remove_worktree
 from meld.housekeeping import CI_RED_STATE
@@ -115,6 +115,45 @@ def _memory_bytes(repo_root: Path) -> int:
         if p.is_file():
             total += p.stat().st_size
     return total
+
+
+def _group_config_checks(cfg: Config, group: GroupConfig, registry: ModelRegistry, adapter) -> list[Check]:
+    """The two checks that are a function of the configuration and the model catalogue alone: the models and
+    efforts this group asks for, and whether its CLI would even let a worker wait as long as polling does.
+
+    Split out because `meld watch`'s configuration form runs exactly these against a candidate file before it is
+    written (spec section 22), and a form that could pass a check the CLI fails would be a second opinion about a
+    settled question. `adapter` is None when this build has no adapter for the group's `cli` -- that is a `cli:`
+    problem for `run_checks` to report, so the ceiling is skipped rather than failed.
+    """
+    problems = []
+    for role_name, role in (("orchestrator", group.orchestrator), ("pm", group.pm)):
+        problems += [f"{role_name}: {p}" for p in registry.validate(group.cli, role.model, role.effort)]
+    checks = [Check(f"models:{group.name}", not problems,
+                    "; ".join(problems) or f"{group.orchestrator.model}/{group.orchestrator.effort}, {group.pm.model}/{group.pm.effort}",
+                    "" if not problems else "pick models from `meld models`")]
+    if adapter is None:
+        checks.append(Check(f"timeout-ceiling:{group.name}", None, "skipped (unknown cli)"))
+    else:
+        ceiling = adapter.command_timeout_ceiling_seconds()
+        ok = ceiling > cfg.wait_timeout_seconds
+        checks.append(Check(f"timeout-ceiling:{group.name}", ok,
+                            f"command ceiling {ceiling}s vs polling.wait_timeout_seconds {cfg.wait_timeout_seconds}s",
+                            "" if ok else "lower polling.wait_timeout_seconds below the CLI's command ceiling"))
+    return checks
+
+
+def config_checks(cfg: Config, registry: ModelRegistry, adapter_for) -> list[Check]:
+    """Everything `meld doctor` can say about a configuration without the network, a binary, a token or the
+    machine. `meld watch`'s form runs these against a candidate before writing it."""
+    out: list[Check] = []
+    for group in cfg.groups.values():
+        try:
+            adapter = adapter_for(group.cli)
+        except UnknownAdapter:
+            adapter = None
+        out += _group_config_checks(cfg, group, registry, adapter)
+    return out
 
 
 def run_checks(cfg: Config, repo_root: Path, *, env: Mapping[str, str], gh_factory: Callable[[str | None], GitHub], registry: ModelRegistry,
@@ -234,20 +273,9 @@ def run_checks(cfg: Config, repo_root: Path, *, env: Mapping[str, str], gh_facto
                 checks.append(Check(f"git-identity:{group.name}", True, f"{group.bot} <{noreply_email(int(user['id']), group.bot)}> (derived)"))
             except (GitHubError, KeyError, TypeError, ValueError) as e:
                 checks.append(Check(f"git-identity:{group.name}", False, f"cannot resolve {group.bot}: {e}", "set git_name/git_email under [groups.%s]" % group.name))
-        # 5. models
-        problems = []
-        for role_name, role in (("orchestrator", group.orchestrator), ("pm", group.pm)):
-            problems += [f"{role_name}: {p}" for p in registry.validate(group.cli, role.model, role.effort)]
-        checks.append(Check(f"models:{group.name}", not problems, "; ".join(problems) or f"{group.orchestrator.model}/{group.orchestrator.effort}, {group.pm.model}/{group.pm.effort}",
-                            "" if not problems else "pick models from `meld models`"))
-        # 6. command ceiling vs wait timeout
-        if adapter is None:
-            checks.append(Check(f"timeout-ceiling:{group.name}", None, "skipped (unknown cli)"))
-        else:
-            ceiling = adapter.command_timeout_ceiling_seconds()
-            ok = ceiling > cfg.wait_timeout_seconds
-            checks.append(Check(f"timeout-ceiling:{group.name}", ok, f"command ceiling {ceiling}s vs polling.wait_timeout_seconds {cfg.wait_timeout_seconds}s",
-                                "" if ok else "lower polling.wait_timeout_seconds below the CLI's command ceiling"))
+        # 5. models, 6. command ceiling vs wait timeout -- shared with doctor.config_checks (spec 22), so the
+        # CLI and meld watch's configuration form can never drift into two opinions about a settled question.
+        checks += _group_config_checks(cfg, group, registry, adapter)
         # 7. token permissions (read probes; write only with --probe-status) -- App permissions come from the token response (step 3)
         if not group.is_app:
             if token and login == group.bot and head_sha:

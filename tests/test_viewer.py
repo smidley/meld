@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from meld.config import load_config
 from meld.context import load_context
 from meld.github import GitHubError
 from meld.runners import freeze_path, role_run_path, supervisor_path, write_record
@@ -41,7 +42,8 @@ def viewer_for(tmp_path, *, group: str | None = None, role: str = "pm", **overri
                {"id": 555, "html_url": "https://github.com/acme/widgets/issues/10#issuecomment-555"})
     ctx = load_context(tmp_path / ".meld.toml", env=env_for(tmp_path, group=group, role=role), run=fake,
                        adapter_for=lambda name: FakeAdapter())
-    kw = dict(token=TOKEN, port=8765, now=lambda: NOW, clock=Clock(), sleep=lambda s: None, alive=lambda pid: True,
+    kw = dict(token=TOKEN, port=8765, config_path=tmp_path / ".meld.toml", now=lambda: NOW, clock=Clock(),
+              sleep=lambda s: None, alive=lambda pid: True,
               start_of=lambda pid: "T0", disk_usage=lambda p: SimpleNamespace(total=0, used=0, free=3 * 1024 ** 3),
               check_every=1, max_polls=1)
     kw.update(overrides)
@@ -57,6 +59,13 @@ def get(v: Viewer, path: str, *, token: str | None = TOKEN, host: str = "127.0.0
 def body(resp: Response) -> dict:
     assert not resp.streaming
     return json.loads(resp.body)
+
+
+def put(v, payload, **kw):
+    from meld.viewer.server import Request
+    target = f"/api/config?t={kw.pop('token', TOKEN)}"
+    headers = {"Host": kw.pop("host", "127.0.0.1:8765"), "Content-Type": "application/json"}
+    return v.handle(Request.parse("PUT", target, headers, json.dumps(payload).encode()))
 
 
 def test_request_parse_splits_the_target_and_lower_cases_header_names():
@@ -104,7 +113,7 @@ def test_no_cors_header_is_ever_sent_and_the_security_headers_always_are(tmp_pat
 def test_unknown_routes_are_404_and_the_wrong_method_is_405_behind_the_gate(tmp_path):
     v, _, _ = viewer_for(tmp_path)
     assert get(v, "/nowhere").status == 404 and "no route" in body(get(v, "/nowhere"))["error"]
-    assert get(v, "/api/config", method="PUT").status == 404        # plan 8d
+    assert get(v, "/api/config", method="DELETE").status == 405     # plan 8d: only GET and PUT
     assert get(v, "/api/action").status == 405                      # POST only
     assert get(v, "/api/state", method="POST").status == 405
     assert get(v, "/nowhere", token=None).status == 403             # the gate comes first
@@ -326,6 +335,98 @@ def test_the_page_has_one_action_bar_that_posts_and_renders_a_refusal_verbatim(t
     for verb in ("LEASE", "EXPIRED", "RELEASED", "LIMITED"):
         assert f'"{verb}"' not in js
     assert "refused" in js and "rule" in js and "innerHTML" not in js
+
+
+def test_api_config_returns_the_file_the_path_and_the_model_catalogue(tmp_path):
+    v, ctx, _ = viewer_for(tmp_path)
+    out = body(get(v, "/api/config"))
+    assert out["path"] == str(tmp_path / ".meld.toml")
+    assert out["config"]["repo"]["name"] == ctx.cfg.repo_name
+    assert out["config"]["groups"]["claude"]["orchestrator"]["model"] == ctx.cfg.groups["claude"].orchestrator.model
+    assert out["models"]["claude"] and all({"id", "efforts", "tier"} <= set(m) for m in out["models"]["claude"])
+    assert "note" in out                                   # a write reconfigures nothing already running
+
+
+def test_a_put_writes_the_file_canonically_and_answers_with_what_it_wrote(tmp_path):
+    v, _, _ = viewer_for(tmp_path)
+    current = body(get(v, "/api/config"))["config"]
+    current["budget"] = {**current.get("budget", {}), "large": 26}
+    # PROJECT_TOML's codex model is the deliberately-invalid "gpt-x" (test_doctor.py's VALID_MODELS_TOML swaps
+    # it the same way): config_checks would 409 on it against the real catalogue regardless of this test's own
+    # change, which is not what this test is about.
+    current["groups"]["codex"]["orchestrator"]["model"] = current["groups"]["codex"]["pm"]["model"] = "gpt-5.6-sol"
+    resp = put(v, {"config": current})
+    assert resp.status == 200, body(resp)
+    written = (tmp_path / ".meld.toml").read_text()
+    assert written.startswith("#") and "large = 26" in written
+    assert load_config(tmp_path / ".meld.toml").budget["large"] == 26
+    assert body(resp)["config"]["budget"]["large"] == 26       # the answer is the file, re-read
+    assert body(get(v, "/api/config"))["config"]["budget"]["large"] == 26
+
+
+def test_a_put_refuses_a_key_the_schema_does_not_know_and_names_it(tmp_path):
+    v, _, _ = viewer_for(tmp_path)
+    current = body(get(v, "/api/config"))["config"]
+    before = (tmp_path / ".meld.toml").read_text()
+    # PROJECT_TOML carries no [review] table at all (it leans on defaults), so this must not clobber -- the
+    # same current.get(..., {}) pattern the budget test above uses, not a bare current["review"][...] which
+    # would KeyError on a table the base fixture never wrote.
+    current["review"] = {**current.get("review", {}), "quorumm": 9}
+    resp = put(v, {"config": current})
+    assert resp.status == 400 and "review.quorumm" in body(resp)["error"]
+    assert (tmp_path / ".meld.toml").read_text() == before      # the original is untouched
+
+
+def test_a_put_refuses_a_config_the_parser_rejects(tmp_path):
+    v, _, _ = viewer_for(tmp_path)
+    current = body(get(v, "/api/config"))["config"]
+    before = (tmp_path / ".meld.toml").read_text()
+    del current["groups"]["claude"]["cli"]
+    resp = put(v, {"config": current})
+    assert resp.status == 400 and "cli" in body(resp)["error"]
+    assert (tmp_path / ".meld.toml").read_text() == before
+
+
+def test_a_put_refuses_a_config_the_doctor_checks_reject(tmp_path):
+    v, _, _ = viewer_for(tmp_path)
+    current = body(get(v, "/api/config"))["config"]
+    before = (tmp_path / ".meld.toml").read_text()
+    current["groups"]["claude"]["orchestrator"]["model"] = "gpt-imaginary"
+    resp = put(v, {"config": current})
+    assert resp.status == 409
+    out = body(resp)
+    assert any(c["name"] == "models:claude" and c["ok"] is False for c in out["checks"])
+    assert "gpt-imaginary" in json.dumps(out["checks"])
+    assert (tmp_path / ".meld.toml").read_text() == before
+
+
+def test_a_put_needs_a_json_object_with_a_config(tmp_path):
+    v, _, _ = viewer_for(tmp_path)
+    for payload in ({}, {"config": None}, {"config": []}, {"config": {}}):
+        assert put(v, payload).status == 400, payload
+    from meld.viewer.server import Request
+    bad = v.handle(Request.parse("PUT", f"/api/config?t={TOKEN}", {"Host": "127.0.0.1:8765"}, b"not json"))
+    assert bad.status == 400
+
+
+def test_the_config_route_is_behind_the_gate_and_takes_only_get_and_put(tmp_path):
+    v, _, _ = viewer_for(tmp_path)
+    assert get(v, "/api/config", token=None).status == 403
+    assert get(v, "/api/config", host="evil.example:8765").status == 403
+    assert get(v, "/api/config", method="POST").status == 405
+    assert get(v, "/api/config").status == 200
+
+
+def test_a_successful_put_drops_the_cached_state(tmp_path):
+    v, _, _ = viewer_for(tmp_path)
+    assert get(v, "/api/state").status == 200 and v._state_cache is not None
+    current = body(get(v, "/api/config"))["config"]
+    current["budget"] = {**current.get("budget", {}), "large": 21}
+    # See the sibling write test: PROJECT_TOML's codex model is deliberately-invalid "gpt-x", which config_checks
+    # would otherwise 409 on regardless of this test's own change.
+    current["groups"]["codex"]["orchestrator"]["model"] = current["groups"]["codex"]["pm"]["model"] = "gpt-5.6-sol"
+    assert put(v, {"config": current}).status == 200
+    assert v._state_cache is None
 
 
 def test_serve_binds_an_os_assigned_loopback_port_and_answers_over_a_socket(tmp_path):

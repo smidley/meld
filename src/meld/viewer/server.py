@@ -11,8 +11,9 @@ import secrets
 import shutil
 import threading
 import time
+import tomllib
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
@@ -23,8 +24,10 @@ from meld.actions import Refused
 from meld.adapters import UnknownAdapter
 from meld.appauth import AppAuthError
 from meld.assemble import BoardError
-from meld.config import ConfigError
+from meld.atomic import write_atomic
+from meld.config import Config, ConfigError, dumps, unknown_keys
 from meld.dispatch import DispatchError
+from meld.doctor import config_checks
 from meld.github import GitHubError
 from meld.gitops import GitError
 from meld.posting import PostError
@@ -108,11 +111,12 @@ class Viewer:
 
     ROUTES: dict[str, str] = {"/": "page", "/static/app.css": "asset_css", "/static/app.js": "asset_js",
                               "/api/state": "api_state", "/api/streams": "api_streams", "/api/events": "api_events",
-                              "/api/action": "api_action"}
-    #: The one route that writes is the one route that is not a GET.
-    METHODS: dict[str, str] = {"/api/action": "POST"}
+                              "/api/action": "api_action", "/api/config": "api_config"}
+    #: The routes that are not plain GETs. `/api/config` is the one route that answers two methods.
+    METHODS: dict[str, str | tuple[str, ...]] = {"/api/action": "POST", "/api/config": ("GET", "PUT")}
 
-    def __init__(self, ctx, *, token: str, port: int, now: Callable[[], str] = _iso_now, clock: Callable[[], float] = time.monotonic,
+    def __init__(self, ctx, *, token: str, port: int, config_path: Path | None = None,
+                 now: Callable[[], str] = _iso_now, clock: Callable[[], float] = time.monotonic,
                  sleep: Callable[[float], None] = time.sleep, alive: Callable[[int], bool] = pid_alive,
                  start_of: Callable[[int], str] = proc_start_of, disk_usage: Callable[[Path], object] = shutil.disk_usage,
                  state_ttl: float = STATE_TTL_SECONDS, interval: float = 1.0, check_every: int = st.CHECK_EVERY,
@@ -120,6 +124,7 @@ class Viewer:
         self.ctx = ctx
         self.token = token
         self.port = port
+        self.config_path = config_path
         self.now, self.clock, self.sleep = now, clock, sleep
         self.alive, self.start_of, self.disk_usage = alive, start_of, disk_usage
         self.state_ttl, self.interval, self.check_every, self.max_polls = state_ttl, interval, check_every, max_polls
@@ -146,7 +151,8 @@ class Viewer:
         name = self.ROUTES.get(req.path)
         if name is None:
             return _json(404, {"error": f"no route {req.path}"})
-        if req.method != self.METHODS.get(req.path, "GET"):
+        allowed = self.METHODS.get(req.path, "GET")
+        if req.method not in ({allowed} if isinstance(allowed, str) else set(allowed)):
             return _json(405, {"error": f"{req.method} is not allowed on {req.path}"})
         return getattr(self, name)(req)
 
@@ -293,6 +299,69 @@ class Viewer:
         with self._lock:
             self._state_cache = None      # the board has just moved; the next /api/state rebuilds rather than lying
         return _json(200, {"ok": True, "verb": verb, "result": result})
+
+    #: What a write does not do. Said in the answer because it is the question a person asks next.
+    CONFIG_NOTE = ("saved to the file; the supervisors and this page keep the configuration they started with, "
+                   "and every new meld process reads the new one")
+
+    def api_config(self, req: Request) -> Response:
+        """The `.meld.toml` as parsed, and a validated write of it (spec 22).
+
+        The viewer decides nothing about validity: `Config.from_dict` decides whether a candidate parses,
+        `doctor.config_checks` decides whether it is sane, and this reports what they said. Every refusal happens
+        before `write_atomic`, so a rejected write leaves the file exactly as it was.
+        """
+        if self.config_path is None:
+            return _json(502, {"error": "this viewer was started without a configuration file"})
+        if req.method == "GET":
+            return self._read_config()
+        try:
+            body = json.loads(req.body or b"")
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            return _json(400, {"error": f"the request body is not JSON: {e}"})
+        candidate = body.get("config") if isinstance(body, dict) else None
+        if not isinstance(candidate, dict) or not candidate:
+            return _json(400, {"error": "the request body must be a JSON object with a non-empty 'config'"})
+        unknown = unknown_keys(candidate)
+        if unknown:
+            # `from_dict` would ignore these; a form must not swallow a field somebody typed.
+            return _json(400, {"error": f"unknown setting(s): {', '.join(unknown)}"})
+        try:
+            cfg = Config.from_dict(candidate)
+        except (ConfigError, AttributeError, TypeError) as e:
+            # AttributeError/TypeError: a "table" that is not one (`review = 5`) makes `from_dict`'s own `.get`
+            # raise rather than refuse. `unknown_keys` cannot see it either, since it only walks mappings. It is
+            # still the candidate's problem, so it is a 400 naming what went wrong, never a traceback.
+            return _json(400, {"error": f"{type(e).__name__}: {e}"})
+        text = dumps(cfg)
+        try:
+            reparsed = Config.from_dict(tomllib.loads(text))
+        except (ConfigError, tomllib.TOMLDecodeError) as e:
+            return _json(500, {"error": f"the rendered file does not parse: {e}"})
+        if reparsed != cfg:
+            differs = sorted(f for f in cfg.__dataclass_fields__ if getattr(cfg, f) != getattr(reparsed, f))
+            return _json(500, {"error": "the rendered file does not describe the same configuration", "differs": differs})
+        checks = config_checks(cfg, self.ctx.models, self.ctx.adapter_for)
+        if any(c.ok is False for c in checks):
+            return _json(409, {"error": "meld doctor's configuration checks refuse this", "checks": [asdict(c) for c in checks]})
+        try:
+            write_atomic(self.config_path, text)
+        except OSError as e:
+            return _json(502, {"error": f"cannot write {self.config_path}: {e}"})
+        with self._lock:
+            self._state_cache = None      # the numbers /api/state derives from the old config are stale now
+        return self._read_config(ok=True)
+
+    def _read_config(self, *, ok: bool = False) -> Response:
+        try:
+            parsed = tomllib.loads(self.config_path.read_text())
+        except (OSError, tomllib.TOMLDecodeError) as e:
+            return _json(502, {"error": f"cannot read {self.config_path}: {e}"})
+        models = {adapter: [{"id": s.id, "efforts": list(s.efforts), "tier": s.tier, "context_class": s.context_class}
+                            for s in self.ctx.models.for_adapter(adapter)]
+                  for adapter in self.ctx.models.adapters}
+        payload = {"path": str(self.config_path), "config": parsed, "models": models, "note": self.CONFIG_NOTE}
+        return _json(200, {**payload, "ok": True} if ok else payload)
 
 
 class _Handler(BaseHTTPRequestHandler):

@@ -571,7 +571,8 @@ def watch(ctx: click.Context, port: int | None, open_browser: bool | None) -> No
         # party would read its own status and post as itself, which section 22 forbids outright.
         raise click.ClickException(f"meld watch is the human's console, not {actor.party.label}'s; "
                                    "unset MELD_GROUP (groups talk through meld post)")
-    viewer = Viewer(c, token=new_token(), port=0)
+    config_path = ctx.obj["config_path"] or _guard(lambda: find_config(Path.cwd()))
+    viewer = Viewer(c, token=new_token(), port=0, config_path=config_path)
     wanted = port if port is not None else c.cfg.viewer_port
     try:
         httpd = SERVE(viewer, port=wanted)

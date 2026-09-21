@@ -131,6 +131,12 @@ def test_watch_honours_port_and_open_flags(tmp_path, monkeypatch):
     assert seen["port"] == 4321 and opened == [result.output.strip()]
 
 
+def test_watch_hands_the_viewer_the_config_file_it_loaded(tmp_path, monkeypatch):
+    result, seen, _ = _watch(tmp_path, monkeypatch, [])
+    assert result.exit_code == 0, result.output
+    assert seen["viewer"].config_path == tmp_path / ".meld.toml"
+
+
 def test_watch_is_refused_to_a_worker_like_every_other_verb(tmp_path, monkeypatch):
     result, seen, _ = _watch(tmp_path, monkeypatch, [], env_extra={"MELD_WORKER": "1"})
     assert result.exit_code != 0 and "viewer" not in seen

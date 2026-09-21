@@ -161,3 +161,14 @@ def test_a_rendered_config_cannot_smuggle_a_quote_or_a_newline():
     data["groups"]["claude"]["git_name"] = 'a "quoted" \\ name\nwith a line break'
     cfg = Config.from_dict(data)
     assert Config.from_dict(tomllib.loads(dumps(cfg))).groups["claude"].git_name == cfg.groups["claude"].git_name
+
+
+def test_every_control_character_survives_the_round_trip():
+    """TOML forbids a raw control character in a basic string. A name pasted from a coloured terminal carries an
+    escape; if the renderer emits it raw, the file it writes cannot be read back at all."""
+    data = minimal()
+    for code in list(range(0x20)) + [0x7F]:
+        data["groups"]["claude"]["git_name"] = f"before{chr(code)}after"
+        cfg = Config.from_dict(data)
+        back = Config.from_dict(tomllib.loads(dumps(cfg)))
+        assert back.groups["claude"].git_name == cfg.groups["claude"].git_name, hex(code)

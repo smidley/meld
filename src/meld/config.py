@@ -168,18 +168,34 @@ def unknown_keys(data: Mapping[str, Any]) -> list[str]:
     return sorted(out)
 
 
+#: The named escapes TOML basic strings allow, checked before the generic control-character fallback in `_s`
+#: so a backslash, a quote, a tab, a newline, a carriage return, a backspace and a form feed each render as
+#: their short form rather than a `\u00XX`.
+_NAMED_ESCAPES = {"\\": "\\\\", '"': '\\"', "\b": "\\b", "\t": "\\t", "\n": "\\n", "\f": "\\f", "\r": "\\r"}
+
+
 def _s(value: str) -> str:
-    """One TOML basic string. Escaped rather than interpolated: a git_name with a quote, a backslash or a newline
-    must come back as itself instead of breaking out of its own literal."""
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
-    return f'"{escaped}"'
+    """One TOML basic string. Escaped rather than interpolated: a git_name with a quote, a backslash, a newline
+    or any other control character must come back as itself instead of breaking out of its own literal --
+    or, worse, producing a file `tomllib` refuses to read back at all. TOML 1.0 requires every C0 control
+    character other than tab, plus DEL (U+007F), to be escaped inside a basic string; a name pasted from a
+    coloured terminal can carry one of these (e.g. ESC, U+001B) even though it looks like plain text."""
+    out = []
+    for ch in value:
+        if ch in _NAMED_ESCAPES:
+            out.append(_NAMED_ESCAPES[ch])
+        elif ch < "\x20" or ch == "\x7f":
+            out.append(f"\\u{ord(ch):04x}")
+        else:
+            out.append(ch)
+    return '"' + "".join(out) + '"'
 
 
-def _list(values) -> str:
+def _list(values: list | tuple) -> str:
     return "[" + ", ".join(_s(str(v)) for v in values) + "]"
 
 
-def _lines(pairs) -> list[str]:
+def _lines(pairs: list[tuple[str, Any]]) -> list[str]:
     """`key = value` for each pair whose value is not None; None means the field is absent from this file."""
     out = []
     for key, value in pairs:
@@ -196,7 +212,7 @@ def _lines(pairs) -> list[str]:
     return out
 
 
-def _group_lines(g: "GroupConfig") -> list[str]:
+def _group_lines(g: GroupConfig) -> list[str]:
     """One group, in the order section 5 writes it: what it is, how it authenticates, what it may run."""
     out = [f"[groups.{g.name}]"] + _lines([
         ("cli", g.cli), ("bot", g.bot), ("token_env", g.token_env),

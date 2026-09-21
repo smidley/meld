@@ -293,8 +293,10 @@ class Viewer:
             return _json(502, {"error": str(e)})
         except Exception as e:  # noqa: BLE001
             # A long-lived local tool: an unhandled exception here drops the connection and prints a traceback in
-            # the person's terminal every time they press a button. A rendered 500 is strictly better, and
-            # `_StopRequested`/`KeyboardInterrupt` are BaseException, so a stop still propagates.
+            # the person's terminal every time they press a button. A rendered 500 is strictly better.
+            # KeyboardInterrupt is BaseException, not Exception, so it still propagates past this; _StopRequested
+            # (runners.py, raised only by the supervisor's own signal handler) is an Exception and would be
+            # caught here like any other -- harmless only because meld watch never installs that handler.
             return _json(500, {"error": f"{type(e).__name__}: {e}"})
         with self._lock:
             self._state_cache = None      # the board has just moved; the next /api/state rebuilds rather than lying
@@ -360,9 +362,11 @@ class Viewer:
             # Same reasoning as api_action: a long-lived local tool must answer even when the answer is that
             # something unforeseen broke. The case that motivated this: a `.meld.toml` carrying a bare TOML
             # date/time/datetime (`load_config` accepts one happily; `json.dumps` cannot serialize one) makes
-            # `_read_config` raise, reached from GET as well as from a successful write's own re-read below --
+            # `_read_config` raise, reached from GET as well as from a successful write's own re-read above --
             # which is why this wraps the whole method rather than only the PUT-parsing middle.
-            # `_StopRequested`/`KeyboardInterrupt` are BaseException, so a stop still propagates.
+            # KeyboardInterrupt is BaseException, not Exception, so it still propagates past this; _StopRequested
+            # (runners.py, raised only by the supervisor's own signal handler) is an Exception and would be
+            # caught here like any other -- harmless only because meld watch never installs that handler.
             return _json(500, {"error": f"{type(e).__name__}: {e}"})
 
     def _read_config(self, *, ok: bool = False) -> Response:

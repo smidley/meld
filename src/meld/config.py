@@ -125,7 +125,13 @@ _DURATION_UNITS = {"": 1, "s": 1, "m": 60, "h": 3600}
 
 
 def parse_duration(text: str) -> int:
-    """Parse '90s', '20m', '2h', or a bare number of seconds into seconds."""
+    """Parse '90s', '20m', '2h', or a bare number of seconds into seconds.
+
+    Zero parses, because zero is a well-formed duration; whether zero is a *usable* one is the caller's
+    question, and `from_dict` answers it for `[timeouts]` at its own read. A negative does not parse at
+    all -- the pattern matches digits and nothing else, so no sign ever reaches here and no caller has to
+    refuse one separately.
+    """
     m = _DURATION_RE.match(str(text))
     if not m:
         raise ConfigError(f"invalid duration {text!r}; use e.g. 90s, 20m, 2h")
@@ -424,9 +430,19 @@ class Config:
         timeouts_cfg = {"S": str(timeouts.get("S", "20m")), "M": str(timeouts.get("M", "45m")), "L": str(timeouts.get("L", "90m"))}
         for size, value in timeouts_cfg.items():
             try:
-                parse_duration(value)
+                seconds = parse_duration(value)
             except ConfigError as e:
                 raise ConfigError(f"timeouts.{size}: {e}") from e
+            # The same floor the numeric settings carry, in the shape a duration takes. `dispatch` sets a
+            # worker's deadline to `when + timedelta(seconds=timeout_seconds(size))`, so a zero here launches
+            # a worker that is already past its deadline -- one paid CLI session per launch, which is
+            # `runners.restart_hours = 0` wearing different clothes. Enforced at this read rather than inside
+            # `parse_duration`, whose contract ("a bare number of seconds" included) belongs to its other
+            # callers and is not this plan's to change. A negative never reaches here: `_DURATION_RE` matches
+            # `\d+`, so `-5m` is already an invalid duration above.
+            if seconds <= 0:
+                raise ConfigError(f"timeouts.{size} must be a duration greater than zero, got {value!r}: a "
+                                  "worker launched with it is past its deadline the instant it starts")
         return cls(
             repo_name=str(_require(repo, "name", "repo")),
             default_branch=str(repo.get("default_branch", "main")),

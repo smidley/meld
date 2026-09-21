@@ -755,8 +755,17 @@ def test_a_put_needs_a_json_object_with_a_config(tmp_path):
     # and the one place a zero is still legal, for contrast: it is the *negative* that is refused.
     (lambda c: c.setdefault("lease", {}).update(grace_minutes=-1),
      "lease.grace_minutes must be an integer of at least 0 minutes, got -1"),
+    # R41. Not a number but a duration, and the same failure: `dispatch` sets a worker's deadline to
+    # `when + timeout_seconds(size)`, so a zero launches one already past it -- a paid CLI session per
+    # launch. Every size shares one read site; `tests/test_config.py` covers all three and every spelling
+    # of zero, this pins that the form's own route refuses one.
+    (lambda c: c.setdefault("timeouts", {}).update(S="0m"),
+     "timeouts.S must be a duration greater than zero, got '0m'"),
+    (lambda c: c.setdefault("timeouts", {}).update(L=0),
+     "timeouts.L must be a duration greater than zero, got '0'"),
 ], ids=["cleared-number", "non-numeric-string", "infinity", "nan",
-        "zero-concurrency", "negative-interval", "fractional-concurrency", "negative-grace"])
+        "zero-concurrency", "negative-interval", "fractional-concurrency", "negative-grace",
+        "zero-timeout", "bare-zero-timeout"])
 def test_a_put_refuses_an_unparseable_number_with_400_not_a_traceback(tmp_path, mutate, expect):
     v, _, _ = viewer_for(tmp_path)
     current = body(get(v, "/api/config"))["config"]

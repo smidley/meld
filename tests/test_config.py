@@ -365,3 +365,45 @@ def test_no_numeric_setting_is_read_with_a_bare_int():
     source = inspect.getsource(Config.from_dict)
     bare = [line.strip() for line in source.splitlines() if re.search(r"(?<![_A-Za-z])int\(", line)]
     assert bare == [], bare
+
+
+@pytest.mark.parametrize("size", ["S", "M", "L"])
+@pytest.mark.parametrize("bad", ["0m", "0", "0s", "0h", 0], ids=["0m", "0", "0s", "0h", "bare-int-0"])
+def test_a_worker_timeout_of_zero_is_refused(size, bad):
+    """R41, the duration-shaped member of the same family as the numeric floors. `dispatch` sets a worker's
+    deadline to `when + timeout_seconds(size)`, so a zero launches a worker already past its deadline --
+    one paid CLI session per launch, which is `runners.restart_hours = 0` in different clothes. Every
+    spelling of zero the grammar admits is covered, including the bare integer a TOML `S = 0` produces,
+    and all three sizes, because they share one read site and a floor applied to only one of them would
+    be worse than none.
+
+    The floor lives at that read site, not inside `parse_duration`: zero is a well-formed duration and
+    the helper's contract belongs to its other callers."""
+    base = tomllib.loads(MINIMAL)
+    timeouts = {"S": "20m", "M": "45m", "L": "90m"} | {size: bad}
+    with pytest.raises(ConfigError, match=rf"timeouts\.{size} must be a duration greater than zero"):
+        Config.from_dict({**base, "timeouts": timeouts})
+
+
+@pytest.mark.parametrize("size", ["S", "M", "L"])
+def test_a_negative_worker_timeout_never_reaches_the_floor(size):
+    """`_DURATION_RE` matches digits and nothing else, so `-5m` is refused as an invalid duration before
+    the floor is consulted. Pinned so a later widening of the pattern to accept a sign cannot quietly open
+    a hole underneath the zero check above."""
+    base = tomllib.loads(MINIMAL)
+    timeouts = {"S": "20m", "M": "45m", "L": "90m"} | {size: "-5m"}
+    with pytest.raises(ConfigError, match=rf"timeouts\.{size}: invalid duration"):
+        Config.from_dict({**base, "timeouts": timeouts})
+
+
+def test_the_smallest_usable_worker_timeout_is_still_legal():
+    """The floor is zero, not a judgement about how short a run may be: one second parses and is kept."""
+    base = tomllib.loads(MINIMAL)
+    cfg = Config.from_dict({**base, "timeouts": {"S": "1s", "M": "1", "L": "1h"}})
+    assert (cfg.timeout_seconds("S"), cfg.timeout_seconds("M"), cfg.timeout_seconds("L")) == (1, 1, 3600)
+
+
+def test_parse_duration_itself_still_accepts_zero():
+    """The helper's contract is unchanged -- zero is a well-formed duration and its other callers are not
+    under this plan's change. Pinned so the floor cannot be "tidied up" into `parse_duration` later."""
+    assert parse_duration("0m") == 0 and parse_duration("0") == 0

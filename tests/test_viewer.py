@@ -390,6 +390,10 @@ def test_the_config_form_does_not_write_a_silent_zero_and_keeps_effort_choices_i
     assert js.count("linkModelAndEffort(") >= 2
     # "saving ..." is in progress, not a success -- must not be painted green.
     assert 'showConfigResult("saving …", null)' in js
+    # R33: a number input carries the weakest floor any field has and an integer step, so the spinner cannot
+    # walk a setting into a fraction. Pinned as one contiguous block, because neither line is worth anything
+    # without the other and because the surrounding comment mentions `min` and `step` on their own.
+    assert 'input.min = "0";\n      input.step = "1";' in js
 
 
 def test_api_config_returns_the_file_the_path_and_the_model_catalogue(tmp_path):
@@ -521,15 +525,37 @@ def test_a_put_needs_a_json_object_with_a_config(tmp_path):
 
 
 @pytest.mark.parametrize("mutate, expect", [
-    # a cleared number field: from_dict's own `int(review.get("quorum", 2))` is unguarded.
-    (lambda c: c.setdefault("review", {}).update(quorum=""), "invalid literal for int() with base 10: ''"),
-    # a non-numeric string in a group setting: same unguarded int(), one level deeper.
-    (lambda c: c["groups"]["claude"].update(concurrency="lots"), "invalid literal for int() with base 10: 'lots'"),
-    # json.loads accepts the non-standard Infinity/NaN literals as floats; int() on them raises OverflowError/
-    # ValueError rather than the ValueError a bad string gives, which is why the except had to widen past ConfigError.
-    (lambda c: c.setdefault("budget", {}).update(large=float("inf")), "cannot convert float infinity to integer"),
-    (lambda c: c.setdefault("budget", {}).update(large=float("nan")), "cannot convert float NaN to integer"),
-], ids=["cleared-number", "non-numeric-string", "infinity", "nan"])
+    # A cleared number field. Since R33 every numeric read goes through `_at_least`, so the refusal names the
+    # *setting* as well as the value -- `int()`'s own "invalid literal for int() with base 10: ''" named
+    # nothing a person could locate on the page.
+    (lambda c: c.setdefault("review", {}).update(quorum=""),
+     "review.quorum must be an integer of at least 1 approving groups, got ''"),
+    # a non-numeric string in a group setting, one level deeper
+    (lambda c: c["groups"]["claude"].update(concurrency="lots"),
+     "groups.claude.concurrency must be an integer of at least 1 concurrent dispatches, got 'lots'"),
+    # json.loads accepts the non-standard Infinity/NaN literals as floats. They used to reach `int()` and
+    # raise OverflowError/ValueError from deep inside it; `_at_least` refuses them as the non-integers they
+    # are, before any conversion. The except clause still widens past ConfigError for the shapes that get
+    # past the guards entirely (`review = 5` -> AttributeError).
+    (lambda c: c.setdefault("budget", {}).update(large=float("inf")),
+     "budget.large must be an integer of at least 0 runs, got inf"),
+    (lambda c: c.setdefault("budget", {}).update(large=float("nan")),
+     "budget.large must be an integer of at least 0 runs, got nan"),
+    # R33, the three the form itself can produce and every one of which used to answer 200. A zero
+    # concurrency refuses every dispatch for that group (`rules.py`'s `n >= group.concurrency`); a zero poll
+    # interval is `waiting.py`'s backoff, starting at 0.0 and doubling to 0.0 forever; a fractional review
+    # concurrency was silently truncated by `int()` and re-rendered as the truncation with no sign of it.
+    (lambda c: c["groups"]["claude"].update(concurrency=0),
+     "groups.claude.concurrency must be an integer of at least 1 concurrent dispatches, got 0"),
+    (lambda c: c.setdefault("polling", {}).update(interval_seconds=-5),
+     "polling.interval_seconds must be an integer of at least 1 seconds, got -5"),
+    (lambda c: c["groups"]["claude"].update(review_concurrency=2.5),
+     "groups.claude.review_concurrency must be an integer of at least 1 concurrent reviews, got 2.5"),
+    # and the one place a zero is still legal, for contrast: it is the *negative* that is refused.
+    (lambda c: c.setdefault("lease", {}).update(grace_minutes=-1),
+     "lease.grace_minutes must be an integer of at least 0 minutes, got -1"),
+], ids=["cleared-number", "non-numeric-string", "infinity", "nan",
+        "zero-concurrency", "negative-interval", "fractional-concurrency", "negative-grace"])
 def test_a_put_refuses_an_unparseable_number_with_400_not_a_traceback(tmp_path, mutate, expect):
     v, _, _ = viewer_for(tmp_path)
     current = body(get(v, "/api/config"))["config"]
@@ -539,6 +565,25 @@ def test_a_put_refuses_an_unparseable_number_with_400_not_a_traceback(tmp_path, 
     assert resp.status == 400
     assert expect in body(resp)["error"]
     assert (tmp_path / ".meld.toml").read_text() == before
+
+
+def test_a_put_still_accepts_a_zero_where_zero_is_the_setting(tmp_path):
+    """The other half of R33: the floors are per field, not a blanket `>= 1`. A budget of 0 ("no runs of this
+    tier"), a lease grace of 0 ("the lease expires at the deadline") and an amend cap of 0 ("propose, then
+    AGREE or DISSENT") each mean exactly what they say, and a parser that refused them would be wrong."""
+    v, _, _ = viewer_for(tmp_path)
+    current = body(get(v, "/api/config"))["config"]
+    current["budget"] = {**current["budget"], "large": 0, "wallclock_hours": 0}
+    current["lease"] = {**current["lease"], "grace_minutes": 0}
+    current["agreement"] = {**current["agreement"], "amend_cap": 0}
+    # PROJECT_TOML's codex model is the deliberately-invalid "gpt-x"; config_checks would 409 on it
+    # regardless of this test's own change (see the sibling write test).
+    current["groups"]["codex"]["orchestrator"]["model"] = current["groups"]["codex"]["pm"]["model"] = "gpt-5.6-sol"
+    resp = put(v, {"config": current})
+    assert resp.status == 200, body(resp)
+    written = load_config(tmp_path / ".meld.toml")
+    assert (written.budget["large"], written.budget_wallclock_hours) == (0, 0)
+    assert (written.lease_grace_minutes, written.amend_cap) == (0, 0)
 
 
 def test_a_get_of_a_file_with_a_bare_toml_date_answers_rather_than_raising(tmp_path):

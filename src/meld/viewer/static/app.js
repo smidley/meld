@@ -231,6 +231,15 @@ function field(into, path, value, { readonly = false, choices = null, label = pa
   } else {
     input = document.createElement("input");
     input.type = typeof value === "number" ? "number" : "text";
+    if (input.type === "number") {
+      // For the person's sake only -- `config.py`'s floors are the authority, and they differ per field (0
+      // for an allowance like a budget or a lease grace, 1 for anything the framework counts by). `min` is
+      // therefore the weakest floor any field has rather than a guess at this one's: a value below its own
+      // floor still comes back named, from the parser. `step` is what keeps the spinner from walking a
+      // setting into a fraction, which `int()` used to truncate silently and the parser now refuses.
+      input.min = "0";
+      input.step = "1";
+    }
     input.value = Array.isArray(value) ? value.join(", ") : String(value);
   }
   input.dataset.path = path;

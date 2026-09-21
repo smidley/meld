@@ -92,9 +92,21 @@ def _role(data: Mapping[str, Any], path: str) -> RoleConfig:
     return RoleConfig(model=str(_require(data, "model", path)), effort=str(_require(data, "effort", path)))
 
 
-#: Floors for the `[logs]` table, which a human hand-edits and a later plan will expose in a form. A
-#: `max_bytes_per_run` of 0 or a negative makes every tick trim every log -- writing an empty `.1` over the
-#: previous one and zeroing the original each cycle -- which is silent, total log destruction from one typo.
+#: Floors for the `[logs]` table, whose own case is the starkest: a `max_bytes_per_run` of 0 or a negative
+#: makes every tick trim every log -- writing an empty `.1` over the previous one and zeroing the original
+#: each cycle -- which is silent, total log destruction from one typo.
+#:
+#: Every other numeric setting `from_dict` reads carries a floor too, written inline at its own read below
+#: rather than as a constant here, because each one is a plain 1 or 0 whose interesting part is *which* and
+#: *why*. The form `meld watch` serves (spec section 22) is why they exist at all: a field a person can type
+#: a 0 into is a field the parser has to have an opinion about. `>= 1` is for everything the framework
+#: counts *by* -- an interval it sleeps, a cadence it fires on, a concurrency or cap it compares a count
+#: against, a number of turns or log lines it slices with -- where 0 does not mean "none" but "degenerate":
+#: a zero-sleep poll loop, a relaunch every cycle, a dispatch that is never legal, a `lines[-0:]` that
+#: returns the whole file rather than none of it. `>= 0` is for the allowances, where 0 means exactly what
+#: it says -- no budget of this tier, no grace on a lease, no amendment round -- and only a negative is
+#: nonsense. `_at_least` refuses a bool and a float as well as a number below the floor, so a form's
+#: `review_concurrency = 2.5` is now named rather than silently truncated to 2 by a bare `int()`.
 LOGS_MIN_BYTES_PER_RUN = 64 * 1024
 LOGS_MIN_WARN_TOTAL_MB = 1
 RUNNERS_MIN_LIMIT_RETRY_MINUTES = 1
@@ -370,8 +382,11 @@ class Config:
                 cli=str(_require(g, "cli", path)),
                 bot=bot,
                 token_env=token_env,
-                concurrency=int(g.get("concurrency", 8)),
-                review_concurrency=int(g.get("review_concurrency", 4)),
+                # 0 is not "no dispatch" but "no dispatch ever": `rules.py`'s `n >= group.concurrency` and
+                # `len(live) >= group.review_concurrency` are both true before anything has started.
+                concurrency=_at_least(g.get("concurrency", 8), 1, f"{path}.concurrency", "concurrent dispatches"),
+                review_concurrency=_at_least(g.get("review_concurrency", 4), 1, f"{path}.review_concurrency",
+                                             "concurrent reviews"),
                 orchestrator=_role(_require(g, "orchestrator", path), f"{path}.orchestrator"),
                 pm=_role(_require(g, "pm", path), f"{path}.pm"),
                 git_name=(str(g["git_name"]) if g.get("git_name") else None),
@@ -406,30 +421,58 @@ class Config:
             private=bool(repo.get("private", True)),
             humans=tuple(str(h) for h in humans.get("accounts", [])),
             groups=groups,
-            review_quorum=int(review.get("quorum", 2)),
-            pingpong_cap=int(review.get("pingpong_cap", 3)),
+            # `effective_quorum` already clamps with `max(1, ...)`, so a 0 here never meant "no approvals
+            # needed" -- it meant 1, silently. A `pingpong_cap` of 0 is worse than silent: `pingpong_exceeded`
+            # is `changes_requested_total() >= cap`, true on a PR nobody has reviewed yet.
+            review_quorum=_at_least(review.get("quorum", 2), 1, "review.quorum", "approving groups"),
+            pingpong_cap=_at_least(review.get("pingpong_cap", 3), 1, "review.pingpong_cap", "reviews"),
             security_paths=tuple(str(p) for p in review.get("security_paths", [])),
-            amend_cap=int(agreement.get("amend_cap", 3)),
-            poll_interval_seconds=int(polling.get("interval_seconds", 30)),
-            wait_timeout_seconds=int(polling.get("wait_timeout_seconds", 300)),
-            restart_hours=int(runners.get("restart_hours", 4)),
-            roster_refresh_minutes=int(runners.get("roster_refresh_minutes", 60)),
-            silence_grace_minutes=int(runners.get("silence_grace_minutes", 30)),
-            summary_cadence_minutes=int(runners.get("summary_cadence_minutes", 60)),
+            # 0 is meaningful here and kept: `can_amend` is `rounds < cap`, so a 0 makes AMEND illegal from the
+            # start -- a coherent policy ("propose, then AGREE or DISSENT"), with `posting.py`'s own refusal
+            # saying exactly that. Nothing loops, stalls or relaunches; only a negative is nonsense.
+            amend_cap=_at_least(agreement.get("amend_cap", 3), 0, "agreement.amend_cap", "amendments"),
+            # `waiting.wait_for_change` starts its backoff at `interval` and doubles it: 0 is a zero-sleep loop
+            # against a rate-limited board that never backs off. A 0 timeout returns `meld wait` instantly, so
+            # a PM's poll loop becomes a spin of paid CLI launches.
+            poll_interval_seconds=_at_least(polling.get("interval_seconds", 30), 1, "polling.interval_seconds", "seconds"),
+            wait_timeout_seconds=_at_least(polling.get("wait_timeout_seconds", 300), 1, "polling.wait_timeout_seconds",
+                                           "seconds"),
+            # `restart_hours` is both a role's launch timeout (`restart_hours * 3600`) and the recycle test
+            # `clock() - started >= restart_hours * 3600`: 0 terminates and relaunches every cycle, and every
+            # relaunch is a paid CLI session.
+            restart_hours=_at_least(runners.get("restart_hours", 4), 1, "runners.restart_hours", "hours"),
+            roster_refresh_minutes=_at_least(runners.get("roster_refresh_minutes", 60), 1,
+                                             "runners.roster_refresh_minutes", "minutes"),
+            # Section 13's "silent past silence_grace_minutes -> PING, then continue SOLO": a 0 tells every
+            # orchestrator the other group has always been silent long enough to leave.
+            silence_grace_minutes=_at_least(runners.get("silence_grace_minutes", 30), 1,
+                                            "runners.silence_grace_minutes", "minutes"),
+            summary_cadence_minutes=_at_least(runners.get("summary_cadence_minutes", 60), 1,
+                                              "runners.summary_cadence_minutes", "minutes"),
             timeouts=timeouts_cfg,
+            # An allowance, not a rate: 0 means "no runs of this tier", which `rules.py`'s `used >= cap`
+            # implements exactly. `wallclock_hours` is the same shape (and read by nothing today).
             budget={
-                "small": int(budget.get("small", 200)),
-                "medium": int(budget.get("medium", 80)),
-                "large": int(budget.get("large", 20)),
+                "small": _at_least(budget.get("small", 200), 0, "budget.small", "runs"),
+                "medium": _at_least(budget.get("medium", 80), 0, "budget.medium", "runs"),
+                "large": _at_least(budget.get("large", 20), 0, "budget.large", "runs"),
             },
-            budget_wallclock_hours=int(budget.get("wallclock_hours", 72)),
+            budget_wallclock_hours=_at_least(budget.get("wallclock_hours", 72), 0, "budget.wallclock_hours", "hours"),
             notify_webhook_env=notify.get("slack_dm_webhook_env"),
-            notify_repeat_after_minutes=int(notify.get("repeat_after_minutes", 120)),
-            worker_log_tail_lines=int(worker.get("log_tail_lines", 50)),
-            worker_max_turns=int(worker.get("max_turns", 200)),
-            lease_grace_minutes=int(lease.get("grace_minutes", 10)),
-            audit_batch_merges=int(audit.get("batch_merges", 5)),
-            audit_batch_hours=int(audit.get("batch_hours", 4)),
+            # A repeat window of 0 makes every pass due again: the same nudge, re-posted to GitHub every tick.
+            notify_repeat_after_minutes=_at_least(notify.get("repeat_after_minutes", 120), 1,
+                                                  "notify.repeat_after_minutes", "minutes"),
+            # `tail_lines` is `lines[-n:]`, and `lines[-0:]` is the *whole* file -- so a 0 here does the exact
+            # opposite of what its author meant, posting an entire streamed transcript into a GitHub comment.
+            worker_log_tail_lines=_at_least(worker.get("log_tail_lines", 50), 1, "worker.log_tail_lines", "lines"),
+            worker_max_turns=_at_least(worker.get("max_turns", 200), 1, "worker.max_turns", "turns"),
+            # 0 is meaningful here and kept: the lease's `until` is `deadline + grace`, so a 0 grace is a lease
+            # that expires exactly at the deadline. Nothing degenerates; only a negative is nonsense.
+            lease_grace_minutes=_at_least(lease.get("grace_minutes", 10), 0, "lease.grace_minutes", "minutes"),
+            # `audit.due` already has `bool(pending)` in front of both comparisons, so a 0 in either is not
+            # "audit everything immediately" -- that is what a 1 says -- but a batch size of nothing.
+            audit_batch_merges=_at_least(audit.get("batch_merges", 5), 1, "audit.batch_merges", "merges"),
+            audit_batch_hours=_at_least(audit.get("batch_hours", 4), 1, "audit.batch_hours", "hours"),
             logs_max_bytes_per_run=_at_least(logs.get("max_bytes_per_run", 8 * 1024 * 1024), LOGS_MIN_BYTES_PER_RUN,
                                              "logs.max_bytes_per_run", "bytes"),
             logs_warn_total_mb=_at_least(logs.get("warn_total_mb", 2048), LOGS_MIN_WARN_TOTAL_MB,

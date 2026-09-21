@@ -336,6 +336,21 @@ def test_the_page_has_one_action_bar_that_posts_and_renders_a_refusal_verbatim(t
     assert "refused" in js and "rule" in js and "innerHTML" not in js
 
 
+def test_the_page_has_a_config_form_that_reads_and_writes_the_known_schema(tmp_path):
+    v, _, _ = viewer_for(tmp_path)
+    html, js = get(v, "/").body.decode(), get(v, "/static/app.js").body.decode()
+    assert 'id="config"' in html and 'id="config-fields"' in html and 'id="config-save"' in html
+    assert '"/api/config"' in js and 'method: "PUT"' in js
+    # identity is shown and not editable (spec 22): the form never turns these into inputs
+    assert "READONLY_TABLES" in js and '"repo"' in js and '"humans"' in js
+    assert "READONLY_GROUP_FIELDS" in js
+    for field in ("bot", "auth", "token_env", "app_id", "installation_id", "private_key_env", "private_key_file"):
+        assert f'"{field}"' in js
+    # the form is generated, not hand-written: no per-field id list
+    assert "configState.models" in js                            # model choices come from the catalogue (R14)
+    assert "innerHTML" not in js
+
+
 def test_api_config_returns_the_file_the_path_and_the_model_catalogue(tmp_path):
     v, ctx, _ = viewer_for(tmp_path)
     out = body(get(v, "/api/config"))

@@ -26,6 +26,13 @@ const FIELDS = {
 const POST_VERBS = ["ASK", "DIRECTIVE", "HALT", "RESUME", "REVERT", "PROVIDED", "RESOLVED", "ACK", "AMEND",
                     "APPROVE", "NEEDS-HUMAN"];
 const CHALLENGE_ACTIONS = ["open", "evidence", "retract", "uphold", "dismiss"];
+// Identity is `meld setup`'s, not a running page's: changing a repo, a human, or a group's bot/auth mid-milestone
+// orphans that group's claims and its open PRs. Shown, never editable (spec 22). The API still accepts them, so
+// what the form sends back is what it was given, with only the editable values replaced.
+const READONLY_TABLES = ["repo", "humans"];
+const READONLY_GROUP_FIELDS = ["cli", "bot", "auth", "token_env", "app_id", "installation_id",
+                               "private_key_env", "private_key_file"];
+let configState = null;     // {path, config, models, note} as last read, and the inputs' backing store
 
 function api(path, params) {
   const url = new URL(path, location.origin);
@@ -194,6 +201,149 @@ async function runAction() {
   }
 }
 
+function isTable(value) {
+  // A TOML sub-table, as tomllib hands it back: a plain object, never an array (a list is a scalar value here,
+  // not a table) and never null (TOML has no null, but a stray JS null must not be walked as if it were one).
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function field(into, path, value, { readonly = false, choices = null } = {}) {
+  // One control per scalar, generated from the payload: a field the schema gains appears here without a line
+  // of JavaScript. A list becomes a comma-separated text box; a table is walked, never rendered as a value --
+  // enforced by renderConfig's own guard below, since by the time a value reaches here it is never a table.
+  const label = document.createElement("label");
+  label.append(text(document.createElement("span"), path));
+  let input;
+  if (choices) {
+    input = document.createElement("select");
+    options(input, choices.includes(value) ? choices : [value, ...choices]);
+    input.value = value;
+  } else if (typeof value === "boolean") {
+    input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = value;
+  } else {
+    input = document.createElement("input");
+    input.type = typeof value === "number" ? "number" : "text";
+    input.value = Array.isArray(value) ? value.join(", ") : String(value);
+  }
+  input.dataset.path = path;
+  input.dataset.kind = Array.isArray(value) ? "list" : typeof value;
+  if (readonly) { input.readOnly = true; input.disabled = choices != null || typeof value === "boolean"; }
+  label.append(input);
+  into.append(label);
+}
+
+function modelChoices(cli) {
+  const specs = (configState.models || {})[cli] || [];
+  return specs.map((s) => s.id);
+}
+
+function effortChoices(cli, model) {
+  const spec = ((configState.models || {})[cli] || []).find((s) => s.id === model);
+  return spec ? spec.efforts : [];
+}
+
+function renderConfig() {
+  const into = el("config-fields");
+  into.replaceChildren();
+  const cfg = configState.config;
+  for (const [table, values] of Object.entries(cfg)) {
+    if (table === "groups") continue;
+    into.append(text(document.createElement("h3"), `[${table}]`));
+    for (const [key, value] of Object.entries(values)) {
+      if (isTable(value)) continue;   // an unknown sub-table (e.g. a hand-added [repo.notes]) is not a field
+      field(into, `${table}.${key}`, value, { readonly: READONLY_TABLES.includes(table) });
+    }
+  }
+  for (const [name, group] of Object.entries(cfg.groups || {})) {
+    into.append(text(document.createElement("h3"), `[groups.${name}]`));
+    for (const [key, value] of Object.entries(group)) {
+      if (key === "orchestrator" || key === "pm") continue;
+      if (isTable(value)) continue;   // ditto, one level down: a group's own unknown sub-table
+      field(into, `groups.${name}.${key}`, value, { readonly: READONLY_GROUP_FIELDS.includes(key) });
+    }
+    for (const role of ["orchestrator", "pm"]) {
+      const r = group[role];
+      if (!r) continue;
+      field(into, `groups.${name}.${role}.model`, r.model, { choices: modelChoices(group.cli) });
+      field(into, `groups.${name}.${role}.effort`, r.effort, { choices: effortChoices(group.cli, r.model) });
+    }
+  }
+}
+
+function collectConfig() {
+  // Start from what the server gave us and replace only what the form shows, so a table the form does not
+  // render -- today none, tomorrow whatever the schema gains before this page does -- rides through untouched.
+  const out = JSON.parse(JSON.stringify(configState.config));
+  for (const input of el("config-fields").querySelectorAll("[data-path]")) {
+    if (input.readOnly || input.disabled) continue;
+    const parts = input.dataset.path.split(".");
+    let node = out;
+    for (const part of parts.slice(0, -1)) {
+      if (!isTable(node)) { node = undefined; break; }
+      node = node[part];
+    }
+    if (!isTable(node)) continue;    // a quoted TOML key containing a literal "." does not shape-match its
+                                      // dotted path -- skip this one field rather than break every other.
+    const key = parts[parts.length - 1];
+    if (input.dataset.kind === "boolean") node[key] = input.checked;
+    else if (input.dataset.kind === "number") node[key] = Number(input.value);
+    else if (input.dataset.kind === "list") node[key] = input.value.split(",").map((s) => s.trim()).filter(Boolean);
+    else node[key] = input.value;
+  }
+  return out;
+}
+
+function showConfigResult(message, ok) {
+  const node = el("config-result");
+  node.classList.remove("ok", "bad");
+  node.classList.add(ok ? "ok" : "bad");
+  text(node, message);
+  node.title = message;
+}
+
+async function loadConfig() {
+  try {
+    configState = await getJSON("/api/config");
+    renderConfig();
+    showConfigResult(`${configState.path} — ${configState.note}`, true);
+  } catch (e) {
+    showConfigResult(e.message, false);
+  }
+}
+
+async function saveConfig() {
+  if (!configState) return;
+  const button = el("config-save");
+  button.disabled = true;
+  showConfigResult("saving …", true);
+  try {
+    const response = await fetch(api("/api/config"), {
+      method: "PUT", cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config: collectConfig() }),
+    });
+    let out = {};
+    try { out = await response.json(); } catch (e) { out = {}; }
+    if (response.ok) {
+      configState = out;
+      renderConfig();
+      showConfigResult(`saved — ${out.note}`, true);
+      pollState();
+    } else if (out.checks) {
+      const bad = out.checks.filter((c) => c.ok === false).map((c) => `${c.name}: ${c.detail}`).join("; ");
+      showConfigResult(`refused — ${bad}`, false);
+    } else {
+      showConfigResult(`${response.status} ${out.error || ""}`, false);
+    }
+  } catch (e) {
+    showConfigResult(e.message, false);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function renderState(state) {
   const s = state.status;
   text(el("repo"), s.repo);
@@ -349,6 +499,8 @@ el("board-panel").addEventListener("click", (e) => {
   el("ref").value = b.dataset.ref || "";
   el(FIELDS[b.dataset.action]?.includes("text") ? "text" : "run").focus();
 });
+el("config").addEventListener("toggle", () => { if (el("config").open && !configState) loadConfig(); });
+el("config-save").addEventListener("click", saveConfig);
 
 pollState();
 pollStreams();

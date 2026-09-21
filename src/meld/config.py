@@ -104,6 +104,152 @@ def parse_duration(text: str) -> int:
     return int(m.group(1)) * _DURATION_UNITS[m.group(2)]
 
 
+#: The header a rendered file carries. Re-rendered from this template on every write: the form owns the file it
+#: writes, and a comment a person left in it does not survive a save (spec section 22).
+HEADER = """# .meld.toml -- written by meld. Every field the schema defines is written, defaults included, so
+# what you read here is what runs. `meld doctor` verifies it; `meld watch`'s form edits it.
+"""
+
+#: The known schema, table by table: the keys `Config.from_dict` reads. `unknown_keys` walks a parsed file
+#: against this, because `from_dict` reads with `.get` and ignores what it does not know -- right for a parser
+#: reading a newer file, wrong for a form that must not swallow a field somebody typed (spec section 22).
+KNOWN: dict[str, tuple[str, ...]] = {
+    "repo": ("name", "default_branch", "private"),
+    "humans": ("accounts",),
+    "review": ("quorum", "pingpong_cap", "security_paths"),
+    "agreement": ("amend_cap",),
+    "polling": ("interval_seconds", "wait_timeout_seconds"),
+    "runners": ("restart_hours", "roster_refresh_minutes", "silence_grace_minutes", "summary_cadence_minutes",
+                "limit_retry_minutes"),
+    "timeouts": ("S", "M", "L"),
+    "budget": ("small", "medium", "large", "wallclock_hours"),
+    "notify": ("slack_dm_webhook_env", "repeat_after_minutes"),
+    "worker": ("log_tail_lines", "max_turns"),
+    "lease": ("grace_minutes",),
+    "audit": ("batch_merges", "batch_hours"),
+    "logs": ("max_bytes_per_run", "warn_total_mb", "warn_free_mb"),
+    "viewer": ("port", "open_browser"),
+}
+
+#: A group's own keys, and a role's. `groups` is keyed by a name the product chooses, so only the fields are fixed.
+KNOWN_GROUP = ("cli", "bot", "token_env", "concurrency", "review_concurrency", "git_name", "git_email",
+               "auth", "app_id", "installation_id", "private_key_env", "private_key_file")
+KNOWN_ROLE = ("model", "effort")
+
+
+def unknown_keys(data: Mapping[str, Any]) -> list[str]:
+    """Dotted paths for every key in a parsed `.meld.toml` the schema does not define, sorted.
+
+    A group's *name* is the product's to choose, so `groups.<anything>` is legal and only its fields are checked.
+    """
+    out: list[str] = []
+    for table, value in data.items():
+        if table == "groups":
+            if not isinstance(value, Mapping):
+                out.append("groups")
+                continue
+            for name, group in value.items():
+                if not isinstance(group, Mapping):
+                    out.append(f"groups.{name}")
+                    continue
+                for key, sub in group.items():
+                    if key in ("orchestrator", "pm"):
+                        if isinstance(sub, Mapping):
+                            out += [f"groups.{name}.{key}.{k}" for k in sub if k not in KNOWN_ROLE]
+                        continue
+                    if key not in KNOWN_GROUP:
+                        out.append(f"groups.{name}.{key}")
+            continue
+        if table not in KNOWN:
+            out.append(table)
+            continue
+        if isinstance(value, Mapping):
+            out += [f"{table}.{k}" for k in value if k not in KNOWN[table]]
+    return sorted(out)
+
+
+def _s(value: str) -> str:
+    """One TOML basic string. Escaped rather than interpolated: a git_name with a quote, a backslash or a newline
+    must come back as itself instead of breaking out of its own literal."""
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+    return f'"{escaped}"'
+
+
+def _list(values) -> str:
+    return "[" + ", ".join(_s(str(v)) for v in values) + "]"
+
+
+def _lines(pairs) -> list[str]:
+    """`key = value` for each pair whose value is not None; None means the field is absent from this file."""
+    out = []
+    for key, value in pairs:
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            out.append(f"{key} = {'true' if value else 'false'}")
+        elif isinstance(value, int):
+            out.append(f"{key} = {value}")
+        elif isinstance(value, (list, tuple)):
+            out.append(f"{key} = {_list(value)}")
+        else:
+            out.append(f"{key} = {_s(str(value))}")
+    return out
+
+
+def _group_lines(g: "GroupConfig") -> list[str]:
+    """One group, in the order section 5 writes it: what it is, how it authenticates, what it may run."""
+    out = [f"[groups.{g.name}]"] + _lines([
+        ("cli", g.cli), ("bot", g.bot), ("token_env", g.token_env),
+        ("auth", g.auth),      # written even when it is the default "pat": every field, or the promise is a lie
+        ("app_id", g.app_id), ("installation_id", g.installation_id),
+        ("private_key_env", g.private_key_env), ("private_key_file", g.private_key_file),
+        ("concurrency", g.concurrency), ("review_concurrency", g.review_concurrency),
+        ("git_name", g.git_name), ("git_email", g.git_email),
+    ])
+    for role_name, role in (("orchestrator", g.orchestrator), ("pm", g.pm)):
+        out += ["", f"[groups.{g.name}.{role_name}]"] + _lines([("model", role.model), ("effort", role.effort)])
+    return out
+
+
+def dumps(cfg: Config) -> str:
+    """`cfg` as canonical TOML: every field the schema defines, in a fixed order, under the header template.
+
+    The standard library reads TOML and does not write it. Writing only the known schema is what makes this safe
+    to point at a person's file: a table this does not understand cannot be mangled, because it is not emitted at
+    all -- and `unknown_keys` is what stops such a table reaching here unnoticed in the first place.
+    """
+    blocks: list[list[str]] = [
+        ["[repo]"] + _lines([("name", cfg.repo_name), ("default_branch", cfg.default_branch), ("private", cfg.private)]),
+        ["[humans]"] + _lines([("accounts", cfg.humans)]),
+    ]
+    for name in sorted(cfg.groups):
+        blocks.append(_group_lines(cfg.groups[name]))
+    blocks += [
+        ["[review]"] + _lines([("quorum", cfg.review_quorum), ("pingpong_cap", cfg.pingpong_cap),
+                               ("security_paths", cfg.security_paths)]),
+        ["[agreement]"] + _lines([("amend_cap", cfg.amend_cap)]),
+        ["[polling]"] + _lines([("interval_seconds", cfg.poll_interval_seconds),
+                                ("wait_timeout_seconds", cfg.wait_timeout_seconds)]),
+        ["[runners]"] + _lines([("restart_hours", cfg.restart_hours),
+                                ("roster_refresh_minutes", cfg.roster_refresh_minutes),
+                                ("silence_grace_minutes", cfg.silence_grace_minutes),
+                                ("summary_cadence_minutes", cfg.summary_cadence_minutes),
+                                ("limit_retry_minutes", cfg.runners_limit_retry_minutes)]),
+        ["[timeouts]"] + _lines([(size, cfg.timeouts[size]) for size in ("S", "M", "L")]),
+        ["[budget]"] + _lines([("small", cfg.budget["small"]), ("medium", cfg.budget["medium"]),
+                               ("large", cfg.budget["large"]), ("wallclock_hours", cfg.budget_wallclock_hours)]),
+        ["[notify]"] + _lines([("slack_dm_webhook_env", cfg.notify_webhook_env),
+                               ("repeat_after_minutes", cfg.notify_repeat_after_minutes)]),
+        ["[worker]"] + _lines([("log_tail_lines", cfg.worker_log_tail_lines), ("max_turns", cfg.worker_max_turns)]),
+        ["[lease]"] + _lines([("grace_minutes", cfg.lease_grace_minutes)]),
+        ["[audit]"] + _lines([("batch_merges", cfg.audit_batch_merges), ("batch_hours", cfg.audit_batch_hours)]),
+        ["[logs]"] + _lines([("max_bytes_per_run", cfg.logs_max_bytes_per_run),
+                             ("warn_total_mb", cfg.logs_warn_total_mb), ("warn_free_mb", cfg.logs_warn_free_mb)]),
+        ["[viewer]"] + _lines([("port", cfg.viewer_port), ("open_browser", cfg.viewer_open_browser)]),
+    ]
+    return HEADER + "\n" + "\n\n".join("\n".join(b) for b in blocks) + "\n"
+
+
 @dataclass(frozen=True)
 class Config:
     repo_name: str

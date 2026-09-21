@@ -363,9 +363,12 @@ class Viewer:
             self._state_cache = None      # the board has just moved; the next /api/state rebuilds rather than lying
         return _json(200, {"ok": True, "verb": verb, "result": result})
 
-    #: What a write does not do. Said in the answer because it is the question a person asks next.
-    CONFIG_NOTE = ("saved to the file; the supervisors and this page keep the configuration they started with, "
-                   "and every new meld process reads the new one")
+    #: What a write does not do. Said in the answer because it is the question a person asks next -- and
+    #: phrased to presume no save, because the page paints this line the moment the panel opens as well as
+    #: after a write. It began "saved to the file; ...", so the first thing a person saw on a panel they had
+    #: not touched was their own path followed by a claim that something had been saved.
+    CONFIG_NOTE = ("writing it reconfigures nothing already running: the supervisors and this page keep the "
+                   "configuration they started with, and every new meld process reads the new one")
 
     def api_config(self, req: Request) -> Response:
         """The `.meld.toml` as parsed, and a validated write of it (spec 22).

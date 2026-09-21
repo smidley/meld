@@ -428,6 +428,24 @@ def test_api_config_returns_the_file_the_path_and_the_model_catalogue(tmp_path):
     assert out["version"] == config_version((tmp_path / ".meld.toml").read_text())   # R34: what PUT must name
 
 
+def test_the_config_note_says_what_a_write_does_not_that_one_has_happened(tmp_path):
+    """R35. `loadConfig` paints this note green the moment the panel opens, and the note began "saved to the
+    file; ..." -- so the first thing a person saw on a panel they had not touched was their own path
+    followed by a claim that something had been saved, and after an actual save it read "saved -- saved to
+    the file; ...". The note is a statement about what writing does; the page's own prefix supplies the
+    tense, on both lines."""
+    v, _, _ = viewer_for(tmp_path)
+    note = body(get(v, "/api/config"))["note"]
+    js = get(v, "/static/app.js").body.decode()
+    # the two lines the page composes from it, quoted from app.js so a reworded prefix has to come back here
+    assert "showConfigResult(`${configState.path} — ${configState.note}`, true)" in js
+    assert "showConfigResult(`saved — ${out.note}`, true)" in js
+    assert "saved" not in note and "wrote" not in note, note
+    assert f"{tmp_path / '.meld.toml'} — {note}".startswith(
+        f"{tmp_path / '.meld.toml'} — writing it reconfigures nothing already running")
+    assert f"saved — {note}".startswith("saved — writing it reconfigures nothing already running")
+
+
 def test_api_config_get_canonicalises_a_starter_file_and_still_names_unknown_keys(tmp_path):
     """R20: a fresh `meld setup` file has no [budget]/[polling]/[runners]/[timeouts]/[logs]/[viewer] table at
     all, yet spec 22 promises the form every one of those settings -- the raw parse alone cannot show a field

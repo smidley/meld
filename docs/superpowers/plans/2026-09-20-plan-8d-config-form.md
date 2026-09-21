@@ -372,7 +372,7 @@ def _group_lines(g: "GroupConfig") -> list[str]:
     """One group, in the order section 5 writes it: what it is, how it authenticates, what it may run."""
     out = [f"[groups.{g.name}]"] + _lines([
         ("cli", g.cli), ("bot", g.bot), ("token_env", g.token_env),
-        ("auth", g.auth if g.is_app else None),          # "pat" is the default; writing it adds nothing
+        ("auth", g.auth),      # written even when it is the default "pat": every field, or the promise is a lie
         ("app_id", g.app_id), ("installation_id", g.installation_id),
         ("private_key_env", g.private_key_env), ("private_key_file", g.private_key_file),
         ("concurrency", g.concurrency), ("review_concurrency", g.review_concurrency),

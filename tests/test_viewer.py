@@ -349,6 +349,28 @@ def test_the_page_has_a_config_form_that_reads_and_writes_the_known_schema(tmp_p
     # the form is generated, not hand-written: no per-field id list
     assert "configState.models" in js                            # model choices come from the catalogue (R14)
     assert "innerHTML" not in js
+    # R21: a hand-added sub-table (e.g. [notes.today]) must be skipped, not rendered as "[object Object]" --
+    # the reviewer deleted this guard and the suite still passed, so it needs its own pin. "isTable" appears
+    # nowhere else in the file.
+    assert "isTable" in js
+
+
+def test_the_config_form_does_not_write_a_silent_zero_and_keeps_effort_choices_in_sync(tmp_path):
+    """R18/R19, both found by a real Chrome driving the real page -- Python can only pin the source, not
+    drive a browser, so these are string checks on the shipped fix rather than a behavioural test.
+
+    R18: `Number("")` is `0`, and Chrome's own `<input type=number>` also hands back `""` for typed garbage
+    ("26x") -- so a cleared or mistyped number field must never be collected as a silent 0; it must be refused
+    locally, before anything is sent. R19: changing a model <select> must repopulate its sibling effort
+    <select>, or the pair can silently fall out of sync and the server 409s on a combination this page itself
+    offered."""
+    v, _, _ = viewer_for(tmp_path)
+    js = get(v, "/static/app.js").body.decode()
+    assert "Number.isFinite" in js and 'input.value.trim() === ""' in js
+    assert "fix before saving" in js
+    assert "linkModelAndEffort" in js and 'addEventListener("change"' in js and "effortChoices" in js
+    # "saving ..." is in progress, not a success -- must not be painted green.
+    assert 'showConfigResult("saving …", null)' in js
 
 
 def test_api_config_returns_the_file_the_path_and_the_model_catalogue(tmp_path):

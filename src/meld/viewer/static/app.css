@@ -77,8 +77,18 @@ button.verb:hover { border-color: var(--accent); color: var(--accent); }
   max-height: 34vh; overflow-y: auto; padding: 4px 0; }
 #config-fields h3 { grid-column: 1 / -1; margin: 6px 0 0; font-size: 13px; color: var(--accent); }
 #config-fields label { display: grid; grid-template-columns: 11rem 1fr; gap: 6px; align-items: baseline; }
+/* Same treatment as #result/.rid/.rwhat: an unclipped grid item takes its content's own width, so a long
+   path (groups.claude.orchestrator.model) spilled up to 109px into the input beside it instead of eliding --
+   badly enough that two different paths truncated to the same visible text. The full path stays on hover
+   (field()'s own title=). */
+#config-fields label > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #config-fields input, #config-fields select { font: inherit; color: var(--fg); background: #222735;
   border: 1px solid var(--line); border-radius: 3px; padding: 1px 4px; min-width: 0; }
 #config-fields input[readonly] { color: var(--dim); background: transparent; border-color: transparent; }
 #config-result.bad { color: var(--bad); }
 #config-result.ok { color: var(--ok); }
+/* #bar button is scoped to #bar; without its own rule #config-save rendered as a plain native button on an
+   otherwise all-dark page. */
+#config-save { font: inherit; color: var(--fg); background: #222735; border: 1px solid var(--line);
+  border-radius: 3px; padding: 2px 6px; cursor: pointer; }
+#config-save:hover { border-color: var(--accent); color: var(--accent); }

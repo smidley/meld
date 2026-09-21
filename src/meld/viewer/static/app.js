@@ -212,7 +212,9 @@ function field(into, path, value, { readonly = false, choices = null } = {}) {
   // of JavaScript. A list becomes a comma-separated text box; a table is walked, never rendered as a value --
   // enforced by renderConfig's own guard below, since by the time a value reaches here it is never a table.
   const label = document.createElement("label");
-  label.append(text(document.createElement("span"), path));
+  const span = text(document.createElement("span"), path);
+  span.title = path;   // the column is narrow and elides long paths (app.css); the full path stays on hover
+  label.append(span);
   let input;
   if (choices) {
     input = document.createElement("select");
@@ -232,6 +234,7 @@ function field(into, path, value, { readonly = false, choices = null } = {}) {
   if (readonly) { input.readOnly = true; input.disabled = choices != null || typeof value === "boolean"; }
   label.append(input);
   into.append(label);
+  return input;
 }
 
 function modelChoices(cli) {
@@ -244,30 +247,49 @@ function effortChoices(cli, model) {
   return spec ? spec.efforts : [];
 }
 
+function linkModelAndEffort(modelInput, effortInput, cli) {
+  // spec 22: "model and effort choices that cannot be wrong rather than rejecting them afterwards" -- a model
+  // change must refresh its sibling effort choices too, or the two fall out of sync (the effort stays valid
+  // for the *old* model) and config_checks 409s on a combination this page itself just offered.
+  modelInput.addEventListener("change", () => {
+    const choices = effortChoices(cli, modelInput.value);
+    // an unrecognised model (e.g. "gpt-x") has no efforts to offer -- keep the current value, which is all
+    // there is, exactly as the initial render already falls back for an unrecognised model or effort.
+    const keep = choices.length === 0 ? effortInput.value
+      : choices.includes(effortInput.value) ? effortInput.value : choices[0];
+    options(effortInput, choices.includes(keep) ? choices : [keep, ...choices]);
+    effortInput.value = keep;
+  });
+}
+
 function renderConfig() {
   const into = el("config-fields");
   into.replaceChildren();
   const cfg = configState.config;
   for (const [table, values] of Object.entries(cfg)) {
     if (table === "groups") continue;
+    // an unknown table that holds nothing but sub-tables (e.g. a hand-added [notes.today]) renders no fields
+    // below -- a heading over nothing is worse than no heading, so it is skipped too.
+    const entries = Object.entries(values).filter(([, value]) => !isTable(value));
+    if (!entries.length) continue;
     into.append(text(document.createElement("h3"), `[${table}]`));
-    for (const [key, value] of Object.entries(values)) {
-      if (isTable(value)) continue;   // an unknown sub-table (e.g. a hand-added [repo.notes]) is not a field
+    for (const [key, value] of entries) {
       field(into, `${table}.${key}`, value, { readonly: READONLY_TABLES.includes(table) });
     }
   }
   for (const [name, group] of Object.entries(cfg.groups || {})) {
+    const entries = Object.entries(group).filter(([key, value]) => key !== "orchestrator" && key !== "pm" && !isTable(value));
+    const roles = ["orchestrator", "pm"].filter((role) => group[role]);
+    if (!entries.length && !roles.length) continue;   // ditto, one level down: a group with nothing to show
     into.append(text(document.createElement("h3"), `[groups.${name}]`));
-    for (const [key, value] of Object.entries(group)) {
-      if (key === "orchestrator" || key === "pm") continue;
-      if (isTable(value)) continue;   // ditto, one level down: a group's own unknown sub-table
+    for (const [key, value] of entries) {
       field(into, `groups.${name}.${key}`, value, { readonly: READONLY_GROUP_FIELDS.includes(key) });
     }
-    for (const role of ["orchestrator", "pm"]) {
+    for (const role of roles) {
       const r = group[role];
-      if (!r) continue;
-      field(into, `groups.${name}.${role}.model`, r.model, { choices: modelChoices(group.cli) });
-      field(into, `groups.${name}.${role}.effort`, r.effort, { choices: effortChoices(group.cli, r.model) });
+      const modelInput = field(into, `groups.${name}.${role}.model`, r.model, { choices: modelChoices(group.cli) });
+      const effortInput = field(into, `groups.${name}.${role}.effort`, r.effort, { choices: effortChoices(group.cli, r.model) });
+      linkModelAndEffort(modelInput, effortInput, group.cli);
     }
   }
 }
@@ -276,6 +298,7 @@ function collectConfig() {
   // Start from what the server gave us and replace only what the form shows, so a table the form does not
   // render -- today none, tomorrow whatever the schema gains before this page does -- rides through untouched.
   const out = JSON.parse(JSON.stringify(configState.config));
+  const invalid = [];
   for (const input of el("config-fields").querySelectorAll("[data-path]")) {
     if (input.readOnly || input.disabled) continue;
     const parts = input.dataset.path.split(".");
@@ -288,17 +311,29 @@ function collectConfig() {
                                       // dotted path -- skip this one field rather than break every other.
     const key = parts[parts.length - 1];
     if (input.dataset.kind === "boolean") node[key] = input.checked;
-    else if (input.dataset.kind === "number") node[key] = Number(input.value);
+    else if (input.dataset.kind === "number") {
+      // Number("") is 0, not NaN, and Chrome hands back "" from <input type=number> for typed garbage
+      // ("26x") too -- so neither a cleared field nor a mistyped one is caught by Number.isFinite alone.
+      // Both must be checked, and neither is an edit: writing 0 for either would be a silent, dangerous
+      // guess (a zeroed concurrency stops all dispatch; a zeroed poll interval is a zero-sleep loop).
+      // Left untouched here -- saveConfig refuses the whole save locally rather than send either one.
+      const n = Number(input.value);
+      if (input.value.trim() === "" || !Number.isFinite(n)) { invalid.push(input.dataset.path); continue; }
+      node[key] = n;
+    }
     else if (input.dataset.kind === "list") node[key] = input.value.split(",").map((s) => s.trim()).filter(Boolean);
     else node[key] = input.value;
   }
-  return out;
+  return { config: out, invalid };
 }
 
 function showConfigResult(message, ok) {
+  // ok is true (success, green), false (refusal, red), or null (in progress -- neither, so "saving …" is not
+  // painted as if it had already succeeded).
   const node = el("config-result");
   node.classList.remove("ok", "bad");
-  node.classList.add(ok ? "ok" : "bad");
+  if (ok === true) node.classList.add("ok");
+  else if (ok === false) node.classList.add("bad");
   text(node, message);
   node.title = message;
 }
@@ -317,18 +352,34 @@ async function saveConfig() {
   if (!configState) return;
   const button = el("config-save");
   button.disabled = true;
-  showConfigResult("saving …", true);
+  showConfigResult("saving …", null);
   try {
+    const { config, invalid } = collectConfig();
+    if (invalid.length) {
+      // Not an edit (see collectConfig): refused here, before anything is sent, so a blank or mistyped
+      // number field never becomes a silent 0 on the file.
+      showConfigResult(`fix before saving -- not a number: ${invalid.join(", ")}`, false);
+      return;
+    }
     const response = await fetch(api("/api/config"), {
       method: "PUT", cache: "no-store",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ config: collectConfig() }),
+      body: JSON.stringify({ config }),
     });
     let out = {};
     try { out = await response.json(); } catch (e) { out = {}; }
     if (response.ok) {
-      configState = out;
-      renderConfig();
+      // Render the new state before committing it: a 200 with an unexpected body (not reachable through the
+      // real server today, but cheap to guard) must not leave configState pointing at something renderConfig
+      // cannot show -- that combination is what previously left the form blank until a full page reload.
+      const next = out;
+      try {
+        configState = next;
+        renderConfig();
+      } catch (e) {
+        configState = null;   // reopening the panel now reloads instead of showing a permanently blank form
+        throw e;
+      }
       showConfigResult(`saved — ${out.note}`, true);
       pollState();
     } else if (out.checks) {

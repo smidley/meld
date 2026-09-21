@@ -2,7 +2,7 @@ import tomllib
 
 import pytest
 
-from meld.config import KNOWN, Config, dumps, load_config, unknown_keys
+from meld.config import KNOWN, Config, ConfigError, dumps, load_config, unknown_keys
 from tests.test_config import MINIMAL
 
 
@@ -224,3 +224,18 @@ def test_unknown_keys_does_not_mistake_a_malformed_table_for_an_unknown_key():
     to report -- not a name `unknown_keys` should invent."""
     assert unknown_keys({"groups": 5}) == []
     assert unknown_keys({"groups": {"claude": 5}}) == []
+
+
+def test_an_infinite_app_id_is_a_config_error_not_a_crash():
+    """`inf` is a legal TOML float. On an App group it must still be the clean ConfigError `_positive_int`
+    raises for anything that is not a positive int -- `int(float("inf"))` raises `OverflowError`, which is
+    not `_positive_int`'s to catch, but `_loose_int`'s pre-read must not let it escape before `_positive_int`
+    gets a turn. On a PAT group, where the field is inert, it must not crash the parser at all."""
+    app_data = app()
+    app_data["groups"]["codex"]["app_id"] = float("inf")
+    with pytest.raises(ConfigError, match=r"groups\.codex\.app_id must be a positive integer"):
+        Config.from_dict(app_data)
+
+    pat_data = minimal()
+    pat_data["groups"]["codex"]["app_id"] = float("inf")
+    Config.from_dict(pat_data)     # must not raise -- auth stays "pat", so app_id is inert

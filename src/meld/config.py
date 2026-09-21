@@ -68,10 +68,15 @@ def _loose_int(value: Any) -> int | None:
     """`value` as an int if it is cleanly one, else `None` -- never raises. Used to read a group's App
     settings when auth is not "app": the field is inert there (nothing reads it unless `is_app`), so a
     stray non-numeric leftover from a half-finished migration must not crash the parser. An App group's
-    own read (`_positive_int` on the raw value, not on this) is what actually enforces the shape."""
+    own read (`_positive_int` on the raw value, not on this) is what actually enforces the shape.
+
+    `OverflowError` is caught alongside `TypeError`/`ValueError`: `inf`/`-inf` is a legal TOML float, and
+    `int(float("inf"))` raises `OverflowError`, not `ValueError` -- without this, that error would escape
+    both auth paths, pre-empting the clean `ConfigError` `_positive_int` would otherwise raise for an App
+    group's `app_id`/`installation_id`."""
     try:
         return None if value is None else int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -159,7 +164,10 @@ def unknown_keys(data: Mapping[str, Any]) -> list[str]:
             if not isinstance(value, Mapping):
                 # A shape problem, not a name problem: "groups" is the one table the schema is surest of, so
                 # reporting it as an *unknown key* would tell a person "unknown key: groups" about a table
-                # they spelled correctly. Leave it for `Config.from_dict` to raise the shape error instead.
+                # they spelled correctly. `Config.from_dict` is what actually surfaces this -- not as a clean
+                # ConfigError, but as the AttributeError/TypeError calling .items()/.get() on the wrong shape
+                # raises uncaught (load_config does not wrap it either); the viewer's PUT turns that into a
+                # 400 (Task 4), and at the CLI it still reaches the caller as-is.
                 continue
             for name, group in value.items():
                 if not isinstance(group, Mapping):

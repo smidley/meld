@@ -299,13 +299,13 @@ def test_viewer_port_must_be_a_tcp_port_number(bad):
         Config.from_dict({**base, "viewer": {"port": bad}})
 
 
-#: Every numeric setting `from_dict` reads, with the floor the parser holds it to. `1` is for what the
-#: framework counts *by* -- an interval it sleeps, a cadence it fires on, a concurrency or cap it compares a
-#: count against, a slice width -- where 0 is not "none" but "degenerate". `0` is for the allowances, where
-#: 0 means exactly what it says. Written out rather than derived from the source, because the interesting
-#: claim is *which* floor each field gets, and a table that derived itself from the code could not be wrong
-#: about it. (`logs.*`, `runners.limit_retry_minutes` and `viewer.port` have their own tests above; their
-#: floors are not 0 or 1.)
+#: Every numeric setting `from_dict` reads, with the floor the parser holds it to. The rule is whether `0`
+#: is a lie: `1` where `0` cannot mean what it says, because the code coerces it or acts on it in a way the
+#: word does not describe; `0` where it means something, and only a negative is nonsense. See `config.py`'s
+#: own note above `LOGS_MIN_BYTES_PER_RUN` for the worked cases. Written out here rather than derived from
+#: the source, because the interesting claim is *which* floor each field gets, and a table that derived
+#: itself from the code could not be wrong about it. (`logs.*`, `runners.limit_retry_minutes` and
+#: `viewer.port` have their own tests above; their floors are not 0 or 1.)
 FLOORS = [
     ("groups.claude.concurrency", 1),
     ("groups.claude.review_concurrency", 1),
@@ -326,8 +326,8 @@ FLOORS = [
     ("worker.log_tail_lines", 1),
     ("worker.max_turns", 1),
     ("lease.grace_minutes", 0),
-    ("audit.batch_merges", 1),
-    ("audit.batch_hours", 1),
+    ("audit.batch_merges", 1),          # cannot mean a batch of nothing, so it can only mean 1 -- a lie
+    ("audit.batch_hours", 0),           # "do not wait on age": real, distinct, and nothing degenerates
 ]
 
 

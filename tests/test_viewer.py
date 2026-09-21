@@ -778,14 +778,21 @@ def test_a_put_refuses_an_unparseable_number_with_400_not_a_traceback(tmp_path, 
 
 
 def test_a_put_still_accepts_a_zero_where_zero_is_the_setting(tmp_path):
-    """The other half of R33: the floors are per field, not a blanket `>= 1`. A budget of 0 ("no runs of this
-    tier"), a lease grace of 0 ("the lease expires at the deadline") and an amend cap of 0 ("propose, then
-    AGREE or DISSENT") each mean exactly what they say, and a parser that refused them would be wrong."""
+    """The other half of R33, and the rule stated: a floor goes on a field where `0` is a lie, not on every
+    field. A budget of 0 ("no runs of this tier"), a lease grace of 0 ("the lease expires at the
+    deadline"), an amend cap of 0 ("propose, then AGREE or DISSENT") and an audit batch of 0 hours ("do not
+    wait on age; audit as soon as anything is pending") each mean exactly what they say, and a parser that
+    refused them would be taking away a usable policy for no gain.
+
+    Its counterpart is the `zero-concurrency` case in the parametrized refusal above, and the sharpest
+    contrast is inside `[audit]` itself: `batch_hours = 0` is kept here while `batch_merges = 0` is
+    refused, because `audit.due` guards both with `bool(pending)` and a batch of nothing can only mean 1."""
     v, _, _ = viewer_for(tmp_path)
     current = body(get(v, "/api/config"))["config"]
     current["budget"] = {**current["budget"], "large": 0, "wallclock_hours": 0}
     current["lease"] = {**current["lease"], "grace_minutes": 0}
     current["agreement"] = {**current["agreement"], "amend_cap": 0}
+    current["audit"] = {**current["audit"], "batch_hours": 0}
     # PROJECT_TOML's codex model is the deliberately-invalid "gpt-x"; config_checks would 409 on it
     # regardless of this test's own change (see the sibling write test).
     current["groups"]["codex"]["orchestrator"]["model"] = current["groups"]["codex"]["pm"]["model"] = "gpt-5.6-sol"
@@ -793,7 +800,8 @@ def test_a_put_still_accepts_a_zero_where_zero_is_the_setting(tmp_path):
     assert resp.status == 200, body(resp)
     written = load_config(tmp_path / ".meld.toml")
     assert (written.budget["large"], written.budget_wallclock_hours) == (0, 0)
-    assert (written.lease_grace_minutes, written.amend_cap) == (0, 0)
+    assert (written.lease_grace_minutes, written.amend_cap, written.audit_batch_hours) == (0, 0, 0)
+    assert written.audit_batch_merges == 5      # ... while its sibling in the same table keeps its floor
 
 
 def test_a_get_of_a_file_with_a_bare_toml_date_answers_rather_than_raising(tmp_path):

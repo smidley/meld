@@ -99,14 +99,24 @@ def _role(data: Mapping[str, Any], path: str) -> RoleConfig:
 #: Every other numeric setting `from_dict` reads carries a floor too, written inline at its own read below
 #: rather than as a constant here, because each one is a plain 1 or 0 whose interesting part is *which* and
 #: *why*. The form `meld watch` serves (spec section 22) is why they exist at all: a field a person can type
-#: a 0 into is a field the parser has to have an opinion about. `>= 1` is for everything the framework
-#: counts *by* -- an interval it sleeps, a cadence it fires on, a concurrency or cap it compares a count
-#: against, a number of turns or log lines it slices with -- where 0 does not mean "none" but "degenerate":
-#: a zero-sleep poll loop, a relaunch every cycle, a dispatch that is never legal, a `lines[-0:]` that
-#: returns the whole file rather than none of it. `>= 0` is for the allowances, where 0 means exactly what
-#: it says -- no budget of this tier, no grace on a lease, no amendment round -- and only a negative is
-#: nonsense. `_at_least` refuses a bool and a float as well as a number below the floor, so a form's
-#: `review_concurrency = 2.5` is now named rather than silently truncated to 2 by a bare `int()`.
+#: a 0 into is a field the parser has to have an opinion about.
+#:
+#: **The rule is whether `0` is a lie.** Refuse it where it cannot mean what it says -- where the code
+#: coerces it into something else, or acts on it in a way the word does not describe. `review.quorum = 0`
+#: is clamped to 1 by `effective_quorum` and always was. `audit.batch_merges = 0` cannot mean a batch of
+#: nothing, because `audit.due` already requires at least one pending merge, so it can only mean 1.
+#: `polling.interval_seconds = 0` does not poll quickly, it deletes the backoff, because `waiting.py`
+#: doubles it from zero forever. `worker.log_tail_lines = 0` posts the *whole* transcript, since
+#: `lines[-0:]` is every line. Keep `0` where it means something, and there only a negative is nonsense:
+#: no budget of that tier, no grace on a lease, no amendment round, no waiting on age before an audit.
+#:
+#: The rule is about lying rather than about harm, deliberately. Silently not doing what a field says is
+#: the failure this whole surface exists to prevent, so an honest `0` stays even when it is drastic, and a
+#: dishonest one goes even when -- as with `review.quorum` -- the clamp meant nothing was misbehaving.
+#:
+#: `_at_least` refuses a bool and a float as well as a number below the floor, so a form's
+#: `review_concurrency = 2.5` is named rather than silently truncated to 2 by a bare `int()`. A group's
+#: inert App settings are the one lenient numeric read left in the file; see `_loose_int` for why.
 LOGS_MIN_BYTES_PER_RUN = 64 * 1024
 LOGS_MIN_WARN_TOTAL_MB = 1
 RUNNERS_MIN_LIMIT_RETRY_MINUTES = 1
@@ -497,10 +507,13 @@ class Config:
             # 0 is meaningful here and kept: the lease's `until` is `deadline + grace`, so a 0 grace is a lease
             # that expires exactly at the deadline. Nothing degenerates; only a negative is nonsense.
             lease_grace_minutes=_at_least(lease.get("grace_minutes", 10), 0, "lease.grace_minutes", "minutes"),
-            # `audit.due` already has `bool(pending)` in front of both comparisons, so a 0 in either is not
-            # "audit everything immediately" -- that is what a 1 says -- but a batch size of nothing.
+            # The two halves of `audit.due` fall on opposite sides of the rule. `bool(pending)` guards both
+            # comparisons, so `batch_merges = 0` cannot mean a batch of nothing -- it can only mean 1, which
+            # is `review.quorum`'s case exactly. `batch_hours = 0` says something real and distinct: do not
+            # wait on age at all, audit as soon as anything is pending. Nothing loops, nothing relaunches,
+            # and refusing it would take away a usable policy for no gain.
             audit_batch_merges=_at_least(audit.get("batch_merges", 5), 1, "audit.batch_merges", "merges"),
-            audit_batch_hours=_at_least(audit.get("batch_hours", 4), 1, "audit.batch_hours", "hours"),
+            audit_batch_hours=_at_least(audit.get("batch_hours", 4), 0, "audit.batch_hours", "hours"),
             logs_max_bytes_per_run=_at_least(logs.get("max_bytes_per_run", 8 * 1024 * 1024), LOGS_MIN_BYTES_PER_RUN,
                                              "logs.max_bytes_per_run", "bytes"),
             logs_warn_total_mb=_at_least(logs.get("warn_total_mb", 2048), LOGS_MIN_WARN_TOTAL_MB,

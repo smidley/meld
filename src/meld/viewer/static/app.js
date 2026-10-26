@@ -195,7 +195,7 @@ function renderThread(turns) {
     head.className = "head";
     const party = cell("party", t.party);
     party.style.color = colorFor(t.kind, t.group);
-    head.append(party, cell("verb", [t.verb, t.ref, t.qualifier].filter(Boolean).join(" ")), cell("dim", (t.at || "").slice(0, 16).replace("T", " ")));
+    head.append(party, cell("verb", [t.verb, t.ref, t.qualifier].filter(Boolean).join(" ")), cell("dim", clock12(Date.parse(t.at || ""))));
     li.append(head, cell("body", t.text));
     list.append(li);
   }
@@ -267,11 +267,13 @@ let lastStatus = null;
 let lastThread = [];
 let lastGenerated = "";
 
-function clock12(ms) {
-  // A time of day the way a person says it, in the browser's own zone: "9:05 pm". The page's other stamps stay UTC
-  // because they are the server's record; the timeline is read, not quoted.
-  const d = new Date(ms), h = d.getHours(), m = String(d.getMinutes()).padStart(2, "0");
-  return `${h % 12 || 12}:${m} ${h < 12 ? "am" : "pm"}`;
+function clock12(ms, { seconds = false } = {}) {
+  // A time of day the way a person says it, in the browser's own zone: "9:05 pm", or "9:05:12 pm" on a transcript line.
+  // An unparseable stamp comes back empty rather than as "NaN:NaN".
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return "";
+  const h = d.getHours(), m = String(d.getMinutes()).padStart(2, "0"), sec = String(d.getSeconds()).padStart(2, "0");
+  return `${h % 12 || 12}:${m}${seconds ? ":" + sec : ""} ${h < 12 ? "am" : "pm"}`;
 }
 
 const ATTENTION = new Set(["NEEDS-HUMAN", "BUDGET", "PROTOCOL-VIOLATION", "CHALLENGE", "DRIFT", "HALT"]);
@@ -337,7 +339,7 @@ function arrowFor(svg) {
   // One arrowhead marker per drawing, named after the svg so two drawings on the page never share an id.
   const id = `${svg.id}-arrow`;
   if (!svg.querySelector(`#${id}`)) {
-    const marker = svgEl("marker", { id, viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: "auto-start-reverse" }, svgEl("defs", {}, svg));
+    const marker = svgEl("marker", { id, viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 3.5, markerHeight: 3.5, orient: "auto-start-reverse" }, svgEl("defs", {}, svg));
     svgEl("path", { class: "arrow", d: "M 0 0 L 10 5 L 0 10 z" }, marker);
   }
   return `url(#${id})`;
@@ -488,7 +490,7 @@ function drawTaskGraph(number) {
                         issue.claimed_by ? `${issue.claimed_by} · ${issue.worker || ""} · ${issue.model || ""}` : "unclaimed");
   const buildNodes = builds.map((r, i) => {
     const n = drawNode(svg, col(1), y(i, builds.length), colW, 44, colorFor("group", r.group), `${r.group} ${r.worker || "build"} · ${r.state === "running" ? "running" : (r.outcome || r.state)}`,
-                       `${r.model || ""}/${r.effort || ""} · ${(r.started_at || "").slice(11, 16)}`,
+                       `${r.model || ""}/${r.effort || ""} · ${clock12(Date.parse(r.started_at || ""))}`,
                        { live: r.state === "running", ring: r.state === "running" ? runFraction(r) : null, onclick: () => showTranscript(r) });
     drawEdge(svg, root.x + root.w, root.y + root.h / 2, n.x, n.y + n.h / 2, "built by", { flowing: r.state === "running" });
     return n;
@@ -551,7 +553,7 @@ function showTranscript(run) {
 }
 
 function runLine(r) {
-  const when = (r.started_at || "").slice(11, 16);
+  const when = clock12(Date.parse(r.started_at || ""));
   const how = r.state === "running" ? "running" : (r.outcome || (r.timed_out ? "timed out" : r.state));
   return `${r.worker || r.kind} worker · ${r.model || "?"}/${r.effort || "?"} · ${how}${when ? ` · started ${when}` : ""}`;
 }
@@ -591,7 +593,7 @@ function openTask(number) {
     const list = document.createElement("ul");
     said.append(list);
     for (const t of turns.slice(-8)) {
-      const li = treeItem(list, t.party, colorFor(t.kind, t.group), `${t.verb} ${t.ref} · ${(t.at || "").slice(11, 16)}`);
+      const li = treeItem(list, t.party, colorFor(t.kind, t.group), `${t.verb} ${t.ref} · ${clock12(Date.parse(t.at || ""))}`);
       const b = text(document.createElement("button"), "show");
       b.type = "button";
       b.addEventListener("click", () => { el("task").close(); showTurn(t.id); });
@@ -1181,7 +1183,7 @@ function cell(className, value) {
 function appendEvent(col, ev) {
   const li = document.createElement("li");
   li.className = ev.kind + (ev.ok === false ? " failed" : "") + (ev.meta && ev.meta.synthesized ? " synthesized" : "");
-  li.append(cell("at", (ev.at || "").slice(11, 19)),
+  li.append(cell("at", clock12(Date.parse(ev.at || ""), { seconds: true })),
             cell("kind", ev.tool ? `${ev.kind} ${ev.tool}` : ev.kind),
             cell("text", ev.text));
   const list = col.list;

@@ -13,7 +13,9 @@ from meld.challenge import challenge
 from meld.config import Config
 from meld.dispatch import DispatchError
 from meld.github import GitHubError
-from meld.plan import plan_ack, plan_approve
+from meld.grammar import agreement_for
+from meld.plan import parse_plan_items, plan_ack, plan_approve
+from meld.rules import Actor, challenge_rule, plan_rule
 from meld.posting import PostError, post
 from meld.status import _age_minutes, build_status
 from meld.waiting import wait_for_change
@@ -63,6 +65,66 @@ def inbox(board: Board, cfg: Config, now: datetime) -> dict:
              "answered": any(a.header.party.kind == "joint" and a.header.verb == "ANSWER" and a.header.ref == c.header.ref for a in comments)}
             for c in comments if c.header.party.kind == "human" and c.header.verb == "ASK"]
     return {"needs_human": needs_human, "budget": budget, "disagree": disagree, "plan_add": plan_add, "asks": asks}
+
+
+def _lines(text: str | None, n: int = 4) -> str:
+    """The first `n` non-empty lines of a comment's text, which is all a decision card has room to say."""
+    kept = [l.strip() for l in (text or "").splitlines() if l.strip() and not l.strip().lower().startswith("verified-by:")]
+    return "\n".join(kept[:n]) + ("\n…" if len(kept) > n else "")
+
+
+def decisions(board: Board, cfg: Config, actor: Actor, now: datetime) -> list[dict]:
+    """Everything waiting on the human, each as one decision with its choices: the plan awaiting approval, a
+    needs-human ask, a budget alert, a disagreement, a plan addition, a challenge the human must settle. Each
+    choice is the request body `/api/action` takes (its `verb` is the dispatch name; `action` the header verb),
+    plus whether the person must type a message; the page renders the card and sends exactly that. Legality
+    stays `rules.py`'s: a choice is offered only when its rule answers None, and a refusal still comes back
+    verbatim if the board moved meanwhile (spec 22)."""
+    by_id = {c.id: c for c in board.comments}
+    out: list[dict] = []
+    plan_ref = f"plan-{board.milestone}"
+    if board.phase == "planning" and plan_rule(board, cfg, actor, "approve", plan_ref) is None:
+        items, _ = parse_plan_items(agreement_for(board.comments, plan_ref, cfg).text or "")
+        out.append({"id": f"plan:{plan_ref}", "kind": "plan_approve", "ref": plan_ref, "age_minutes": None,
+                    "title": f"The plan for milestone {board.milestone} is ready for your approval",
+                    "summary": f"{len(items)} item(s): " + "; ".join(i.title for i in items) if items else "the agreed plan",
+                    "choices": [{"label": "Approve the plan", "body": {"verb": "plan-approve"}, "needs_text": False}]})
+    box = inbox(board, cfg, now)
+    for item in box["needs_human"]:
+        ref = f"#{item['issue']}"
+        out.append({"id": f"needs-human:{ref}", "kind": "needs_human", "ref": ref, "age_minutes": item["age_minutes"],
+                    "title": f"Issue {ref} needs you: {item['title']}", "summary": _lines(item["ask"]) or "(no ask was posted; see the issue)",
+                    "choices": [{"label": "Provided", "body": {"verb": "post", "action": "PROVIDED", "ref": ref}, "needs_text": True,
+                                 "hint": "say where you put it (a variable or 1Password item), never the value"},
+                                {"label": "Resolved", "body": {"verb": "post", "action": "RESOLVED", "ref": ref}, "needs_text": True}]})
+    for item in box["budget"]:
+        ref = item["ref"]
+        choice = ({"label": "Resolved", "body": {"verb": "post", "action": "RESOLVED", "ref": ref}, "needs_text": True} if ref
+                  else {"label": "Give a directive", "body": {"verb": "post", "action": "DIRECTIVE", "ref": _next_id(board, _DIR_RE, "dir")}, "needs_text": True})
+        out.append({"id": f"budget:{item['comment_id']}", "kind": "budget", "ref": ref, "age_minutes": item["age_minutes"],
+                    "title": f"{item['group']} hit its budget" + (f" ({ref})" if ref else ""), "summary": _lines(item["text"]),
+                    "choices": [{**choice, "hint": "raise the cap under Configuration first if the group should continue"}]})
+    for item in box["disagree"]:
+        ref, cmt = item["ref"], by_id.get(item["comment_id"])
+        out.append({"id": f"disagree:{ref}", "kind": "disagree", "ref": ref, "age_minutes": _age_minutes(cmt.created_at, now) if cmt else None,
+                    "title": f"The groups disagree on {ref} ({item['verb']})", "summary": _lines(cmt.text if cmt else "", 6),
+                    "choices": [{"label": "Approve as proposed", "body": {"verb": "post", "action": "APPROVE", "ref": ref}, "needs_text": False},
+                                {"label": "Give a directive", "body": {"verb": "post", "action": "DIRECTIVE", "ref": _next_id(board, _DIR_RE, "dir")}, "needs_text": True},
+                                {"label": "Amend", "body": {"verb": "post", "action": "AMEND", "ref": ref}, "needs_text": True}]})
+    for item in box["plan_add"]:
+        ref, cmt = item["ref"], by_id.get(item["comment_id"])
+        choices = [{"label": "Acknowledge", "body": {"verb": "plan-ack", "ref": ref}, "needs_text": False}] if plan_rule(board, cfg, actor, "ack", ref) is None else []
+        out.append({"id": f"plan-add:{ref}", "kind": "plan_add", "ref": ref, "age_minutes": _age_minutes(cmt.created_at, now) if cmt else None,
+                    "title": f"Plan addition {ref} awaits your acknowledgement", "summary": _lines(cmt.text if cmt else "", 6), "choices": choices})
+    for ref, ch in sorted(board.challenges.items()):
+        if challenge_rule(board, cfg, actor, "uphold", ref) is not None:
+            continue
+        cmt = by_id.get(ch.comment_id)
+        out.append({"id": f"challenge:{ref}", "kind": "challenge", "ref": ref, "age_minutes": _age_minutes(cmt.created_at, now) if cmt else None,
+                    "title": f"Challenge on {ref} by {ch.challenger}: your call", "summary": _lines(cmt.text if cmt else ""),
+                    "choices": [{"label": "Uphold", "body": {"verb": "challenge", "action": "uphold", "ref": ref}, "needs_text": True},
+                                {"label": "Dismiss", "body": {"verb": "challenge", "action": "dismiss", "ref": ref}, "needs_text": True}]})
+    return out
 
 
 def _next_id(board: Board, pattern: re.Pattern, prefix: str) -> str:

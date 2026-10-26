@@ -1059,3 +1059,16 @@ def test_state_carries_the_thread_and_the_page_has_a_conversation_panel(tmp_path
     assert "renderThread" in js and "state.thread" in js and "colorFor" in js and "innerHTML" not in js
     css = get(v, "/static/app.css").body.decode()
     assert '#conversation[data-filter="quiet"] li.housekeeping' in css
+
+
+def test_state_carries_the_decisions_and_the_page_renders_them_as_cards(tmp_path):
+    """Plan 18: everything waiting on the human is one card with its choices, through the page's one write path."""
+    v, ctx, _ = viewer_for(tmp_path)
+    state = body(get(v, "/api/state"))
+    assert isinstance(state["decisions"], list)
+    for d in state["decisions"]:
+        assert {"id", "kind", "title", "summary", "choices"} <= set(d) and all({"label", "body", "needs_text"} <= set(c) for c in d["choices"])
+    html = get(v, "/").body.decode()
+    assert 'id="decisions"' in html and 'id="card"' in html
+    js = get(v, "/static/app.js").body.decode()
+    assert "renderDecisions" in js and "postAction" in js and "state.decisions" in js and "innerHTML" not in js

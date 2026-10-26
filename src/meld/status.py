@@ -14,6 +14,7 @@ from meld.rules import (
     approving_parties,
     committer_party,
     legal_agreement_verbs,
+    outside_milestone,
     issue_verb_rules,
     pr_verb_rules,
     party_of_login,
@@ -109,7 +110,7 @@ def audit_summary(board: Board, cfg: Config, actor: Actor, now: datetime) -> dic
         return {"pending": [], "merges_pending": 0, "oldest_pending_hours": None, "due": False, "milestone_complete": complete, "challenged": []}
     pending = sorted((p for p in board.pulls.values()
                       if p.merged and not p.memory and cfg.group_for_bot(p.author) is not None      # a human's PR is not worker output
-                      and party_of_login(cfg, p.author) != actor.group
+                      and party_of_login(cfg, p.author) != actor.group and not outside_milestone(board, p)
                       and actor.group not in board.audits.get(p.number, {})),
                      key=lambda p: p.number)
     ages = [_age_minutes(p.merged_at, now) for p in pending if p.merged_at]

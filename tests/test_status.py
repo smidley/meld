@@ -250,7 +250,7 @@ def test_status_reports_the_audit_schedule_for_the_calling_group():
     fresh = replace(merged, merged_at="2026-09-03T11:30:00Z")
     # An open issue keeps the milestone incomplete, so this checks the age/batch-count gate alone (spec 21 item 10
     # would otherwise make a fresh, low-volume merge due anyway once the milestone reads as finished).
-    still_open = mk_board(CFG2, issues=[mk_issue(11)], pulls=[fresh])
+    still_open = mk_board(CFG2, issues=[mk_issue(9, "ready", state="closed"), mk_issue(11)], pulls=[fresh])
     assert render_status(still_open, CFG2, CODEX_PM, REG, now)["audit"] == {
         "pending": [19], "merges_pending": 1, "oldest_pending_hours": 0.5, "due": False, "milestone_complete": False, "challenged": []}
     done = replace(board, audits={19: {"codex": "pass"}})
@@ -351,7 +351,7 @@ def test_an_audit_a_challenge_asks_for_is_due_at_once():
     other; it is due now, and `audit.challenged` names it so the PM audits it first."""
     fresh = replace(mk_pr(19, 9, committer="meld-claude-bot", state="closed", merged=True), merged_at="2026-09-03T11:30:00Z")
     now = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
-    quiet = mk_board(CFG2, issues=[mk_issue(11)], pulls=[fresh])
+    quiet = mk_board(CFG2, issues=[mk_issue(9, "ready", state="closed"), mk_issue(11)], pulls=[fresh])
     assert render_status(quiet, CFG2, CODEX_PM, REG, now)["audit"]["due"] is False
     on_pr = replace(quiet, open_challenges=frozenset({"#19"}))
     assert render_status(on_pr, CFG2, CODEX_PM, REG, now)["audit"] == {
@@ -359,3 +359,20 @@ def test_an_audit_a_challenge_asks_for_is_due_at_once():
     on_issue = replace(quiet, open_challenges=frozenset({"#9"}))
     assert render_status(on_issue, CFG2, CODEX_PM, REG, now)["audit"]["challenged"] == [19]
     assert render_status(on_pr, CFG2, CLAUDE_PM, REG, now)["audit"]["challenged"] == []      # claude authored it: owes no audit
+
+
+def test_audits_stay_inside_the_active_milestone():
+    """A merged PR whose issue belongs to an earlier milestone was audited on that milestone's thread, which this board
+    never reads: it is neither pending nor legal to audit again (the second live run re-audited milestone 1 at large tier)."""
+    from meld.rules import Verb, pr_refusal
+    from meld.status import audit_summary
+    old = replace(mk_pr(19, 9, committer="meld-claude-bot", state="closed", merged=True), merged_at="2026-09-03T06:00:00Z")
+    mine = replace(mk_pr(31, 12, committer="meld-claude-bot", state="closed", merged=True), merged_at="2026-09-03T06:00:00Z")
+    board = mk_board(CFG2, issues=[mk_issue(12, "ready", state="closed"), mk_issue(13)], pulls=[old, mine])
+    now = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
+    assert audit_summary(board, CFG2, CODEX_PM, now)["pending"] == [31]
+    refusal = pr_refusal(board, CFG2, CODEX_PM, Verb.AUDIT, old)
+    assert refusal is not None and "outside the active milestone" in refusal.rule
+    assert pr_refusal(board, CFG2, CODEX_PM, Verb.AUDIT, mine) is None
+    # Planning: no issues on the board yet, nothing can be told apart (the older fixtures rely on this).
+    assert audit_summary(mk_board(CFG2, pulls=[old]), CFG2, CODEX_PM, now)["pending"] == [19]

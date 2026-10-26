@@ -350,6 +350,8 @@ def test_dispatch_audit_refusals_come_from_the_rules(tmp_path):
     with pytest.raises(Refused, match="cannot audit: cannot audit a PR authored by own group"):
         dispatch(ctx, 19, kind="audit", adapter=FakeAdapter(), now=NOW)          # PR #19 was merged by claude
     fake2, codex, repo2, _ = make_product(tmp_path / "codex", group="codex")
+    closed_9 = {**next(i for i in fixture("issues.json") if i["number"] == 13), "number": 9, "state": "closed", "title": "Old"}
+    fake2.route("GET", R + "issues", fixture("issues.json") + [closed_9])   # PR #19 closes #9: in this milestone, so auditable
     publish_pr_branch(repo2)
     sh(["git", "merge", "-q", "--no-ff", "-m", "Old merged (#19)", "meld/13-ci-pipeline"], repo2)
     sh(["git", "push", "-q", "origin", "main"], repo2)

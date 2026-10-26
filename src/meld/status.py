@@ -70,6 +70,7 @@ def render_status(board: Board, cfg: Config, actor: Actor, models: ModelRegistry
     ]
     runs = [
         {"group": r.group, "issue": r.issue, "kind": r.kind, "pr": r.pr, "pid": r.pid, "worker": r.worker,
+         "model": r.model, "effort": r.effort, "outcome": r.outcome,
          "state": "running" if r.alive else "collected" if r.collected else "finished", "started_at": r.started_at,
          "deadline": r.deadline, "branch": r.branch, "timed_out": r.timed_out}
         for g in sorted(board.runs) for r in sorted(board.runs[g].values(), key=lambda r: r.issue)

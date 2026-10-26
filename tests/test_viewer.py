@@ -266,7 +266,9 @@ def test_the_page_references_nothing_off_the_machine_and_renders_text_as_text(tm
     v, _, _ = viewer_for(tmp_path)
     html, css, js = (get(v, p).body.decode() for p in ("/", "/static/app.css", "/static/app.js"))
     for text in (html, css, js):
-        assert "http://" not in text and "https://" not in text and "//cdn" not in text and "@import" not in text
+        # The SVG namespace is a name createElementNS needs, not a reference: nothing is fetched from it.
+        scrubbed = text.replace("http://www.w3.org/2000/svg", "")
+        assert "http://" not in scrubbed and "https://" not in scrubbed and "//cdn" not in scrubbed and "@import" not in scrubbed
     assert "innerHTML" not in js and "textContent" in js and "EventSource" in js
     assert 'className = "badge' not in js
     assert "classList" in js
@@ -1092,7 +1094,7 @@ def test_the_page_shows_narration_by_default_and_a_card_jumps_to_its_turn(tmp_pa
     html = get(v, "/").body.decode()
     assert 'id="show-tools"' in html
     js = get(v, "/static/app.js").body.decode()
-    assert "showTurn" in js and 'classList.add("narration")' in js and "innerHTML" not in js
+    assert "showTurn" in js and 'classList.add("narration"' in js and "innerHTML" not in js
     css = get(v, "/static/app.css").body.decode()
     assert "#streams.narration li.tool_call" in css
 
@@ -1142,3 +1144,45 @@ def test_the_tag_form_offers_every_clis_models_and_sends_only_what_changed(tmp_p
     assert "payload.model = model" in js and '["worker", "tag-worker"]' in js
     config = body(get(v, "/api/config"))
     assert set(config["models"]) >= {"claude", "codex"} and all("efforts" in spec for specs in config["models"].values() for spec in specs)
+
+
+def test_transcripts_put_live_columns_first_and_hide_finished_ones_by_default(tmp_path):
+    """Plan 24, from the live run: September's un-reaped worker runs filled the transcripts tab with dead columns. Live
+    columns come first, dead ones are classed and hidden behind "show finished"."""
+    v, ctx, _ = viewer_for(tmp_path)
+    html = get(v, "/").body.decode()
+    assert 'id="show-finished"' in html
+    js = get(v, "/static/app.js").body.decode()
+    assert 'classList.add("narration", "live-only")' in js and "rank[a.liveness.state]" in js and 'classList.toggle("dead"' in js and "innerHTML" not in js
+    css = get(v, "/static/app.css").body.decode()
+    assert "#streams.live-only .column.dead" in css
+    assert "following: true" in js and "scrollColumns" in js and 'if (name === "streams") scrollColumns();' in js   # each column follows its newest line
+
+
+def test_a_card_opens_a_tree_of_everything_that_touched_the_issue(tmp_path):
+    """Plan 24, from the live run: which sub-agent is working on which task. A card's title opens a dialog whose tree
+    shows the holder, each build run with its worker and model, the pull request with its verdicts, each review and
+    audit run, and the thread turns about it, every run linking to its transcript column."""
+    v, ctx, _ = viewer_for(tmp_path)
+    html = get(v, "/").body.decode()
+    assert 'id="task"' in html and 'id="task-tree"' in html and 'id="task-close"' in html
+    js = get(v, "/static/app.js").body.decode()
+    for marker in ("openTask", "showTranscript", "runLine", "treeItem", "col.meta = s", "lastStatus = s", "audited_by", "innerHTML"):
+        assert (marker in js) == (marker != "innerHTML"), marker
+    state = body(get(v, "/api/state"))
+    assert all({"model", "effort", "outcome"} <= set(r) for r in state["status"]["runs"])
+
+
+def test_the_page_draws_its_overview_as_inline_svg(tmp_path):
+    """Plan 24: a live map of the groups, their roles and running workers; progress and budget bars; the task view as a
+    graph. All drawn node by node with createElementNS -- no markup strings, no external library."""
+    v, ctx, _ = viewer_for(tmp_path)
+    html = get(v, "/").body.decode()
+    for marker in ('id="map"', 'id="task-graph"', 'id="progress-fill"', 'id="budget-bars"'):
+        assert marker in html, marker
+    js = get(v, "/static/app.js").body.decode()
+    for marker in ("createElementNS", "drawMap", "drawBars", "drawTaskGraph", "state.processes", "drawEdge"):
+        assert marker in js, marker
+    assert "innerHTML" not in js and "http://www.w3.org/2000/svg" in js
+    state = body(get(v, "/api/state"))
+    assert set(state["processes"]) == set(state["supervisors"]) and all("roles" in v for v in state["processes"].values())

@@ -16,7 +16,12 @@
     <span id="halted" class="badge bad hidden">HALTED</span>
   </div>
   <p id="headline"></p>
-  <div id="supervisors" class="row"></div>
+  <div id="bars">
+    <div class="bar"><span class="blabel">milestone</span><div class="track"><div id="progress-fill" class="fill"></div></div><span id="progress-text" class="dim"></span></div>
+    <div id="budget-bars"></div>
+  </div>
+  <svg id="map" role="img" aria-label="the agents and what each is working on"></svg>
+  <div id="supervisors" class="row hidden"></div>
   <div id="needs-human" class="row"></div>
 </header>
 <section id="decisions" class="hidden"></section>
@@ -28,6 +33,11 @@
     <div class="coutcome dim"></div>
   </div>
 </template>
+<dialog id="task">
+  <div class="row"><span id="task-title" class="strong"></span><button type="button" id="task-close" title="Close">×</button></div>
+  <svg id="task-graph" role="img" aria-label="everything that touched this issue"></svg>
+  <ul id="task-tree" class="hidden"></ul>
+</dialog>
 <main id="live">
   <section id="conversation" class="column" data-filter="quiet">
     <h2><span class="who">Conversation</span> <span class="hint">what the agents are saying to each other</span>
@@ -58,6 +68,7 @@
     <span id="logs"></span>
     <span id="feed" class="badge unknown">feed connecting</span>
     <label id="detail" title="The transcripts show what each agent said by default; tick to see every tool call and result too."><input type="checkbox" id="show-tools"> show tool calls</label>
+    <label id="finished" title="Transcripts of processes that have ended are hidden by default, so what is running is in front; tick to see them too."><input type="checkbox" id="show-finished"> show finished</label>
     <span id="stamp" class="dim"></span>
     <span id="error" class="bad"></span>
   </span>

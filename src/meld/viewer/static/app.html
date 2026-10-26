@@ -73,6 +73,12 @@
       <select id="verb" aria-label="header verb" class="hidden"></select>
       <input id="ref" placeholder="which issue or PR, e.g. #13" aria-label="ref">
       <input id="text" placeholder="your message" aria-label="message">
+      <span id="tag" class="hidden">
+        <select id="tag-model" aria-label="model"><option value="">model: leave as is</option></select>
+        <select id="tag-effort" aria-label="effort"><option value="">effort: leave as is</option></select>
+        <select id="tag-size" aria-label="size"><option value="">size: leave as is</option><option>S</option><option>M</option><option>L</option></select>
+        <input id="tag-worker" placeholder="worker, e.g. backend (blank keeps it)" aria-label="worker">
+      </span>
       <button id="run" type="submit" title="Nothing runs until you press Run.">Run</button>
       <span id="result" class="dim"></span>
       <p id="explain" class="hint"></p>

@@ -73,6 +73,7 @@ body > * { flex: 0 0 auto; }
 #supervisors .agent.busy .dot { animation: blink 1.2s infinite; }
 #supervisors .agent .doing { color: var(--dim); }
 #bar #explain { flex: 1 0 100%; margin: 2px 0 0; }
+#tag { display: inline-flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 #conversation[data-filter="quiet"] li.housekeeping { display: none; }
 #conversation[data-filter="people"] li:not(.agreement):not(.human):not(.joint) { display: none; }
 

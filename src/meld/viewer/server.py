@@ -36,6 +36,7 @@ from meld.prompts import ROLES
 from meld.results import ResultsError
 from meld.runners import freeze_path, read_record, supervisor_path
 from meld.state import liveness, pid_alive, proc_start_of
+from meld.chat import thread_entries
 from meld.status import build_status
 from meld.transcript import total_bytes
 from meld.viewer import actions as va
@@ -62,6 +63,9 @@ def _iso_now() -> str:
 def new_token() -> str:
     """A 32-byte URL-safe token, minted once per `meld watch`; it lives in the process and in the printed URL."""
     return secrets.token_urlsafe(32)
+
+
+THREAD_LAST = 200   # the newest coordination comments /api/state carries; the page appends what is new by id
 
 
 @dataclass(frozen=True)
@@ -247,7 +251,7 @@ class Viewer:
         home, cfg = self.ctx.store.home, self.ctx.cfg
         now = datetime.strptime(self.now(), _ISO_FMT).replace(tzinfo=timezone.utc)
         try:
-            status, _ = build_status(self.ctx, now=now)
+            status, board = build_status(self.ctx, now=now)
         except (GitHubError, BoardError, OSError) as e:
             # OSError is here for `gh` itself: a binary that is missing or mid-upgrade raises FileNotFoundError
             # out of `subprocess`, which `github._request` does not convert, and unhandled it escapes `handle`,
@@ -259,7 +263,7 @@ class Viewer:
             free_mb: int | None = self.disk_usage(home).free // (1024 * 1024)  # type: ignore[attr-defined]
         except OSError:
             free_mb = None
-        return _json(200, {"status": status, "supervisors": supervisors, "frozen": frozen,
+        return _json(200, {"status": status, "supervisors": supervisors, "frozen": frozen, "thread": thread_entries(board, last=THREAD_LAST),
                            "disk": {"free_mb": free_mb, "warn_free_mb": cfg.logs_warn_free_mb},
                            "logs": {"total_mb": total_bytes(home / "logs") // (1024 * 1024), "warn_total_mb": cfg.logs_warn_total_mb},
                            "generated_at": self.now()})

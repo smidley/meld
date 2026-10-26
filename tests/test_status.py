@@ -292,7 +292,9 @@ def test_status_agreements_report_verification():
               mk_comment(CFG2, 2, "meld-codex-bot", "[codex] AGREE plan-1\n\nyes"),
               mk_comment(CFG2, 3, "meld-codex-bot", "[joint] PLAN plan-1\n\nsplit\n\nverified-by: x")]
     data = render_status(mk_board(CFG2, comments=thread), CFG2, CLAUDE_PM, REG, datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc))
-    assert data["coordination"]["agreements"]["plan-1"] == {"status": "agreed", "joint_verified": False, "legal": []}
+    ag = data["coordination"]["agreements"]["plan-1"]
+    assert (ag["status"], ag["joint_verified"], ag["legal"]) == ("agreed", False, [])
+    assert ag["summary"] and "\n" not in ag["summary"] and "proposer" in ag       # plan 17: a row says what the ref is about
 
 
 def test_status_agreements_carry_legal_actions(board1_gh, tmp_path):

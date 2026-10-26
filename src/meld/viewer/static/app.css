@@ -23,7 +23,22 @@ body > * { flex: 0 0 auto; }
 .badge.unknown { color: var(--unknown); border-color: var(--unknown); }
 .badge.frozen { color: var(--warn); border-color: var(--warn); }
 .badge.reconnecting { color: var(--warn); border-color: var(--warn); }
-#streams { display: flex; gap: 8px; padding: 8px; overflow-x: auto; flex: 1 1 auto; min-height: 0; }
+#live { display: flex; gap: 8px; padding: 8px; flex: 1 1 auto; min-height: 0; }
+#streams { display: flex; gap: 8px; overflow-x: auto; flex: 1 1 auto; min-height: 0; }
+/* The conversation: the coordination issue's comments, each a turn by a party. It sits first, beside the transcripts,
+   because who said what to whom is the thing a person watching Meld most needs to read. */
+#conversation { flex: 0 0 38rem; max-width: 48vw; }
+#conversation h2 { display: flex; gap: 8px; align-items: baseline; }
+#conversation h2 select { margin-left: auto; font: inherit; color: var(--fg); background: #222735;
+  border: 1px solid var(--line); border-radius: 3px; }
+#turns li { display: block; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+#turns .head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+#turns .party { font-weight: 600; border: 1px solid currentColor; border-radius: 3px; padding: 0 6px; }
+#turns .verb { font-weight: 600; }
+#turns .body { margin: 4px 0 0; white-space: pre-wrap; word-break: break-word; max-height: 14rem; overflow-y: auto; }
+#conversation[data-filter="quiet"] li.housekeeping { display: none; }
+#conversation[data-filter="people"] li:not(.agreement):not(.human):not(.joint) { display: none; }
+.hint { font-weight: normal; color: var(--dim); }
 .column { flex: 0 0 34rem; max-width: 46rem; display: flex; flex-direction: column; background: var(--panel);
   border: 1px solid var(--line); border-radius: 4px; min-height: 0; }
 .column.ended { opacity: 0.75; }

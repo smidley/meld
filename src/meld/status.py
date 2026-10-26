@@ -75,7 +75,9 @@ def render_status(board: Board, cfg: Config, actor: Actor, models: ModelRegistry
         for g in sorted(board.runs) for r in sorted(board.runs[g].values(), key=lambda r: r.issue)
     ]
     refs = sorted({c.header.ref for c in board.comments if c.ok and c.header and c.header.ref and c.header.verb in AGREEMENT_VERBS})
-    agreements = {ref: {"status": ag.status, "joint_verified": ag.joint_verified, "legal": legal_agreement_verbs(board, cfg, actor, ref)}
+    agreements = {ref: {"status": ag.status, "joint_verified": ag.joint_verified, "proposer": ag.proposer,
+                        "summary": ((ag.text or "").strip().splitlines() or [""])[0][:160],   # the proposal's first line, so a row says what the ref is about
+                        "legal": legal_agreement_verbs(board, cfg, actor, ref)}
                   for ref, ag in ((r, agreement_for(board.comments, r, cfg)) for r in refs)}
     return {
         "repo": board.repo, "milestone": board.milestone, "coordination_issue": board.coordination_issue,

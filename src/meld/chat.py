@@ -44,8 +44,22 @@ def inbox(board: Board, cfg: Config, now: datetime) -> dict:
         last_id = asks[-1].id if asks else 0
         if asks and _later_human(comments, last_id, ("PROVIDED", "RESOLVED"), f"#{i.number}"):
             continue
-        needs_human.append({"issue": i.number, "title": i.title, "age_minutes": _age_minutes(i.updated_at, now), "ask": asks[-1].text if asks else "",
-                            "comment_id": asks[-1].id if asks else None})
+        needs_human.append({"issue": i.number, "ref": f"#{i.number}", "title": i.title, "age_minutes": _age_minutes(i.updated_at, now),
+                            "ask": asks[-1].text if asks else "", "comment_id": asks[-1].id if asks else None})
+    # A NEEDS-HUMAN about something other than a needs-human issue -- a PR, a bare number, no ref at all -- has no label to
+    # carry it, so it waits here until a person posts anything on that ref: the second live run's codex PM asked about
+    # `NEEDS-HUMAN 40` (a merged PR) and the page said nothing waited.
+    covered = {item["ref"] for item in needs_human}
+    for c in comments:
+        if c.header.verb != "NEEDS-HUMAN" or c.header.party.kind == "human":
+            continue
+        raw = c.header.ref
+        ref = f"#{raw}" if raw and raw.isdigit() else raw
+        if ref in covered or any(h.id > c.id and h.header.party.kind == "human" and h.header.verb != "ASK" and (ref is None or h.header.ref in (ref, raw)) for h in comments):
+            continue
+        covered.add(ref)
+        needs_human.append({"issue": None, "ref": ref, "party": c.header.party.label.strip("[]"), "title": (c.text.strip().splitlines() or [""])[0][:120],
+                            "age_minutes": _age_minutes(c.created_at, now), "ask": c.text, "comment_id": c.id})
     budget = []
     for c in comments:
         if c.header.verb != "BUDGET":
@@ -91,9 +105,11 @@ def decisions(board: Board, cfg: Config, actor: Actor, now: datetime) -> list[di
                     "choices": [{"label": "Approve the plan", "body": {"verb": "plan-approve"}, "needs_text": False}]})
     box = inbox(board, cfg, now)
     for item in box["needs_human"]:
-        ref = f"#{item['issue']}"
+        ref = item["ref"]
         out.append({"id": f"needs-human:{ref}", "kind": "needs_human", "ref": ref, "age_minutes": item["age_minutes"], "comment_id": item["comment_id"],
-                    "title": f"Issue {ref} needs you: {item['title']}", "summary": _lines(item["ask"]) or "(no ask was posted; see the issue)",
+                    "title": (f"Issue {ref} needs you: {item['title']}" if item["issue"] is not None
+                              else f"{item['party']} needs you{f' about {ref}' if ref else ''}: {item['title']}"),
+                    "summary": _lines(item["ask"]) or "(no ask was posted; see the issue)",
                     "choices": [{"label": "Provided", "body": {"verb": "post", "action": "PROVIDED", "ref": ref}, "needs_text": True,
                                  "hint": "say where you put it (a variable or 1Password item), never the value"},
                                 {"label": "Resolved", "body": {"verb": "post", "action": "RESOLVED", "ref": ref}, "needs_text": True}]})
@@ -162,7 +178,7 @@ def next_ask_id(board: Board) -> str:
 
 
 def _render_inbox(box: dict) -> str:
-    lines = ["Needs a human:"] + [f"  #{i['issue']} {i['title']} ({i['age_minutes']} min): {i['ask'].splitlines()[0] if i['ask'] else '(no ask posted)'}" for i in box["needs_human"]]
+    lines = ["Needs a human:"] + [f"  {i['ref'] or '(no ref)'} {i['title']} ({i['age_minutes']} min): {i['ask'].splitlines()[0] if i['ask'] else '(no ask posted)'}" for i in box["needs_human"]]
     lines += ["Budget:"] + [f"  {b['group']} {b['ref'] or '(no ref)'}: {b['text'].splitlines()[0] if b['text'] else ''}" for b in box["budget"]]
     lines += ["Disagreements awaiting you:"] + [f"  {d['verb']} {d['ref']}" for d in box["disagree"]]
     lines += ["Plan additions awaiting ACK:"] + [f"  {p['ref']}" for p in box["plan_add"]]

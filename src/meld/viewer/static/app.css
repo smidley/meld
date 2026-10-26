@@ -42,6 +42,17 @@ body > * { flex: 0 0 auto; }
 #map .node { fill: var(--panel2); stroke: var(--line); }
 #map .edge { fill: none; stroke: var(--line); stroke-width: 1.5; }
 #map .live { animation: ring 1.6s infinite; }
+#map .elabel, #task-graph .elabel, #timeline .tick { font-size: 10.5px; fill: var(--dim); }
+#map .arrow, #task-graph .arrow { fill: var(--line); }
+#map .ring-track, #task-graph .ring-track { fill: none; stroke: var(--line); stroke-width: 3; }
+#map .ring, #task-graph .ring { fill: none; stroke-width: 3; stroke-linecap: round; transition: stroke-dashoffset 0.6s ease; }
+#timeline { display: block; max-width: 100%; height: auto; margin: 6px 0 0; }
+#timeline text { font: 11px system-ui, sans-serif; fill: var(--fg); }
+#timeline .lane { stroke: var(--line); stroke-dasharray: 2 4; }
+#timeline .now { stroke: var(--dim); }
+#timeline .dot { cursor: pointer; }
+#timeline .dot.attention { stroke: var(--warn); stroke-width: 2; }
+#timeline .dot:hover { stroke: var(--fg); stroke-width: 2; }
 @keyframes ring { 0%, 100% { stroke-opacity: 1; } 50% { stroke-opacity: 0.25; } }
 #task-graph { display: block; max-width: 100%; height: auto; margin-top: 8px; }
 #task-graph text { font: 12.5px system-ui, sans-serif; fill: var(--fg); }
@@ -159,7 +170,8 @@ li.raw .text { color: var(--raw); }
 li.synthesized .text { color: var(--dim); font-style: italic; }
 /* A transcript column shows the agent's own narration unless "show tool calls" is ticked: the tool traffic is the
    detail, the messages are what a person follows. */
-#streams.narration li.tool_call, #streams.narration li.tool_result, #streams.narration li.thinking { display: none; }
+#streams.narration li.tool_call, #streams.narration li.tool_result, #streams.narration li.thinking,
+#streams.narration li.raw, #streams.narration li.usage { display: none; }
 
 /* ---- rows (pull requests, agreements) ---- */
 .brow { display: grid; grid-template-columns: fit-content(9rem) 1fr auto; gap: 8px; padding: 3px 12px; align-items: baseline; }

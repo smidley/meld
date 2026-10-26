@@ -1178,10 +1178,11 @@ def test_the_page_draws_its_overview_as_inline_svg(tmp_path):
     graph. All drawn node by node with createElementNS -- no markup strings, no external library."""
     v, ctx, _ = viewer_for(tmp_path)
     html = get(v, "/").body.decode()
-    for marker in ('id="map"', 'id="task-graph"', 'id="progress-fill"', 'id="budget-bars"'):
+    for marker in ('id="map"', 'id="task-graph"', 'id="progress-fill"', 'id="budget-bars"', 'id="timeline"'):
         assert marker in html, marker
     js = get(v, "/static/app.js").body.decode()
-    for marker in ("createElementNS", "drawMap", "drawBars", "drawTaskGraph", "state.processes", "drawEdge"):
+    for marker in ("createElementNS", "drawMap", "drawBars", "drawTaskGraph", "state.processes", "drawEdge",
+                   "drawTimeline", "drawRing", "runFraction", "arrowFor", "showTurn(t.id)"):
         assert marker in js, marker
     assert "innerHTML" not in js and "http://www.w3.org/2000/svg" in js
     state = body(get(v, "/api/state"))

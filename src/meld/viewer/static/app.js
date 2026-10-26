@@ -251,6 +251,51 @@ function issueCard(i, lane) {
 let lastPulls = [];
 let lastStatus = null;
 let lastThread = [];
+let lastGenerated = "";
+
+const ATTENTION = new Set(["NEEDS-HUMAN", "BUDGET", "PROTOCOL-VIOLATION", "CHALLENGE", "DRIFT", "HALT"]);
+function drawTimeline(state) {
+  // The thread as a strip: one dot per post, a lane per voice, time left to right over the last ninety minutes (or the
+  // whole thread when it is shorter), so the rhythm of the conversation -- who spoke, how often, what needed a person --
+  // reads at a glance. Clicking a dot shows that turn in the conversation.
+  const svg = el("timeline");
+  svg.replaceChildren();
+  const turns = (state.thread || []).filter((t) => t.at);
+  const now = Date.parse(state.generated_at || "") || Date.now();
+  if (!turns.length) { svg.setAttribute("height", 0); return; }
+  const span = Math.min(90 * 60 * 1000, Math.max(5 * 60 * 1000, now - Date.parse(turns[0].at)));
+  const from = now - span;
+  const shown = turns.filter((t) => Date.parse(t.at) >= from);
+  const voices = [];
+  for (const t of shown) { const v = t.group || t.kind; if (!voices.includes(v)) voices.push(v); }   // a group's two roles share a lane
+  const left = 92, right = 24, laneH = 18, top = 8, width = Math.max(640, svg.parentElement.clientWidth || 640);
+  const height = top + voices.length * laneH + 20;
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("width", width);
+  svg.setAttribute("height", height);
+  const xOf = (iso) => left + ((Date.parse(iso) - from) / span) * (width - left - right);
+  voices.forEach((v, i) => {
+    const y = top + i * laneH + laneH / 2;
+    svgText(svg, 4, y + 4, clip(v, 12), "sub");
+    svgEl("line", { class: "lane", x1: left, y1: y, x2: width - right, y2: y }, svg);
+  });
+  // Time ticks every fifteen minutes, labelled HH:MM in UTC like every other stamp on the page.
+  const step = 15 * 60 * 1000;
+  for (let t = Math.ceil(from / step) * step; t <= now; t += step) {
+    const x = xOf(new Date(t).toISOString());
+    svgText(svg, x, height - 4, new Date(t).toISOString().slice(11, 16), "tick").setAttribute("text-anchor", "middle");
+  }
+  svgEl("line", { class: "now", x1: width - right, y1: top, x2: width - right, y2: height - 16 }, svg);
+  for (const t of shown) {
+    const y = top + voices.indexOf(t.group || t.kind) * laneH + laneH / 2;
+    const attention = ATTENTION.has(t.verb);
+    const color = t.group ? colorFor("group", t.group) : (t.kind === "human" ? "#d29922" : "#8b949e");
+    const dot = svgEl("circle", { class: "dot" + (attention ? " attention" : ""), cx: xOf(t.at), cy: y,
+                                  r: attention ? 5 : (t.housekeeping ? 2.5 : 4), fill: color, "fill-opacity": t.housekeeping ? 0.45 : 1 }, svg);
+    svgEl("title", {}, dot).textContent = `${t.at.slice(11, 16)} [${t.party}] ${t.verb}${t.ref ? " " + t.ref : ""}${t.qualifier ? " " + t.qualifier : ""}`;
+    dot.addEventListener("click", () => showTurn(t.id));
+  }
+}
 
 // ---- drawing: inline SVG built node by node (no markup strings), the page's only graphics ----
 const SVG = "http://www.w3.org/2000/svg";
@@ -266,17 +311,43 @@ function svgText(parent, x, y, value, cls) {
   return t;
 }
 function clip(value, n) { const s = String(value == null ? "" : value); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
-function drawEdge(parent, x1, y1, x2, y2) {
-  const mx = (x1 + x2) / 2;
-  svgEl("path", { class: "edge", d: `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}` }, parent);
+function arrowFor(svg) {
+  // One arrowhead marker per drawing, named after the svg so two drawings on the page never share an id.
+  const id = `${svg.id}-arrow`;
+  if (!svg.querySelector(`#${id}`)) {
+    const marker = svgEl("marker", { id, viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: "auto-start-reverse" }, svgEl("defs", {}, svg));
+    svgEl("path", { class: "arrow", d: "M 0 0 L 10 5 L 0 10 z" }, marker);
+  }
+  return `url(#${id})`;
 }
-function drawNode(parent, x, y, w, h, color, title, sub, { live = false, onclick = null } = {}) {
+function drawEdge(parent, x1, y1, x2, y2, label) {
+  const mx = (x1 + x2) / 2;
+  const svg = parent.ownerSVGElement || parent;
+  svgEl("path", { class: "edge", d: `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`, "marker-end": arrowFor(svg) }, parent);
+  if (label) svgText(parent, mx, (y1 + y2) / 2 - 5, label, "elabel").setAttribute("text-anchor", "middle");
+}
+function drawRing(parent, cx, cy, r, fraction, color) {
+  // How far through its time a run is: a thin arc that fills clockwise from the top; red once it is past its deadline.
+  const circ = 2 * Math.PI * r, f = Math.min(1, Math.max(0, fraction));
+  svgEl("circle", { class: "ring-track", cx, cy, r }, parent);
+  svgEl("circle", { class: "ring", cx, cy, r, stroke: f >= 1 ? "#f85149" : color, "stroke-dasharray": circ, "stroke-dashoffset": circ * (1 - f),
+                    transform: `rotate(-90 ${cx} ${cy})` }, parent);
+}
+function runFraction(r) {
+  // Elapsed over allowed, against the server's clock (the state's own stamp), never the browser's.
+  const start = Date.parse(r.started_at || ""), end = Date.parse(r.deadline || ""), now = Date.parse(lastGenerated || "");
+  if (!(start < end) || !now) return 0;
+  return (now - start) / (end - start);
+}
+function drawNode(parent, x, y, w, h, color, title, sub, { live = false, onclick = null, ring = null } = {}) {
   const g = svgEl("g", {}, parent);
   const rect = svgEl("rect", { class: "node" + (live ? " live" : "") + (onclick ? " clickable" : ""), x, y, width: w, height: h, rx: 6,
                                ...(color ? { stroke: color, "stroke-width": live ? 2.5 : 1.5 } : {}) }, g);
   if (color) svgEl("rect", { x: x + 1, y: y + 1, width: 5, height: h - 2, rx: 3, fill: color }, g);
-  svgText(g, x + 12, y + (sub ? 18 : h / 2 + 4), clip(title, Math.floor(w / 7)));
-  if (sub) svgText(g, x + 12, y + 34, clip(sub, Math.floor(w / 6.4)), "sub");
+  const textW = ring == null ? w : w - 26;
+  svgText(g, x + 12, y + (sub ? 18 : h / 2 + 4), clip(title, Math.floor(textW / 7)));
+  if (sub) svgText(g, x + 12, y + 34, clip(sub, Math.floor(textW / 6.4)), "sub");
+  if (ring != null) drawRing(g, x + w - 16, y + h / 2, 9, ring, color || "#58a6ff");
   if (onclick) { g.style.cursor = "pointer"; g.addEventListener("click", onclick); }
   return { x, y, w, h };
 }
@@ -315,8 +386,8 @@ function drawMap(state) {
     running.filter((r) => r.group === g).forEach((r, k) => {
       const what = r.kind === "build" ? `building #${r.issue}` : `${r.kind === "audit" ? "auditing" : "reviewing"} PR #${r.issue}`;
       const w = drawNode(svg, wx + k * (workW + 10), y + 14, workW, 36, color, what, `${r.worker || r.kind} · ${r.model || ""}`, { live: true,
-                         onclick: r.kind === "build" ? () => openTask(r.issue) : () => showTranscript(r) });
-      drawEdge(svg, rx + roleW, y + 27 + 12, w.x, w.y + w.h / 2);
+                         ring: runFraction(r), onclick: r.kind === "build" ? () => openTask(r.issue) : () => showTranscript(r) });
+      drawEdge(svg, rx + roleW, y + 27 + 12, w.x, w.y + w.h / 2, k === 0 ? "dispatched" : "");
     });
   });
 }
@@ -380,8 +451,9 @@ function drawTaskGraph(number) {
                         issue.claimed_by ? `${issue.claimed_by} · ${issue.worker || ""} · ${issue.model || ""}` : "unclaimed");
   const buildNodes = builds.map((r, i) => {
     const n = drawNode(svg, col(1), y(i, builds.length), colW, 44, colorFor("group", r.group), `${r.group} ${r.worker || "build"} · ${r.state === "running" ? "running" : (r.outcome || r.state)}`,
-                       `${r.model || ""}/${r.effort || ""} · ${(r.started_at || "").slice(11, 16)}`, { live: r.state === "running", onclick: () => showTranscript(r) });
-    drawEdge(svg, root.x + root.w, root.y + root.h / 2, n.x, n.y + n.h / 2);
+                       `${r.model || ""}/${r.effort || ""} · ${(r.started_at || "").slice(11, 16)}`,
+                       { live: r.state === "running", ring: r.state === "running" ? runFraction(r) : null, onclick: () => showTranscript(r) });
+    drawEdge(svg, root.x + root.w, root.y + root.h / 2, n.x, n.y + n.h / 2, "built by");
     return n;
   });
   const prNodes = prs.map((p, i) => {
@@ -389,20 +461,21 @@ function drawTaskGraph(number) {
     const verdicts = [p.approvals.length && `approved by ${p.approvals.join(", ")}`, p.changes_requested.length && `changes: ${p.changes_requested.join(", ")}`].filter(Boolean).join(" · ");
     const n = drawNode(svg, col(2), y(i, prs.length), colW, 44, p.merged ? "#3fb950" : null, `PR #${p.number} · ${state}`, verdicts || "awaiting review");
     const from = buildNodes[buildNodes.length - 1] || root;
-    drawEdge(svg, from.x + from.w, from.y + from.h / 2, n.x, n.y + n.h / 2);
+    drawEdge(svg, from.x + from.w, from.y + from.h / 2, n.x, n.y + n.h / 2, "opened");
     return [p.number, n];
   });
   checks.forEach((r, i) => {
     const n = drawNode(svg, col(3), y(i, checks.length), colW, 44, colorFor("group", r.group), `${r.group} ${r.kind} · ${r.state === "running" ? "running" : (r.outcome || r.state)}`,
-                       `${r.worker || r.kind} · ${r.model || ""}/${r.effort || ""}`, { live: r.state === "running", onclick: () => showTranscript(r) });
+                       `${r.worker || r.kind} · ${r.model || ""}/${r.effort || ""}`,
+                       { live: r.state === "running", ring: r.state === "running" ? runFraction(r) : null, onclick: () => showTranscript(r) });
     const [, from] = prNodes.find(([num]) => num === r.pr) || [null, root];
-    drawEdge(svg, from.x + from.w, from.y + from.h / 2, n.x, n.y + n.h / 2);
+    drawEdge(svg, from.x + from.w, from.y + from.h / 2, n.x, n.y + n.h / 2, r.kind === "audit" ? "audited by" : "reviewed by");
   });
   for (const p of prs) for (const [group, verdict] of Object.entries(p.audited_by || {})) {
     const i = checks.length;
     const n = drawNode(svg, col(3), y(i, checks.length + 1), colW, 44, colorFor("group", group), `${group} audit · ${verdict}`, "");
     const [, from] = prNodes.find(([num]) => num === p.number) || [null, root];
-    drawEdge(svg, from.x + from.w, from.y + from.h / 2, n.x, n.y + n.h / 2);
+    drawEdge(svg, from.x + from.w, from.y + from.h / 2, n.x, n.y + n.h / 2, "audited by");
   }
 }
 
@@ -999,9 +1072,11 @@ function renderState(state) {
   text(el("headline"), state.headline || "");
   groupOrder = Object.keys(state.supervisors || {});
   lastThread = state.thread || [];
+  lastGenerated = state.generated_at || "";
   lastStatus = state.status;
   drawBars(state);
   drawMap(state);
+  drawTimeline(state);
   renderDecisions(state.decisions);
   renderThread(state.thread);
   // The agents, one chip per group in its colour: its supervisor in plain words (the reason on hover), and any frozen role.

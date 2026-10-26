@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Mapping
 
@@ -43,10 +43,54 @@ class GroupConfig:
     installation_id: int | None = None
     private_key_env: str | None = None
     private_key_file: str | None = None
+    # Plan 28: what makes a group "codex pointed at my server" rather than a new adapter. `env` is added to every launch
+    # of the group (roles and workers), `cli_config` is handed to the adapter as its own settings (Codex: `-c key=value`
+    # overrides, which is how a custom `model_providers.<id>` and `model_provider` reach an ephemeral `codex exec`;
+    # Claude Code: keys merged under its `--settings`). Both live in `.meld.toml`, which is committed: no secrets here.
+    env: dict[str, str] = field(default_factory=dict)
+    cli_config: dict[str, Any] = field(default_factory=dict)
 
     @property
     def is_app(self) -> bool:
         return self.auth == "app"
+
+
+ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+#: What a group's `env` may never set: the launch owns its party identity, its git identity and its GitHub credentials.
+GUARDED_ENV_PREFIXES = ("MELD_", "GIT_", "GH_", "GITHUB_")
+
+
+def extra_env(group: "GroupConfig") -> dict[str, str]:
+    """The group's own environment, minus anything that would re-point a launch's identity or credentials."""
+    return {k: v for k, v in group.env.items() if not k.startswith(GUARDED_ENV_PREFIXES)}
+
+
+def _env_table(data: Any, path: str) -> dict[str, str]:
+    if data is None:
+        return {}
+    if not isinstance(data, Mapping):
+        raise ConfigError(f"{path} must be a table of NAME = \"value\" pairs")
+    out: dict[str, str] = {}
+    for k, v in data.items():
+        if not ENV_NAME_RE.match(str(k)):
+            raise ConfigError(f"{path}.{k}: not an environment variable name")
+        if isinstance(v, bool) or not isinstance(v, (str, int, float)):
+            raise ConfigError(f"{path}.{k} must be a string")
+        out[str(k)] = str(v)
+    return out
+
+
+def _settings_table(data: Any, path: str) -> dict[str, Any]:
+    if data is None:
+        return {}
+    if not isinstance(data, Mapping):
+        raise ConfigError(f"{path} must be a table of key = value pairs")
+    out: dict[str, Any] = {}
+    for k, v in data.items():
+        if not isinstance(v, (str, int, float, bool)):
+            raise ConfigError(f"{path}.{k} must be a string, number or boolean")
+        out[str(k)] = v
+    return out
 
 
 def _require(data: Mapping[str, Any], key: str, path: str) -> Any:
@@ -188,7 +232,10 @@ KNOWN: dict[str, tuple[str, ...]] = {
 
 #: A group's own keys, and a role's. `groups` is keyed by a name the product chooses, so only the fields are fixed.
 KNOWN_GROUP = ("cli", "bot", "token_env", "concurrency", "review_concurrency", "git_name", "git_email",
-               "auth", "app_id", "installation_id", "private_key_env", "private_key_file")
+               "auth", "app_id", "installation_id", "private_key_env", "private_key_file", "env", "cli_config")
+#: Group tables whose keys are the product's to choose (an environment variable name, a CLI's own setting), so only
+#: the table name is checked.
+FREE_GROUP_TABLES = ("env", "cli_config")
 KNOWN_ROLE = ("model", "effort")
 
 
@@ -228,6 +275,8 @@ def unknown_keys(data: Mapping[str, Any]) -> list[tuple[str, ...]]:
                         if isinstance(sub, Mapping):
                             out += [("groups", name, key, k) for k in sub if k not in KNOWN_ROLE]
                         continue
+                    if key in FREE_GROUP_TABLES:
+                        continue
                     if key not in KNOWN_GROUP:
                         out.append(("groups", name, key))
             continue
@@ -266,6 +315,15 @@ def _list(values: list | tuple) -> str:
     return "[" + ", ".join(_s(str(v)) for v in values) + "]"
 
 
+_BARE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _key(name: str) -> str:
+    """A TOML key: bare when it can be, quoted otherwise (a Codex override such as `model_providers.ollama.base_url`
+    is one key with dots in it, which an unquoted spelling would read as three nested tables)."""
+    return name if _BARE_KEY_RE.match(name) else _s(name)
+
+
 def _lines(pairs: list[tuple[str, Any]]) -> list[str]:
     """`key = value` for each pair whose value is not None; None means the field is absent from this file."""
     out = []
@@ -274,7 +332,7 @@ def _lines(pairs: list[tuple[str, Any]]) -> list[str]:
             continue
         if isinstance(value, bool):
             out.append(f"{key} = {'true' if value else 'false'}")
-        elif isinstance(value, int):
+        elif isinstance(value, (int, float)):
             out.append(f"{key} = {value}")
         elif isinstance(value, (list, tuple)):
             out.append(f"{key} = {_list(value)}")
@@ -295,6 +353,10 @@ def _group_lines(g: GroupConfig) -> list[str]:
     ])
     for role_name, role in (("orchestrator", g.orchestrator), ("pm", g.pm)):
         out += ["", f"[groups.{g.name}.{role_name}]"] + _lines([("model", role.model), ("effort", role.effort)])
+    # The two free tables are written only when they hold something: an empty table says nothing a missing one does not.
+    for table, values in (("env", g.env), ("cli_config", g.cli_config)):
+        if values:
+            out += ["", f"[groups.{g.name}.{table}]"] + _lines([(_key(k), v) for k, v in sorted(values.items())])
     return out
 
 
@@ -435,6 +497,8 @@ class Config:
                 installation_id=installation_id,
                 private_key_env=key_env,
                 private_key_file=key_file,
+                env=_env_table(g.get("env"), f"{path}.env"),
+                cli_config=_settings_table(g.get("cli_config"), f"{path}.cli_config"),
             )
         review = data.get("review", {})
         agreement = data.get("agreement", {})

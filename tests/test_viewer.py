@@ -1288,3 +1288,29 @@ def test_the_page_picks_up_a_group_saved_to_the_file_without_a_restart(tmp_path)
     os.utime(path, (later + 2, later + 2))
     broken = body(get(v, "/api/state"))
     assert "gemini" in broken["supervisors"] and broken["config_error"] and ".meld.toml" in broken["config_error"]
+
+
+def test_a_group_can_carry_its_own_environment_and_cli_settings_through_the_form(tmp_path):
+    """Plan 28: each group card shows two boxes, `env` and `cli_config` (a pair per line), and "Add a group" takes an
+    optional model server: a Codex group gets the -c overrides that name a custom provider, a Claude group the base URL.
+    The server parses the tables, writes them back with quoted dotted keys, and reads them again."""
+    v, _, _ = viewer_for(tmp_path)
+    js = get(v, "/static/app.js").body.decode()
+    for marker in ("function mapField", "function parseMap", 'dataset.kind = "map"', "function endpointSettings", "model_providers.${name}.base_url",
+                   "ANTHROPIC_BASE_URL", "model server URL", "meld add-model"):
+        assert marker in js, marker
+    out = body(get(v, "/api/config"))
+    candidate = out["config"]
+    for g in candidate["groups"].values():
+        known = out["models"][g["cli"]][0]
+        for role in ("orchestrator", "pm"):
+            g[role] = {"model": known["id"], "effort": known["efforts"][0]}
+    candidate["groups"]["codex"]["env"] = {"OPENAI_API_KEY": "ollama"}
+    candidate["groups"]["codex"]["cli_config"] = {"model_provider": "ollama", "model_providers.ollama.base_url": "http://server:11434/v1", "disable_response_storage": True}
+    resp = put(v, {"config": candidate, "version": out["version"]})
+    assert resp.status == 200, resp.body
+    written = (tmp_path / ".meld.toml").read_text()
+    assert "[groups.codex.env]" in written and 'OPENAI_API_KEY = "ollama"' in written
+    assert '"model_providers.ollama.base_url" = "http://server:11434/v1"' in written and "disable_response_storage = true" in written
+    again = body(get(v, "/api/config"))["config"]["groups"]["codex"]
+    assert again["env"] == {"OPENAI_API_KEY": "ollama"} and again["cli_config"]["disable_response_storage"] is True

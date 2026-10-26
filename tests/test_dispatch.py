@@ -766,3 +766,20 @@ def test_dispatch_fast_forwards_a_reused_worktree_to_what_a_person_pushed(tmp_pa
     third = dispatch(ctx, 11, adapter=FakeAdapter(), now=NOW)
     assert third["branch_refresh"] == "current"
     wait_for_exit(third["pid"])
+
+
+def test_a_groups_own_environment_and_cli_settings_reach_the_worker_but_never_its_credentials(tmp_path):
+    """Plan 28: [groups.<g>.env] rides into the scrubbed worker environment and [groups.<g>.cli_config] into the launch
+    spec; a guarded name in env (MELD_*, GIT_*, GH_*, GITHUB_*) is dropped rather than letting a group hand a worker
+    a token or re-point its git identity."""
+    from dataclasses import replace
+    fake, ctx, repo, origin = make_product(tmp_path)
+    claim_issue_11(fake)
+    group = replace(ctx.cfg.groups["claude"], env={"ANTHROPIC_BASE_URL": "http://server:11434", "GH_TOKEN": "smuggled", "GIT_AUTHOR_NAME": "nope"},
+                    cli_config={"model": "qwen3-coder"})
+    ctx.cfg = replace(ctx.cfg, groups={**ctx.cfg.groups, "claude": group})
+    adapter = FakeAdapter(script=DONE_SCRIPT)
+    dispatch(ctx, 11, adapter=adapter, now=NOW)
+    spec = adapter.launches[0]
+    assert spec.env["ANTHROPIC_BASE_URL"] == "http://server:11434" and "GH_TOKEN" not in spec.env
+    assert spec.env["GIT_AUTHOR_NAME"] == "meld-claude-bot" and spec.cli_config == {"model": "qwen3-coder"}

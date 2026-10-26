@@ -69,3 +69,18 @@ def test_the_catalogue_carries_the_current_families():
         assert spec is not None and spec.tier == tier, (adapter, model)
     assert "xhigh" in reg.get("claude", "claude-opus-5-5").efforts and "ultra" in reg.get("codex", "gpt-6-astra").efforts
     assert "ultra" not in reg.get("codex", "gpt-6-luna").efforts and reg.validate("claude", "claude-sonnet-5-5", "xhigh") == []
+
+
+def test_the_products_own_catalogue_lays_over_the_packaged_one(tmp_path: Path):
+    """Plan 28: `.meld/models.toml` adds a local model (or redefines a packaged one) without touching the package."""
+    from meld.models import write_product_model
+    extra = tmp_path / ".meld" / "models.toml"
+    write_product_model(extra, "codex", "qwen3-coder:30b", tier="large", context_class="large", efforts=["low", "high"])
+    write_product_model(extra, "claude", "gpt-oss:20b", tier="medium", context_class="medium", efforts=["medium"])
+    write_product_model(extra, "codex", "qwen3-coder:30b", tier="medium", context_class="large", efforts=["low", "high"])   # replaced, not duplicated
+    text = extra.read_text()
+    assert text.count('[codex."qwen3-coder:30b"]') == 1 and '[claude."gpt-oss:20b"]' in text
+    reg = ModelRegistry.load(extra=extra)
+    assert reg.get("codex", "qwen3-coder:30b").tier == "medium" and reg.get("claude", "gpt-oss:20b").efforts == ("medium",)
+    assert reg.get("claude", "claude-sonnet-5") is not None                  # the packaged entries are still there
+    assert ModelRegistry.load(extra=tmp_path / "absent.toml").get("codex", "qwen3-coder:30b") is None

@@ -81,6 +81,11 @@ def find_config(start: Path) -> Path:
     raise ConfigError(f"no .meld.toml found from {start} upward; pass --config")
 
 
+def product_models_path(config_path: Path) -> Path:
+    """The product's own catalogue entries, beside its `.meld.toml`: `.meld/models.toml`."""
+    return config_path.parent / ".meld" / "models.toml"
+
+
 def load_context(config_path: Path | None = None, env: Mapping[str, str] | None = None, run=subprocess.run,
                  cwd: Path | None = None, models: ModelRegistry | None = None, adapter_for: Callable[[str], Adapter] = get_adapter,
                  app_post=None) -> Context:
@@ -112,5 +117,5 @@ def load_context(config_path: Path | None = None, env: Mapping[str, str] | None 
                 raise ConfigError(f"{g.token_env} is not set in the environment")
     gh = GitHub(cfg.repo_name, token=token, run=run, cache_dir=store.cache_dir, token_provider=provider)
     login = cfg.groups[party.group].bot if party.group else gh.viewer_login()
-    return Context(cfg=cfg, party=party, gh=gh, store=store, models=models or ModelRegistry.load(),
+    return Context(cfg=cfg, party=party, gh=gh, store=store, models=models or ModelRegistry.load(extra=product_models_path(path)),
                    repo_root=path.parent, actor_login=login, adapter_for=adapter_for, app_auth=app_auth)

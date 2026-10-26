@@ -57,7 +57,8 @@ class ClaudeAdapter:
             "--verbose",                       # claude -p refuses stream-json without it
             "--permission-mode", "bypassPermissions",
             "--strict-mcp-config", "--mcp-config", json.dumps(_MCP_CONFIG),
-            "--settings", json.dumps(settings_for(spec.role, spec.env)),
+            # The group's own settings go UNDER the framework's: hooks stay disabled, memory off, credentials blanked.
+            "--settings", json.dumps({**spec.cli_config, **settings_for(spec.role, spec.env)}),
             # user: installed skills (~/.claude/skills, plugin caches) load; hooks stay disabled and MCP stays empty via _SETTINGS/_MCP_CONFIG
             "--setting-sources", "user,project",
             "--max-turns", str(spec.max_turns),

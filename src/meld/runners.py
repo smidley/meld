@@ -13,7 +13,7 @@ from pathlib import Path
 from meld.adapters import Adapter, LaunchSpec
 from meld.assemble import BoardError, find_active_milestone
 from meld.atomic import write_atomic
-from meld.config import GroupConfig, Party
+from meld.config import GroupConfig, Party, extra_env
 from meld.dispatch import DispatchError
 from meld.github import GitHubError
 from meld.grammar import Header, compose
@@ -60,6 +60,7 @@ class RoleProcess:
 
 def role_env(ctx, group: GroupConfig, role: str, *, base_env: dict | None = None) -> dict[str, str]:
     env = dict(os.environ if base_env is None else base_env)
+    env.update(extra_env(group))   # the group's own variables (a model endpoint, say) under its identity, never over it
     env.update({"MELD_GROUP": group.name, "MELD_ROLE": role, "MELD_HOME": str(ctx.store.home)})
     return env
 
@@ -81,7 +82,7 @@ def launch_role(ctx, group: GroupConfig, adapter: Adapter, role: str, *, base_en
         prompt = role_prompt(role, ctx.cfg, group, ctx.repo_root, roster_entries=ctx.roster_entries(), launch_no=launch_no, reason=reason)
         spec = LaunchSpec(role=role, model=cfg_role.model, effort=cfg_role.effort, cwd=ctx.repo_root, prompt=prompt,
                           log_path=log_path, timeout_seconds=ctx.cfg.restart_hours * 3600, env=role_env(ctx, group, role, base_env=base_env),
-                          max_turns=ROLE_MAX_TURNS)
+                          max_turns=ROLE_MAX_TURNS, cli_config=dict(group.cli_config))
         proc = adapter.launch(spec)
     except OSError as e:
         raise DispatchError(f"cannot start {adapter.name}: {e}") from e

@@ -244,6 +244,8 @@ button.verb:hover { border-color: var(--accent); color: var(--accent); }
 #config-fields label > span { min-width: 0; white-space: normal; line-height: 1.2; }
 #config-fields input, #config-fields select { font: inherit; font-family: var(--mono); color: var(--fg); background: #222735;
   border: 1px solid var(--line); border-radius: 3px; padding: 1px 4px; min-width: 0; }
+#config-fields label.map { grid-column: 1 / -1; grid-template-columns: minmax(9rem, 0.6fr) minmax(7rem, 2.4fr); align-items: start; }
+#config-fields textarea { font: inherit; font-family: var(--mono); color: var(--fg); background: #222735; border: 1px solid var(--line); border-radius: 3px; padding: 2px 6px; resize: vertical; }
 #config-fields input[readonly] { color: var(--dim); background: transparent; border-color: transparent; }
 /* A field GET named as a key the schema does not define: it blocks every save until it is removed from the
    file by hand, so it is marked here rather than sitting among the settings looking editable. */

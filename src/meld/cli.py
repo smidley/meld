@@ -15,7 +15,7 @@ import click
 
 from meld import __version__
 from meld.actions import Refused, claim as do_claim, release as do_release
-from meld.adapters import UnknownAdapter, get_adapter
+from meld.adapters import ADAPTER_NAMES, UnknownAdapter, get_adapter
 from meld.appauth import AppAuthError
 from meld.assemble import BoardError
 from meld.audit import audit as do_audit, reopen as do_reopen
@@ -106,6 +106,32 @@ def models(ctx: click.Context, adapter: str | None) -> None:
         emit({"adapters": [_adapter_models(c, a) for a in c.models.adapters]}, ctx.obj["pretty"])
         return
     emit(_adapter_models(c, adapter), ctx.obj["pretty"])
+
+
+TIERS = ("small", "medium", "large")
+
+
+@main.command("add-model")
+@click.argument("adapter")
+@click.argument("model_id")
+@click.option("--tier", type=click.Choice(TIERS), required=True, help="Which budget tier a run of this model spends.")
+@click.option("--context", "context_class", type=click.Choice(TIERS), default="large", show_default=True, help="How much context it holds (sizes a task may be tagged).")
+@click.option("--efforts", default="low,medium,high", show_default=True, help="The effort levels the CLI accepts for it, cheapest first, comma-separated.")
+@click.pass_context
+def add_model(ctx: click.Context, adapter: str, model_id: str, tier: str, context_class: str, efforts: str) -> None:
+    """Add a model to the product's own catalogue (.meld/models.toml), e.g. a local model behind an endpoint."""
+    from meld.context import product_models_path
+    from meld.models import write_product_model
+    c = _load(ctx)
+    if adapter not in c.models.adapters and adapter not in ADAPTER_NAMES:
+        raise click.ClickException(f"unknown adapter {adapter!r}; known: {', '.join(ADAPTER_NAMES)}")
+    levels = [e.strip() for e in efforts.split(",") if e.strip()]
+    if not levels:
+        raise click.ClickException("--efforts needs at least one level")
+    path = product_models_path(ctx.obj["config_path"] or _guard(lambda: find_config(Path.cwd())))
+    write_product_model(path, adapter, model_id, tier=tier, context_class=context_class, efforts=levels)
+    emit({"added": {"adapter": adapter, "id": model_id, "tier": tier, "context_class": context_class, "efforts": levels}, "catalogue": str(path)},
+         ctx.obj["pretty"])
 
 
 @main.command()

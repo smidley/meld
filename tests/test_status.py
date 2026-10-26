@@ -221,7 +221,7 @@ def test_models_command_lists_every_adapter_for_a_human(project: Path, monkeypat
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
     assert "adapter" not in data
-    assert [a["adapter"] for a in data["adapters"]] == ["claude", "codex", "gemini", "grok"]
+    assert [a["adapter"] for a in data["adapters"]] == ["claude", "codex", "gemini", "grok", "antigravity"]
     assert any(m["id"] == "claude-sonnet-5" for m in data["adapters"][0]["models"])
     assert data["adapters"][1]["models"], "codex models are listed too"
 

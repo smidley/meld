@@ -25,6 +25,11 @@
 
 `uv run pytest -q` green with no warnings. Against the owner's Ollama server: a Codex group added from the page with the server's URL, a model named with `meld add-model`, `meld doctor` green for it, and one headless run.
 
+## The first real contact (added the same day)
+
+The owner installed Grok Build (grok 1.0.70) and Google's Antigravity CLI (agy 1.4.7) while this plan was open, so plan 25's carried item closed here. One read-only prompt through each (plan mode, a directory listing, a one-word reply) captured the real output: Grok's `streaming-messages-json` is Claude Code's stream-json format line for line, so `adapters/grok.py` now parses with the Claude parser and passes `-p -m --effort --output-format streaming-messages-json --always-approve --cwd --max-turns` (`--no-auto-update` is accepted but undocumented, so it is passed and not checked); `grok models` lists `grok-4.7` as the only model, which replaces `grok-build-0.1` in the catalogue, and is the login probe. Antigravity is a new adapter, `adapters/antigravity.py`: `agy -p --model --effort --output-format stream-json --dangerously-skip-permissions`, events `init`/`step_update`/`result` with an agent's text joined per step from its deltas, `agy models` as the login probe and the source of its six catalogue entries. Both fixtures under `tests/fixtures/transcripts/` are the probes' own lines, trimmed.
+
 ## Carried
 
 - The Ollama run itself, pending the server's URL and model.
+- The Gemini CLI adapter is still unverified (no `gemini` binary here); Antigravity is the Google CLI that is.

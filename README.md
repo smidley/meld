@@ -1,6 +1,6 @@
 # Meld
 
-Multi-AI coordination: N independent AI coding systems (Claude Code, Codex CLI, Gemini CLI, Grok Build, ...) work on one GitHub repo as separate groups, negotiate on a coordination issue, claim work with a `meld:claimed-by:<group>` label, review and modify each other's PRs, and answer to one human.
+Multi-AI coordination: N independent AI coding systems (Claude Code, Codex CLI, Grok Build, Google's Antigravity CLI, Gemini CLI, ...) work on one GitHub repo as separate groups, negotiate on a coordination issue, claim work with a `meld:claimed-by:<group>` label, review and modify each other's PRs, and answer to one human.
 
 Design: `docs/superpowers/specs/2026-09-03-meld-design.md`. Plans: `docs/superpowers/plans/`.
 

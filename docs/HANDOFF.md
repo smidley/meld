@@ -489,7 +489,9 @@ Plan: `docs/superpowers/plans/2026-10-26-plan-27-not-running.md`. `Viewer._refre
 
 Plan: `docs/superpowers/plans/2026-10-26-plan-28-any-endpoint.md`. `GroupConfig.env` and `.cli_config` (free tables; `_env_table`/`_settings_table` check shape, `FREE_GROUP_TABLES` keeps `unknown_keys` off their keys, `_group_lines` writes them with `_key` quoting a dotted key); `config.extra_env` drops guarded names and is applied in `runners.role_env` and `dispatch._launch` (after the scrub, under the worker's git and gh settings); `LaunchSpec.cli_config` is rendered by `codex.override_args` as `-c key=value` and merged under Claude's `--settings`. `ModelRegistry.load(extra=)` lays `.meld/models.toml` (`context.product_models_path`) over the package; `models.write_product_model` and `meld add-model` write it. The form: `mapField`/`parseMap` for the two tables on every card, `endpointSettings` for "Add a group" with a model server.
 
-**Known follow-ups:** the first run against the owner's Ollama server; the viewer reloads `.meld.toml` on change but not `.meld/models.toml`.
+The same day the owner installed Grok Build and Antigravity: `adapters/grok.py` was rewritten on the verified `streaming-messages-json` format (Claude Code's stream-json, parsed by the Claude parser; `grok models` as the login probe; `grok-4.7` in the catalogue) and `adapters/antigravity.py` added (`agy`; `init`/`step_update`/`result`, deltas joined per step; six catalogue entries from `agy models`). `ADAPTER_NAMES` is five. Fixtures are the probes' real lines.
+
+**Known follow-ups:** the first run against the owner's Ollama server; the Gemini CLI adapter remains doc-built; the viewer reloads `.meld.toml` on change but not `.meld/models.toml`.
 
 ## What is next
 

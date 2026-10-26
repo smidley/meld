@@ -22,7 +22,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from meld.actions import Refused
-from meld.adapters import UnknownAdapter
+from meld.adapters import ADAPTER_NAMES, UnknownAdapter
 from meld.appauth import AppAuthError
 from meld.assemble import BoardError
 from meld.atomic import write_atomic
@@ -495,7 +495,7 @@ class Viewer:
         # when `_canonical_config` fell back to the raw parse, which is otherwise invisible in the body.
         # Both are diagnosis, not settings: `PUT` ignores them exactly as it ignores `path`, `models`,
         # `note` and `version`, and `unknown_keys` is re-derived from the candidate on the way in.
-        payload = {"path": str(self.config_path), "config": config, "models": models,
+        payload = {"path": str(self.config_path), "config": config, "models": models, "adapters": list(ADAPTER_NAMES),
                    "note": self.CONFIG_NOTE, "version": config_version(raw),
                    "unknown": [dotted_key(k) for k in unknown_keys(parsed)]}
         if error is not None:

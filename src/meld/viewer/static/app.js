@@ -344,21 +344,13 @@ function arrowFor(svg) {
   }
   return `url(#${id})`;
 }
-function drawEdge(parent, x1, y1, x2, y2, label, { flowing = false } = {}) {
+function drawEdge(parent, x1, y1, x2, y2, { flowing = false } = {}) {
   // A cubic curve from the right edge of one node to the left edge of the next. A flowing edge carries moving dashes:
-  // that is the page's picture of communication in progress, in the direction it goes. The label sits as a pill
-  // three quarters of the way along, where curves into different targets have already parted.
+  // that is the page's picture of communication in progress, in the direction it goes. What the edge means is said
+  // by a pill on the card it enters (drawNode's `tag`), never by text on the edge, which overlapped whatever it crossed.
   const mx = (x1 + x2) / 2;
   const svg = parent.ownerSVGElement || parent;
   svgEl("path", { class: "edge" + (flowing ? " flowing" : ""), d: `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`, "marker-end": arrowFor(svg) }, parent);
-  if (label) {
-    const t = 0.72, u = 1 - t;
-    const px = u * u * u * x1 + 3 * u * u * t * mx + 3 * u * t * t * mx + t * t * t * x2;
-    const py = u * u * u * y1 + 3 * u * u * t * y1 + 3 * u * t * t * y2 + t * t * t * y2;
-    const w = label.length * 6.2 + 10;
-    svgEl("rect", { class: "pill", x: px - w / 2, y: py - 8, width: w, height: 15, rx: 7 }, parent);
-    svgText(parent, px, py + 3.5, label, "elabel").setAttribute("text-anchor", "middle");
-  }
 }
 function drawRing(parent, cx, cy, r, fraction, color) {
   // How far through its time a run is: a thin arc that fills clockwise from the top; red once it is past its deadline.
@@ -373,11 +365,17 @@ function runFraction(r) {
   if (!(start < end) || !now) return 0;
   return (now - start) / (end - start);
 }
-function drawNode(parent, x, y, w, h, color, title, sub, { live = false, onclick = null, ring = null } = {}) {
+function drawNode(parent, x, y, w, h, color, title, sub, { live = false, onclick = null, ring = null, tag = null } = {}) {
   const g = svgEl("g", {}, parent);
   const rect = svgEl("rect", { class: "node" + (live ? " live" : "") + (onclick ? " clickable" : ""), x, y, width: w, height: h, rx: 6,
                                ...(color ? { stroke: color, "stroke-width": live ? 2.5 : 1.5 } : {}) }, g);
   if (color) svgEl("rect", { x: x + 1, y: y + 1, width: 5, height: h - 2, rx: 3, fill: color }, g);
+  if (tag) {
+    // The relation this card has to the one before it, as a pill sitting on the card's top edge, right-aligned.
+    const pw = tag.length * 6.2 + 10;
+    svgEl("rect", { class: "pill", x: x + w - pw - 8, y: y - 8, width: pw, height: 15, rx: 7 }, g);
+    svgText(g, x + w - 8 - pw / 2, y + 3.5, tag, "elabel").setAttribute("text-anchor", "middle");
+  }
   const textW = ring == null ? w : w - 26;
   svgText(g, x + 12, y + (sub ? 18 : h / 2 + 4), clip(title, Math.floor(textW / 7)));
   if (sub) svgText(g, x + 12, y + 34, clip(sub, Math.floor(textW / 6.4)), "sub");
@@ -394,7 +392,7 @@ function drawMap(state) {
   const s = state.status || {};
   const groups = Object.keys(state.supervisors || {});
   const running = (s.runs || []).filter((r) => r.state === "running");
-  const rowH = 62, left = 8, groupW = 120, roleW = 160, workW = 200, gap = 26, gapW = 76;
+  const rowH = 62, left = 8, groupW = 120, roleW = 160, workW = 200, gap = 26, gapW = 40;
   const rows = Math.max(1, groups.length);
   const widest = Math.max(1, ...groups.map((g) => running.filter((r) => r.group === g).length));
   const width = left + groupW + gap + roleW + gapW + widest * (workW + 10) + 8;
@@ -413,15 +411,15 @@ function drawMap(state) {
       const ry = y + ri * 27;
       const liveRole = info.state === "alive";
       const r = drawNode(svg, rx, ry, roleW, 24, liveRole ? color : null, `${role} · ${info.frozen ? "frozen" : (info.state === "alive" ? "awake" : info.state)}`, null, { live: liveRole });
-      drawEdge(svg, node.x + node.w, node.y + node.h / 2, r.x, r.y + r.h / 2, "", { flowing: liveRole });
+      drawEdge(svg, node.x + node.w, node.y + node.h / 2, r.x, r.y + r.h / 2, { flowing: liveRole });
       ri++;
     }
     const wx = rx + roleW + gapW;
     running.filter((r) => r.group === g).forEach((r, k) => {
       const what = r.kind === "build" ? `building #${r.issue}` : `${r.kind === "audit" ? "auditing" : "reviewing"} PR #${r.issue}`;
       const w = drawNode(svg, wx + k * (workW + 10), y + 14, workW, 36, color, what, `${r.worker || r.kind} · ${r.model || ""}`, { live: true,
-                         ring: runFraction(r), onclick: r.kind === "build" ? () => openTask(r.issue) : () => showTranscript(r) });
-      drawEdge(svg, rx + roleW, y + 27 + 12, w.x, w.y + w.h / 2, k === 0 ? "dispatched" : "", { flowing: true });
+                         ring: runFraction(r), tag: "dispatched", onclick: r.kind === "build" ? () => openTask(r.issue) : () => showTranscript(r) });
+      drawEdge(svg, rx + roleW, y + 27 + 12, w.x, w.y + w.h / 2, { flowing: true });
     });
   });
 }
@@ -477,7 +475,7 @@ function drawTaskGraph(number) {
     .filter(([group]) => !checks.some((r) => r.kind === "audit" && r.pr === p.number && r.group === group))
     .map(([group, verdict]) => ({ pr: p.number, group, verdict })));
   const third = [...checks.map((r) => ({ run: r })), ...verdicts.map((v) => ({ verdict: v }))];
-  const colW = 200, gapX = 70, rowH = 60;
+  const colW = 200, gapX = 60, rowH = 64;
   const rows = Math.max(1, builds.length, prs.length, third.length);
   const width = 4 * (colW + gapX), height = rows * rowH + 10;
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
@@ -491,16 +489,16 @@ function drawTaskGraph(number) {
   const buildNodes = builds.map((r, i) => {
     const n = drawNode(svg, col(1), y(i, builds.length), colW, 44, colorFor("group", r.group), `${r.group} ${r.worker || "build"} · ${r.state === "running" ? "running" : (r.outcome || r.state)}`,
                        `${r.model || ""}/${r.effort || ""} · ${clock12(Date.parse(r.started_at || ""))}`,
-                       { live: r.state === "running", ring: r.state === "running" ? runFraction(r) : null, onclick: () => showTranscript(r) });
-    drawEdge(svg, root.x + root.w, root.y + root.h / 2, n.x, n.y + n.h / 2, "built by", { flowing: r.state === "running" });
+                       { live: r.state === "running", ring: r.state === "running" ? runFraction(r) : null, tag: "built by", onclick: () => showTranscript(r) });
+    drawEdge(svg, root.x + root.w, root.y + root.h / 2, n.x, n.y + n.h / 2, { flowing: r.state === "running" });
     return n;
   });
   const prNodes = prs.map((p, i) => {
     const state = [p.merged ? "merged" : p.state, p.checks !== "none" && `checks ${p.checks}`].filter(Boolean).join(" · ");
     const verdicts = [p.approvals.length && `approved by ${p.approvals.join(", ")}`, p.changes_requested.length && `changes: ${p.changes_requested.join(", ")}`].filter(Boolean).join(" · ");
-    const n = drawNode(svg, col(2), y(i, prs.length), colW, 44, p.merged ? "#3fb950" : null, `PR #${p.number} · ${state}`, verdicts || "awaiting review");
+    const n = drawNode(svg, col(2), y(i, prs.length), colW, 44, p.merged ? "#3fb950" : null, `PR #${p.number} · ${state}`, verdicts || "awaiting review", { tag: "opened" });
     const from = buildNodes[buildNodes.length - 1] || root;
-    drawEdge(svg, from.x + from.w, from.y + from.h / 2, n.x, n.y + n.h / 2, "opened");
+    drawEdge(svg, from.x + from.w, from.y + from.h / 2, n.x, n.y + n.h / 2);
     return [p.number, n];
   });
   third.forEach((item, i) => {
@@ -509,14 +507,15 @@ function drawTaskGraph(number) {
       const r = item.run;
       const n = drawNode(svg, col(3), yy, colW, 44, colorFor("group", r.group), `${r.group} ${r.kind} · ${r.state === "running" ? "running" : (r.outcome || r.state)}`,
                          `${r.worker || r.kind} · ${r.model || ""}/${r.effort || ""}`,
-                         { live: r.state === "running", ring: r.state === "running" ? runFraction(r) : null, onclick: () => showTranscript(r) });
+                         { live: r.state === "running", ring: r.state === "running" ? runFraction(r) : null, tag: r.kind === "audit" ? "audited by" : "reviewed by",
+                           onclick: () => showTranscript(r) });
       const [, from] = prNodes.find(([num]) => num === r.pr) || [null, root];
-      drawEdge(svg, from.x + from.w, from.y + from.h / 2, n.x, n.y + n.h / 2, r.kind === "audit" ? "audited by" : "reviewed by", { flowing: r.state === "running" });
+      drawEdge(svg, from.x + from.w, from.y + from.h / 2, n.x, n.y + n.h / 2, { flowing: r.state === "running" });
     } else {
       const v = item.verdict;
-      const n = drawNode(svg, col(3), yy, colW, 44, colorFor("group", v.group), `${v.group} audit · ${v.verdict}`, "on the thread");
+      const n = drawNode(svg, col(3), yy, colW, 44, colorFor("group", v.group), `${v.group} audit · ${v.verdict}`, "on the thread", { tag: "audited by" });
       const [, from] = prNodes.find(([num]) => num === v.pr) || [null, root];
-      drawEdge(svg, from.x + from.w, from.y + from.h / 2, n.x, n.y + n.h / 2, "audited by");
+      drawEdge(svg, from.x + from.w, from.y + from.h / 2, n.x, n.y + n.h / 2);
     }
   });
 }
@@ -937,42 +936,148 @@ function linkModelAndEffort(modelInput, effortInput, cli) {
   });
 }
 
+// The form in plain words: a heading and one line of why per table, a label per key (the raw table and key stay on
+// hover and in dataset.path, which collectConfig walks). A table or key the schema gains but this list does not know
+// still renders, under its raw name.
+const WORDS = {
+  repo: ["Repository", "which GitHub repository meld runs on; set by meld setup", { name: "repository", default_branch: "default branch", private: "private repository" }],
+  humans: ["People", "GitHub logins who may act as the human: approve plans, answer asks, halt", { accounts: "GitHub logins" }],
+  review: ["Review rules", "what a pull request needs before it merges", { quorum: "approvals needed to merge", pingpong_cap: "review rounds before a person is asked", security_paths: "paths that also get a security review" }],
+  agreement: ["Agreements", "how long the groups may argue before a person decides", { amend_cap: "amendment rounds before DISAGREE" }],
+  budget: ["Budgets", "worker runs a milestone may spend, per model tier", { small: "small-tier runs", medium: "medium-tier runs", large: "large-tier runs", wallclock_hours: "wall-clock hours (not enforced yet)" }],
+  timeouts: ["Worker time", "how long one worker run may take, by task size", { S: "small task", M: "medium task", L: "large task" }],
+  polling: ["Polling", "how often the roles look at GitHub", { interval_seconds: "poll every (seconds)", wait_timeout_seconds: "wait at most (seconds)" }],
+  runners: ["Role schedule", "when a role is restarted, refreshed or nudged", { restart_hours: "restart roles every (hours)", roster_refresh_minutes: "refresh the roster every (minutes)", silence_grace_minutes: "silence allowed before a nudge (minutes)", summary_cadence_minutes: "STATUS summary every (minutes)", limit_retry_minutes: "retry after a usage limit (minutes)" }],
+  worker: ["Workers", "what one worker run gets", { log_tail_lines: "log lines quoted on failure", max_turns: "turns a run may take" }],
+  lease: ["Leases", "", { grace_minutes: "grace after a lease expires (minutes)" }],
+  audit: ["Audits", "when merged work is audited", { batch_merges: "merges per audit batch", batch_hours: "hours before a batch is due" }],
+  notify: ["Notifications", "a Slack nudge when something waits on you", { slack_dm_webhook_env: "environment variable holding the webhook", repeat_after_minutes: "repeat after (minutes)" }],
+  logs: ["Logs", "transcript storage on this machine", { max_bytes_per_run: "bytes kept per run", warn_total_mb: "warn above (MB in total)", warn_free_mb: "warn below (MB free)" }],
+  viewer: ["This page", "", { port: "port", open_browser: "open the browser on start" }],
+};
+const GROUP_WORDS = { cli: "CLI (which AI)", bot: "GitHub login it posts as", token_env: "environment variable holding its token", auth: "authentication (pat or app)",
+                      app_id: "GitHub App id", installation_id: "App installation id", private_key_env: "App key variable", private_key_file: "App key file",
+                      concurrency: "builds at once", review_concurrency: "reviews or audits at once", git_name: "git author name", git_email: "git author email" };
+const newGroups = new Set();   // groups added on this page and not yet saved: their identity is still editable
+
+function sectionHead(into, heading, why, raw) {
+  const h = text(document.createElement("h3"), heading);
+  h.title = raw;
+  into.append(h);
+  if (why) {
+    const p = text(document.createElement("p"), why);
+    p.className = "explain dim";
+    into.append(p);
+  }
+}
+
 function renderConfig() {
   const into = el("config-fields");
   into.replaceChildren();
   const cfg = configState.config;
-  for (const [table, values] of Object.entries(cfg)) {
-    if (table === "groups") continue;
+  const order = [...Object.keys(WORDS).filter((t) => t in cfg), ...Object.keys(cfg).filter((t) => t !== "groups" && !(t in WORDS))];
+  for (const table of order) {
+    const values = cfg[table];
+    if (!isTable(values)) continue;
     // an unknown table that holds nothing but sub-tables (e.g. a hand-added [notes.today]) renders no fields
     // below -- a heading over nothing is worse than no heading, so it is skipped too.
     const entries = Object.entries(values).filter(([, value]) => !isTable(value));
     if (!entries.length) continue;
-    into.append(text(document.createElement("h3"), `[${table}]`));
+    const [heading, why, labels] = WORDS[table] || [`[${table}]`, "", {}];
+    sectionHead(into, heading, why, `[${table}]`);
     for (const [key, value] of entries) {
-      // The heading above already names the table, so the label shows only the key -- see field()'s own
-      // `label` option. `path` (below) still carries the full dotted form for dataset.path and the title.
-      field(into, `${table}.${key}`, value, { readonly: READONLY_TABLES.includes(table), label: key });
+      field(into, `${table}.${key}`, value, { readonly: READONLY_TABLES.includes(table), label: labels[key] || key });
     }
   }
-  for (const [name, group] of Object.entries(cfg.groups || {})) {
-    const entries = Object.entries(group).filter(([key, value]) => key !== "orchestrator" && key !== "pm" && !isTable(value));
-    const roles = ["orchestrator", "pm"].filter((role) => group[role]);
-    if (!entries.length && !roles.length) continue;   // ditto, one level down: a group with nothing to show
-    into.append(text(document.createElement("h3"), `[groups.${name}]`));
-    for (const [key, value] of entries) {
-      field(into, `groups.${name}.${key}`, value, { readonly: READONLY_GROUP_FIELDS.includes(key), label: key });
-    }
-    for (const role of roles) {
-      const r = group[role];
-      // Relative to [groups.<name>], not to the role: "orchestrator.model" and "orchestrator.effort" are
-      // still distinct after truncation, which "groups.claude.orche…" for both was not (R25).
-      const modelInput = field(into, `groups.${name}.${role}.model`, r.model,
-        { choices: modelChoices(group.cli), label: `${role}.model` });
-      const effortInput = field(into, `groups.${name}.${role}.effort`, r.effort,
-        { choices: effortChoices(group.cli, r.model), label: `${role}.effort` });
-      linkModelAndEffort(modelInput, effortInput, group.cli);
+  sectionHead(into, "The AIs", "each group is one AI: a CLI on this machine, posting to GitHub as its own login. Add one for another AI once its CLI is "
+                               + "installed and logged in; remove one to stop configuring it. A running group keeps its old settings until it restarts.", "[groups]");
+  for (const [name, group] of Object.entries(cfg.groups || {})) renderGroup(into, name, group);
+  addGroupRow(into);
+}
+
+function renderGroup(into, name, group) {
+  const fresh = newGroups.has(name);
+  const card = document.createElement("div");
+  card.className = "gcard" + (fresh ? " fresh" : "");
+  card.dataset.group = name;
+  const head = document.createElement("div");
+  head.className = "ghead";
+  const title = text(document.createElement("span"), name);
+  title.className = "strong";
+  title.style.color = colorFor("group", name);
+  head.append(title, text(document.createElement("span"), fresh ? "new, not saved yet" : `runs the ${group.cli || "?"} CLI`));
+  const remove = document.createElement("button");
+  remove.type = "button";
+  text(remove, "Remove");
+  remove.title = "drop this group from the file on Save";
+  remove.addEventListener("click", () => { card.classList.toggle("removed"); text(remove, card.classList.contains("removed") ? "Keep" : "Remove"); });
+  head.append(remove);
+  card.append(head);
+  const entries = Object.entries(group).filter(([key, value]) => key !== "orchestrator" && key !== "pm" && !isTable(value));
+  for (const [key, value] of entries) {
+    const input = field(card, `groups.${name}.${key}`, value, { readonly: !fresh && READONLY_GROUP_FIELDS.includes(key), label: GROUP_WORDS[key] || key,
+                                                                 choices: key === "cli" && fresh ? adapterNames() : null });
+    if (key === "cli" && fresh) {
+      // Another CLI means another catalogue: the roles take that CLI's defaults and the card redraws.
+      input.addEventListener("change", () => {
+        configState.config = collectConfig().config;
+        const g = configState.config.groups[name], t = newGroupTemplate(name, input.value);
+        Object.assign(g, { cli: t.cli, orchestrator: t.orchestrator, pm: t.pm });
+        renderConfig();
+      });
     }
   }
+  for (const role of ["orchestrator", "pm"].filter((r) => group[r])) {
+    const r = group[role];
+    const modelInput = field(card, `groups.${name}.${role}.model`, r.model, { choices: modelChoices(group.cli), label: `${role} model` });
+    const effortInput = field(card, `groups.${name}.${role}.effort`, r.effort, { choices: effortChoices(group.cli, r.model), label: `${role} effort` });
+    linkModelAndEffort(modelInput, effortInput, group.cli);
+  }
+  into.append(card);
+}
+
+function adapterNames() {
+  return configState.adapters || Object.keys(configState.models || {});
+}
+
+function newGroupTemplate(name, cli) {
+  // A group block with the catalogue's defaults for that CLI: its first large-tier model at a high effort for both
+  // roles, the conventional bot login and token variable, and the default concurrencies. Everything is editable.
+  const specs = (configState.models || {})[cli] || [];
+  const pick = specs.find((s) => s.tier === "large") || specs[0] || { id: "", efforts: ["medium"] };
+  const effort = pick.efforts.includes("high") ? "high" : pick.efforts[pick.efforts.length - 1];
+  return { cli, bot: `meld-${name}-bot`, token_env: `MELD_TOKEN_${name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`, auth: "pat",
+           concurrency: 8, review_concurrency: 4, orchestrator: { model: pick.id, effort }, pm: { model: pick.id, effort } };
+}
+
+function addGroupRow(into) {
+  const row = document.createElement("div");
+  row.className = "gadd";
+  const name = document.createElement("input");
+  name.placeholder = "name, e.g. gemini";
+  name.title = "lowercase letters, digits, - or _; at most 32; it becomes the meld:claimed-by:<name> label";
+  const cli = document.createElement("select");
+  options(cli, adapterNames());
+  const button = document.createElement("button");
+  button.type = "button";
+  text(button, "Add a group");
+  button.title = "a new [groups.<name>] block with that CLI's catalogue defaults; set its login and token variable, then Save";
+  button.addEventListener("click", () => {
+    const n = name.value.trim();
+    if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(n) || n === "human" || n === "joint") {
+      showConfigResult("a group name is lowercase letters, digits, - or _, at most 32 characters, and never human or joint", false);
+      return;
+    }
+    if (configState.config.groups && configState.config.groups[n]) { showConfigResult(`a group named ${n} already exists`, false); return; }
+    configState.config = collectConfig().config;   // keep every edit made so far
+    configState.config.groups = configState.config.groups || {};
+    configState.config.groups[n] = newGroupTemplate(n, cli.value);
+    newGroups.add(n);
+    renderConfig();
+    showConfigResult(`added ${n}: check its GitHub login and token variable, then Save`, null);
+  });
+  row.append(name, cli, button);
+  into.append(row);
 }
 
 function collectConfig() {
@@ -1005,6 +1110,7 @@ function collectConfig() {
     else if (input.dataset.kind === "list") node[key] = input.value.split(",").map((s) => s.trim()).filter(Boolean);
     else node[key] = input.value;
   }
+  for (const card of el("config-fields").querySelectorAll(".gcard.removed")) delete out.groups[card.dataset.group];
   return { config: out, invalid };
 }
 
@@ -1048,6 +1154,7 @@ function configTrouble() {
 async function loadConfig() {
   try {
     configState = await getJSON("/api/config");
+    newGroups.clear();
     renderConfig();
     const trouble = configTrouble();
     if (trouble) showConfigResult(`${configState.path} — ${trouble}`, false);

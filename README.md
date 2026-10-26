@@ -1,6 +1,6 @@
 # Meld
 
-Multi-AI coordination: N independent AI coding systems (Claude Code, Codex CLI, ...) work on one GitHub repo as separate groups, negotiate on a coordination issue, claim work with a `meld:claimed-by:<group>` label, review and modify each other's PRs, and answer to one human.
+Multi-AI coordination: N independent AI coding systems (Claude Code, Codex CLI, Gemini CLI, Grok Build, ...) work on one GitHub repo as separate groups, negotiate on a coordination issue, claim work with a `meld:claimed-by:<group>` label, review and modify each other's PRs, and answer to one human.
 
 Design: `docs/superpowers/specs/2026-09-03-meld-design.md`. Plans: `docs/superpowers/plans/`.
 
@@ -93,7 +93,7 @@ A product can ship its own skills as `.meld/skills/<name>/SKILL.md`, with `name`
 
 A brief lists only the skills that match the task: first whatever the orchestrator pinned with `meld tag N --skill <name>` (repeatable — it writes `skill:<name>` labels and refuses a name that is on neither the installed nor the product list), then every skill whose name or description shares a term with the issue's or PR's own title and body.
 
-At dispatch, the product's skills are copied into the worktree under the directory the launching CLI looks in — `.claude/skills/` for Claude Code, `.agents/skills/` for Codex — and each copied skill is added to the clone's shared `info/exclude` by its own exact path. So each CLI finds them where it natively looks, nothing is written to your home directory, and a worker cannot commit the copies — while a project skill you or a worker write by hand in that same directory stays perfectly visible to git. A worker whose CLI cannot invoke a skill by name is told to open the `SKILL.md` at the path the brief prints.
+At dispatch, the product's skills are copied into the worktree under the directory the launching CLI looks in — `.claude/skills/` for Claude Code, `.agents/skills/` for Codex, `.gemini/skills/` for Gemini CLI (Grok Build has no such directory) — and each copied skill is added to the clone's shared `info/exclude` by its own exact path. So each CLI finds them where it natively looks, nothing is written to your home directory, and a worker cannot commit the copies — while a project skill you or a worker write by hand in that same directory stays perfectly visible to git. A worker whose CLI cannot invoke a skill by name is told to open the `SKILL.md` at the path the brief prints.
 
 ## Doctor
 

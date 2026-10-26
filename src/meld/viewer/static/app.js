@@ -103,21 +103,28 @@ function boardRow(into, id, what, legal, keys) {
   into.append(row);
 }
 
+let lastBoard = "";
 function renderBoard(s) {
+  // Rebuilding every row on every poll swallowed a click that landed mid-rebuild and dropped focus from a control;
+  // most polls change nothing, so a board identical to the one already drawn is left alone.
+  const key = JSON.stringify([s.issues, s.pulls, s.coordination && s.coordination.agreements]);
+  if (key === lastBoard) return;
+  lastBoard = key;
   const issues = el("issues");
   issues.replaceChildren();
   for (const i of s.issues || []) {
-    const held = [i.status, i.claimed_by && `claimed by ${i.claimed_by}`, i.worker, i.challenged && "challenged"];
+    const held = [i.status, i.claimed_by && `claimed by ${i.claimed_by}`, i.worker && `worker ${i.worker}`, i.challenged && "challenged"];
     boardRow(issues, `#${i.number}`, `${i.title} — ${held.filter(Boolean).join(", ")}`, i.legal,
              { ref: `#${i.number}`, number: i.number });
   }
   const pulls = el("pulls");
   pulls.replaceChildren();
   for (const p of s.pulls || []) {
-    const how = [p.merged ? "merged" : p.state, p.issue && `closes #${p.issue}`,
+    // A failing or pending check is the usual reason a merge button is missing, so the row says so.
+    const how = [p.merged ? "merged" : p.state, p.issue && `closes #${p.issue}`, !p.merged && (p.checks === "pending" || p.checks === "failure") && `checks ${p.checks}`,
                  p.approvals.length && `approved by ${p.approvals.join(", ")}`,
                  p.changes_requested.length && `changes requested by ${p.changes_requested.join(", ")}`];
-    boardRow(pulls, `#${p.number}`, how.filter(Boolean).join(", "), p.legal, { ref: `#${p.number}`, number: p.number });
+    boardRow(pulls, `#${p.number}`, `${p.title} — ${how.filter(Boolean).join(", ")}`, p.legal, { ref: `#${p.number}`, number: p.number });
   }
   const agreements = el("agreements");
   agreements.replaceChildren();
@@ -507,6 +514,12 @@ function renderState(state) {
   nh.replaceChildren();
   for (const item of s.needs_human || []) {
     const line = text(document.createElement("span"), `needs human: #${item.issue} ${item.title} (${item.age_minutes}m)`);
+    line.className = "bad";
+    nh.append(line);
+  }
+  // The non-fatal read problems `meld status` warns a PM about (a corrupt run record, an unreadable result file).
+  for (const err of s.state_errors || []) {
+    const line = text(document.createElement("span"), `state error: ${err}`);
     line.className = "bad";
     nh.append(line);
   }

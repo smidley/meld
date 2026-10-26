@@ -103,7 +103,7 @@ def audit_summary(board: Board, cfg: Config, actor: Actor, now: datetime) -> dic
     # vacuous truth read as "milestone 1 is already complete" to the first live run's PM.
     complete = bool(board.issues) and all(i.state == "closed" for i in board.issues.values())
     if actor.group is None:
-        return {"pending": [], "merges_pending": 0, "oldest_pending_hours": None, "due": False, "milestone_complete": complete}
+        return {"pending": [], "merges_pending": 0, "oldest_pending_hours": None, "due": False, "milestone_complete": complete, "challenged": []}
     pending = sorted((p for p in board.pulls.values()
                       if p.merged and not p.memory and cfg.group_for_bot(p.author) is not None      # a human's PR is not worker output
                       and party_of_login(cfg, p.author) != actor.group
@@ -111,9 +111,13 @@ def audit_summary(board: Board, cfg: Config, actor: Actor, now: datetime) -> dic
                      key=lambda p: p.number)
     ages = [_age_minutes(p.merged_at, now) for p in pending if p.merged_at]
     hours = round(max(ages) / 60, 1) if ages else None
-    due = bool(pending) and (len(pending) >= cfg.audit_batch_merges or (hours is not None and hours >= cfg.audit_batch_hours) or complete)
+    # An audit a CHALLENGE asks for is due at once: a pending PR, or the issue it closed, under an open challenge (handoff residual 7).
+    challenged = [p.number for p in pending
+                  if board.is_challenged(f"#{p.number}") or (p.issue_number is not None and board.is_challenged(f"#{p.issue_number}"))]
+    due = bool(pending) and (len(pending) >= cfg.audit_batch_merges or (hours is not None and hours >= cfg.audit_batch_hours) or complete
+                             or bool(challenged))
     return {"pending": [p.number for p in pending], "merges_pending": len(pending), "oldest_pending_hours": hours, "due": due,
-            "milestone_complete": complete}
+            "milestone_complete": complete, "challenged": challenged}
 
 
 def build_status(ctx, now: datetime | None = None) -> tuple[dict, Board]:

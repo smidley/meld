@@ -31,6 +31,7 @@ from meld.gitops import (
     git,
     head_sha,
     noreply_email,
+    is_ancestor,
     push_branch,
     remove_worktree,
     slugify,
@@ -695,7 +696,13 @@ def _collect_build(ctx, board: Board, group: GroupConfig, rec: RunRecord, issue,
                                                f"Worker summary: {_pr_body_text(result.summary)}"))
         ctx.store.write_run(replace(rec, collected=True))
         return {"collected": number, "outcome": "no_change", "pr": existing.number}
-    push_branch(wt, rec.branch, ctx.gh.token)
+    # A worker that rebased onto the default branch (as decision drift-1 asks) made its branch non-fast-forward, and the
+    # first live run's collect failed on it twice until a PM force-pushed by hand. The PR's branch is rewritten only
+    # when the new head really sits on the current default branch, and only while origin/<branch> is still where this
+    # worktree last saw it (--force-with-lease), so a reviewer's push-fix nobody here has fetched is refused, not lost.
+    rebased = (existing is not None and existing.state == "open"
+               and not is_ancestor(wt, f"origin/{rec.branch}") and is_ancestor(wt, f"origin/{ctx.cfg.default_branch}"))
+    push_branch(wt, rec.branch, ctx.gh.token, force_with_lease=rebased)
     # Worker text enters the PR body: strip its power to close arbitrary issues (only our Closes line may).
     body = f"Closes #{number}\n\n{_pr_body_text(result.summary)}\n\nverified-by: {_pr_body_text(result.verified_by)}"
     if existing is not None and existing.state == "open":

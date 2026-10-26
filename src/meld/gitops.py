@@ -97,18 +97,31 @@ def is_dirty(path: Path, run: RunFn = subprocess.run) -> bool:
     return bool(git(["status", "--porcelain"], path, run))
 
 
-def push_branch(path: Path, branch: str, token: str | None, run: RunFn = subprocess.run, base_env: dict | None = None) -> None:
+def is_ancestor(path: Path, ancestor: str, descendant: str = "HEAD", run: RunFn = subprocess.run) -> bool:
+    """True when `ancestor` is reachable from `descendant`; False when it is not, and when either ref does not exist."""
+    try:
+        git(["merge-base", "--is-ancestor", ancestor, descendant], path, run)
+    except GitError:
+        return False
+    return True
+
+
+def push_branch(path: Path, branch: str, token: str | None, run: RunFn = subprocess.run, base_env: dict | None = None,
+                force_with_lease: bool = False) -> None:
     """Push HEAD to origin/<branch>. The refspec is HEAD:refs/heads/<branch> rather than the bare branch name so a
     detached checkout (a review worktree) pushes what it has, not whatever the clone's local branch points at;
     --set-upstream is harmless when detached (there is no branch to configure). With a token, git authenticates
     through an inline helper that reads MELD_PUSH_TOKEN from the environment (the token never appears in argv);
-    without one, git's own configured credentials apply."""
+    without one, git's own configured credentials apply. `force_with_lease` rewrites origin/<branch> only while it is
+    still at the commit this checkout's remote-tracking ref recorded, so a push nobody here has fetched (a reviewer's
+    push-fix) refuses the rewrite instead of being lost."""
     env = dict(os.environ if base_env is None else base_env)
     args: list[str] = []
     if token:
         env["MELD_PUSH_TOKEN"] = token
         args += ["-c", "credential.helper=", "-c", f"credential.helper={_CREDENTIAL_HELPER}"]
-    git([*args, "push", "--set-upstream", "origin", f"HEAD:refs/heads/{branch}"], path, run, env=env)
+    lease = ["--force-with-lease"] if force_with_lease else []
+    git([*args, "push", *lease, "--set-upstream", "origin", f"HEAD:refs/heads/{branch}"], path, run, env=env)
 
 
 def remove_worktree(repo_root: Path, path: Path, run: RunFn = subprocess.run) -> None:

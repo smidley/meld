@@ -7,7 +7,7 @@ import pytest
 from meld.actions import Refused
 from meld.dispatch import collect, dispatch, fenced, neutralise_closers, neutralise_memory_markers, tick
 from meld.memory import MARKER_RE
-from meld.gitops import remote_branch_exists, worktree_exists
+from meld.gitops import GitError, remote_branch_exists, worktree_exists
 from meld.results import BODY_LIMIT, TRUNCATED
 from tests.fakeadapter import FakeAdapter
 from tests.gitfixtures import sh
@@ -358,3 +358,57 @@ def test_collect_treats_an_unchanged_pr_head_as_no_change_and_keeps_the_issue_in
     note = issue_posts(fake, 11)[-1]
     assert note.startswith("Meld: `claude` worker reported done but pushed nothing new since PR #21's head") and "stays in progress" in note
     assert json.loads((tmp_path / "home" / "runs" / "claude" / "11.json").read_text())["collected"] is True
+
+
+def test_collect_pushes_a_rebased_retry_under_a_lease(tmp_path):
+    """Live-run residual 16: a worker that rebased onto main (decision drift-1) made its branch non-fast-forward, and
+    collect failed twice until a PM force-pushed by hand. Collect now rewrites the PR's branch with --force-with-lease
+    when the new head sits on the current default branch -- and still refuses when origin/<branch> moved under it,
+    because a reviewer's push-fix nobody here has fetched must not be lost."""
+    from tests.productfixtures import fixture
+    fake, ctx, repo, origin = make_product(tmp_path)
+    claim_issue_11(fake)
+    routes_for_labels(fake, 11)
+    fake.route("POST", R + "pulls", {"number": 21, "html_url": "https://github.com/acme/widgets/pull/21"})
+    out = dispatch(ctx, 11, adapter=FakeAdapter(script=DONE_SCRIPT), now=NOW)
+    wait_for_exit(out["pid"])
+    assert collect(ctx, 11, now=NOW)["outcome"] == "done"
+    rec_path = tmp_path / "home" / "runs" / "claude" / "11.json"
+    rec = json.loads(rec_path.read_text())
+    wt, branch = Path(rec["worktree"]), "meld/11-add-health-endpoint"
+    first = sh(["git", "rev-parse", "HEAD"], wt)
+    # main moves on and the retry (simulated here) rebases the branch onto it: the same one commit, a new head, no fast-forward
+    (repo / "CHANGELOG.md").write_text("moved on\n")
+    sh(["git", "add", "CHANGELOG.md"], repo)
+    sh(["git", "commit", "-q", "-m", "docs: changelog"], repo)
+    sh(["git", "push", "-q", "origin", "main"], repo)
+    sh(["git", "fetch", "-q", "origin"], wt)
+    sh(["git", "rebase", "-q", "origin/main"], wt)
+    rebased = sh(["git", "rev-parse", "HEAD"], wt)
+    assert rebased != first
+    pr = {"number": 21, "title": "Add health endpoint", "state": "open", "merged_at": None, "user": {"login": "meld-claude-bot"},
+          "head": {"ref": branch, "sha": first}, "labels": [], "body": "Closes #11\n\nfirst attempt"}
+    fake.route("GET", R + "pulls", fixture("pulls.json") + [pr])
+    fake.route("GET", R + "pulls/21/reviews", [])
+    fake.route("GET", R + "pulls/21/commits", [{"sha": first, "author": {"login": "meld-claude-bot"}, "committer": {"login": "meld-claude-bot"}}])
+    fake.route("GET", R + "pulls/21/files", [{"filename": "health.py", "status": "added"}])
+    fake.route("GET", R + f"commits/{first}/check-runs", fixture("checkruns_abc123.json"))
+    fake.route("GET", R + f"commits/{first}/status", {"state": "pending", "statuses": []})
+    fake.route("PATCH", R + "pulls/21", {"number": 21})
+    rec_path.write_text(json.dumps({**rec, "collected": False}))
+    assert collect(ctx, 11, now=NOW) == {"collected": 11, "outcome": "done", "pr": 21, "commits": 1}
+    assert sh(["git", "rev-parse", f"refs/heads/{branch}"], origin) == rebased
+    # A reviewer's push-fix lands on origin/<branch> from another clone; this worktree has not fetched it. The next
+    # rewrite (an amend here) is refused by the lease, and the remote branch keeps the fix.
+    other = tmp_path / "other"
+    sh(["git", "clone", "-q", str(origin), str(other)], tmp_path)
+    sh(["git", "config", "user.name", "Reviewer"], other)
+    sh(["git", "config", "user.email", "reviewer@example.com"], other)
+    tree = sh(["git", "rev-parse", f"{rebased}^{{tree}}"], other)
+    fix = sh(["git", "commit-tree", tree, "-p", rebased, "-m", "reviewer push-fix"], other)
+    sh(["git", "push", "-q", "origin", f"{fix}:refs/heads/{branch}"], other)
+    sh(["git", "commit", "-q", "--amend", "--no-edit", "--allow-empty"], wt)
+    rec_path.write_text(json.dumps({**rec, "collected": False}))
+    with pytest.raises(GitError, match="stale info|rejected"):
+        collect(ctx, 11, now=NOW)
+    assert sh(["git", "rev-parse", f"refs/heads/{branch}"], origin) == fix

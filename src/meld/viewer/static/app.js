@@ -446,7 +446,7 @@ function drawMap(state) {
   groups.forEach((g, i) => {
     const y = i * rowH + 4, color = colorFor("group", g);
     const sup = (state.supervisors || {})[g] || {};
-    const WORDS = { alive: "running", dead: "stopped", unknown: "not running here" };
+    const WORDS = { alive: "running", dead: "stopped", unknown: "not started" };
     const node = drawNode(svg, left, y, groupW, 52, color, g, WORDS[sup.state] || sup.state || "", { live: sup.state === "alive" });
     const roles = ((state.processes || {})[g] || {}).roles || {};
     const rx = left + groupW + gap;
@@ -466,6 +466,28 @@ function drawMap(state) {
       drawEdge(svg, rx + roleW, y + 27 + 12, w.x, w.y + w.h / 2, { flowing: true });
     });
   });
+}
+
+function renderSetup(state) {
+  // A configured group that is not running, and what this machine says it still needs: the owner added two groups
+  // through the form and saw nothing, because a saved group starts nothing by itself.
+  const list = el("setup");
+  list.replaceChildren();
+  if (state.config_error) {
+    const li = text(document.createElement("li"), `the configuration file does not load, so the page keeps the last good one: ${state.config_error}`);
+    li.className = "bad";
+    list.append(li);
+  }
+  for (const [g, s] of Object.entries(state.setup || {})) {
+    if (s.running) continue;
+    const needs = [!s.cli_found && `install the ${s.cli} CLI${s.binary ? ` (\`${s.binary}\` is not on PATH)` : ""} and log in`,
+                   !s.token_set && `set ${s.token_env || "its token variable"} where meld run will see it`,
+                   "make sure its GitHub login exists and can write to the repository (meld doctor checks)"].filter(Boolean);
+    const li = text(document.createElement("li"), `${g} is configured but not running: ${needs.join(" · ")} · then start it in the product clone: `);
+    const code = text(document.createElement("code"), `meld run ${g} --detach`);
+    li.append(code);
+    list.append(li);
+  }
 }
 
 function drawBars(state) {
@@ -1124,7 +1146,8 @@ function addGroupRow(into) {
     configState.config.groups[n] = newGroupTemplate(n, cli.value);
     newGroups.add(n);
     renderConfig();
-    showConfigResult(`added ${n}: check its GitHub login and token variable, then Save`, null);
+    showConfigResult(`added ${n}: check its GitHub login and token variable, then Save. A saved group starts nothing by itself: install its CLI and log in, `
+                     + `create the login and token, then run meld run ${n} --detach; the header will say what is still missing.`, null);
   });
   row.append(name, cli, button);
   into.append(row);
@@ -1293,6 +1316,7 @@ function renderState(state) {
   lastStatus = state.status;
   drawBars(state);
   drawMap(state);
+  renderSetup(state);
   drawTimeline(state);
   renderDecisions(state.decisions);
   renderThread(state.thread);

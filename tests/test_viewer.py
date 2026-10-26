@@ -1250,3 +1250,41 @@ def test_every_reference_on_the_page_links_to_github(tmp_path):
                    "if (!href) return text(parent, value);"):
         assert marker in js, marker
     assert "lastStatus = s;   // first" in js                    # the repository is known before anything links through it
+
+
+def test_a_configured_group_that_is_not_running_says_what_it_still_needs(tmp_path):
+    """Plan 27: the owner added two groups through the form and saw nothing. /api/state now carries `setup` per group --
+    its CLI on PATH, its token in the environment, whether its supervisor runs -- and the header lists each group that is
+    configured but not running with what this machine says it needs and the command that starts it."""
+    v, _, _ = viewer_for(tmp_path, which=lambda binary: None, env={})
+    state = body(get(v, "/api/state"))
+    assert set(state["setup"]) == {"claude", "codex"} and state["config_error"] is None
+    for g, s in state["setup"].items():
+        assert s["running"] is False and s["cli_found"] is False and s["token_set"] is False and s["token_env"].startswith("MELD_TOKEN_")
+    found = viewer_for(tmp_path, which=lambda binary: "/usr/local/bin/" + binary, env={"MELD_TOKEN_CLAUDE": "x", "MELD_TOKEN_CODEX": "y"})[0]
+    assert all(s["cli_found"] and s["token_set"] for s in body(get(found, "/api/state"))["setup"].values())
+    html, js = get(v, "/").body.decode(), get(v, "/static/app.js").body.decode()
+    assert 'id="setup"' in html
+    for marker in ("function renderSetup", "is configured but not running", "meld run ${g} --detach", "state.config_error", "install the ${s.cli} CLI"):
+        assert marker in js, marker
+
+
+def test_the_page_picks_up_a_group_saved_to_the_file_without_a_restart(tmp_path):
+    """The form writes the file; the page used to keep the configuration it started with until a restart, so a group
+    saved there was invisible. The state route re-reads the file when its modification time changes, keeps the last
+    good configuration when the new file does not load, and says so."""
+    import os
+    v, _, _ = viewer_for(tmp_path, state_ttl=0, which=lambda binary: None, env={})
+    path = tmp_path / ".meld.toml"
+    assert set(body(get(v, "/api/state"))["supervisors"]) == {"claude", "codex"}
+    later = path.stat().st_mtime + 2
+    path.write_text(path.read_text() + "\n[groups.gemini]\ncli = \"gemini\"\nbot = \"meld-gemini-bot\"\ntoken_env = \"MELD_TOKEN_GEMINI\"\n"
+                    "[groups.gemini.orchestrator]\nmodel = \"gemini-3-pro-preview\"\neffort = \"default\"\n"
+                    "[groups.gemini.pm]\nmodel = \"gemini-3-pro-preview\"\neffort = \"default\"\n")
+    os.utime(path, (later, later))
+    state = body(get(v, "/api/state"))
+    assert "gemini" in state["supervisors"] and state["setup"]["gemini"]["cli"] == "gemini" and state["setup"]["gemini"]["running"] is False
+    path.write_text("this is not toml = [")
+    os.utime(path, (later + 2, later + 2))
+    broken = body(get(v, "/api/state"))
+    assert "gemini" in broken["supervisors"] and broken["config_error"] and ".meld.toml" in broken["config_error"]

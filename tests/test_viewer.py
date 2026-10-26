@@ -1095,3 +1095,18 @@ def test_the_page_shows_narration_by_default_and_a_card_jumps_to_its_turn(tmp_pa
     assert "showTurn" in js and 'classList.add("narration")' in js and "innerHTML" not in js
     css = get(v, "/static/app.css").body.decode()
     assert "#streams.narration li.tool_call" in css
+
+
+def test_the_page_is_laid_out_as_header_decisions_conversation_work_and_a_tab_drawer(tmp_path):
+    """Plan 21: the page reads top to bottom as what is happening, what needs you, what the agents say beside the work
+    as lanes, and a tab row whose drawer holds the transcripts, pull requests, agreements, the bar and configuration."""
+    v, ctx, _ = viewer_for(tmp_path)
+    html = get(v, "/").body.decode()
+    for marker in ('id="headline"', 'id="supervisors"', 'id="decisions"', 'id="conversation"', 'id="work"', 'class="kanban"',
+                   'id="tabs"', 'id="drawer"', 'data-tab="streams"', 'data-tab="act"', 'data-tab="config"', 'id="bar"', 'id="config"'):
+        assert marker in html, marker
+    assert html.index('id="headline"') < html.index('id="decisions"') < html.index('id="conversation"') < html.index('id="work"') < html.index('id="tabs"')
+    js = get(v, "/static/app.js").body.decode()
+    assert "LANES" in js and "issueCard" in js and "openTab" in js and 'openTab("act")' in js and "innerHTML" not in js
+    css = get(v, "/static/app.css").body.decode()
+    assert "#issues.kanban" in css and "#drawer.closed" in css and "system-ui" in css

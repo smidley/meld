@@ -497,7 +497,9 @@ The same day the owner installed Grok Build and Antigravity: `adapters/grok.py` 
 
 Plan: `docs/superpowers/plans/2026-10-26-plan-29-journey.md`. `chat.journey(issue, status, now)` derives seven steps (claimed, built, pull request, reviewed, merged, audited, closed) as done/now/next with details, a `now` sentence and a `next` sentence from `meld status`'s JSON; `chat.journeys` and `chat.progress_line` (up to three open issues' `now`, else counts per step) ride in `/api/state` as `journeys` and `progress`. The page draws `.journey` (seven `.jstep` segments) and `.jnow` on each card and appends the progress line under the milestone bar; the board key includes the journeys so a run's ticking minutes redraw the card.
 
-**Known follow-ups:** the journey has no timestamps of its own (status carries none per issue); `meld chat` does not print it.
+**Two run-found fixes on the same branch.** `rules.participating_groups`/`needed_approvals`: the merge quorum is `min(review.quorum, N-1)` with `N` the groups that have spoken on the milestone's thread (every configured group until one has), because the owner's two configured-but-never-started groups had pushed the quorum to two with one possible approver and PR #55 could not merge; `meld status`'s `quorum` is the same number. And the needs-human card for a post that is not a credential ask now says what to do with each button (the owner: "it's unclear what I'm supposed to do here").
+
+**Known follow-ups:** the journey has no timestamps of its own (status carries none per issue); `meld chat` does not print it; the role prompt still quotes `cfg.effective_quorum`, which has no board to count participants from.
 
 ## What is next
 

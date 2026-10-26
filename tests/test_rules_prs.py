@@ -345,3 +345,17 @@ def test_review_dispatch_is_refused_for_a_head_the_group_already_reviewed():
     two = replace(one, reviews=one.reviews + (Review("meld-claude-bot", "APPROVED", "abc123", "2026-09-03T11:00:00Z"),))
     assert rule(mk_board(sec_cfg, pulls=[two]), sec_cfg, CLAUDE_PM, Verb.REVIEW, two) == (
         "claude already used both its review slots (reviewer and security) on head abc123; a new review needs a new head")
+
+
+def test_the_quorum_counts_only_the_groups_that_have_spoken():
+    """The second live run's owner added two groups through the form; neither had started or posted, yet both counted
+    toward the quorum, which climbed to two with one non-committer group able to approve, and no PR could merge."""
+    from meld.rules import needed_approvals, participating_groups
+    from tests.factories import CFG3, mk_comment
+    quiet = mk_board(CFG3)
+    assert participating_groups(quiet, CFG3) == frozenset(CFG3.groups) and needed_approvals(quiet, CFG3) == 2
+    spoken = mk_board(CFG3, comments=[mk_comment(CFG3, 1, "meld-claude-bot", "[claude] CONFIG\n\nx"),
+                                      mk_comment(CFG3, 2, "meld-codex-bot", "[codex] ROSTER\n\ny")])
+    assert participating_groups(spoken, CFG3) == frozenset({"claude", "codex"}) and needed_approvals(spoken, CFG3) == 1
+    pr = mk_pr(20, 13, committer="meld-claude-bot", approvals=("meld-codex-bot",), checks="green")
+    assert prule(replace(spoken, pulls={20: pr}), CODEX_PM, Verb.MERGE, pr) is None

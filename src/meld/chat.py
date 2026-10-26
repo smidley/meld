@@ -109,10 +109,14 @@ def decisions(board: Board, cfg: Config, actor: Actor, now: datetime) -> list[di
         out.append({"id": f"needs-human:{ref}", "kind": "needs_human", "ref": ref, "age_minutes": item["age_minutes"], "comment_id": item["comment_id"],
                     "title": (f"Issue {ref} needs you: {item['title']}" if item["issue"] is not None
                               else f"{item['party']} needs you{f' about {ref}' if ref else ''}: {item['title']}"),
-                    "summary": _lines(item["ask"]) or "(no ask was posted; see the issue)",
+                    "summary": (_lines(item["ask"]) or "(no ask was posted; see the issue)")
+                               + "\n\nWhat to do: if it asks for a credential, put it where it says, press Provided and say where (never the value). "
+                                 "If it reports something Meld got wrong or a stuck state, fix that (or ask Claude Code to), press Resolved and say what changed. "
+                                 "Either posts your reply on the thread for the agents to read.",
                     "choices": [{"label": "Provided", "body": {"verb": "post", "action": "PROVIDED", "ref": ref}, "needs_text": True,
-                                 "hint": "say where you put it (a variable or 1Password item), never the value"},
-                                {"label": "Resolved", "body": {"verb": "post", "action": "RESOLVED", "ref": ref}, "needs_text": True}]})
+                                 "hint": "one line for the agents: where you put it, or what changed"},
+                                {"label": "Resolved", "body": {"verb": "post", "action": "RESOLVED", "ref": ref}, "needs_text": True,
+                                 "hint": "one line for the agents: what changed"}]})
     for item in box["budget"]:
         ref = item["ref"]
         choice = ({"label": "Resolved", "body": {"verb": "post", "action": "RESOLVED", "ref": ref}, "needs_text": True} if ref

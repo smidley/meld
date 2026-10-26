@@ -14,6 +14,7 @@ from meld.rules import (
     approving_parties,
     committer_party,
     legal_agreement_verbs,
+    needed_approvals,
     outside_milestone,
     issue_verb_rules,
     pr_verb_rules,
@@ -84,7 +85,7 @@ def render_status(board: Board, cfg: Config, actor: Actor, models: ModelRegistry
     return {
         "repo": board.repo, "milestone": board.milestone, "coordination_issue": board.coordination_issue,
         "phase": board.phase, "halted": board.halted, "party": actor.party.label, "actor": actor.login,
-        "quorum": cfg.effective_quorum, "needs_human": needs_human,
+        "quorum": needed_approvals(board, cfg), "needs_human": needs_human,
         "budget": {"spent": board.spend, "cap": cfg.budget},
         "issues": issues, "pulls": pulls, "runs": runs,
         "coordination": {"comments": len(board.comments), "last_comment_id": max((c.id for c in board.comments), default=0),

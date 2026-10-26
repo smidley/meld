@@ -6,6 +6,7 @@ in process by the tests; `_Handler` and `serve` (at the end of this module) are 
 from __future__ import annotations
 
 import hashlib
+import os
 import hmac
 import json
 import secrets
@@ -26,7 +27,7 @@ from meld.adapters import ADAPTER_NAMES, UnknownAdapter
 from meld.appauth import AppAuthError
 from meld.assemble import BoardError
 from meld.atomic import write_atomic
-from meld.config import Config, ConfigError, dotted_key, dumps, unknown_keys
+from meld.config import Config, ConfigError, dotted_key, dumps, load_config, unknown_keys
 from meld.dispatch import DispatchError
 from meld.doctor import config_checks
 from meld.github import GitHubError
@@ -188,11 +189,15 @@ class Viewer:
                  sleep: Callable[[float], None] = time.sleep, alive: Callable[[int], bool] = pid_alive,
                  start_of: Callable[[int], str] = proc_start_of, disk_usage: Callable[[Path], object] = shutil.disk_usage,
                  state_ttl: float = STATE_TTL_SECONDS, interval: float = 1.0, check_every: int = st.CHECK_EVERY,
-                 max_polls: int | None = None) -> None:
+                 max_polls: int | None = None, which: Callable[[str], str | None] = shutil.which,
+                 env: Mapping[str, str] | None = None) -> None:
         self.ctx = ctx
         self.token = token
         self.port = port
         self.config_path = config_path
+        self.which, self.env = which, (os.environ if env is None else env)
+        self._config_stamp = self._config_mtime()
+        self._config_error: str | None = None
         self.now, self.clock, self.sleep = now, clock, sleep
         self.alive, self.start_of, self.disk_usage = alive, start_of, disk_usage
         self.state_ttl, self.interval, self.check_every, self.max_polls = state_ttl, interval, check_every, max_polls
@@ -247,7 +252,43 @@ class Viewer:
                 self._state_cache = (self.clock(), resp)
             return resp
 
+    def _config_mtime(self) -> int | None:
+        try:
+            return self.config_path.stat().st_mtime_ns if self.config_path else None
+        except OSError:
+            return None
+
+    def _refresh_config(self) -> None:
+        """Re-read `.meld.toml` when it changed on disk, so a group saved through the form (or by hand) is on the page
+        without a restart -- the second live run's owner added two groups and saw nothing. A file that no longer loads
+        leaves the loaded configuration in place and is reported as `config_error`; the human's context holds no
+        group credentials, so a new group costs this read nothing."""
+        stamp = self._config_mtime()
+        if stamp is None or stamp == self._config_stamp:
+            return
+        self._config_stamp = stamp
+        try:
+            self.ctx.cfg = load_config(self.config_path)   # type: ignore[arg-type]
+            self._config_error = None
+        except (ConfigError, ValueError, AttributeError, TypeError, OSError) as e:
+            self._config_error = f"{self.config_path}: {e}"
+
+    def _setup(self, cfg, supervisors: dict) -> dict:
+        """What each configured group needs before it can run, from this machine alone: its CLI on PATH, its token in
+        this process's environment (an App group carries no token), and whether its supervisor is running."""
+        out = {}
+        for g in cfg.groups.values():
+            try:
+                binary: str | None = self.ctx.adapter_for(g.cli).version_argv()[0]
+            except UnknownAdapter:
+                binary = None
+            out[g.name] = {"cli": g.cli, "binary": binary, "cli_found": bool(binary and self.which(binary)),
+                           "token_env": g.token_env, "token_set": g.is_app or bool(g.token_env and self.env.get(g.token_env)),
+                           "running": supervisors.get(g.name, {}).get("state") == "alive"}
+        return out
+
     def _build_state(self) -> Response:
+        self._refresh_config()
         home, cfg = self.ctx.store.home, self.ctx.cfg
         now = datetime.strptime(self.now(), _ISO_FMT).replace(tzinfo=timezone.utc)
         try:
@@ -265,6 +306,7 @@ class Viewer:
             free_mb = None
         return _json(200, {"status": status, "supervisors": supervisors, "frozen": frozen, "thread": thread_entries(board, last=THREAD_LAST),
                            "processes": processes(cfg, home, alive=self.alive, start_of=self.start_of),
+                           "setup": self._setup(cfg, supervisors), "config_error": self._config_error,
                            "decisions": (pending := decisions(board, cfg, self.ctx.actor(), now)), "headline": headline(status, pending),
                            "disk": {"free_mb": free_mb, "warn_free_mb": cfg.logs_warn_free_mb},
                            "logs": {"total_mb": total_bytes(home / "logs") // (1024 * 1024), "warn_total_mb": cfg.logs_warn_total_mb},

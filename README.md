@@ -14,7 +14,7 @@ Design: `docs/superpowers/specs/2026-09-03-meld-design.md`. Plans: `docs/superpo
 
 | Command | What it does |
 |---|---|
-| `meld status` | Board as JSON plus the legal actions for the calling party |
+| `meld status` | Board as JSON plus, per issue and PR, the `legal` verbs for the calling party and a `refused` map naming why each other verb is not legal right now |
 | `meld wait [--timeout S] [--interval S] [--filter KINDS]` | Block until the board changes, then print status with a `changes` list; `--filter` limits which change kinds count |
 | `meld claim N` | Claim a ready issue by labelling it `meld:claimed-by:<group>` (a human claims as `meld:claimed-by:human`); the first label wins, and a lost race removes only its own label |
 | `meld release N [--force]` | Return an issue to ready, removing every `meld:claimed-by:*` label on it; `--force` is human-only |
@@ -27,7 +27,7 @@ Design: `docs/superpowers/specs/2026-09-03-meld-design.md`. Plans: `docs/superpo
 | `meld review N` | Submit a collected reviewer verdict as a GitHub review plus a `meld/review/<group>` commit status; push-fix pushes the fix and asks the author group to re-review the new head; a verdict on a moved head is marked stale. On your own group's PR (after another group's push-fix) the verdict goes out as a comment review — GitHub refuses an approve from the PR author's account — and the `success` status is what counts toward the quorum |
 | `meld merge N` | Squash-merge a PR once the quorum (GitHub approvals on the head, plus the author group's `meld/review/<group>` `success` status), green checks, and no open challenge all hold, guarded by the head sha; an already-merged PR is a no-op success |
 | `meld audit N` | Post a collected auditor's `AUDIT #<pr> PASS|FAIL` verdict on the coordination issue; a `FAIL` makes `meld reopen` legal for that group |
-| `meld reopen N` | Return a closed issue to `ready` after your group's own `AUDIT ... FAIL`, quoting the findings |
+| `meld reopen N` | Return a closed issue to `ready` after your group's own `AUDIT ... FAIL`, quoting the findings; the FAIL must be newer than the issue's last close, so work closed since it was posted is audited before it can be reopened |
 | `meld reap N` | Remove a finished run's worktree and archive its record |
 | `meld tag N [--worker W] [--model M] [--effort E] [--size S] [--skill NAME]... [--scope GLOB]... [--may-delete PATH]... [--held CATEGORY]...` | Set the worker, model, effort, size, and `skill:` labels on an issue, and write its declarations: `--scope`/`--may-delete` replace the body's `## Scope` and `## May delete` sections (one single-line path per option), `--held` asks the human to authorize the category and then adds `meld:held:<category>` plus `meld:needs-human` |
 | `meld decide REF [--supersedes FILE]` | Record a verified `[joint] DECISION` as `.meld/decisions/NNNN-<slug>.md` through a memory PR; `--supersedes NNNN-<slug>.md` retires that earlier decision in the same PR |

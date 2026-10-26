@@ -197,6 +197,68 @@ function showResult(message, ok) {
   node.title = message;   // the line truncates (app.css); the full answer stays reachable on hover
 }
 
+async function postAction(payload) {
+  // The page's one write (spec 22): POST /api/action as the human. Returns what to tell the person: a success
+  // with the verb's result, a refusal verbatim (rule included -- summarising it would make the page a second
+  // authority on what is legal), or the transport's own failure.
+  let response;
+  try {
+    response = await fetch(api("/api/action"), { method: "POST", cache: "no-store",
+                                                headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+  } catch (e) {
+    return { ok: false, message: `${payload.verb}: ${e.message}` };
+  }
+  let out = {};
+  try { out = await response.json(); } catch (e) { out = {}; }
+  if (response.ok) return { ok: true, message: `${payload.verb} ok: ${JSON.stringify(out.result)}` };
+  if (out.refused) return { ok: false, message: `refused ${out.verb} ${out.target}: ${out.rule}` };
+  return { ok: false, message: `${payload.verb}: ${response.status} ${out.error || ""}` };
+}
+
+let lastDecisions = "";
+function renderDecisions(list) {
+  // Rebuilt only when the set changes, so a message being typed into a card survives the ten-second poll.
+  const key = JSON.stringify(list || []);
+  if (key === lastDecisions) return;
+  lastDecisions = key;
+  const root = el("decisions");
+  root.replaceChildren();
+  root.classList.toggle("hidden", !(list && list.length));
+  for (const d of list || []) {
+    const card = el("card").content.firstElementChild.cloneNode(true);
+    text(card.querySelector(".ctitle"), d.age_minutes != null ? `${d.title} (${d.age_minutes} min)` : d.title);
+    text(card.querySelector(".csummary"), d.summary);
+    const choices = card.querySelector(".cchoices");
+    const outcome = card.querySelector(".coutcome");
+    let input = null;
+    if (d.choices.some((c) => c.needs_text)) {
+      input = document.createElement("input");
+      input.placeholder = (d.choices.find((c) => c.hint) || {}).hint || "your message";
+      input.title = input.placeholder;
+      choices.append(input);
+    }
+    for (const c of d.choices) {
+      const b = text(document.createElement("button"), c.label);
+      b.type = "button";
+      b.addEventListener("click", async () => {
+        const payload = { party: "human", ...c.body };
+        if (c.needs_text) {
+          const message = (input && input.value.trim()) || "";
+          if (!message) { text(outcome, `${c.label} needs a message`).className = "coutcome bad"; return; }
+          payload.text = message;
+        }
+        for (const other of choices.querySelectorAll("button")) other.disabled = true;
+        text(outcome, `${c.label} …`).className = "coutcome dim";
+        const result = await postAction(payload);
+        text(outcome, result.message).className = "coutcome " + (result.ok ? "ok" : "bad");
+        if (result.ok) pollState(); else for (const other of choices.querySelectorAll("button")) other.disabled = false;
+      });
+      choices.append(b);
+    }
+    root.append(card);
+  }
+}
+
 async function runAction() {
   const action = el("action").value;
   const wants = FIELDS[action] || [];
@@ -218,29 +280,9 @@ async function runAction() {
   const button = el("run");
   button.disabled = true;
   try {
-    let response;
-    try {
-      response = await fetch(api("/api/action"), {
-        method: "POST", cache: "no-store",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-    } catch (e) {
-      showResult(`${action}: ${e.message}`, false);
-      return;
-    }
-    let out = {};
-    try { out = await response.json(); } catch (e) { out = {}; }
-    if (response.ok) {
-      showResult(`${action} ok: ${JSON.stringify(out.result)}`, true);
-      pollState();                     // the server dropped its cached state; show the moved board at once
-    } else if (out.refused) {
-      // Verbatim, rule included: the rule is the whole content of a refusal, and summarising it would make the
-      // page a second authority on what is legal.
-      showResult(`refused ${out.verb} ${out.target}: ${out.rule}`, false);
-    } else {
-      showResult(`${action}: ${response.status} ${out.error || ""}`, false);
-    }
+    const result = await postAction(payload);
+    showResult(result.message, result.ok);
+    if (result.ok) pollState();        // the server dropped its cached state; show the moved board at once
   } finally {
     button.disabled = false;
   }
@@ -533,6 +575,7 @@ function renderState(state) {
   text(el("error"), "");
 
   groupOrder = Object.keys(state.supervisors || {});
+  renderDecisions(state.decisions);
   renderThread(state.thread);
   const sup = el("supervisors");
   sup.replaceChildren();

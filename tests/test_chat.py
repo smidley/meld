@@ -283,3 +283,49 @@ def test_thread_entries_are_the_thread_as_data(tmp_path):
     assert entries[0]["party"].startswith("[") and entries[0]["kind"] in ("group", "pm", "human", "joint")
     assert all(e["housekeeping"] == (e["verb"] in ("STATUS", "LEASE", "EXPIRED", "RELEASED", "RESUMED", "CONFIG", "ROSTER", "ROSTER-CHANGE", "LIMITED")) for e in entries)
     assert thread_entries(board, last=1) == entries[-1:] and thread_entries(board, last=0) == entries
+
+
+def test_decisions_present_everything_waiting_on_the_human_with_its_choices():
+    """Plan 18: the page's decision cards. Each pending item is one decision with the request bodies /api/action takes;
+    a choice is offered only when rules.py would allow it, and nothing here decides legality on its own."""
+    from dataclasses import replace
+    from meld.board import Challenge
+    from meld.chat import decisions
+    from meld.config import Party
+    from meld.rules import Actor
+    HUMAN = Actor(Party("human"), "empowerScott")
+    comments = [
+        mk_comment(CFG2, 1, "meld-codex-bot", "[codex] NEEDS-HUMAN #14\n\nCreate a Stripe sandbox key and put it in STRIPE_KEY"),
+        mk_comment(CFG2, 2, "meld-claude-bot", "[claude] BUDGET\n\nlarge tier exhausted"),
+        mk_comment(CFG2, 3, "meld-claude-bot", "[claude] PROPOSE ans-1\n\nA"),
+        mk_comment(CFG2, 4, "meld-codex-bot", "[codex] DISSENT ans-1\n\nB"),
+        mk_comment(CFG2, 5, "meld-claude-bot", "[joint] ANSWER ans-1 DISAGREE\n\n## Positions\n- claude: A\n- codex: B\n\nverified-by: x"),
+        mk_comment(CFG2, 6, "meld-codex-bot", "[codex] PROPOSE plan-add-1\n\n- id: x | title: X | worker: backend | model: claude-sonnet-5 | effort: low | size: S"),
+        mk_comment(CFG2, 7, "meld-claude-bot", "[claude] AGREE plan-add-1\n\nfine"),
+        mk_comment(CFG2, 8, "meld-codex-bot", "[joint] PLAN-ADD plan-add-1\n\n- id: x | title: X | worker: backend | model: claude-sonnet-5 | effort: low | size: S\n\nverified-by: y"),
+        mk_comment(CFG2, 9, "meld-codex-bot", "[codex] CHALLENGE #13\n\nthe CI claim names no command"),
+    ]
+    board = mk_board(CFG2, issues=[mk_issue(14, status="needs_human"), mk_issue(13, status="in_review", claimed_by="claude")], comments=comments)
+    board = replace(board, open_challenges=frozenset({"#13"}), challenges={"#13": Challenge("#13", "codex", 9, "2026-09-03T10:09:00Z")})
+    out = decisions(board, CFG2, HUMAN, NOW)
+    by_kind = {d["kind"]: d for d in out}
+    assert [d["kind"] for d in out] == ["needs_human", "budget", "disagree", "plan_add", "challenge"]
+    nh = by_kind["needs_human"]
+    assert nh["title"] == "Issue #14 needs you: Issue 14" and "Stripe sandbox key" in nh["summary"]
+    assert [(c["label"], c["body"], c["needs_text"]) for c in nh["choices"]] == [
+        ("Provided", {"verb": "post", "action": "PROVIDED", "ref": "#14"}, True), ("Resolved", {"verb": "post", "action": "RESOLVED", "ref": "#14"}, True)]
+    assert by_kind["budget"]["choices"][0]["body"] == {"verb": "post", "action": "DIRECTIVE", "ref": "dir-1"}   # an old BUDGET with no ref
+    assert [c["body"]["action"] for c in by_kind["disagree"]["choices"]] == ["APPROVE", "DIRECTIVE", "AMEND"] and "claude: A" in by_kind["disagree"]["summary"]
+    assert by_kind["plan_add"]["choices"] == [{"label": "Acknowledge", "body": {"verb": "plan-ack", "ref": "plan-add-1"}, "needs_text": False}]
+    assert [c["body"] for c in by_kind["challenge"]["choices"]] == [{"verb": "challenge", "action": "uphold", "ref": "#13"}, {"verb": "challenge", "action": "dismiss", "ref": "#13"}]
+    assert "names no command" in by_kind["challenge"]["summary"] and "codex" in by_kind["challenge"]["title"]
+    # the plan awaiting approval, in planning, with a verified [joint] PLAN
+    plan = "- id: a | title: Add health endpoint | worker: backend | model: claude-sonnet-5 | effort: medium | size: S\n- id: b | title: Docs | worker: docs | model: claude-sonnet-5 | effort: low | size: S"
+    planning = mk_board(CFG2, phase="planning", comments=[
+        mk_comment(CFG2, 1, "meld-claude-bot", f"[claude] PROPOSE plan-3\n\n{plan}"),
+        mk_comment(CFG2, 2, "meld-codex-bot", "[codex] AGREE plan-3\n\nfine"),
+        mk_comment(CFG2, 3, "meld-claude-bot", f"[joint] PLAN plan-3\n\n{plan}\n\nverified-by: meld status")])
+    approve = decisions(planning, CFG2, HUMAN, NOW)
+    assert [d["kind"] for d in approve] == ["plan_approve"]
+    assert approve[0]["summary"] == "2 item(s): Add health endpoint; Docs" and approve[0]["choices"] == [{"label": "Approve the plan", "body": {"verb": "plan-approve"}, "needs_text": False}]
+    assert decisions(mk_board(CFG2), CFG2, HUMAN, NOW) == []

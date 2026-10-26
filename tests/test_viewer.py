@@ -1040,3 +1040,22 @@ def test_a_body_larger_than_the_cap_is_refused_at_the_transport(tmp_path):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+def test_state_carries_the_thread_and_the_page_has_a_conversation_panel(tmp_path):
+    """Plan 17: cross-agent communication on the page. /api/state carries the newest coordination comments as data
+    (oldest first, appended by id in the browser), and the page has the panel, the filter and the party colours --
+    all through textContent, never innerHTML."""
+    from meld.viewer.server import THREAD_LAST
+    v, ctx, _ = viewer_for(tmp_path)
+    state = body(get(v, "/api/state"))
+    thread = state["thread"]
+    assert isinstance(thread, list) and thread and len(thread) <= THREAD_LAST
+    assert [t["id"] for t in thread] == sorted(t["id"] for t in thread)
+    assert {"id", "at", "party", "kind", "group", "verb", "ref", "qualifier", "text"} <= set(thread[0])
+    html = get(v, "/").body.decode()
+    assert 'id="conversation"' in html and 'id="turns"' in html and 'id="convo-filter"' in html and 'id="streams"' in html
+    js = get(v, "/static/app.js").body.decode()
+    assert "renderThread" in js and "state.thread" in js and "colorFor" in js and "innerHTML" not in js
+    css = get(v, "/static/app.css").body.decode()
+    assert '#conversation[data-filter="quiet"] li.housekeeping' in css

@@ -268,3 +268,18 @@ def test_cli_thread_prints_the_newest_comments_oldest_first(tmp_path, monkeypatc
     whole = CliRunner().invoke(cli.main, ["--config", str(repo / ".meld.toml"), "thread", "--last", "0"], env=env)
     assert whole.exit_code == 0 and all(f"#{c.id} {c.created_at} " in whole.output for c in ok)
     assert whole.output.index(f"#{ok[0].id} ") < whole.output.index(f"#{ok[-1].id} ")
+
+
+def test_thread_entries_are_the_thread_as_data(tmp_path):
+    """Plan 17: the viewer's conversation panel reads the same thread `meld thread` prints, as data, oldest first."""
+    from meld.chat import thread_entries, thread_lines
+    from meld.status import build_status
+    fake, human, repo, origin = make_product(tmp_path, group=None)
+    _, board = build_status(human)
+    entries = thread_entries(board)
+    assert len(entries) == len(thread_lines(board)) >= 2
+    assert [e["id"] for e in entries] == sorted(e["id"] for e in entries)
+    assert {"id", "at", "party", "kind", "group", "verb", "ref", "qualifier", "text", "housekeeping", "agreement"} <= set(entries[0])
+    assert entries[0]["party"].startswith("[") and entries[0]["kind"] in ("group", "pm", "human", "joint")
+    assert all(e["housekeeping"] == (e["verb"] in ("STATUS", "LEASE", "EXPIRED", "RELEASED", "RESUMED", "CONFIG", "ROSTER", "ROSTER-CHANGE", "LIMITED")) for e in entries)
+    assert thread_entries(board, last=1) == entries[-1:] and thread_entries(board, last=0) == entries

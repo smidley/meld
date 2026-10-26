@@ -27,16 +27,17 @@
   <div id="needs-human" class="row"></div>
 </header>
 <section id="board-panel">
-  <div class="panel"><h2>Issues</h2><div id="issues"></div></div>
-  <div class="panel"><h2>Pull requests</h2><div id="pulls"></div></div>
-  <div class="panel"><h2>Agreements</h2><div id="agreements"></div></div>
+  <div class="panel"><h2>Issues <span class="hint">a verb button fills the bar below; nothing runs until Run</span></h2><div id="issues"></div></div>
+  <div class="panel"><h2>Pull requests <span class="hint">hover a row for why a verb is missing</span></h2><div id="pulls"></div></div>
+  <div class="panel"><h2>Agreements <span class="hint">what the groups proposed and settled</span></h2><div id="agreements"></div></div>
 </section>
 <form id="bar" autocomplete="off">
+  <span class="strong" title="Everything here is posted as you, the human party; the rules decide it exactly as on the CLI.">You, as the human:</span>
   <select id="action" aria-label="action"></select>
   <select id="verb" aria-label="header verb" class="hidden"></select>
-  <input id="ref" placeholder="ref (#13, plan-add-1)" aria-label="ref">
-  <input id="text" placeholder="message" aria-label="message">
-  <button id="run" type="submit">Run</button>
+  <input id="ref" placeholder="ref, e.g. #13 or plan-add-1" aria-label="ref">
+  <input id="text" placeholder="message (post, challenge, remember)" aria-label="message">
+  <button id="run" type="submit" title="Nothing runs until you press Run.">Run</button>
   <span id="result" class="dim"></span>
 </form>
 <details id="config">
@@ -54,7 +55,18 @@
     <span class="rverbs"></span>
   </div>
 </template>
-<main id="streams"></main>
+<main id="live">
+  <section id="conversation" class="column" data-filter="quiet">
+    <h2><span class="who">Conversation</span> <span class="hint">the coordination issue, live</span>
+      <select id="convo-filter" aria-label="conversation filter">
+        <option value="quiet">without housekeeping</option>
+        <option value="all">everything</option>
+        <option value="people">agreements and humans</option>
+      </select></h2>
+    <ol id="turns" class="events"></ol>
+  </section>
+  <div id="streams"></div>
+</main>
 <template id="column">
   <section class="column">
     <h2><span class="who"></span> <span class="live badge"></span> <span class="why dim"></span></h2>

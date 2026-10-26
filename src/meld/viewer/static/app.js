@@ -6,6 +6,16 @@ const KINDS = ["run_started", "message", "thinking", "tool_call", "tool_result",
                "usage_limit", "log_truncated", "cli_error", "raw"];
 const BADGE_STATES = ["alive", "dead", "unknown", "frozen", "reconnecting"];
 const STATE_EVERY_MS = 10000;
+// One colour per party, so who is talking reads at a glance in the conversation and on the transcript columns:
+// groups in configuration order, the human green, the framework's [joint] voice lilac.
+const PALETTE = ["#58a6ff", "#f0883e", "#a371f7", "#39c5cf", "#e3b341"];
+let groupOrder = [];
+function colorFor(kind, group) {
+  if (kind === "human") return "#3fb950";
+  if (kind === "joint") return "#d2a8ff";
+  const i = groupOrder.indexOf(group);
+  return PALETTE[(i < 0 ? 0 : i) % PALETTE.length];
+}
 const STREAMS_EVERY_MS = 5000;
 const columns = new Map();   // stream id -> {root, list, live, why, listed, liveness}
 // The verbs /api/action implements (spec 22): the routes this page has, which is a different axis from
@@ -107,6 +117,30 @@ function boardRow(into, id, what, legal, keys, refused) {
 }
 
 let lastBoard = "";
+let lastTurn = 0;
+function renderThread(turns) {
+  // Append what is new by comment id; never rebuild, so the list keeps its scroll position and only follows the
+  // newest turn while the reader is already at the bottom (the same rule the transcript columns use).
+  const list = el("turns");
+  const pinned = lastTurn === 0 || list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+  for (const t of turns || []) {
+    if (t.id <= lastTurn) continue;
+    lastTurn = t.id;
+    const li = document.createElement("li");
+    // `housekeeping` and `agreement` are the server's classification (chat.thread_entries): the page keeps no verb lists.
+    li.className = [t.kind, t.housekeeping && "housekeeping", t.agreement && "agreement"].filter(Boolean).join(" ");
+    li.title = `comment ${t.id}`;
+    const head = document.createElement("div");
+    head.className = "head";
+    const party = cell("party", t.party);
+    party.style.color = colorFor(t.kind, t.group);
+    head.append(party, cell("verb", [t.verb, t.ref, t.qualifier].filter(Boolean).join(" ")), cell("dim", (t.at || "").slice(0, 16).replace("T", " ")));
+    li.append(head, cell("body", t.text));
+    list.append(li);
+  }
+  if (pinned) list.scrollTop = list.scrollHeight;
+}
+
 function renderBoard(s) {
   // Rebuilding every row on every poll swallowed a click that landed mid-rebuild and dropped focus from a control;
   // most polls change nothing, so a board identical to the one already drawn is left alone.
@@ -132,7 +166,8 @@ function renderBoard(s) {
   const agreements = el("agreements");
   agreements.replaceChildren();
   for (const [ref, a] of Object.entries((s.coordination && s.coordination.agreements) || {})) {
-    boardRow(agreements, ref, a.joint_verified ? `${a.status} (verified)` : a.status, a.legal, { ref });
+    const settled = a.joint_verified ? `${a.status} (verified)` : a.status;
+    boardRow(agreements, ref, [a.proposer && a.summary ? `${a.proposer}: ${a.summary}` : a.summary, settled].filter(Boolean).join(" — "), a.legal, { ref });
   }
 }
 
@@ -497,6 +532,8 @@ function renderState(state) {
   text(el("stamp"), `as of ${state.generated_at}`);
   text(el("error"), "");
 
+  groupOrder = Object.keys(state.supervisors || {});
+  renderThread(state.thread);
   const sup = el("supervisors");
   sup.replaceChildren();
   for (const [group, live] of Object.entries(state.supervisors)) {
@@ -594,6 +631,7 @@ function renderStreams(list) {
     col.listed = true;
     col.liveness = s.liveness;
     text(col.who, s.kind === "role" ? `${s.group} / ${s.role}` : `${s.group} / ${s.kind} #${s.issue}`);
+    col.who.style.color = colorFor("group", s.group);
   }
   for (const [id, col] of columns) {
     if (seen.has(id)) continue;
@@ -622,6 +660,7 @@ async function pollStreams() {
   setTimeout(pollStreams, STREAMS_EVERY_MS);
 }
 
+el("convo-filter").addEventListener("change", (e) => { el("conversation").dataset.filter = e.target.value; });
 options(el("action"), Object.keys(FIELDS));
 showFields();
 el("action").addEventListener("change", showFields);

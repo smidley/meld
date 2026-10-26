@@ -8,6 +8,7 @@ from typing import Callable, Iterable
 
 from meld.actions import Refused
 from meld.board import Board
+from meld.grammar import AGREEMENT_VERBS
 from meld.challenge import challenge
 from meld.config import Config
 from meld.dispatch import DispatchError
@@ -20,6 +21,9 @@ from meld.waiting import wait_for_change
 _ASK_RE = re.compile(r"^ask-(\d+)$")
 _DIR_RE = re.compile(r"^dir-(\d+)$")
 _REF_RE = re.compile(r"^(#\d+|[a-z][a-z0-9]*(?:-[a-z0-9]+)*-\d+)$")   # #13, budget-1, plan-add-2, audit-40-1
+# The verbs a reader catching up can skip: liveness and bookkeeping the framework and the PMs post on a cadence. The
+# viewer's conversation panel hides them by default; the classification is made here so the page keeps no verb lists.
+HOUSEKEEPING_VERBS = frozenset({"STATUS", "LEASE", "EXPIRED", "RELEASED", "RESUMED", "CONFIG", "ROSTER", "ROSTER-CHANGE", "LIMITED"})
 
 
 def _ordered(board: Board):
@@ -89,6 +93,16 @@ def thread_lines(board: Board, last: int | None = None) -> list[str]:
         comments = comments[-last:] if last > 0 else comments
     return [f"#{c.id} {c.created_at} " + f"{c.header.party.label} {c.header.verb} {c.header.ref or ''} {c.header.qualifier or ''}".strip()
             + f"\n{c.text}" for c in comments]
+
+
+def thread_entries(board: Board, last: int | None = None) -> list[dict]:
+    """The same thread as `thread_lines`, as data for the viewer's conversation panel: oldest first, the newest `last`."""
+    comments = _ordered(board)
+    if last is not None and last > 0:
+        comments = comments[-last:]
+    return [{"id": c.id, "at": c.created_at, "party": c.header.party.label, "kind": c.header.party.kind, "group": c.header.party.group,
+             "verb": c.header.verb, "ref": c.header.ref, "qualifier": c.header.qualifier, "text": c.text,
+             "housekeeping": c.header.verb in HOUSEKEEPING_VERBS, "agreement": c.header.verb in AGREEMENT_VERBS} for c in comments]
 
 
 def _new_comments(board: Board, after_id: int, verbose: bool) -> list[str]:

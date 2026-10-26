@@ -206,11 +206,17 @@ const LANES = [["To do", ["planned", "ready", "unlabeled"]], ["In progress", ["i
                ["In review", ["in_review"]], ["Done", ["closed"]]];
 let prevLane = new Map();   // issue number -> lane name at the last render, so a card that moved can slide in
 let liveRuns = [];          // the running worker runs from the last state, by group and issue
+let laneFlowUntil = new Map();   // lane name -> when its flow line stops running fast after a card arrived
 function issueCard(i, lane) {
   const card = document.createElement("div");
+  card.dataset.issue = String(i.number);
   const runs = liveRuns.filter((r) => r.issue === i.number && r.kind === "build");
+  const pr = (lastPulls || []).find((p) => p.issue === i.number && p.state === "open");
+  const checks = pr ? liveRuns.filter((r) => r.pr === pr.number && (r.kind === "review" || r.kind === "audit")) : [];
+  const moved = prevLane.has(i.number) && prevLane.get(i.number) !== lane;
+  if (moved) laneFlowUntil.set(lane, Date.now() + 60000);
   card.className = "icard" + (i.status === "blocked" || i.status === "needs_human" || i.challenged ? " attention" : "")
-                 + (runs.length ? " working" : "") + (prevLane.has(i.number) && prevLane.get(i.number) !== lane ? " moved" : "");
+                 + (runs.length || checks.length ? " working" : "") + (moved ? " moved" : "");
   const head = document.createElement("div");
   head.className = "ihead";
   const title = cell("ititle", i.title);
@@ -227,13 +233,21 @@ function issueCard(i, lane) {
   const flags = [i.worker, i.status === "planned" && "planned", i.status === "blocked" && "blocked",
                  i.status === "needs_human" && "needs a person", i.challenged && "challenged"].filter(Boolean);
   if (flags.length) badges.append(text(document.createElement("span"), (i.claimed_by ? " · " : "") + flags.join(" · ")));
-  for (const r of runs) {
-    const line = cell("iactivity", `${r.group}'s ${r.worker || "build"} worker is building this now`);
+  card.append(head, badges);
+  for (const r of [...runs, ...checks]) {
+    // Who is on it, and how far through its time that run is: a bar that fills as the deadline nears.
+    const line = cell("iactivity", r.kind === "build" ? `${r.group}'s ${r.worker || "build"} worker is building this now`
+                                   : `${r.group}'s ${r.worker || r.kind} worker is ${r.kind === "audit" ? "auditing" : "reviewing"} PR #${r.pr} now`);
     line.style.color = colorFor("group", r.group);
-    card.append(head, badges, line);
+    const bar = document.createElement("div");
+    bar.className = "iprogress";
+    const fill = document.createElement("div");
+    fill.className = "ifill";
+    fill.style.width = `${Math.round(Math.min(1, runFraction(r)) * 100)}%`;
+    fill.style.background = colorFor("group", r.group);
+    bar.append(fill);
+    card.append(line, bar);
   }
-  if (!runs.length) card.append(head, badges);
-  const pr = (lastPulls || []).find((p) => p.issue === i.number && p.state === "open");
   if (pr) {
     const reviewing = liveRuns.filter((r) => r.pr === pr.number && (r.kind === "review" || r.kind === "audit")).map((r) => `${r.group} reviewing`);
     const state = [pr.approvals.length && `approved by ${pr.approvals.join(", ")}`, pr.changes_requested.length && `changes requested by ${pr.changes_requested.join(", ")}`,
@@ -574,14 +588,29 @@ function renderBoard(s) {
   // The work, as four lanes an issue moves through; a card is the issue, its holder in that group's colour, and
   // its verb buttons (hover the card for why the others are missing).
   const issues = el("issues");
+  // Where every card was before the rebuild, so one that changed lane can be seen travelling there (FLIP: draw it in
+  // its new place, then animate from the old place to none).
+  const before = new Map([...issues.querySelectorAll(".icard")].map((c) => [c.dataset.issue, c.getBoundingClientRect()]));
   issues.replaceChildren();
   for (const [name, statuses] of LANES) {
     const lane = document.createElement("div");
     lane.className = "lane";
     const items = (s.issues || []).filter((i) => statuses.includes(i.status));
     lane.append(text(document.createElement("h3"), `${name} · ${items.length}`));
+    const flow = document.createElement("div");
+    flow.className = "flowline";
+    flow.title = "work flows left to right; the line runs fast for a minute after a card arrives here";
+    lane.append(flow);
     for (const i of items) lane.append(issueCard(i, name));
+    flow.classList.toggle("flowing", (laneFlowUntil.get(name) || 0) > Date.now());
     issues.append(lane);
+  }
+  for (const card of issues.querySelectorAll(".icard.moved")) {
+    const old = before.get(card.dataset.issue);
+    if (!old || typeof card.animate !== "function") continue;
+    const now = card.getBoundingClientRect();
+    const dx = old.left - now.left, dy = old.top - now.top;
+    if (dx || dy) card.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }], { duration: 800, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" });
   }
   prevLane = new Map((s.issues || []).map((i) => [i.number, (LANES.find(([, statuses]) => statuses.includes(i.status)) || [""])[0]]));
   const pulls = el("pulls");

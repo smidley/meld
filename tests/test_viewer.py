@@ -1187,3 +1187,16 @@ def test_the_page_draws_its_overview_as_inline_svg(tmp_path):
     assert "innerHTML" not in js and "http://www.w3.org/2000/svg" in js
     state = body(get(v, "/api/state"))
     assert set(state["processes"]) == set(state["supervisors"]) and all("roles" in v for v in state["processes"].values())
+
+
+def test_the_work_lanes_show_the_flow(tmp_path):
+    """A card that changed lane travels there (FLIP through the Web Animations API, from where it was to where it is), each
+    lane carries a flow line drifting in the direction of work that races for a minute after a card arrives, and a card
+    with a worker on it shows a bar of that run's elapsed time. Motion is off under prefers-reduced-motion."""
+    v, ctx, _ = viewer_for(tmp_path)
+    js = get(v, "/static/app.js").body.decode()
+    for marker in ("flowline", "card.animate(", "getBoundingClientRect", "dataset.issue", "laneFlowUntil", "iprogress", "runFraction(r)"):
+        assert marker in js, marker
+    css = get(v, "/static/app.css").body.decode()
+    for marker in (".flowline", ".flowline.flowing", "@keyframes flow", "@keyframes settle", ".icard .iprogress", "prefers-reduced-motion"):
+        assert marker in css, marker

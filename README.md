@@ -70,6 +70,8 @@ Three things stop a worker from doing more than its task asked for. All three ar
 
 Widening a scope, allowing a deletion, or authorizing a category is an edit to the issue (or a `meld tag` call) plus, for a held category, a human's answer. There is no merge override.
 
+**What the guardrails are not.** A worker runs on this host as you, inside a git worktree, with your own permissions: it can read any file your account can read and run any command you can run. The scrubbed environment keeps GitHub credentials out of its hands, the scope and deletion checks decide what `meld merge` accepts, and the claim lock decides who may work an issue. They keep autonomous work on task; they are not a containment boundary. Run Meld on a machine, or under an account, whose contents you would hand to the model.
+
 A fourth guardrail protects memory itself: a wrong or stale decision or lesson is superseded, never edited or deleted, so no brief can quote something already known to be wrong (see Memory above).
 
 ## The human console

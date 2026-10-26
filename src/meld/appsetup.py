@@ -24,7 +24,8 @@ from meld.appauth import API, AppAuthError, _bearer, _http, jwt_for_app
 from meld.atomic import write_atomic
 from meld.config import Config, ConfigError, dumps
 
-PERMISSIONS = {"contents": "write", "issues": "write", "pull_requests": "write", "statuses": "write", "metadata": "read"}
+# The four a group needs plus checks (a review's verdict is also a check run; doctor's app-installation check asks for it) and metadata.
+PERMISSIONS = {"contents": "write", "issues": "write", "pull_requests": "write", "statuses": "write", "checks": "write", "metadata": "read"}
 
 
 def manifest(name: str, repo: str, redirect_url: str, setup_url: str) -> dict:

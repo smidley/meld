@@ -10,7 +10,7 @@
 
 1. **An App, not an account.** GitHub creates no user accounts by API, but it creates an App from a manifest with one click and installs it with a second, and an App group already mints its own tokens (plan 6a). *Not taken:* driving the account sign-up page.
 2. **The manifest flow, on the loopback.** `appsetup.AppSetup` serves one page that POSTs the manifest to GitHub, catches `/callback?code=` and converts it (`POST /app-manifests/{code}/conversions`, unauthenticated, the App's id, slug and private key in the answer), stores the key 0600 under `$MELD_HOME/keys/<group>.pem`, sends the person to `apps/<slug>/installations/new`, and catches the manifest's `setup_url` redirect `/installed?installation_id=` (falling back to `GET /app/installations` as the App). Only then is `[groups.<g>]` rewritten as an App group, through `Config.from_dict` and `dumps` like every write of the file.
-3. **Exactly the four permissions a group needs**, plus Metadata read, no webhook, private. The client secret in GitHub's answer is never stored.
+3. **Exactly the four permissions a group needs**, plus Checks write (a review's verdict is also a check run) and Metadata read, no webhook, private. The client secret in GitHub's answer is never stored.
 4. **The group must already exist in the file** (the page's Add a group, or by hand); the command converts its identity and touches nothing else.
 
 ## Tasks

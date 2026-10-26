@@ -26,7 +26,7 @@ def flow(tmp_path: Path, **over) -> AppSetup:
 
 def test_the_manifest_asks_for_exactly_what_a_group_needs_and_no_webhook():
     m = manifest("meld-claude", "acme/widgets", "http://127.0.0.1:5/callback", "http://127.0.0.1:5/installed")
-    assert m["default_permissions"] == PERMISSIONS == {"contents": "write", "issues": "write", "pull_requests": "write", "statuses": "write", "metadata": "read"}
+    assert m["default_permissions"] == PERMISSIONS == {"contents": "write", "issues": "write", "pull_requests": "write", "statuses": "write", "checks": "write", "metadata": "read"}
     assert m["public"] is False and m["default_events"] == [] and m["hook_attributes"]["active"] is False
     assert m["redirect_url"].endswith("/callback") and m["setup_url"].endswith("/installed") and m["url"] == "https://github.com/acme/widgets"
 

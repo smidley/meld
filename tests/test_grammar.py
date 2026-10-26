@@ -111,3 +111,14 @@ def test_pm_lease_and_expired_verbs():
     assert parse_header("[codex:pm] EXPIRED #12", CFG) == Header(Party("pm", "codex"), "EXPIRED", "#12", None)
     assert parse_header("[codex] LEASE #12", CFG) is None
     assert validate(Header(Party("pm", "codex"), "LEASE", None, None), "until: x") == ["LEASE requires a ref"]
+
+
+def test_authorization_ignores_login_case():
+    """GitHub logins are case-insensitive (spec 21 item 20): a bot or human whose comment arrives under a differently
+    cased login is still the party `.meld.toml` names."""
+    assert is_authorized("Meld-Claude-Bot", Header(Party("group", "claude"), "ROSTER", None, None), CFG)
+    assert is_authorized("EMPOWERSCOTT", Header(Party("human"), "HALT", None, None), CFG)
+    assert is_authorized("MELD-CODEX-BOT", Header(Party("joint"), "PLAN", None, None), CFG)
+    assert not is_authorized("meld-codex-bot", Header(Party("group", "claude"), "ROSTER", None, None), CFG)
+    raw = {"id": 5, "user": {"login": "MELD-CLAUDE-BOT"}, "created_at": "2026-09-03T10:00:00Z", "body": "[claude] PROPOSE plan-1\n\nSplit it."}
+    assert parse_comment(raw, CFG).ok

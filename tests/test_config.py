@@ -409,3 +409,12 @@ def test_parse_duration_itself_still_accepts_zero():
     """The helper's contract is unchanged -- zero is a well-formed duration and its other callers are not
     under this plan's change. Pinned so the floor cannot be "tidied up" into `parse_duration` later."""
     assert parse_duration("0m") == 0 and parse_duration("0") == 0
+
+
+def test_logins_compare_case_insensitively(tmp_path):
+    """GitHub treats logins case-insensitively; an entry whose case differs from GitHub's canonical form used to
+    silently never match (spec 21 item 20). `is_party` is the one test the comment and event sweeps use."""
+    cfg = load_config(write(tmp_path, MINIMAL))
+    assert cfg.group_for_bot("Meld-Codex-Bot").name == "codex"
+    assert cfg.is_human("EMPOWERSCOTT") and cfg.is_party("empowerscott") and cfg.is_party("MELD-CLAUDE-BOT")
+    assert not cfg.is_party("nobody") and not cfg.is_human("meld-claude-bot")

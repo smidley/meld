@@ -168,8 +168,7 @@ def build_board(gh: GitHub, cfg: Config, runs: dict[str, dict[int, RunRecord]], 
         raise BoardError(f"coordination issue {coordination} not found in milestone {milestone} issues")
     coord_raw = coord_raw_list[0]
     comments = tuple(parse_comment(c, cfg) for c in gh.list_comments(coordination))
-    known = {g.bot for g in cfg.groups.values()} | set(cfg.humans)
-    ignored = sum(1 for c in comments if c.author not in known)
+    ignored = sum(1 for c in comments if not cfg.is_party(c.author))
     issues = {i["number"]: _issue(i) for i in raw_issues if i["number"] != coordination}
     pulls: dict[int, PullRequest] = {}
     for raw in gh.list_pulls(state="all"):

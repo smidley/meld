@@ -29,7 +29,7 @@ from meld.adapters import UnknownAdapter
 from meld.adapters.base import SCRUBBED_EXACT, SCRUBBED_PREFIXES
 from meld.appauth import AppAuthError, app_slug, load_pem, mint_installation_token
 from meld.atomic import write_atomic
-from meld.config import Config, GroupConfig
+from meld.config import Config, GroupConfig, same_login
 from meld.github import GitHub, GitHubError
 from meld.gitops import GitError, git, noreply_email, remove_worktree
 from meld.housekeeping import CI_RED_STATE
@@ -183,8 +183,8 @@ def run_checks(cfg: Config, repo_root: Path, *, env: Mapping[str, str], gh_facto
     # 1. gh's own login is a listed human
     try:
         me = gh_factory(None).viewer_login()
-        checks.append(Check("gh-login", me in cfg.humans, f"gh is logged in as {me}; humans: {', '.join(cfg.humans)}",
-                            "" if me in cfg.humans else "add the login to [humans].accounts or `gh auth switch`"))
+        checks.append(Check("gh-login", cfg.is_human(me), f"gh is logged in as {me}; humans: {', '.join(cfg.humans)}",
+                            "" if cfg.is_human(me) else "add the login to [humans].accounts or `gh auth switch`"))
     except GitHubError as e:
         checks.append(Check("gh-login", False, f"gh api user failed: {e}", "run `gh auth login`"))
     head_sha: str | None = None
@@ -238,8 +238,8 @@ def run_checks(cfg: Config, repo_root: Path, *, env: Mapping[str, str], gh_facto
                 pem = load_pem(env, group.private_key_env, group.private_key_file)
                 slug = app_slug(group.app_id, pem, get=app_get)  # type: ignore[arg-type]
                 login = f"{slug}[bot]"
-                checks.append(Check(f"app:{group.name}", login == group.bot, f"App {group.app_id} is {login}; configured bot is {group.bot}",
-                                    "" if login == group.bot else f"set [groups.{group.name}].bot = \"{login}\""))
+                checks.append(Check(f"app:{group.name}", same_login(login, group.bot), f"App {group.app_id} is {login}; configured bot is {group.bot}",
+                                    "" if same_login(login, group.bot) else f"set [groups.{group.name}].bot = \"{login}\""))
             except AppAuthError as e:
                 checks.append(Check(f"app:{group.name}", False, f"App auth failed: {e}", "check private_key_env/private_key_file and app_id"))
             if pem is not None:
@@ -281,9 +281,9 @@ def run_checks(cfg: Config, repo_root: Path, *, env: Mapping[str, str], gh_facto
             else:
                 try:
                     login = gh_factory(token).viewer_login()
-                    checks.append(Check(f"token:{group.name}", login == group.bot,
+                    checks.append(Check(f"token:{group.name}", same_login(login, group.bot),
                                         f"{group.token_env} belongs to {login}; configured bot is {group.bot}",
-                                        "" if login == group.bot else "mint the token from the bot account, or fix [groups.%s].bot" % group.name))
+                                        "" if same_login(login, group.bot) else "mint the token from the bot account, or fix [groups.%s].bot" % group.name))
                 except GitHubError as e:
                     login = None
                     checks.append(Check(f"token:{group.name}", False, f"{group.token_env}: gh api user failed: {e}", "check the token is valid and not expired"))
@@ -301,7 +301,7 @@ def run_checks(cfg: Config, repo_root: Path, *, env: Mapping[str, str], gh_facto
         checks += _group_config_checks(cfg, group, registry, adapter)
         # 7. token permissions (read probes; write only with --probe-status) -- App permissions come from the token response (step 3)
         if not group.is_app:
-            if token and login == group.bot and head_sha:
+            if token and login is not None and same_login(login, group.bot) and head_sha:
                 gh = gh_factory(token)
                 missing = []
                 for perm, call in (("Issues", lambda: gh.get(f"repos/{cfg.repo_name}/issues", {"per_page": 1}, use_cache=False)),

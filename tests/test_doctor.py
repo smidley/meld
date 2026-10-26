@@ -588,3 +588,10 @@ def test_doctor_summary_keeps_a_check_that_could_not_run_out_of_warnings(tmp_pat
     assert {"timeout-ceiling:codex", "disk-free"} <= set(s["not_measured"])
     assert not ({"timeout-ceiling:codex", "disk-free"} & set(s["warnings"]))
     assert all(c["measured"] is False for c in s["checks"] if c["name"] in s["not_measured"])
+
+
+def test_doctor_matches_a_bot_or_human_login_whatever_its_case(tmp_path):
+    """GitHub reports logins in its own canonical case; a `.meld.toml` entry that differs only by case is the same
+    account, not a wrong one (spec 21 item 20)."""
+    checks = by_name(run(tmp_path, fakes(claude_login="Meld-Claude-Bot", human="EmpowerScott")))
+    assert checks["token:claude"].ok is True and checks["gh-login"].ok is True and checks["token-permissions:claude"].ok is True

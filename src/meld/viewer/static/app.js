@@ -274,6 +274,22 @@ function issueCard(i, lane) {
                  i.status === "needs_human" && "needs a person", i.challenged && "challenged"].filter(Boolean);
   if (flags.length) badges.append(text(document.createElement("span"), (i.claimed_by ? " · " : "") + flags.join(" · ")));
   card.append(head, badges);
+  const j = lastJourneys[i.number];
+  if (j) {
+    // The issue's way from claimed to closed: seven segments, filled when done, pulsing for the step under way, dim for
+    // what is still to come; the server says what is happening now and what follows (chat.journey), the page prints it.
+    const strip = document.createElement("div");
+    strip.className = "journey";
+    for (const step of j.steps) {
+      const seg = document.createElement("span");
+      seg.className = `jstep ${step.state}`;
+      seg.title = `${step.name}${step.detail ? `: ${step.detail}` : ""}`;
+      text(seg, step.name);
+      strip.append(seg);
+    }
+    card.append(strip);
+    if (j.now || j.next) card.append(cell("jnow", [j.now && `now: ${j.now}`, j.next].filter(Boolean).join(" · ")));
+  }
   for (const r of [...runs, ...checks]) {
     // Who is on it, and how far through its time that run is: a bar that fills as the deadline nears.
     const line = cell("iactivity", r.kind === "build" ? `${r.group}'s ${r.worker || "build"} worker is building this now`
@@ -306,6 +322,7 @@ function issueCard(i, lane) {
   card.append(verbs);
   return card;
 }
+let lastJourneys = {};
 let lastPulls = [];
 let lastStatus = null;
 let lastThread = [];
@@ -496,7 +513,7 @@ function drawBars(state) {
   const done = issues.filter((i) => i.status === "closed").length;
   const pct = issues.length ? Math.round((done / issues.length) * 100) : 0;
   el("progress-fill").style.width = `${pct}%`;
-  text(el("progress-text"), issues.length ? `${done} of ${issues.length} issues done` : "no issues yet");
+  text(el("progress-text"), (issues.length ? `${done} of ${issues.length} issues done` : "no issues yet") + (state.progress ? ` · ${state.progress}` : ""));
   const bars = el("budget-bars");
   bars.replaceChildren();
   const cap = (s.budget || {}).cap || {};
@@ -674,7 +691,7 @@ function openTask(number) {
 function renderBoard(s) {
   // Rebuilding every row on every poll swallowed a click that landed mid-rebuild and dropped focus from a control;
   // most polls change nothing, so a board identical to the one already drawn is left alone.
-  const key = JSON.stringify([s.issues, s.pulls, s.coordination && s.coordination.agreements, s.runs]);
+  const key = JSON.stringify([s.issues, s.pulls, s.coordination && s.coordination.agreements, s.runs, lastJourneys]);
   if (key === lastBoard) return;
   lastBoard = key;
   liveRuns = (s.runs || []).filter((r) => r.state === "running");
@@ -1372,6 +1389,7 @@ function renderState(state) {
   groupOrder = Object.keys(state.supervisors || {});
   lastThread = state.thread || [];
   lastGenerated = state.generated_at || "";
+  lastJourneys = state.journeys || {};
   lastStatus = state.status;
   drawBars(state);
   drawMap(state);

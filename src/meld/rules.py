@@ -345,6 +345,21 @@ def _other_party_only(cfg: Config, actor: Actor, pr: PullRequest, verb: Verb) ->
     return None
 
 
+def participating_groups(board: Board, cfg: Config) -> frozenset[str]:
+    """The groups that have spoken on this milestone's coordination thread. A group in `.meld.toml` that has never posted
+    (added through the form, not started, no bot yet) is not a reviewer anyone can wait for: the second live run's owner
+    configured two such groups and the quorum climbed to two with only one non-committer group running, so no pull request
+    could merge. With nothing on the thread yet, every configured group counts."""
+    spoken = frozenset(c.header.party.group for c in board.comments
+                       if c.ok and c.header is not None and c.header.party.group in cfg.groups)
+    return spoken or frozenset(cfg.groups)
+
+
+def needed_approvals(board: Board, cfg: Config) -> int:
+    """`review.quorum`, never more than the participating groups less the one that committed the head (spec 13)."""
+    return max(1, min(cfg.review_quorum, len(participating_groups(board, cfg)) - 1))
+
+
 def _merge(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | None:
     if board.halted:
         return "HALT is in effect"
@@ -357,7 +372,7 @@ def _merge(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | No
     if pr.checks != "green":
         return f"required checks are {pr.checks}, not green"
     have = approving_parties(cfg, pr)
-    need = cfg.effective_quorum
+    need = needed_approvals(board, cfg)
     if len(have) < need:
         return f"{len(have)}/{need} approvals from non-committer parties (have: {sorted(have)})"
     outside = board.scope_violations(pr)

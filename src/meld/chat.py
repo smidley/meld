@@ -109,10 +109,14 @@ def decisions(board: Board, cfg: Config, actor: Actor, now: datetime) -> list[di
         out.append({"id": f"needs-human:{ref}", "kind": "needs_human", "ref": ref, "age_minutes": item["age_minutes"], "comment_id": item["comment_id"],
                     "title": (f"Issue {ref} needs you: {item['title']}" if item["issue"] is not None
                               else f"{item['party']} needs you{f' about {ref}' if ref else ''}: {item['title']}"),
-                    "summary": _lines(item["ask"]) or "(no ask was posted; see the issue)",
+                    "summary": (_lines(item["ask"]) or "(no ask was posted; see the issue)")
+                               + "\n\nWhat to do: if it asks for a credential, put it where it says, press Provided and say where (never the value). "
+                                 "If it reports something Meld got wrong or a stuck state, fix that (or ask Claude Code to), press Resolved and say what changed. "
+                                 "Either posts your reply on the thread for the agents to read.",
                     "choices": [{"label": "Provided", "body": {"verb": "post", "action": "PROVIDED", "ref": ref}, "needs_text": True,
-                                 "hint": "say where you put it (a variable or 1Password item), never the value"},
-                                {"label": "Resolved", "body": {"verb": "post", "action": "RESOLVED", "ref": ref}, "needs_text": True}]})
+                                 "hint": "one line for the agents: where you put it, or what changed"},
+                                {"label": "Resolved", "body": {"verb": "post", "action": "RESOLVED", "ref": ref}, "needs_text": True,
+                                 "hint": "one line for the agents: what changed"}]})
     for item in box["budget"]:
         ref = item["ref"]
         choice = ({"label": "Resolved", "body": {"verb": "post", "action": "RESOLVED", "ref": ref}, "needs_text": True} if ref
@@ -141,6 +145,116 @@ def decisions(board: Board, cfg: Config, actor: Actor, now: datetime) -> list[di
                     "choices": [{"label": "Uphold", "body": {"verb": "challenge", "action": "uphold", "ref": ref}, "needs_text": True},
                                 {"label": "Dismiss", "body": {"verb": "challenge", "action": "dismiss", "ref": ref}, "needs_text": True}]})
     return out
+
+
+STEPS = ("claimed", "built", "pull request", "reviewed", "merged", "audited", "closed")
+
+
+def _minutes(since: str | None, now: datetime) -> int | None:
+    if not since:
+        return None
+    try:
+        then = datetime.strptime(since, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    return max(0, int((now - then).total_seconds() // 60))
+
+
+def journey(issue: dict, status: dict, now: datetime) -> dict:
+    """Where one issue is on its way from claimed to closed, from `meld status`'s own JSON (plan 29): seven steps, each
+    done, now or next with a detail, plus one sentence for what is happening and one for what comes next. The page draws
+    the steps and prints the sentences; it decides nothing."""
+    n = issue["number"]
+    runs = status.get("runs", [])
+    builds = [r for r in runs if r.get("kind") == "build" and r.get("issue") == n]
+    prs = [p for p in status.get("pulls", []) if p.get("issue") == n]
+    pr = max(prs, key=lambda p: p["number"]) if prs else None
+    checks = [r for r in runs if pr and r.get("kind") in ("review", "audit") and r.get("issue") == pr["number"]]
+    running = lambda rs: [r for r in rs if r.get("state") == "running"]   # noqa: E731
+    quorum = status.get("quorum") or 1
+    st = issue["status"]
+    who = issue.get("claimed_by")
+    done: dict[str, str] = {}
+    if who or st in ("in_progress", "in_review", "closed", "blocked", "needs_human"):
+        done["claimed"] = f"by {who}" if who else "claimed"
+    if pr or any(r.get("outcome") in ("done", "no_change") for r in builds):
+        last = [r for r in builds if r.get("outcome") in ("done", "no_change")]
+        done["built"] = f"{last[-1]['group']}'s {last[-1].get('worker') or 'build'} worker" if last else "built"
+    if pr:
+        done["pull request"] = f"PR #{pr['number']}"
+        if pr.get("merged") or len(pr.get("approvals") or []) >= quorum:
+            done["reviewed"] = "approved by " + ", ".join(pr.get("approvals") or []) if pr.get("approvals") else "approved"
+        if pr.get("merged"):
+            done["merged"] = f"PR #{pr['number']} merged"
+        if pr.get("audited_by"):
+            done["audited"] = ", ".join(f"{g}: {v}" for g, v in sorted(pr["audited_by"].items()))
+    if st == "closed":
+        done["closed"] = "closed"
+    # what is happening now, in the first step that is not done
+    now_text, now_step = "", None
+    for step in STEPS:
+        if step in done:
+            continue
+        now_step = step
+        break
+    live_build, live_checks = running(builds), running(checks)
+    if st == "needs_human":
+        now_text = "waiting on a person"
+    elif st == "blocked":
+        now_text = "blocked: the worker could not finish; a retry or a person is needed"
+    elif issue.get("challenged"):
+        now_text = "under challenge"
+    elif live_build:
+        r = live_build[0]
+        mins = _minutes(r.get("started_at"), now)
+        now_text = f"{r['group']}'s {r.get('worker') or 'build'} worker is building it" + (f", {mins} min in" if mins is not None else "")
+    elif live_checks:
+        r = live_checks[0]
+        mins = _minutes(r.get("started_at"), now)
+        now_text = f"{r['group']} is {'auditing' if r.get('kind') == 'audit' else 'reviewing'} PR #{r.get('pr') or r.get('issue')}" + (f", {mins} min in" if mins is not None else "")
+    elif pr and not pr.get("merged"):
+        if pr.get("changes_requested"):
+            now_text = f"PR #{pr['number']}: changes requested by {', '.join(pr['changes_requested'])}; the author group fixes and asks again"
+        elif len(pr.get("approvals") or []) >= quorum:
+            now_text = f"PR #{pr['number']} is approved" + ("; checks are red" if pr.get("checks") == "red" else "; checks are pending" if pr.get("checks") == "pending" else " and ready to merge")
+        else:
+            have = len(pr.get("approvals") or [])
+            now_text = f"PR #{pr['number']} waits for a review ({have} of {quorum} approvals)"
+    elif pr and pr.get("merged") and not pr.get("audited_by"):
+        now_text = "merged; an audit is owed before the milestone closes"
+    elif st == "ready":
+        now_text = "ready for a group to claim"
+    elif st == "planned":
+        now_text = "planned; waits for the plan's approval"
+    elif st == "in_progress" and not live_build:
+        now_text = f"claimed by {who}; no worker is on it yet" if who else "in progress"
+    elif st == "closed":
+        now_text = "done"
+    remaining = [s for s in STEPS if s not in done and s != now_step]
+    next_text = "then " + ", ".join(remaining) if remaining else ""
+    steps = [{"name": s, "state": "done" if s in done else ("now" if s == now_step else "next"), "detail": done.get(s, now_text if s == now_step else "")}
+             for s in STEPS]
+    return {"issue": n, "steps": steps, "now": now_text, "next": next_text}
+
+
+def journeys(status: dict, now: datetime) -> dict[int, dict]:
+    return {i["number"]: journey(i, status, now) for i in status.get("issues", [])}
+
+
+def progress_line(status: dict, now: datetime) -> str:
+    """The one line under the progress bar: what is left and where each piece stands (plan 29)."""
+    issues = status.get("issues", [])
+    left = [i for i in issues if i["status"] != "closed"]
+    if not issues or not left:
+        return ""
+    js = journeys(status, now)
+    if len(left) <= 3:
+        return " · ".join(f"#{i['number']}: {js[i['number']]['now']}" for i in left)
+    counts: dict[str, int] = {}
+    for i in left:
+        step = next((s["name"] for s in js[i["number"]]["steps"] if s["state"] == "now"), "closed")
+        counts[step] = counts.get(step, 0) + 1
+    return f"{len(left)} left: " + ", ".join(f"{c} at {s}" for s, c in counts.items())
 
 
 def headline(status: dict, decisions: list[dict]) -> str:

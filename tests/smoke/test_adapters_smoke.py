@@ -25,11 +25,13 @@ def _repo(tmp_path: Path) -> Path:
     return tmp_path
 
 
-@pytest.mark.parametrize("name,model", [("claude", "claude-sonnet-5"), ("codex", "gpt-5.6-terra")])
+@pytest.mark.parametrize("name,model", [("claude", "claude-sonnet-5"), ("codex", "gpt-5.6-terra"),
+                                        ("grok", "grok-4.7"), ("antigravity", "gemini-3.8-flash-low"), ("gemini", "gemini-2.5-flash")])
 def test_adapter_creates_a_file(tmp_path: Path, name: str, model: str):
-    if shutil.which(name) is None:
-        pytest.skip(f"{name} not on PATH")
     adapter = get_adapter(name)
+    binary = adapter.version_argv()[0]          # the adapter's binary, which is not always its name (`agy` for antigravity)
+    if shutil.which(binary) is None:
+        pytest.skip(f"{binary} not on PATH")
     spec = LaunchSpec(role="worker", model=model, effort="low", cwd=_repo(tmp_path), prompt=PROMPT, log_path=tmp_path / "log.txt",
                       timeout_seconds=300, env=scrub_env(dict(os.environ)), max_turns=10)
     proc = adapter.launch(spec)

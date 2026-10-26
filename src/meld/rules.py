@@ -413,6 +413,14 @@ def _reviews_on_head(cfg: Config, group: str, pr: PullRequest) -> int:
                and party_of_login(cfg, r.author) == group)
 
 
+def outside_milestone(board: Board, pr: PullRequest) -> bool:
+    """A merged PR that closed an issue of an earlier milestone. `board.audits` is derived from the active coordination
+    thread, so the AUDIT it received in its own milestone is invisible here and every group would owe it again: the second
+    live run's PMs re-audited milestone 1's PRs at large tier until the caps bounded them. With no issues on the board yet
+    (planning) nothing can be told apart, and nothing is in scope either."""
+    return pr.issue_number is not None and bool(board.issues) and pr.issue_number not in board.issues
+
+
 def _audit(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | None:
     if board.halted:
         return "HALT is in effect"
@@ -433,6 +441,8 @@ def _audit(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | No
         return "PR was not authored by a group; audits cover worker output"
     if actor.group in board.audits.get(pr.number, {}):
         return f"{actor.group} already audited #{pr.number}"
+    if outside_milestone(board, pr):
+        return "PR closes an issue outside the active milestone; it was audited in its own"
     return _run_slot(board, cfg, actor, pr.number)
 
 

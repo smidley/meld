@@ -358,3 +358,22 @@ def test_headline_says_where_the_milestone_stands_in_plain_words():
     assert headline(render_status(replace(board, halted=True), CFG2, HUMAN, REG, NOW), []).startswith("Halted by a human: nothing moves until a RESUME;")
     done = render_status(mk_board(CFG2, issues=[mk_issue(9, status="closed", state="closed")]), CFG2, HUMAN, REG, NOW)
     assert headline(done, []) == "Milestone 3 is complete: every issue is closed; nothing waits on you."
+
+
+def test_a_needs_human_about_something_other_than_an_issue_still_waits_on_the_person():
+    """The second live run's codex PM posted `NEEDS-HUMAN 40` about a merged PR; no issue carried the label, so the page
+    said nothing waited. Such a post is a decision until a person answers on that ref, and a bare number reads as #n."""
+    from meld.chat import decisions, inbox
+    from meld.config import Party
+    from meld.rules import Actor
+    HUMAN = Actor(Party("human"), "empowerScott")
+    ask = mk_comment(CFG2, 1, "meld-codex-bot", "[codex:pm] NEEDS-HUMAN 40\n\nMeld audit state is inconsistent for PR #40.\nverified-by: meld status")
+    board = mk_board(CFG2, issues=[mk_issue(14)], comments=[ask])
+    (item,) = inbox(board, CFG2, NOW)["needs_human"]
+    assert item["issue"] is None and item["ref"] == "#40" and item["party"] == "codex:pm" and item["comment_id"] == 1
+    (card,) = decisions(board, CFG2, HUMAN, NOW)
+    assert card["kind"] == "needs_human" and card["ref"] == "#40"
+    assert card["title"] == "codex:pm needs you about #40: Meld audit state is inconsistent for PR #40."
+    assert card["choices"][1]["body"] == {"verb": "post", "action": "RESOLVED", "ref": "#40"}
+    answered = mk_board(CFG2, issues=[mk_issue(14)], comments=[ask, mk_comment(CFG2, 2, "empowerScott", "[human] RESOLVED #40\n\nfixed in meld")])
+    assert inbox(answered, CFG2, NOW)["needs_human"] == [] and decisions(answered, CFG2, HUMAN, NOW) == []

@@ -5,7 +5,7 @@ import pytest
 
 from meld.actions import Refused
 from meld.audit import audit, reopen
-from meld.dispatch import collect, dispatch, neutralise_closers
+from meld.dispatch import DispatchError, collect, dispatch, neutralise_closers
 from meld.github import GitHubError
 from meld.results import BODY_LIMIT, TRUNCATED, load_result, store_result
 from tests.fakeadapter import FakeAdapter
@@ -169,3 +169,19 @@ def test_reopen_opens_the_issue_last_so_a_failed_step_leaves_a_legal_retry(tmp_p
     assert all(i < patch for i, w in enumerate(writes) if w in (("POST", R + "issues/13/labels"), ("DELETE", R + "issues/13/labels/meld%3Aclaimed-by%3Acodex"),
                                                                  ("POST", R + "issues/13/comments")))
     assert any("no cache step, criterion 2 unmet" in c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/13/comments")
+
+
+def test_a_consumed_audit_marks_its_run_and_says_so_on_a_second_call(tmp_path):
+    """The second live run's codex PM saw a collected audit run with no verdict file (it had been posted weeks before),
+    read `meld audit`'s "run meld collect first" as a stuck result and called for a human. The run record now carries the
+    verdict's outcome and the error names what happened."""
+    fake, ctx, repo, origin = make_product(tmp_path)
+    merged_pr_20(fake, repo)
+    routes_for_labels(fake, 13)
+    out = dispatch(ctx, 20, kind="audit", adapter=FakeAdapter(script=AUDIT_FAIL_SCRIPT), now=NOW)
+    wait_for_exit(out["pid"])
+    collect(ctx, 20, now=NOW)
+    audit(ctx, 20, now=NOW)
+    assert json.loads((tmp_path / "home" / "runs" / "claude" / "20.json").read_text())["outcome"] == "posted"
+    with pytest.raises(DispatchError, match=r"no collected audit result for #20: its verdict was already consumed \(posted\)"):
+        audit(ctx, 20, now=NOW)

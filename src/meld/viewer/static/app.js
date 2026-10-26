@@ -195,7 +195,7 @@ function renderThread(turns) {
     head.className = "head";
     const party = cell("party", t.party);
     party.style.color = colorFor(t.kind, t.group);
-    head.append(party, cell("verb", [t.verb, t.ref, t.qualifier].filter(Boolean).join(" ")), cell("dim", (t.at || "").slice(0, 16).replace("T", " ")));
+    head.append(party, cell("verb", [t.verb, t.ref, t.qualifier].filter(Boolean).join(" ")), cell("dim", clock12(Date.parse(t.at || ""))));
     li.append(head, cell("body", t.text));
     list.append(li);
   }
@@ -206,14 +206,23 @@ const LANES = [["To do", ["planned", "ready", "unlabeled"]], ["In progress", ["i
                ["In review", ["in_review"]], ["Done", ["closed"]]];
 let prevLane = new Map();   // issue number -> lane name at the last render, so a card that moved can slide in
 let liveRuns = [];          // the running worker runs from the last state, by group and issue
+let laneFlowUntil = new Map();   // lane name -> when its flow line stops running fast after a card arrived
 function issueCard(i, lane) {
   const card = document.createElement("div");
+  card.dataset.issue = String(i.number);
   const runs = liveRuns.filter((r) => r.issue === i.number && r.kind === "build");
+  const pr = (lastPulls || []).find((p) => p.issue === i.number && p.state === "open");
+  const checks = pr ? liveRuns.filter((r) => r.pr === pr.number && (r.kind === "review" || r.kind === "audit")) : [];
+  const moved = prevLane.has(i.number) && prevLane.get(i.number) !== lane;
+  if (moved) laneFlowUntil.set(lane, Date.now() + 60000);
   card.className = "icard" + (i.status === "blocked" || i.status === "needs_human" || i.challenged ? " attention" : "")
-                 + (runs.length ? " working" : "") + (prevLane.has(i.number) && prevLane.get(i.number) !== lane ? " moved" : "");
+                 + (runs.length || checks.length ? " working" : "") + (moved ? " moved" : "");
   const head = document.createElement("div");
   head.className = "ihead";
-  head.append(cell("inum", `#${i.number}`), cell("ititle", i.title));
+  const title = cell("ititle", i.title);
+  title.title = "everything that touched this issue";
+  title.addEventListener("click", () => openTask(i.number));
+  head.append(cell("inum", `#${i.number}`), title);
   const badges = document.createElement("div");
   badges.className = "ibadges";
   if (i.claimed_by) {
@@ -224,13 +233,21 @@ function issueCard(i, lane) {
   const flags = [i.worker, i.status === "planned" && "planned", i.status === "blocked" && "blocked",
                  i.status === "needs_human" && "needs a person", i.challenged && "challenged"].filter(Boolean);
   if (flags.length) badges.append(text(document.createElement("span"), (i.claimed_by ? " · " : "") + flags.join(" · ")));
-  for (const r of runs) {
-    const line = cell("iactivity", `${r.group}'s ${r.worker || "build"} worker is building this now`);
+  card.append(head, badges);
+  for (const r of [...runs, ...checks]) {
+    // Who is on it, and how far through its time that run is: a bar that fills as the deadline nears.
+    const line = cell("iactivity", r.kind === "build" ? `${r.group}'s ${r.worker || "build"} worker is building this now`
+                                   : `${r.group}'s ${r.worker || r.kind} worker is ${r.kind === "audit" ? "auditing" : "reviewing"} PR #${r.pr} now`);
     line.style.color = colorFor("group", r.group);
-    card.append(head, badges, line);
+    const bar = document.createElement("div");
+    bar.className = "iprogress";
+    const fill = document.createElement("div");
+    fill.className = "ifill";
+    fill.style.width = `${Math.round(Math.min(1, runFraction(r)) * 100)}%`;
+    fill.style.background = colorFor("group", r.group);
+    bar.append(fill);
+    card.append(line, bar);
   }
-  if (!runs.length) card.append(head, badges);
-  const pr = (lastPulls || []).find((p) => p.issue === i.number && p.state === "open");
   if (pr) {
     const reviewing = liveRuns.filter((r) => r.pr === pr.number && (r.kind === "review" || r.kind === "audit")).map((r) => `${r.group} reviewing`);
     const state = [pr.approvals.length && `approved by ${pr.approvals.join(", ")}`, pr.changes_requested.length && `changes requested by ${pr.changes_requested.join(", ")}`,
@@ -246,6 +263,346 @@ function issueCard(i, lane) {
   return card;
 }
 let lastPulls = [];
+let lastStatus = null;
+let lastThread = [];
+let lastGenerated = "";
+
+function clock12(ms, { seconds = false } = {}) {
+  // A time of day the way a person says it, in the browser's own zone: "9:05 pm", or "9:05:12 pm" on a transcript line.
+  // An unparseable stamp comes back empty rather than as "NaN:NaN".
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return "";
+  const h = d.getHours(), m = String(d.getMinutes()).padStart(2, "0"), sec = String(d.getSeconds()).padStart(2, "0");
+  return `${h % 12 || 12}:${m}${seconds ? ":" + sec : ""} ${h < 12 ? "am" : "pm"}`;
+}
+
+const ATTENTION = new Set(["NEEDS-HUMAN", "BUDGET", "PROTOCOL-VIOLATION", "CHALLENGE", "DRIFT", "HALT"]);
+function drawTimeline(state) {
+  // The thread as a strip: one dot per post, a lane per voice, time left to right over the last ninety minutes (or the
+  // whole thread when it is shorter), so the rhythm of the conversation -- who spoke, how often, what needed a person --
+  // reads at a glance. Clicking a dot shows that turn in the conversation.
+  const svg = el("timeline");
+  svg.replaceChildren();
+  const turns = (state.thread || []).filter((t) => t.at);
+  const now = Date.parse(state.generated_at || "") || Date.now();
+  if (!turns.length) { svg.setAttribute("height", 0); return; }
+  const span = Math.min(90 * 60 * 1000, Math.max(5 * 60 * 1000, now - Date.parse(turns[0].at)));
+  const from = now - span;
+  const shown = turns.filter((t) => Date.parse(t.at) >= from);
+  const voices = [];
+  for (const t of shown) { const v = t.group || t.kind; if (!voices.includes(v)) voices.push(v); }   // a group's two roles share a lane
+  const left = 92, right = 24, laneH = 18, top = 8, width = Math.max(640, svg.parentElement.clientWidth || 640);
+  const height = top + voices.length * laneH + 20;
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("width", width);
+  svg.setAttribute("height", height);
+  const xOf = (iso) => left + ((Date.parse(iso) - from) / span) * (width - left - right);
+  voices.forEach((v, i) => {
+    const y = top + i * laneH + laneH / 2;
+    svgText(svg, 4, y + 4, clip(v, 12), "sub");
+    svgEl("line", { class: "lane", x1: left, y1: y, x2: width - right, y2: y }, svg);
+  });
+  // Time ticks every fifteen minutes, labelled HH:MM in UTC like every other stamp on the page.
+  const step = 15 * 60 * 1000;
+  for (let t = Math.ceil(from / step) * step; t <= now; t += step) {
+    const x = xOf(new Date(t).toISOString());
+    svgText(svg, x, height - 4, clock12(t), "tick").setAttribute("text-anchor", "middle");
+  }
+  svgEl("line", { class: "now", x1: width - right, y1: top, x2: width - right, y2: height - 16 }, svg);
+  for (const t of shown) {
+    const y = top + voices.indexOf(t.group || t.kind) * laneH + laneH / 2;
+    const attention = ATTENTION.has(t.verb);
+    const color = t.group ? colorFor("group", t.group) : (t.kind === "human" ? "#d29922" : "#8b949e");
+    const dot = svgEl("circle", { class: "dot" + (attention ? " attention" : ""), cx: xOf(t.at), cy: y,
+                                  r: attention ? 5 : (t.housekeeping ? 2.5 : 4), fill: color, "fill-opacity": t.housekeeping ? 0.45 : 1 }, svg);
+    svgEl("title", {}, dot).textContent = `${clock12(Date.parse(t.at))} [${t.party}] ${t.verb}${t.ref ? " " + t.ref : ""}${t.qualifier ? " " + t.qualifier : ""}`;
+    dot.style.animationDelay = `-${(t.id % 29) * 0.11}s`;   // each dot breathes on its own beat, never all together
+    dot.addEventListener("click", () => showTurn(t.id));
+  }
+}
+
+// ---- drawing: inline SVG built node by node (no markup strings), the page's only graphics ----
+const SVG = "http://www.w3.org/2000/svg";
+function svgEl(tag, attrs, parent) {
+  const n = document.createElementNS(SVG, tag);
+  for (const [k, v] of Object.entries(attrs || {})) n.setAttribute(k, String(v));
+  if (parent) parent.append(n);
+  return n;
+}
+function svgText(parent, x, y, value, cls) {
+  const t = svgEl("text", { x, y, ...(cls ? { class: cls } : {}) }, parent);
+  t.textContent = value;
+  return t;
+}
+function clip(value, n) { const s = String(value == null ? "" : value); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+function arrowFor(svg) {
+  // One arrowhead marker per drawing, named after the svg so two drawings on the page never share an id.
+  const id = `${svg.id}-arrow`;
+  if (!svg.querySelector(`#${id}`)) {
+    const marker = svgEl("marker", { id, viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 3.5, markerHeight: 3.5, orient: "auto-start-reverse" }, svgEl("defs", {}, svg));
+    svgEl("path", { class: "arrow", d: "M 0 0 L 10 5 L 0 10 z" }, marker);
+  }
+  return `url(#${id})`;
+}
+function drawEdge(parent, x1, y1, x2, y2, label, { flowing = false } = {}) {
+  // A cubic curve from the right edge of one node to the left edge of the next. A flowing edge carries moving dashes:
+  // that is the page's picture of communication in progress, in the direction it goes. The label sits as a pill
+  // three quarters of the way along, where curves into different targets have already parted.
+  const mx = (x1 + x2) / 2;
+  const svg = parent.ownerSVGElement || parent;
+  svgEl("path", { class: "edge" + (flowing ? " flowing" : ""), d: `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`, "marker-end": arrowFor(svg) }, parent);
+  if (label) {
+    const t = 0.72, u = 1 - t;
+    const px = u * u * u * x1 + 3 * u * u * t * mx + 3 * u * t * t * mx + t * t * t * x2;
+    const py = u * u * u * y1 + 3 * u * u * t * y1 + 3 * u * t * t * y2 + t * t * t * y2;
+    const w = label.length * 6.2 + 10;
+    svgEl("rect", { class: "pill", x: px - w / 2, y: py - 8, width: w, height: 15, rx: 7 }, parent);
+    svgText(parent, px, py + 3.5, label, "elabel").setAttribute("text-anchor", "middle");
+  }
+}
+function drawRing(parent, cx, cy, r, fraction, color) {
+  // How far through its time a run is: a thin arc that fills clockwise from the top; red once it is past its deadline.
+  const circ = 2 * Math.PI * r, f = Math.min(1, Math.max(0, fraction));
+  svgEl("circle", { class: "ring-track", cx, cy, r }, parent);
+  svgEl("circle", { class: "ring", cx, cy, r, stroke: f >= 1 ? "#f85149" : color, "stroke-dasharray": circ, "stroke-dashoffset": circ * (1 - f),
+                    transform: `rotate(-90 ${cx} ${cy})` }, parent);
+}
+function runFraction(r) {
+  // Elapsed over allowed, against the server's clock (the state's own stamp), never the browser's.
+  const start = Date.parse(r.started_at || ""), end = Date.parse(r.deadline || ""), now = Date.parse(lastGenerated || "");
+  if (!(start < end) || !now) return 0;
+  return (now - start) / (end - start);
+}
+function drawNode(parent, x, y, w, h, color, title, sub, { live = false, onclick = null, ring = null } = {}) {
+  const g = svgEl("g", {}, parent);
+  const rect = svgEl("rect", { class: "node" + (live ? " live" : "") + (onclick ? " clickable" : ""), x, y, width: w, height: h, rx: 6,
+                               ...(color ? { stroke: color, "stroke-width": live ? 2.5 : 1.5 } : {}) }, g);
+  if (color) svgEl("rect", { x: x + 1, y: y + 1, width: 5, height: h - 2, rx: 3, fill: color }, g);
+  const textW = ring == null ? w : w - 26;
+  svgText(g, x + 12, y + (sub ? 18 : h / 2 + 4), clip(title, Math.floor(textW / 7)));
+  if (sub) svgText(g, x + 12, y + 34, clip(sub, Math.floor(textW / 6.4)), "sub");
+  if (ring != null) drawRing(g, x + w - 16, y + h / 2, 9, ring, color || "#58a6ff");
+  if (onclick) { g.style.cursor = "pointer"; g.addEventListener("click", onclick); }
+  return { x, y, w, h };
+}
+
+function drawMap(state) {
+  // The agents and what each is on: a row per group -- the group, its two roles with their liveness, then one node per
+  // running worker with its issue or PR -- wired left to right. The map is the page's picture of who does what.
+  const svg = el("map");
+  svg.replaceChildren();
+  const s = state.status || {};
+  const groups = Object.keys(state.supervisors || {});
+  const running = (s.runs || []).filter((r) => r.state === "running");
+  const rowH = 62, left = 8, groupW = 120, roleW = 160, workW = 200, gap = 26, gapW = 76;
+  const rows = Math.max(1, groups.length);
+  const widest = Math.max(1, ...groups.map((g) => running.filter((r) => r.group === g).length));
+  const width = left + groupW + gap + roleW + gapW + widest * (workW + 10) + 8;
+  svg.setAttribute("viewBox", `0 0 ${Math.max(width, 640)} ${rows * rowH + 4}`);
+  svg.setAttribute("width", Math.max(width, 640));   // drawn at its own size, never scaled up to the page width
+  svg.setAttribute("height", rows * rowH + 4);
+  groups.forEach((g, i) => {
+    const y = i * rowH + 4, color = colorFor("group", g);
+    const sup = (state.supervisors || {})[g] || {};
+    const WORDS = { alive: "running", dead: "stopped", unknown: "not running here" };
+    const node = drawNode(svg, left, y, groupW, 52, color, g, WORDS[sup.state] || sup.state || "", { live: sup.state === "alive" });
+    const roles = ((state.processes || {})[g] || {}).roles || {};
+    const rx = left + groupW + gap;
+    let ri = 0;
+    for (const [role, info] of Object.entries(roles)) {
+      const ry = y + ri * 27;
+      const liveRole = info.state === "alive";
+      const r = drawNode(svg, rx, ry, roleW, 24, liveRole ? color : null, `${role} · ${info.frozen ? "frozen" : (info.state === "alive" ? "awake" : info.state)}`, null, { live: liveRole });
+      drawEdge(svg, node.x + node.w, node.y + node.h / 2, r.x, r.y + r.h / 2, "", { flowing: liveRole });
+      ri++;
+    }
+    const wx = rx + roleW + gapW;
+    running.filter((r) => r.group === g).forEach((r, k) => {
+      const what = r.kind === "build" ? `building #${r.issue}` : `${r.kind === "audit" ? "auditing" : "reviewing"} PR #${r.issue}`;
+      const w = drawNode(svg, wx + k * (workW + 10), y + 14, workW, 36, color, what, `${r.worker || r.kind} · ${r.model || ""}`, { live: true,
+                         ring: runFraction(r), onclick: r.kind === "build" ? () => openTask(r.issue) : () => showTranscript(r) });
+      drawEdge(svg, rx + roleW, y + 27 + 12, w.x, w.y + w.h / 2, k === 0 ? "dispatched" : "", { flowing: true });
+    });
+  });
+}
+
+function drawBars(state) {
+  const s = state.status || {};
+  const issues = s.issues || [];
+  const done = issues.filter((i) => i.status === "closed").length;
+  const pct = issues.length ? Math.round((done / issues.length) * 100) : 0;
+  el("progress-fill").style.width = `${pct}%`;
+  text(el("progress-text"), issues.length ? `${done} of ${issues.length} issues done` : "no issues yet");
+  const bars = el("budget-bars");
+  bars.replaceChildren();
+  const cap = (s.budget || {}).cap || {};
+  for (const [group, tiers] of Object.entries((s.budget || {}).spent || {})) {
+    for (const tier of Object.keys(cap)) {
+      const used = (tiers || {})[tier] || 0;
+      if (!used && tier !== "large") continue;
+      const bar = document.createElement("div");
+      bar.className = "bar";
+      const label = text(document.createElement("span"), `${group} ${tier}`);
+      label.className = "blabel";
+      label.style.color = colorFor("group", group);
+      const track = document.createElement("div");
+      track.className = "track";
+      const fill = document.createElement("div");
+      const share = cap[tier] ? Math.min(100, Math.round((used / cap[tier]) * 100)) : 0;
+      fill.className = "fill" + (share >= 90 ? " bad" : share >= 70 ? " warn" : "");
+      fill.style.width = `${share}%`;
+      track.append(fill);
+      const t = text(document.createElement("span"), `${used} of ${cap[tier] || "?"} runs`);
+      t.className = "dim";
+      bar.append(label, track, t);
+      bars.append(bar);
+    }
+  }
+}
+
+function drawTaskGraph(number) {
+  // Everything that touched one issue, as a graph: the issue, each build run, the pull request, each review and audit
+  // run -- left to right, a running node pulsing, a run node opening its transcript.
+  const s = lastStatus;
+  const svg = el("task-graph");
+  svg.replaceChildren();
+  const issue = (s.issues || []).find((i) => i.number === number);
+  if (!issue) return;
+  const runs = s.runs || [];
+  const builds = runs.filter((r) => r.kind === "build" && r.issue === number);
+  const prs = (s.pulls || []).filter((p) => p.issue === number);
+  const checks = prs.flatMap((p) => runs.filter((r) => (r.kind === "review" || r.kind === "audit") && r.issue === p.number).map((r) => ({ ...r, pr: p.number })));
+  // The third column is every run on a PR plus every audit verdict on the thread whose run is gone, one row each.
+  const verdicts = prs.flatMap((p) => Object.entries(p.audited_by || {})
+    .filter(([group]) => !checks.some((r) => r.kind === "audit" && r.pr === p.number && r.group === group))
+    .map(([group, verdict]) => ({ pr: p.number, group, verdict })));
+  const third = [...checks.map((r) => ({ run: r })), ...verdicts.map((v) => ({ verdict: v }))];
+  const colW = 200, gapX = 70, rowH = 60;
+  const rows = Math.max(1, builds.length, prs.length, third.length);
+  const width = 4 * (colW + gapX), height = rows * rowH + 10;
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("width", width);      // its own size: the dialog grows to it and scrolls past the viewport
+  svg.setAttribute("height", height);
+  const col = (i) => 10 + i * (colW + gapX);
+  const y = (i, n) => 5 + i * rowH + ((rows - n) * rowH) / 2;
+  const holderColor = issue.claimed_by ? colorFor("group", issue.claimed_by) : null;
+  const root = drawNode(svg, col(0), y(0, 1), colW, 44, holderColor, `#${issue.number} ${issue.status.replace("_", " ")}`,
+                        issue.claimed_by ? `${issue.claimed_by} · ${issue.worker || ""} · ${issue.model || ""}` : "unclaimed");
+  const buildNodes = builds.map((r, i) => {
+    const n = drawNode(svg, col(1), y(i, builds.length), colW, 44, colorFor("group", r.group), `${r.group} ${r.worker || "build"} · ${r.state === "running" ? "running" : (r.outcome || r.state)}`,
+                       `${r.model || ""}/${r.effort || ""} · ${clock12(Date.parse(r.started_at || ""))}`,
+                       { live: r.state === "running", ring: r.state === "running" ? runFraction(r) : null, onclick: () => showTranscript(r) });
+    drawEdge(svg, root.x + root.w, root.y + root.h / 2, n.x, n.y + n.h / 2, "built by", { flowing: r.state === "running" });
+    return n;
+  });
+  const prNodes = prs.map((p, i) => {
+    const state = [p.merged ? "merged" : p.state, p.checks !== "none" && `checks ${p.checks}`].filter(Boolean).join(" · ");
+    const verdicts = [p.approvals.length && `approved by ${p.approvals.join(", ")}`, p.changes_requested.length && `changes: ${p.changes_requested.join(", ")}`].filter(Boolean).join(" · ");
+    const n = drawNode(svg, col(2), y(i, prs.length), colW, 44, p.merged ? "#3fb950" : null, `PR #${p.number} · ${state}`, verdicts || "awaiting review");
+    const from = buildNodes[buildNodes.length - 1] || root;
+    drawEdge(svg, from.x + from.w, from.y + from.h / 2, n.x, n.y + n.h / 2, "opened");
+    return [p.number, n];
+  });
+  third.forEach((item, i) => {
+    const yy = y(i, third.length);
+    if (item.run) {
+      const r = item.run;
+      const n = drawNode(svg, col(3), yy, colW, 44, colorFor("group", r.group), `${r.group} ${r.kind} · ${r.state === "running" ? "running" : (r.outcome || r.state)}`,
+                         `${r.worker || r.kind} · ${r.model || ""}/${r.effort || ""}`,
+                         { live: r.state === "running", ring: r.state === "running" ? runFraction(r) : null, onclick: () => showTranscript(r) });
+      const [, from] = prNodes.find(([num]) => num === r.pr) || [null, root];
+      drawEdge(svg, from.x + from.w, from.y + from.h / 2, n.x, n.y + n.h / 2, r.kind === "audit" ? "audited by" : "reviewed by", { flowing: r.state === "running" });
+    } else {
+      const v = item.verdict;
+      const n = drawNode(svg, col(3), yy, colW, 44, colorFor("group", v.group), `${v.group} audit · ${v.verdict}`, "on the thread");
+      const [, from] = prNodes.find(([num]) => num === v.pr) || [null, root];
+      drawEdge(svg, from.x + from.w, from.y + from.h / 2, n.x, n.y + n.h / 2, "audited by");
+    }
+  });
+}
+
+function treeItem(parent, who, color, metaText, run) {
+  const li = document.createElement("li");
+  const name = cell("who", who);
+  if (color) name.style.color = color;
+  li.append(name, document.createTextNode(" "), cell("meta", metaText));
+  if (run) {
+    const b = text(document.createElement("button"), "transcript");
+    b.type = "button";
+    b.addEventListener("click", () => showTranscript(run));
+    li.append(b);
+  }
+  parent.append(li);
+  return li;
+}
+
+function showTranscript(run) {
+  // The transcript column of a run: the stream whose group, kind and number match. Opens the drawer, shows finished
+  // columns if the run has ended, scrolls the column into view and flashes it.
+  openTab("streams");
+  const col = [...columns.values()].find((c) => c.meta && c.meta.group === run.group && c.meta.kind === run.kind && c.meta.issue === run.issue);
+  if (!col) return;
+  if (col.root.classList.contains("dead") || col.root.classList.contains("ended")) {
+    el("show-finished").checked = true;
+    el("streams").classList.remove("live-only");
+  }
+  col.root.scrollIntoView({ inline: "center", block: "nearest" });
+  col.root.classList.add("flash");
+  setTimeout(() => col.root.classList.remove("flash"), 1500);
+  el("task").close();
+}
+
+function runLine(r) {
+  const when = clock12(Date.parse(r.started_at || ""));
+  const how = r.state === "running" ? "running" : (r.outcome || (r.timed_out ? "timed out" : r.state));
+  return `${r.worker || r.kind} worker · ${r.model || "?"}/${r.effort || "?"} · ${how}${when ? ` · started ${when}` : ""}`;
+}
+
+function openTask(number) {
+  // Everything that touched one issue, as a tree: the issue, its holder, each build run, its pull request with the
+  // verdicts and checks, each review and audit run, and the thread turns about it.
+  const s = lastStatus;
+  if (!s) return;
+  const issue = (s.issues || []).find((i) => i.number === number);
+  if (!issue) return;
+  text(el("task-title"), `#${issue.number} ${issue.title}`);
+  const tree = el("task-tree");
+  tree.replaceChildren();
+  const root = treeItem(tree, issue.claimed_by ? `claimed by ${issue.claimed_by}` : "unclaimed", issue.claimed_by ? colorFor("group", issue.claimed_by) : null,
+                        [issue.status.replace("_", " "), issue.worker && `worker ${issue.worker}`, issue.model && `${issue.model}/${issue.effort || "?"}`, issue.size && `size ${issue.size}`].filter(Boolean).join(" · "));
+  const under = document.createElement("ul");
+  root.append(under);
+  const runs = s.runs || [];
+  for (const r of runs.filter((x) => x.kind === "build" && x.issue === number)) treeItem(under, r.group, colorFor("group", r.group), runLine(r), r);
+  const prs = (s.pulls || []).filter((p) => p.issue === number);
+  for (const p of prs) {
+    const state = [p.merged ? "merged" : p.state, p.checks !== "none" && `checks ${p.checks}`, p.approvals.length && `approved by ${p.approvals.join(", ")}`,
+                   p.changes_requested.length && `changes requested by ${p.changes_requested.join(", ")}`].filter(Boolean).join(" · ");
+    const pr = treeItem(under, `PR #${p.number}`, null, state);
+    const below = document.createElement("ul");
+    pr.append(below);
+    for (const r of runs.filter((x) => (x.kind === "review" || x.kind === "audit") && x.issue === p.number)) {
+      treeItem(below, `${r.group} ${r.kind}`, colorFor("group", r.group), runLine(r), r);
+    }
+    for (const [group, verdict] of Object.entries(p.audited_by || {})) treeItem(below, `${group} audit`, colorFor("group", group), verdict);
+  }
+  const refs = new Set([`#${number}`, ...prs.map((p) => `#${p.number}`)]);
+  const turns = lastThread.filter((t) => refs.has(t.ref));
+  if (turns.length) {
+    const said = treeItem(under, "on the coordination issue", null, `${turns.length} turn${turns.length === 1 ? "" : "s"}`);
+    const list = document.createElement("ul");
+    said.append(list);
+    for (const t of turns.slice(-8)) {
+      const li = treeItem(list, t.party, colorFor(t.kind, t.group), `${t.verb} ${t.ref} · ${clock12(Date.parse(t.at || ""))}`);
+      const b = text(document.createElement("button"), "show");
+      b.type = "button";
+      b.addEventListener("click", () => { el("task").close(); showTurn(t.id); });
+      li.append(b);
+    }
+  }
+  drawTaskGraph(number);
+  el("task").showModal();
+}
 
 function renderBoard(s) {
   // Rebuilding every row on every poll swallowed a click that landed mid-rebuild and dropped focus from a control;
@@ -255,17 +612,33 @@ function renderBoard(s) {
   lastBoard = key;
   liveRuns = (s.runs || []).filter((r) => r.state === "running");
   lastPulls = s.pulls || [];
+  lastStatus = s;
   // The work, as four lanes an issue moves through; a card is the issue, its holder in that group's colour, and
   // its verb buttons (hover the card for why the others are missing).
   const issues = el("issues");
+  // Where every card was before the rebuild, so one that changed lane can be seen travelling there (FLIP: draw it in
+  // its new place, then animate from the old place to none).
+  const before = new Map([...issues.querySelectorAll(".icard")].map((c) => [c.dataset.issue, c.getBoundingClientRect()]));
   issues.replaceChildren();
   for (const [name, statuses] of LANES) {
     const lane = document.createElement("div");
     lane.className = "lane";
     const items = (s.issues || []).filter((i) => statuses.includes(i.status));
     lane.append(text(document.createElement("h3"), `${name} · ${items.length}`));
+    const flow = document.createElement("div");
+    flow.className = "flowline";
+    flow.title = "work flows left to right; the line runs fast for a minute after a card arrives here";
+    lane.append(flow);
     for (const i of items) lane.append(issueCard(i, name));
+    flow.classList.toggle("flowing", (laneFlowUntil.get(name) || 0) > Date.now());
     issues.append(lane);
+  }
+  for (const card of issues.querySelectorAll(".icard.moved")) {
+    const old = before.get(card.dataset.issue);
+    if (!old || typeof card.animate !== "function") continue;
+    const now = card.getBoundingClientRect();
+    const dx = old.left - now.left, dy = old.top - now.top;
+    if (dx || dy) card.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }], { duration: 800, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" });
   }
   prevLane = new Map((s.issues || []).map((i) => [i.number, (LANES.find(([, statuses]) => statuses.includes(i.status)) || [""])[0]]));
   const pulls = el("pulls");
@@ -755,6 +1128,12 @@ function renderState(state) {
 
   text(el("headline"), state.headline || "");
   groupOrder = Object.keys(state.supervisors || {});
+  lastThread = state.thread || [];
+  lastGenerated = state.generated_at || "";
+  lastStatus = state.status;
+  drawBars(state);
+  drawMap(state);
+  drawTimeline(state);
   renderDecisions(state.decisions);
   renderThread(state.thread);
   // The agents, one chip per group in its colour: its supervisor in plain words (the reason on hover), and any frozen role.
@@ -804,13 +1183,18 @@ function cell(className, value) {
 function appendEvent(col, ev) {
   const li = document.createElement("li");
   li.className = ev.kind + (ev.ok === false ? " failed" : "") + (ev.meta && ev.meta.synthesized ? " synthesized" : "");
-  li.append(cell("at", (ev.at || "").slice(11, 19)),
+  li.append(cell("at", clock12(Date.parse(ev.at || ""), { seconds: true })),
             cell("kind", ev.tool ? `${ev.kind} ${ev.tool}` : ev.kind),
             cell("text", ev.text));
   const list = col.list;
-  const pinned = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
   list.append(li);
-  if (pinned) list.scrollTop = list.scrollHeight;
+  if (col.following) list.scrollTop = list.scrollHeight;
+}
+
+function scrollColumns() {
+  // Every column that is following shows its newest line: called when the drawer opens and when a view option changes,
+  // because a column that filled while hidden has no scroll position of its own to keep.
+  for (const col of columns.values()) if (col.following) col.list.scrollTop = col.list.scrollHeight;
 }
 
 function columnFor(id) {
@@ -822,7 +1206,9 @@ function columnFor(id) {
     const root = el("column").content.firstElementChild.cloneNode(true);
     col = { root, list: root.querySelector(".events"), live: root.querySelector(".live"),
             why: root.querySelector(".why"), who: root.querySelector(".who"),
-            listed: false, liveness: { state: "unknown", reason: "not listed yet" } };
+            listed: false, liveness: { state: "unknown", reason: "not listed yet" }, following: true };
+    // A column follows its newest line until the reader scrolls it up; scrolling back to the bottom resumes.
+    col.list.addEventListener("scroll", () => { col.following = col.list.scrollHeight - col.list.scrollTop - col.list.clientHeight < 40; });
     text(col.who, id);
     el("streams").append(root);
     columns.set(id, col);
@@ -859,6 +1245,7 @@ function renderStreams(list) {
     const col = columnFor(s.id);
     col.listed = true;
     col.liveness = s.liveness;
+    col.meta = s;
     text(col.who, s.kind === "role" ? `${s.group} / ${s.role}` : `${s.group} / ${s.kind} #${s.issue}`);
     col.who.style.color = colorFor("group", s.group);
   }
@@ -871,10 +1258,17 @@ function renderStreams(list) {
     // genuinely early column is always named by the following poll.
     if (col.listed) { col.root.remove(); columns.delete(id); } else { col.listed = true; }
   }
-  for (const col of columns.values()) {
+  // Live first: alive columns, then unknown, then dead, in that order on the page; a dead column is also classed so
+  // "show finished" can hide it. Re-appending moves a column, so the order follows liveness as it changes.
+  const rank = { alive: 0, unknown: 1, dead: 2 };
+  const ordered = [...columns.values()].sort((a, b) => (rank[a.liveness.state] ?? 1) - (rank[b.liveness.state] ?? 1));
+  for (const col of ordered) {
     badge(col.live, col.liveness.state);
     text(col.why, col.liveness.reason);
+    col.root.classList.toggle("dead", col.liveness.state === "dead");
+    el("streams").append(col.root);
   }
+  scrollColumns();
 }
 
 let statePending = null;
@@ -896,18 +1290,21 @@ el("turns").addEventListener("scroll", () => {
   el("newest").classList.toggle("hidden", following);
 });
 el("newest").addEventListener("click", followNewest);
-el("streams").classList.add("narration");
+el("streams").classList.add("narration", "live-only");
+el("task-close").addEventListener("click", () => el("task").close());
+el("show-finished").addEventListener("change", (e) => { el("streams").classList.toggle("live-only", !e.target.checked); scrollColumns(); });
 // The drawer: one tab open at a time, or none; the Configuration tab opens its <details>, whose toggle loads the form.
 function openTab(name) {
   for (const b of document.querySelectorAll("#tabs .tab")) b.classList.toggle("active", b.dataset.tab === name);
   for (const pane of el("drawer").querySelectorAll(".tabpane")) pane.classList.toggle("hidden", pane.id !== name);
   el("drawer").classList.toggle("closed", !name);
   if (name === "config") el("config").open = true;
+  if (name === "streams") scrollColumns();
 }
 for (const b of document.querySelectorAll("#tabs .tab")) {
   b.addEventListener("click", () => openTab(b.classList.contains("active") ? null : b.dataset.tab));
 }
-el("show-tools").addEventListener("change", (e) => { el("streams").classList.toggle("narration", !e.target.checked); });
+el("show-tools").addEventListener("change", (e) => { el("streams").classList.toggle("narration", !e.target.checked); scrollColumns(); });
 for (const [key, intent] of Object.entries(INTENTS)) {
   const o = document.createElement("option");
   o.value = key;

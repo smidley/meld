@@ -274,7 +274,10 @@ def review(ctx, number: int, *, now: datetime | None = None) -> dict:
         return out
     stored = load_result(ctx.store.home, group.name, "review", number)
     if stored is None:
-        raise DispatchError(f"no collected review result for {target}; run `meld collect {number}` first")
+        rec = board.run_for(group.name, number)
+        hint = ("its verdict was already consumed; dispatch a fresh review if one is owed"
+                if rec is not None and rec.collected else f"run `meld collect {number}` first")
+        raise DispatchError(f"no collected review result for {target}: {hint}")
     when = _iso(_now(now))
     pushed = stored.get("pushed")
     result = stored.get("result") or {}

@@ -14,6 +14,7 @@ from meld.rules import (
     approving_parties,
     committer_party,
     legal_agreement_verbs,
+    outside_milestone,
     issue_verb_rules,
     pr_verb_rules,
     party_of_login,
@@ -70,6 +71,7 @@ def render_status(board: Board, cfg: Config, actor: Actor, models: ModelRegistry
     ]
     runs = [
         {"group": r.group, "issue": r.issue, "kind": r.kind, "pr": r.pr, "pid": r.pid, "worker": r.worker,
+         "model": r.model, "effort": r.effort, "outcome": r.outcome,
          "state": "running" if r.alive else "collected" if r.collected else "finished", "started_at": r.started_at,
          "deadline": r.deadline, "branch": r.branch, "timed_out": r.timed_out}
         for g in sorted(board.runs) for r in sorted(board.runs[g].values(), key=lambda r: r.issue)
@@ -108,7 +110,7 @@ def audit_summary(board: Board, cfg: Config, actor: Actor, now: datetime) -> dic
         return {"pending": [], "merges_pending": 0, "oldest_pending_hours": None, "due": False, "milestone_complete": complete, "challenged": []}
     pending = sorted((p for p in board.pulls.values()
                       if p.merged and not p.memory and cfg.group_for_bot(p.author) is not None      # a human's PR is not worker output
-                      and party_of_login(cfg, p.author) != actor.group
+                      and party_of_login(cfg, p.author) != actor.group and not outside_milestone(board, p)
                       and actor.group not in board.audits.get(p.number, {})),
                      key=lambda p: p.number)
     ages = [_age_minutes(p.merged_at, now) for p in pending if p.merged_at]

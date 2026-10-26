@@ -37,7 +37,7 @@ from meld.prompts import ROLES
 from meld.results import ResultsError
 from meld.runners import freeze_path, read_record, supervisor_path, processes
 from meld.state import liveness, pid_alive, proc_start_of
-from meld.chat import decisions, headline, thread_entries
+from meld.chat import decisions, headline, journeys, progress_line, thread_entries
 from meld.status import build_status
 from meld.transcript import total_bytes
 from meld.viewer import actions as va
@@ -307,6 +307,7 @@ class Viewer:
         return _json(200, {"status": status, "supervisors": supervisors, "frozen": frozen, "thread": thread_entries(board, last=THREAD_LAST),
                            "processes": processes(cfg, home, alive=self.alive, start_of=self.start_of),
                            "setup": self._setup(cfg, supervisors), "config_error": self._config_error,
+                           "journeys": journeys(status, now), "progress": progress_line(status, now),
                            "decisions": (pending := decisions(board, cfg, self.ctx.actor(), now)), "headline": headline(status, pending),
                            "disk": {"free_mb": free_mb, "warn_free_mb": cfg.logs_warn_free_mb},
                            "logs": {"total_mb": total_bytes(home / "logs") // (1024 * 1024), "warn_total_mb": cfg.logs_warn_total_mb},

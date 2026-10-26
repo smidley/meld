@@ -377,3 +377,37 @@ def test_a_needs_human_about_something_other_than_an_issue_still_waits_on_the_pe
     assert card["choices"][1]["body"] == {"verb": "post", "action": "RESOLVED", "ref": "#40"}
     answered = mk_board(CFG2, issues=[mk_issue(14)], comments=[ask, mk_comment(CFG2, 2, "empowerScott", "[human] RESOLVED #40\n\nfixed in meld")])
     assert inbox(answered, CFG2, NOW)["needs_human"] == [] and decisions(answered, CFG2, HUMAN, NOW) == []
+
+
+def test_a_journey_says_where_an_issue_is_and_what_comes_next():
+    """Plan 29: the owner saw "2 of 3 issues done" and nothing about how the third was getting there. From status's own
+    JSON: seven steps done/now/next with details, one sentence for now, one for what follows, and a progress line."""
+    from datetime import datetime, timezone
+    from meld.chat import journey, journeys, progress_line
+    now = datetime(2026, 10, 26, 22, 0, tzinfo=timezone.utc)
+    status = {"quorum": 2,
+              "issues": [{"number": 49, "title": "Formats", "status": "in_review", "claimed_by": "claude", "worker": "backend", "challenged": False},
+                         {"number": 47, "title": "Docs", "status": "closed", "claimed_by": None, "worker": "docs", "challenged": False},
+                         {"number": 50, "title": "Next", "status": "ready", "claimed_by": None, "worker": None, "challenged": False}],
+              "pulls": [{"number": 55, "issue": 49, "state": "open", "merged": False, "approvals": [], "changes_requested": [], "checks": "green", "audited_by": {}},
+                        {"number": 51, "issue": 47, "state": "closed", "merged": True, "approvals": ["codex", "claude"], "changes_requested": [], "checks": "green", "audited_by": {"codex": "pass"}}],
+              "runs": [{"group": "claude", "issue": 49, "kind": "build", "pr": None, "state": "collected", "outcome": "done", "worker": "backend", "started_at": "2026-10-26T21:30:00Z"},
+                       {"group": "codex", "issue": 55, "kind": "review", "pr": 55, "state": "running", "outcome": None, "worker": "reviewer", "started_at": "2026-10-26T21:48:00Z"}]}
+    j = journey(status["issues"][0], status, now)
+    assert [(s["name"], s["state"]) for s in j["steps"]] == [("claimed", "done"), ("built", "done"), ("pull request", "done"), ("reviewed", "now"),
+                                                             ("merged", "next"), ("audited", "next"), ("closed", "next")]
+    assert j["steps"][1]["detail"] == "claude's backend worker" and j["steps"][2]["detail"] == "PR #55"
+    assert j["now"] == "codex is reviewing PR #55, 12 min in" and j["next"] == "then merged, audited, closed"
+    done = journey(status["issues"][1], status, now)
+    assert all(s["state"] == "done" for s in done["steps"]) and done["now"] == "done" and done["next"] == ""
+    assert done["steps"][5]["detail"] == "codex: pass"
+    fresh = journey(status["issues"][2], status, now)
+    assert fresh["steps"][0]["state"] == "now" and fresh["now"] == "ready for a group to claim"
+    assert set(journeys(status, now)) == {49, 47, 50}
+    assert progress_line(status, now) == "#49: codex is reviewing PR #55, 12 min in · #50: ready for a group to claim"
+    many = {**status, "issues": status["issues"] + [{"number": k, "title": "t", "status": "ready", "claimed_by": None, "worker": None, "challenged": False} for k in (60, 61)]}
+    assert progress_line(many, now) == "4 left: 1 at reviewed, 3 at claimed"
+    waiting = {**status, "runs": [status["runs"][0]]}
+    assert journey(status["issues"][0], waiting, now)["now"] == "PR #55 waits for a review (0 of 2 approvals)"
+    approved = {**waiting, "pulls": [{**status["pulls"][0], "approvals": ["codex", "claude"]}, status["pulls"][1]]}
+    assert journey(status["issues"][0], approved, now)["now"] == "PR #55 is approved and ready to merge"

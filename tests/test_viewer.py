@@ -1314,3 +1314,17 @@ def test_a_group_can_carry_its_own_environment_and_cli_settings_through_the_form
     assert '"model_providers.ollama.base_url" = "http://server:11434/v1"' in written and "disable_response_storage = true" in written
     again = body(get(v, "/api/config"))["config"]["groups"]["codex"]
     assert again["env"] == {"OPENAI_API_KEY": "ollama"} and again["cli_config"]["disable_response_storage"] is True
+
+
+def test_the_cards_draw_each_issues_journey_and_the_bar_says_what_is_left(tmp_path):
+    """Plan 29: /api/state carries `journeys` and `progress`; a card draws the seven steps and prints now and next."""
+    v, _, _ = viewer_for(tmp_path)
+    state = body(get(v, "/api/state"))
+    assert set(state["journeys"]) == {str(i["number"]) for i in state["status"]["issues"]} or set(state["journeys"]) == {i["number"] for i in state["status"]["issues"]}
+    one = next(iter(state["journeys"].values()))
+    assert [s["name"] for s in one["steps"]] == ["claimed", "built", "pull request", "reviewed", "merged", "audited", "closed"] and "now" in one
+    assert isinstance(state["progress"], str)
+    js, css = get(v, "/static/app.js").body.decode(), get(v, "/static/app.css").body.decode()
+    for marker in ("lastJourneys", 'className = "journey"', "jstep ${step.state}", "state.progress", '"jnow"'):
+        assert marker in js, marker
+    assert ".icard .jstep.now" in css and ".icard .jstep.done" in css

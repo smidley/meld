@@ -24,6 +24,21 @@ tasks:
     cmds:
       - uv run meld run {{.GROUP}}
 
+  up:
+    desc: Start a group's supervisor in the background (GROUP=claude|codex); `task ps` shows it, `task down` stops it
+    cmds:
+      - uv run meld run {{.GROUP}} --detach
+
+  down:
+    desc: Stop a group's background supervisor (GROUP=claude|codex)
+    cmds:
+      - uv run meld stop {{.GROUP}}
+
+  ps:
+    desc: Each group's supervisor and roles, alive or not, from the local records
+    cmds:
+      - uv run meld --pretty ps
+
   doctor:
     desc: Verify CLIs, tokens, identities, models, and permissions (CLI_ARGS for flags, e.g. --probe-status)
     cmds:

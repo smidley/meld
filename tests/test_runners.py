@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import signal
 import time
 from dataclasses import dataclass, field
@@ -834,3 +835,48 @@ def test_a_record_that_cannot_be_written_never_costs_a_launch(tmp_path):
     assert len(adapter.launches) == 2                       # each role launched exactly once: no orphan, no duplicate
     assert out["roles"]["pm"]["launch_errors"] == 0          # a record failing is not the role's cycle failing
     assert read_record(supervisor_path(tmp_path / "home", "claude")) is None
+
+
+def test_cli_run_detach_ps_and_stop_manage_a_background_supervisor(tmp_path, monkeypatch):
+    """Handoff residual 17: the launcher lived outside the repo. `meld run --detach` starts the supervisor in its own
+    session with its output on a log, `meld ps` reads the records it keeps, `meld stop` ends it by its record (never a
+    reused pid). The detached child here is a sleeping python, never a real CLI; the sleep records nothing, so the
+    test writes the record the real supervisor writes at startup."""
+    import signal
+    from meld.runners import supervisor_path
+    from meld.state import pid_alive
+    _, ctx, env = make(tmp_path)
+    home = tmp_path / "home"
+    monkeypatch.setattr(cli, "detach_argv", lambda config_path, group: [sys.executable, "-c", "import time; time.sleep(60)"])
+    monkeypatch.setattr(cli, "START_OF", lambda pid: "fixed-start")
+    args = ["--config", str(tmp_path / ".meld.toml"), "--compact"]
+    result = CliRunner().invoke(cli.main, [*args, "run", "claude", "--detach"], env=env)
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    pid = data["pid"]
+    try:
+        assert data["detached"] is True and data["group"] == "claude" and pid_alive(pid) and Path(data["log"]).exists()
+        assert os.getpgid(pid) == pid                                      # its own session: it outlives this shell
+        record = supervisor_path(home, "claude")
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(json.dumps({"pid": pid, "started_at": "2026-09-03T12:00:00Z", "proc_start": "fixed-start"}))
+        again = CliRunner().invoke(cli.main, [*args, "run", "claude", "--detach"], env=env)
+        assert again.exit_code == 1 and "already running" in again.output and f"meld stop claude" in again.output
+        exclusive = CliRunner().invoke(cli.main, [*args, "run", "claude", "--detach", "--once"], env=env)
+        assert exclusive.exit_code == 1 and "exclusive" in exclusive.output
+        ps = json.loads(CliRunner().invoke(cli.main, [*args, "ps"], env=env).output)
+        assert ps["claude"]["supervisor"]["state"] == "alive" and ps["claude"]["supervisor"]["pid"] == pid
+        assert ps["codex"]["supervisor"]["state"] == "unknown" and ps["claude"]["roles"]["pm"]["state"] == "unknown"
+        assert ps["claude"]["roles"]["pm"]["frozen"] is None
+        stop = CliRunner().invoke(cli.main, [*args, "stop", "claude"], env=env)
+        assert stop.exit_code == 0, stop.output
+        assert json.loads(stop.output) == {"group": "claude", "pid": pid, "stopped": True, "how": "term"}
+        assert not pid_alive(pid)
+        again_stop = json.loads(CliRunner().invoke(cli.main, [*args, "stop", "claude"], env=env).output)
+        assert again_stop["stopped"] is False and again_stop["state"] == "dead" and "gone" in again_stop["reason"]
+        assert json.loads(CliRunner().invoke(cli.main, [*args, "ps"], env=env).output)["claude"]["supervisor"]["state"] == "dead"
+        unknown = CliRunner().invoke(cli.main, [*args, "stop", "bogus"], env=env)
+        assert unknown.exit_code == 1 and "unknown group" in unknown.output
+    finally:
+        if pid_alive(pid):
+            os.kill(pid, signal.SIGKILL)

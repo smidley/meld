@@ -18,7 +18,7 @@ from meld.dispatch import DispatchError
 from meld.github import GitHubError
 from meld.grammar import Header, compose
 from meld.prompts import ROLES, role_prompt
-from meld.state import proc_start_of
+from meld.state import liveness, pid_alive, proc_start_of
 from meld.transcript import Tail
 
 ROLE_MAX_TURNS = 10000
@@ -140,6 +140,18 @@ def supervisor_path(home: Path, group: str) -> Path:
 def role_run_path(home: Path, group: str, role: str) -> Path:
     """Where a role's current launch is recorded: pid, start time, the log it writes, launch number and reason."""
     return home / "state" / group / role / "current.json"
+
+
+def processes(cfg, home: Path, *, alive: Callable[[int], bool] = pid_alive, start_of: Callable[[int], str] = proc_start_of) -> dict:
+    """Every group's supervisor and roles as the local records describe them: spec 22's tri-state liveness with its
+    reason per process, plus each role's freeze -- read from `$MELD_HOME/state` alone, no GitHub (`meld ps`)."""
+    from meld.prompts import ROLES
+    out = {}
+    for g in cfg.groups:
+        roles = {r: {**liveness(read_record(role_run_path(home, g, r)), alive=alive, start_of=start_of), "frozen": read_record(freeze_path(home, g, r))}
+                 for r in ROLES}
+        out[g] = {"supervisor": liveness(read_record(supervisor_path(home, g)), alive=alive, start_of=start_of), "roles": roles}
+    return out
 
 
 def read_record(path: Path) -> dict | None:

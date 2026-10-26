@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -34,9 +35,9 @@ from meld.plan import plan_ack as do_plan_ack, plan_approve as do_plan_approve, 
 from meld.posting import PostError, post as do_post
 from meld.results import ResultsError
 from meld.review import merge as do_merge, review as do_review
-from meld.runners import run_group
+from meld.runners import processes, read_record, run_group, supervisor_path
 from meld.setup import SetupError, setup as do_setup
-from meld.state import CHANGE_KINDS, StateStore, meld_home
+from meld.state import CHANGE_KINDS, StateStore, liveness, meld_home, pid_alive, proc_start_of
 from meld.status import build_status
 from meld.tagging import tag as do_tag
 from meld.transcript import Tail, newest_log, render_line
@@ -438,15 +439,79 @@ def chat(ctx: click.Context, once: str | None, verbose: bool) -> None:
 @main.command()
 @click.argument("group")
 @click.option("--once", is_flag=True, help="Launch both roles once and return when they exit (no restarts).")
+@click.option("--detach", is_flag=True, help="Start the supervisor in its own session with its output on $MELD_HOME/logs/<group>/supervisor.log, print its pid, and return.")
 @click.pass_context
-def run(ctx: click.Context, group: str, once: bool) -> None:
-    """Supervise a group's orchestrator and PM processes."""
+def run(ctx: click.Context, group: str, once: bool, detach: bool) -> None:
+    """Supervise a group's orchestrator and PM processes (`--detach` starts that supervision in the background; `meld ps` shows it and `meld stop` ends it)."""
     env = {**os.environ, "MELD_GROUP": group, "MELD_ROLE": "orchestrator"}
     try:
         c = load_context(ctx.obj["config_path"], env=env, run=RUN, adapter_for=ADAPTER_FOR)
     except ConfigError as e:
         raise click.ClickException(str(e)) from e
+    if detach:
+        if once:
+            raise click.ClickException("--detach and --once are exclusive: --once is a foreground diagnostic")
+        home = meld_home(os.environ)
+        state = liveness(read_record(supervisor_path(home, group)), alive=ALIVE, start_of=START_OF)
+        if state["state"] == "alive":
+            raise click.ClickException(f"a supervisor for {group} is already running ({state['reason']}); `meld stop {group}` first")
+        log = home / "logs" / group / "supervisor.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with open(log, "ab") as handle:
+            proc = subprocess.Popen(detach_argv(ctx.obj["config_path"], group), cwd=str(Path.cwd()), env=dict(os.environ),
+                                    stdin=subprocess.DEVNULL, stdout=handle, stderr=handle, start_new_session=True)
+        emit({"group": group, "pid": proc.pid, "log": str(log), "detached": True}, ctx.obj["pretty"])
+        return
     emit(_guard(lambda: run_group(c, once=once, base_env=env)), ctx.obj["pretty"])
+
+
+ALIVE = pid_alive          # seams for the tests, which stand a sleeping python in for a supervisor and never run `ps`
+START_OF = proc_start_of
+SLEEP = time.sleep
+
+
+def detach_argv(config_path: Path | None, group: str) -> list[str]:
+    """The command a detached supervisor is: this interpreter, `python -m meld`, the same config, `run GROUP`."""
+    return [sys.executable, "-m", "meld", *(["--config", str(config_path)] if config_path else []), "run", group]
+
+
+@main.command()
+@click.argument("group")
+@click.option("--grace", default=15, show_default=True, help="Seconds to wait after SIGTERM before SIGKILL.")
+@click.pass_context
+def stop(ctx: click.Context, group: str, grace: float) -> None:
+    """Stop a group's supervisor: SIGTERM (it stops its roles and returns), then SIGKILL once --grace seconds have passed.
+    Reads the supervisor's own record under $MELD_HOME, so it never signals a pid that has since been reused."""
+    cfg = _guard(lambda: load_config(ctx.obj["config_path"] or find_config(Path.cwd())))
+    if group not in cfg.groups:
+        raise click.ClickException(f"unknown group {group!r}; configured: {', '.join(cfg.groups)}")
+    state = liveness(read_record(supervisor_path(meld_home(os.environ), group)), alive=ALIVE, start_of=START_OF)
+    if state["state"] != "alive":
+        emit({"group": group, "stopped": False, "state": state["state"], "reason": state["reason"]}, ctx.obj["pretty"])
+        return
+    pid = int(state["pid"])
+    os.kill(pid, signal.SIGTERM)
+    deadline = time.monotonic() + grace
+    while ALIVE(pid) and time.monotonic() < deadline:
+        SLEEP(0.2)
+    how = "term"
+    if ALIVE(pid):
+        os.kill(pid, signal.SIGKILL)
+        how = "kill"
+        for _ in range(25):
+            if not ALIVE(pid):
+                break
+            SLEEP(0.2)
+    emit({"group": group, "pid": pid, "stopped": not ALIVE(pid), "how": how}, ctx.obj["pretty"])
+
+
+@main.command()
+@click.pass_context
+def ps(ctx: click.Context) -> None:
+    """Each group's supervisor and roles as the local records describe them -- alive, dead or unknown, with the reason --
+    and each role's freeze. Reads $MELD_HOME only; nothing is asked of GitHub."""
+    cfg = _guard(lambda: load_config(ctx.obj["config_path"] or find_config(Path.cwd())))
+    emit(processes(cfg, meld_home(os.environ), alive=ALIVE, start_of=START_OF), ctx.obj["pretty"])
 
 
 @main.command()

@@ -1,0 +1,13 @@
+Loaded cached credentials.
+{"type":"init","timestamp":"2026-10-26T21:00:00Z","session_id":"abc123def","model":"gemini-3-pro-preview"}
+{"type":"message","role":"user","content":"Read .meld-brief.md and do it.","timestamp":"2026-10-26T21:00:00Z"}
+{"type":"tool_use","tool_name":"Shell","tool_id":"tool_1","parameters":{"command":"meld status"},"timestamp":"2026-10-26T21:00:01Z"}
+{"type":"tool_result","tool_id":"tool_1","status":"success","output":"{\"phase\": \"executing\"}","timestamp":"2026-10-26T21:00:02Z"}
+{"type":"message","role":"assistant","content":"The board is executing; ","delta":true,"timestamp":"2026-10-26T21:00:05Z"}
+{"type":"message","role":"assistant","content":"claiming #13.","delta":true,"timestamp":"2026-10-26T21:00:05Z"}
+{"type":"tool_use","tool_name":"Shell","tool_id":"tool_2","parameters":{"command":"meld claim 13"},"timestamp":"2026-10-26T21:00:06Z"}
+{"type":"tool_result","tool_id":"tool_2","status":"error","output":"refused: HALT is in effect","timestamp":"2026-10-26T21:00:07Z"}
+{"type":"error","message":"API key invalid or expired","timestamp":"2026-10-26T21:00:08Z"}
+{"type":"error","message":"Rate limit exceeded for gemini-3-pro-preview; resets at 2026-10-27T00:00:00Z","timestamp":"2026-10-26T21:00:09Z"}
+{"type":"banner","text":"something new"}
+{"type":"result","status":"success","stats":{"input_tokens":100,"output_tokens":50,"duration_ms":1200,"tool_calls":2},"timestamp":"2026-10-26T21:00:10Z"}

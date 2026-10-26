@@ -105,7 +105,7 @@ def test_setup_writes_the_starter_and_never_overwrites_without_force(tmp_path):
     fake.route("GET", R + "issues", [])
     fake.route("POST", R + "issues", {"number": 2}, status=201)
     out = setup(gh_for(fake), repo="acme/widgets", goal="Ship a widget catalogue", milestone_title="M1", human="empowerScott",
-                target_dir=tmp_path, registry=ModelRegistry.load(), which=lambda b: "/bin/" + b)
+                target_dir=tmp_path, registry=ModelRegistry.load(), which=lambda b: "/bin/" + b if b in ("claude", "codex") else None)
     assert out["milestone"] == 1 and out["coordination_issue"] == 2 and out["config"] == str(tmp_path / ".meld.toml")
     assert out["labels"]["created"] and out["groups"] == ["claude", "codex"]
     text = (tmp_path / ".meld.toml").read_text()

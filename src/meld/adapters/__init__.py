@@ -5,7 +5,7 @@ from importlib import import_module
 
 from meld.adapters.base import Adapter, LaunchSpec, scrub_env
 
-ADAPTER_NAMES = ("claude", "codex")
+ADAPTER_NAMES = ("claude", "codex", "gemini", "grok")
 
 
 class UnknownAdapter(KeyError):

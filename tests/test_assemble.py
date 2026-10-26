@@ -161,3 +161,18 @@ def test_build_board_fills_the_bot_logins_and_reads_claims_from_labels(tmp_path)
     _, board = build_status(ctx)
     assert board.bots == {"claude": "meld-claude-bot", "codex": "meld-codex-bot"}
     assert board.issues[12].claimed_by == "claude" and board.issues[13].claimed_by == "codex" and board.issues[11].claimed_by is None
+
+
+def test_missing_checks_permission_degrades_to_unreadable_checks(board1_gh):
+    """The first Antigravity App group lacked Checks, and every `meld status` of its roles died on HTTP 403 reading check
+    runs. The board builds, the PR's checks read "unreadable" (so a merge is refused on what cannot be seen), and the
+    gap is recorded once."""
+    fake, gh = board1_gh
+    fake.route("GET", "repos/acme/widgets/commits/abc123/check-runs", {"message": "Resource not accessible by integration"}, status=403)
+    errors: list[str] = []
+    board = build_board(gh, CFG2, {}, {}, errors=errors)
+    assert board.pulls[20].checks == "unreadable" and board.pulls[20].head_committer == "meld-codex-bot"
+    (note,) = errors
+    assert note.startswith("PR #20: check runs unavailable (") and "HTTP 403" in note and note.endswith("grant the token or App Checks: read")
+    build_board(gh, CFG2, {}, {}, errors=errors)
+    assert len(errors) == 1

@@ -261,14 +261,14 @@ def run_checks(cfg: Config, repo_root: Path, *, env: Mapping[str, str], gh_facto
                     # groups: without the permission every review this group submits records check_run_error.
                     no_checks = tok.permissions.get("checks") != "write"
                     if no_checks:
-                        detail += "; each review by this group will record check_run_error"
+                        detail += "; this group cannot read check runs (every open PR shows checks unreadable to it, so it can never merge) and each review it posts will record check_run_error"
                     bad = bool(wrong) or (not unverified and not covers)
                     fix = ""
                     if bad:
                         fix = ("edit the App's permissions (Contents, Issues, Pull requests, Commit statuses: read & write; "
                                "Checks: read & write recommended) and install it on the repo")
                     elif no_checks:
-                        fix = "grant the App Checks: read & write"
+                        fix = "grant the App Checks: read & write (GitHub > Settings > Developer settings > GitHub Apps > the App > Permissions), then accept the change on its installation"
                     checks.append(Check(f"app-installation:{group.name}", False if bad else (None if unverified or no_checks else True), detail, fix,
                                         measured=not unverified))
                 except AppAuthError as e:

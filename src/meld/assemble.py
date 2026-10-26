@@ -121,7 +121,19 @@ def _pull(gh: GitHub, raw: dict, errors: list[str] | None = None) -> PullRequest
         if commits:
             last = commits[-1]
             head_committer = (last.get("author") or {}).get("login") or (last.get("committer") or {}).get("login") or None
-        checks = checks_state(gh.check_runs(head_sha))
+        # Check runs need the Checks permission, which an App created by hand may lack: the first Antigravity group's
+        # every `meld status` died on HTTP 403 here. Degrade to "unreadable" (so rules._merge refuses to merge on what it
+        # cannot see, and the card says so) and record the gap; a rate limit still propagates.
+        try:
+            checks = checks_state(gh.check_runs(head_sha))
+        except RateLimited:
+            raise
+        except GitHubError as e:
+            checks = "unreadable"
+            if errors is not None:
+                note = f"PR #{number}: check runs unavailable ({e}); grant the token or App Checks: read"
+                if note not in errors:
+                    errors.append(note)
         entries = gh.pull_files(number)
         files = tuple(e["filename"] for e in entries)
         removed = tuple(e["filename"] for e in entries if e["status"] == "removed")

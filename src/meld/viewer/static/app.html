@@ -14,17 +14,8 @@
     <span id="milestone"></span>
     <span id="phase" class="badge"></span>
     <span id="halted" class="badge bad hidden">HALTED</span>
-    <span id="budget"></span>
   </div>
-  <div id="machine" class="row">
-    <span id="disk"></span>
-    <span id="logs"></span>
-    <span id="feed" class="badge unknown">feed connecting</span>
-    <label id="detail" title="The transcript columns show what each agent said by default; tick to see every tool call and result too."><input type="checkbox" id="show-tools"> show tool calls</label>
-    <span id="stamp" class="dim"></span>
-    <span id="error" class="bad"></span>
-  </div>
-  <div id="headline" class="row strong"></div>
+  <p id="headline"></p>
   <div id="supervisors" class="row"></div>
   <div id="needs-human" class="row"></div>
 </header>
@@ -37,38 +28,9 @@
     <div class="coutcome dim"></div>
   </div>
 </template>
-<section id="board-panel">
-  <div class="panel"><h2>Issues <span class="hint">a verb button fills the bar below; nothing runs until Run</span></h2><div id="issues"></div></div>
-  <div class="panel"><h2>Pull requests <span class="hint">hover a row for why a verb is missing</span></h2><div id="pulls"></div></div>
-  <div class="panel"><h2>Agreements <span class="hint">what the groups proposed and settled</span></h2><div id="agreements"></div></div>
-</section>
-<form id="bar" autocomplete="off">
-  <span class="strong" title="Everything here is posted as you, the human party; the rules decide it exactly as on the CLI.">You, as the human:</span>
-  <select id="action" aria-label="action"></select>
-  <select id="verb" aria-label="header verb" class="hidden"></select>
-  <input id="ref" placeholder="ref, e.g. #13 or plan-add-1" aria-label="ref">
-  <input id="text" placeholder="message (post, challenge, remember)" aria-label="message">
-  <button id="run" type="submit" title="Nothing runs until you press Run.">Run</button>
-  <span id="result" class="dim"></span>
-</form>
-<details id="config">
-  <summary>Configuration</summary>
-  <div id="config-fields"></div>
-  <div class="row">
-    <button id="config-save" type="button">Save</button>
-    <span id="config-result" class="dim"></span>
-  </div>
-</details>
-<template id="row">
-  <div class="brow">
-    <span class="rid"></span>
-    <span class="rwhat"></span>
-    <span class="rverbs"></span>
-  </div>
-</template>
 <main id="live">
   <section id="conversation" class="column" data-filter="quiet">
-    <h2><span class="who">Conversation</span> <span class="hint">the coordination issue, live</span>
+    <h2><span class="who">Conversation</span> <span class="hint">what the agents are saying to each other</span>
       <select id="convo-filter" aria-label="conversation filter">
         <option value="quiet">without housekeeping</option>
         <option value="all">everything</option>
@@ -76,8 +38,58 @@
       </select></h2>
     <ol id="turns" class="events"></ol>
   </section>
-  <div id="streams"></div>
+  <section id="work" class="column">
+    <h2><span class="who">Work</span> <span class="hint">every issue of the milestone, from to-do to done; a button fills the action bar, nothing runs until Run</span></h2>
+    <div id="issues" class="kanban"></div>
+  </section>
 </main>
+<nav id="tabs">
+  <button type="button" class="tab" data-tab="streams">Transcripts</button>
+  <button type="button" class="tab" data-tab="pulls-panel">Pull requests</button>
+  <button type="button" class="tab" data-tab="agreements-panel">Agreements</button>
+  <button type="button" class="tab" data-tab="act">Act as the human</button>
+  <button type="button" class="tab" data-tab="config">Configuration</button>
+  <span id="machine" class="row dim">
+    <span id="budget"></span>
+    <span id="disk"></span>
+    <span id="logs"></span>
+    <span id="feed" class="badge unknown">feed connecting</span>
+    <label id="detail" title="The transcripts show what each agent said by default; tick to see every tool call and result too."><input type="checkbox" id="show-tools"> show tool calls</label>
+    <span id="stamp" class="dim"></span>
+    <span id="error" class="bad"></span>
+  </span>
+</nav>
+<section id="drawer" class="closed">
+  <div id="streams" class="tabpane hidden"></div>
+  <div id="pulls-panel" class="tabpane hidden"><div class="panel"><h2>Pull requests <span class="hint">hover a row for why a verb is missing</span></h2><div id="pulls"></div></div></div>
+  <div id="agreements-panel" class="tabpane hidden"><div class="panel"><h2>Agreements <span class="hint">what the groups proposed and settled</span></h2><div id="agreements"></div></div></div>
+  <div id="act" class="tabpane hidden">
+    <form id="bar" autocomplete="off">
+      <span class="strong" title="Everything here is posted as you, the human party; the rules decide it exactly as on the CLI.">You, as the human:</span>
+      <select id="action" aria-label="action"></select>
+      <select id="verb" aria-label="header verb" class="hidden"></select>
+      <input id="ref" placeholder="ref, e.g. #13 or plan-add-1" aria-label="ref">
+      <input id="text" placeholder="message (post, challenge, remember)" aria-label="message">
+      <button id="run" type="submit" title="Nothing runs until you press Run.">Run</button>
+      <span id="result" class="dim"></span>
+    </form>
+  </div>
+  <details id="config" class="tabpane hidden">
+    <summary>Configuration</summary>
+    <div id="config-fields"></div>
+    <div class="row">
+      <button id="config-save" type="button">Save</button>
+      <span id="config-result" class="dim"></span>
+    </div>
+  </details>
+</section>
+<template id="row">
+  <div class="brow">
+    <span class="rid"></span>
+    <span class="rwhat"></span>
+    <span class="rverbs"></span>
+  </div>
+</template>
 <template id="column">
   <section class="column">
     <h2><span class="who"></span> <span class="live badge"></span> <span class="why dim"></span></h2>

@@ -142,18 +142,50 @@ function renderThread(turns) {
   if (pinned) list.scrollTop = list.scrollHeight;
 }
 
+const LANES = [["To do", ["planned", "ready", "unlabeled"]], ["In progress", ["in_progress", "blocked", "needs_human"]],
+               ["In review", ["in_review"]], ["Done", ["closed"]]];
+function issueCard(i) {
+  const card = document.createElement("div");
+  card.className = "icard" + (i.status === "blocked" || i.status === "needs_human" || i.challenged ? " attention" : "");
+  const head = document.createElement("div");
+  head.className = "ihead";
+  head.append(cell("inum", `#${i.number}`), cell("ititle", i.title));
+  const badges = document.createElement("div");
+  badges.className = "ibadges";
+  if (i.claimed_by) {
+    const who = cell("iwho", i.claimed_by);
+    who.style.color = colorFor("group", i.claimed_by);
+    badges.append(who);
+  }
+  const flags = [i.worker, i.status === "planned" && "planned", i.status === "blocked" && "blocked",
+                 i.status === "needs_human" && "needs a person", i.challenged && "challenged"].filter(Boolean);
+  if (flags.length) badges.append(text(document.createElement("span"), (i.claimed_by ? " · " : "") + flags.join(" · ")));
+  const verbs = document.createElement("div");
+  verbs.className = "rverbs";
+  verbControls(verbs, i.legal, { ref: `#${i.number}`, number: i.number });
+  const why = Object.entries(i.refused || {}).map(([verb, rule]) => `${verb}: ${rule}`);
+  card.title = why.length ? `not legal now:\n${why.join("\n")}` : "";
+  card.append(head, badges, verbs);
+  return card;
+}
+
 function renderBoard(s) {
   // Rebuilding every row on every poll swallowed a click that landed mid-rebuild and dropped focus from a control;
   // most polls change nothing, so a board identical to the one already drawn is left alone.
   const key = JSON.stringify([s.issues, s.pulls, s.coordination && s.coordination.agreements]);
   if (key === lastBoard) return;
   lastBoard = key;
+  // The work, as four lanes an issue moves through; a card is the issue, its holder in that group's colour, and
+  // its verb buttons (hover the card for why the others are missing).
   const issues = el("issues");
   issues.replaceChildren();
-  for (const i of s.issues || []) {
-    const held = [i.status, i.claimed_by && `claimed by ${i.claimed_by}`, i.worker && `worker ${i.worker}`, i.challenged && "challenged"];
-    boardRow(issues, `#${i.number}`, `${i.title} — ${held.filter(Boolean).join(", ")}`, i.legal,
-             { ref: `#${i.number}`, number: i.number }, i.refused);
+  for (const [name, statuses] of LANES) {
+    const lane = document.createElement("div");
+    lane.className = "lane";
+    const items = (s.issues || []).filter((i) => statuses.includes(i.status));
+    lane.append(text(document.createElement("h3"), `${name} · ${items.length}`));
+    for (const i of items) lane.append(issueCard(i));
+    issues.append(lane);
   }
   const pulls = el("pulls");
   pulls.replaceChildren();
@@ -597,13 +629,17 @@ function renderState(state) {
   groupOrder = Object.keys(state.supervisors || {});
   renderDecisions(state.decisions);
   renderThread(state.thread);
+  // The agents, one chip per group in its colour: its supervisor in plain words (the reason on hover), and any frozen role.
+  const WORDS = { alive: "running", dead: "stopped", unknown: "not running here" };
   const sup = el("supervisors");
   sup.replaceChildren();
   for (const [group, live] of Object.entries(state.supervisors)) {
     const span = document.createElement("span");
-    const reason = text(document.createElement("span"), ` ${live.reason}`);
-    reason.className = "dim";
-    span.append(text(document.createElement("span"), `${group}: `), badge(document.createElement("span"), live.state), reason);
+    span.className = "agent";
+    span.title = live.reason;
+    const dot = cell("dot", "●");
+    dot.style.color = colorFor("group", group);
+    span.append(dot, text(document.createElement("span"), group), badge(document.createElement("span"), live.state, WORDS[live.state] || live.state));
     for (const [role, freeze] of Object.entries(state.frozen[group] || {})) {
       if (freeze) {
         const f = badge(document.createElement("span"), "frozen", `${role} frozen`);
@@ -721,6 +757,16 @@ async function pollStreams() {
 
 el("convo-filter").addEventListener("change", (e) => { el("conversation").dataset.filter = e.target.value; });
 el("streams").classList.add("narration");
+// The drawer: one tab open at a time, or none; the Configuration tab opens its <details>, whose toggle loads the form.
+function openTab(name) {
+  for (const b of document.querySelectorAll("#tabs .tab")) b.classList.toggle("active", b.dataset.tab === name);
+  for (const pane of el("drawer").querySelectorAll(".tabpane")) pane.classList.toggle("hidden", pane.id !== name);
+  el("drawer").classList.toggle("closed", !name);
+  if (name === "config") el("config").open = true;
+}
+for (const b of document.querySelectorAll("#tabs .tab")) {
+  b.addEventListener("click", () => openTab(b.classList.contains("active") ? null : b.dataset.tab));
+}
 el("show-tools").addEventListener("change", (e) => { el("streams").classList.toggle("narration", !e.target.checked); });
 options(el("action"), Object.keys(FIELDS));
 showFields();
@@ -728,12 +774,15 @@ el("action").addEventListener("change", showFields);
 el("bar").addEventListener("submit", (e) => { e.preventDefault(); runAction(); });
 // A row's button never acts: it fills the bar and hands the person the keyboard. One execution path, and a
 // merge is never one stray click away.
-el("board-panel").addEventListener("click", (e) => {
+// Verb buttons live in the work lanes and in two drawer tabs, so the delegate is the document; the bar sits in the
+// "Act as the human" tab, which opens so the filled bar is in view.
+document.addEventListener("click", (e) => {
   const b = e.target.closest("button.verb");
   // Defence in depth, not the primary guard: verbControls (above) now renders a button only for a verb FIELDS
   // has an entry for, so button.verb never carries an action this bar can't spell and this can't fire in
   // practice. Kept so the two staying in sync is enforced twice, not assumed once.
   if (!b || !FIELDS[b.dataset.action]) return;
+  openTab("act");
   el("action").value = b.dataset.action;
   showFields();
   el("ref").value = b.dataset.ref || "";

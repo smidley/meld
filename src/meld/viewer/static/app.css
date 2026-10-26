@@ -29,6 +29,9 @@ body > * { flex: 0 0 auto; }
 #repo { font-size: 16px; }
 #phase { text-transform: capitalize; font-weight: 600; color: var(--accent); border-color: var(--accent); }
 #headline { margin: 6px 0 4px; font-size: 16px; font-weight: 500; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.card .cwhere { font-size: 12.5px; margin-left: 8px; }
 #bars { display: flex; flex-wrap: wrap; gap: 4px 28px; align-items: center; margin: 4px 0 2px; font-size: 12.5px; }
 #budget-bars { display: flex; flex-wrap: wrap; gap: 4px 20px; }
 .bar { display: flex; align-items: center; gap: 8px; white-space: nowrap; }

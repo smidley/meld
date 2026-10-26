@@ -156,9 +156,8 @@ function boardRow(into, id, what, legal, keys, refused) {
   const row = el("row").content.firstElementChild.cloneNode(true);
   // Both tracks truncate: an agreement ref is a model-authored token of any length and a title can be long.
   // The full text stays reachable on hover, which is what the freeze badge does with its reset instant.
-  const rid = text(row.querySelector(".rid"), id);
+  const rid = refLink(row.querySelector(".rid"), id);
   const rwhat = text(row.querySelector(".rwhat"), what);
-  rid.title = id;
   // Hovering the row also says why each verb that is missing from `legal` is missing: the rule `meld status`
   // reports under `refused`, verbatim, so a person never has to guess why there is no merge button.
   const why = Object.entries(refused || {}).map(([verb, rule]) => `${verb}: ${rule}`);
@@ -195,11 +194,49 @@ function renderThread(turns) {
     head.className = "head";
     const party = cell("party", t.party);
     party.style.color = colorFor(t.kind, t.group);
-    head.append(party, cell("verb", [t.verb, t.ref, t.qualifier].filter(Boolean).join(" ")), cell("dim", clock12(Date.parse(t.at || ""))));
+    const verb = cell("verb", t.verb + " ");
+    if (t.ref) refLink(verb, t.ref);
+    if (t.qualifier) text(verb.appendChild(document.createElement("span")), ` ${t.qualifier}`);
+    const stamp = document.createElement("span");
+    stamp.className = "dim";
+    link(stamp, clock12(Date.parse(t.at || "")), ghUrl("comment", t.id), "open this comment on GitHub");
+    head.append(party, verb, stamp);
     li.append(head, cell("body", t.text));
     list.append(li);
   }
   if (added && following) requestAnimationFrame(followNewest);
+}
+
+// Every reference the page shows is a link to the thing itself on GitHub: the repository, the milestone, an issue or
+// pull request by number, a thread comment by id. These are the one place the page points off the machine, and they
+// are navigation a person chooses -- nothing is fetched from them -- opened in a new tab with no referrer.
+function ghUrl(kind, id) {
+  const repo = lastStatus && lastStatus.repo;
+  if (!repo) return null;
+  const base = `https://github.com/${repo}`;
+  if (kind === "repo") return base;
+  if (kind === "milestone") return `${base}/milestone/${id}`;
+  if (kind === "issue") return `${base}/issues/${id}`;      // GitHub forwards an issue number that is a pull request
+  if (kind === "comment") return lastStatus.coordination_issue ? `${base}/issues/${lastStatus.coordination_issue}#issuecomment-${id}` : null;
+  return null;
+}
+function link(parent, value, href, title) {
+  // A link when there is somewhere to go, the plain text otherwise, so a page without a repository still reads.
+  if (!href) return text(parent, value);
+  const a = document.createElement("a");
+  a.href = href;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  a.title = title || "open on GitHub";
+  text(a, value);
+  parent.append(a);
+  return parent;
+}
+function refLink(parent, ref) {
+  // A `#n` ref links to that issue or pull request; any other ref (an agreement's token) to the coordination issue.
+  const n = /^#(\d+)$/.exec(ref || "");
+  return link(parent, ref, n ? ghUrl("issue", n[1]) : (lastStatus && lastStatus.coordination_issue ? ghUrl("issue", lastStatus.coordination_issue) : null),
+              n ? "open on GitHub" : "open the coordination issue on GitHub");
 }
 
 const LANES = [["To do", ["planned", "ready", "unlabeled"]], ["In progress", ["in_progress", "blocked", "needs_human"]],
@@ -222,7 +259,10 @@ function issueCard(i, lane) {
   const title = cell("ititle", i.title);
   title.title = "everything that touched this issue";
   title.addEventListener("click", () => openTask(i.number));
-  head.append(cell("inum", `#${i.number}`), title);
+  const num = document.createElement("span");
+  num.className = "inum";
+  link(num, `#${i.number}`, ghUrl("issue", i.number));
+  head.append(num, title);
   const badges = document.createElement("div");
   badges.className = "ibadges";
   if (i.claimed_by) {
@@ -252,7 +292,11 @@ function issueCard(i, lane) {
     const reviewing = liveRuns.filter((r) => r.pr === pr.number && (r.kind === "review" || r.kind === "audit")).map((r) => `${r.group} reviewing`);
     const state = [pr.approvals.length && `approved by ${pr.approvals.join(", ")}`, pr.changes_requested.length && `changes requested by ${pr.changes_requested.join(", ")}`,
                    (pr.checks === "pending" || pr.checks === "red") && `checks ${pr.checks}`, ...reviewing].filter(Boolean);
-    card.append(cell("ipr", `PR #${pr.number}` + (state.length ? ` · ${state.join(" · ")}` : " · awaiting review")));
+    const line = document.createElement("div");
+    line.className = "ipr";
+    link(line, `PR #${pr.number}`, ghUrl("issue", pr.number));
+    text(line.appendChild(document.createElement("span")), state.length ? ` · ${state.join(" · ")}` : " · awaiting review");
+    card.append(line);
   }
   const verbs = document.createElement("div");
   verbs.className = "rverbs";
@@ -564,7 +608,9 @@ function openTask(number) {
   if (!s) return;
   const issue = (s.issues || []).find((i) => i.number === number);
   if (!issue) return;
-  text(el("task-title"), `#${issue.number} ${issue.title}`);
+  el("task-title").replaceChildren();
+  link(el("task-title"), `#${issue.number}`, ghUrl("issue", issue.number));
+  text(el("task-title").appendChild(document.createElement("span")), ` ${issue.title}`);
   const tree = el("task-tree");
   tree.replaceChildren();
   const root = treeItem(tree, issue.claimed_by ? `claimed by ${issue.claimed_by}` : "unclaimed", issue.claimed_by ? colorFor("group", issue.claimed_by) : null,
@@ -768,6 +814,10 @@ function renderDecisions(list) {
       title.classList.add("link");
       title.title = "show this in the conversation";
       title.addEventListener("click", () => showTurn(d.comment_id));
+      const where = document.createElement("span");
+      where.className = "cwhere dim";
+      link(where, "on GitHub ↗", ghUrl("comment", d.comment_id), "open this comment on GitHub");
+      title.after(where);
     }
     text(card.querySelector(".csummary"), d.summary);
     const choices = card.querySelector(".cchoices");
@@ -1216,8 +1266,11 @@ async function saveConfig() {
 
 function renderState(state) {
   const s = state.status;
-  text(el("repo"), s.repo);
-  text(el("milestone"), s.milestone ? `milestone ${s.milestone}` : "");
+  lastStatus = s;   // first: every reference drawn below links through ghUrl, which reads the repository from it
+  el("repo").replaceChildren();
+  link(el("repo"), s.repo, ghUrl("repo"), "open the repository on GitHub");
+  el("milestone").replaceChildren();
+  if (s.milestone) link(el("milestone"), `milestone ${s.milestone}`, ghUrl("milestone", s.milestone), "open the milestone on GitHub");
   badge(el("phase"), "", s.phase || "");
   el("halted").classList.toggle("hidden", !s.halted);
   // `spent` is Board.spend: group -> tier -> count, so it takes two levels of entries. One level stringified

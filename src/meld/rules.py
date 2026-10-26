@@ -207,6 +207,13 @@ def _reopen(board: Board, cfg: Config, actor: Actor, issue: Issue) -> str | None
     ]
     if not audits:
         return f"no AUDIT {ref} FAIL posted by {actor.group}"
+    newest = audits[-1]
+    if issue.closed_at and newest.created_at and newest.created_at <= issue.closed_at:
+        # The first live run reopened two issues whose fixes had already landed: the FAIL was real once, the issue
+        # was reopened on it, fixed and closed again, and the same FAIL kept `reopen` legal. A FAIL speaks about the
+        # close it followed; a later close is work it never judged (handoff residuals 2 and 15).
+        return (f"the newest AUDIT {ref} FAIL by {actor.group} ({newest.created_at}) predates the issue's last close "
+                f"({issue.closed_at}); audit the work closed since")
     if pr is not None and party_of_login(cfg, pr.author) == actor.group:
         return f"{actor.group} authored the PR that closed {ref}"
     return None
@@ -261,8 +268,14 @@ def issue_refusal(board: Board, cfg: Config, actor: Actor, verb: Verb, issue: Is
     return Refusal(verb, f"#{issue.number}", rule) if rule else None
 
 
+def issue_verb_rules(board: Board, cfg: Config, actor: Actor, issue: Issue, models: ModelRegistry) -> dict[str, str | None]:
+    """Every issue verb and why `actor` may not run it on `issue` right now -- None when it may. One table, read both
+    by `legal` and by `meld status`'s `refused` map, so a verb absent from `legal` always says why."""
+    return {v.value: (r.rule if (r := issue_refusal(board, cfg, actor, v, issue, models)) else None) for v in ISSUE_VERBS}
+
+
 def legal_issue_verbs(board: Board, cfg: Config, actor: Actor, issue: Issue, models: ModelRegistry) -> list[str]:
-    return [v.value for v in ISSUE_VERBS if issue_refusal(board, cfg, actor, v, issue, models) is None]
+    return [v for v, rule in issue_verb_rules(board, cfg, actor, issue, models).items() if rule is None]
 
 
 # ---- PR verbs ----------------------------------------------------------------
@@ -456,11 +469,12 @@ def pr_refusal(board: Board, cfg: Config, actor: Actor, verb: Verb, pr: PullRequ
     return Refusal(verb, f"#{pr.number}", rule) if rule else None
 
 
-def legal_pr_verbs(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> list[str]:
-    """What `actor` may do to `pr` now. approve/request-changes are reported through the path `meld review` really
-    takes: the author group's verdict is legal as a COMMENT review (review_verdict_rule), and a memory PR's verdict
-    follows memory_review_rule -- so the array never says approve is illegal at the moment `meld review` would post one."""
-    out = []
+def pr_verb_rules(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> dict[str, str | None]:
+    """Every PR verb and why `actor` may not run it on `pr` right now -- None when it may. approve/request-changes are
+    judged through the path `meld review` really takes: the author group's verdict is legal as a COMMENT review
+    (review_verdict_rule), and a memory PR's verdict follows memory_review_rule -- so the table never says approve is
+    illegal at the moment `meld review` would post one. Read both by `legal` and by `meld status`'s `refused` map."""
+    out: dict[str, str | None] = {}
     for v in PR_VERBS:
         if v in (Verb.APPROVE, Verb.REQUEST_CHANGES):
             verdict = "approve" if v == Verb.APPROVE else "request-changes"
@@ -468,9 +482,13 @@ def legal_pr_verbs(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> 
         else:
             refusal = pr_refusal(board, cfg, actor, v, pr)
             rule = None if refusal is None else refusal.rule
-        if rule is None:
-            out.append(v.value)
+        out[v.value] = rule
     return out
+
+
+def legal_pr_verbs(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> list[str]:
+    """What `actor` may do to `pr` now."""
+    return [v for v, rule in pr_verb_rules(board, cfg, actor, pr).items() if rule is None]
 
 
 def review_verdict_rule(board: Board, cfg: Config, actor: Actor, pr: PullRequest, verdict: str) -> str | None:
@@ -566,7 +584,9 @@ def decide_rule(board: Board, cfg: Config, actor: Actor, ref: str) -> str | None
         return f"{ref} ended in DISAGREE; the human decides"
     if agreement.proposer != actor.group:
         return f"only the proposer ({agreement.proposer}) may record {ref}"
-    if any(p.memory is not None and p.memory[:2] == ("decision", ref) for p in board.pulls.values() if p.state == "open"):
+    # An open memory PR is in flight; a merged one has landed the decision file, which memory.decide otherwise discovers
+    # only by reading origin -- so `legal` used to list `decide` for a ref whose file was already on the default branch.
+    if any(p.memory is not None and p.memory[:2] == ("decision", ref) for p in board.pulls.values() if p.state == "open" or p.merged):
         return f"{ref} is already recorded or has an open memory PR"
     return None
 

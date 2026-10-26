@@ -75,7 +75,7 @@ def _issue(raw: dict) -> Issue:
         number=raw["number"], title=raw.get("title", ""), body=raw.get("body") or "", labels=_labels(raw),
         state=raw.get("state", "open"),
         milestone=(raw.get("milestone") or {}).get("number"), created_at=raw.get("created_at", ""),
-        updated_at=raw.get("updated_at", ""),
+        updated_at=raw.get("updated_at", ""), closed_at=raw.get("closed_at") or "",
     )
 
 

@@ -321,3 +321,24 @@ def test_a_pm_may_release_a_ready_stale_claim_once_the_holders_lease_expired():
     assert rule(live, CODEX_PM, Verb.RELEASE, stale) == "issue is not claimed by codex"
     expired = mk_board(CFG2, issues=[stale], leases={12: mk_lease(12, until="2026-09-03T11:00:00Z")}, now="2026-09-03T12:00:00Z")
     assert rule(expired, CODEX_PM, Verb.RELEASE, stale) is None
+
+
+def test_reopen_needs_a_fail_audit_newer_than_the_issues_last_close():
+    """Handoff residuals 2 and 15: the first live run reopened issues whose fixes had already landed, because a FAIL
+    posted after the first close kept `reopen` legal through every later close. A FAIL speaks about the close it
+    followed; a later close is work it never judged."""
+    pr = mk_pr(19, 9, committer="meld-claude-bot", state="closed", merged=True)
+    audit = mk_comment(CFG2, 7, "meld-codex-bot", "[codex] AUDIT #9 FAIL\n\ncriterion 2 unmet", "2026-09-03T11:00:00Z")
+    first_close = mk_issue(9, state="closed", closed_at="2026-09-03T10:30:00Z")
+    assert rule(mk_board(CFG2, issues=[first_close], pulls=[pr], comments=[audit]), CODEX_PM, Verb.REOPEN, first_close) is None
+    closed_again = mk_issue(9, state="closed", closed_at="2026-09-03T12:00:00Z")
+    b = mk_board(CFG2, issues=[closed_again], pulls=[pr], comments=[audit])
+    assert rule(b, CODEX_PM, Verb.REOPEN, closed_again) == ("the newest AUDIT #9 FAIL by codex (2026-09-03T11:00:00Z) predates the issue's "
+                                                             "last close (2026-09-03T12:00:00Z); audit the work closed since")
+    assert "reopen" not in legal_issue_verbs(b, CFG2, CODEX_PM, closed_again, REG)
+    newer = mk_comment(CFG2, 8, "meld-codex-bot", "[codex] AUDIT #9 FAIL\n\nstill unmet", "2026-09-03T12:30:00Z")
+    assert rule(mk_board(CFG2, issues=[closed_again], pulls=[pr], comments=[audit, newer]), CODEX_PM, Verb.REOPEN, closed_again) is None
+    # a human's reopen needs no audit at all, and an issue record with no close time keeps the older behaviour
+    assert rule(b, HUMAN, Verb.REOPEN, closed_again) is None
+    undated = mk_issue(9, state="closed")
+    assert rule(mk_board(CFG2, issues=[undated], pulls=[pr], comments=[audit]), CODEX_PM, Verb.REOPEN, undated) is None

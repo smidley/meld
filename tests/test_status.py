@@ -91,6 +91,12 @@ def test_status_command_reports_board_and_legal_actions(project: Path, monkeypat
     assert pulls[20]["committer_party"] == "codex" and pulls[20]["approvals"] == ["claude"]
     # review is not listed: claude already approved this head, and a group gets one review slot per head
     assert pulls[20]["legal"] == ["approve", "request-changes", "push-fix", "merge", "remember"]
+    # ...and `refused` says so, from the same rule table: every verb is in exactly one of the two (plan 12, residuals 8 and 15)
+    assert "already reviewed" in pulls[20]["refused"]["review"] and "review" not in pulls[20]["legal"]
+    assert set(pulls[20]["refused"]) | set(pulls[20]["legal"]) == {"approve", "request-changes", "push-fix", "merge", "review", "audit", "reap", "remember"}
+    assert not set(pulls[20]["refused"]) & set(pulls[20]["legal"])
+    assert "CHALLENGE" in issues[12]["refused"]["dispatch"] and "dispatch" not in issues[12]["legal"]
+    assert set(issues[11]["refused"]) | set(issues[11]["legal"]) == {"claim", "release", "dispatch", "collect", "reopen", "tag", "reap", "remember"}
     fake.route("GET", "repos/acme/widgets/pulls/20/reviews", [])   # no verdict on the head yet: review is offered
     again = CliRunner().invoke(cli.main, ["--config", str(project / ".meld.toml"), "--compact", "status"], env=env_for(project))
     assert "review" in {p["number"]: p for p in json.loads(again.output)["pulls"]}[20]["legal"]

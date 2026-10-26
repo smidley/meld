@@ -232,3 +232,39 @@ def test_budget_items_clear_only_on_a_human_answer_to_their_ref():
     ]
     box = inbox(mk_board(comments=comments), CFG2, datetime(2026, 9, 5, 11, tzinfo=timezone.utc))
     assert [b["ref"] for b in box["budget"]] == ["budget-2"]
+
+
+def test_run_chat_recent_prints_the_thread_and_resolved_takes_any_grammar_ref(tmp_path):
+    """Handoff residual 13: /resolved refused anything but #N, so a BUDGET (budget-<n>) was answered from the raw CLI,
+    and the console could show only comments newer than a /wait. /recent prints the newest N through the same
+    renderer as `meld thread`, and /provided, /resolved and /revert take any ref the grammar accepts."""
+    from meld.chat import thread_lines
+    from meld.status import build_status
+    fake, human, repo, origin = make_product(tmp_path, group=None)
+    _, board = build_status(human)
+    ok = sorted((c for c in board.comments if c.ok), key=lambda c: (c.created_at, c.id))
+    assert len(ok) >= 2
+    out_lines: list[str] = []
+    result = run_chat(human, ["/recent 2", "/resolved budget-1 raised the cap", "/provided #13 the key is in 1Password", "/resolved fix it now", "/recent x", "/quit"], out_lines.append)
+    newest = [f"#{c.id} {c.created_at} {c.header.party.label} {c.header.verb}" for c in ok[-2:]]
+    assert [line.split("\n")[0][:len(n)] for line, n in zip(out_lines[1:3], newest)] == newest   # the inbox is line 0
+    assert f"#{ok[0].id} " not in "".join(out_lines[1:3])
+    posted = [c.body["body"].splitlines()[0] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/10/comments"]
+    assert posted == ["[human] RESOLVED budget-1", "[human] PROVIDED #13"]
+    assert len(result["errors"]) == 2 and "needs a ref like #13 or budget-1" in result["errors"][0] and "/recent takes a count" in result["errors"][1]
+    assert thread_lines(board, last=0) == thread_lines(board) and len(thread_lines(board, last=1)) == 1
+
+
+def test_cli_thread_prints_the_newest_comments_oldest_first(tmp_path, monkeypatch):
+    from meld.status import build_status
+    fake, human, repo, origin = make_product(tmp_path, group=None)
+    monkeypatch.setattr(cli, "RUN", fake)
+    env = env_for(tmp_path, group=None)
+    _, board = build_status(human)
+    ok = sorted((c for c in board.comments if c.ok), key=lambda c: (c.created_at, c.id))
+    result = CliRunner().invoke(cli.main, ["--config", str(repo / ".meld.toml"), "thread", "--last", "1"], env=env)
+    assert result.exit_code == 0, result.output
+    assert result.output.startswith(f"#{ok[-1].id} {ok[-1].created_at} ") and f"#{ok[0].id} " not in result.output
+    whole = CliRunner().invoke(cli.main, ["--config", str(repo / ".meld.toml"), "thread", "--last", "0"], env=env)
+    assert whole.exit_code == 0 and all(f"#{c.id} {c.created_at} " in whole.output for c in ok)
+    assert whole.output.index(f"#{ok[0].id} ") < whole.output.index(f"#{ok[-1].id} ")

@@ -19,6 +19,7 @@ from meld.waiting import wait_for_change
 
 _ASK_RE = re.compile(r"^ask-(\d+)$")
 _DIR_RE = re.compile(r"^dir-(\d+)$")
+_REF_RE = re.compile(r"^(#\d+|[a-z][a-z0-9]*(?:-[a-z0-9]+)*-\d+)$")   # #13, budget-1, plan-add-2, audit-40-1
 
 
 def _ordered(board: Board):
@@ -78,6 +79,18 @@ def _render_inbox(box: dict) -> str:
     return "\n".join(lines)
 
 
+def thread_lines(board: Board, last: int | None = None) -> list[str]:
+    """The coordination thread as text, oldest first: every parsed, authorized comment (the ones the board reads), as
+    `#<id> <time> <header>` followed by its text; `last` keeps only the newest N. The one paginated reader, for a
+    person catching up (`/recent` in chat) and a restarted role rebuilding its picture (`meld thread`): a bare
+    `gh api` returns thirty comments, and the first live run's thread passed a hundred in hours."""
+    comments = _ordered(board)
+    if last is not None:
+        comments = comments[-last:] if last > 0 else comments
+    return [f"#{c.id} {c.created_at} " + f"{c.header.party.label} {c.header.verb} {c.header.ref or ''} {c.header.qualifier or ''}".strip()
+            + f"\n{c.text}" for c in comments]
+
+
 def _new_comments(board: Board, after_id: int, verbose: bool) -> list[str]:
     out = []
     for c in _ordered(board):
@@ -128,11 +141,20 @@ def run_chat(ctx, lines: Iterable[str], out: Callable[[str], None], *, verbose: 
                 do_post("RESUME", None, "resume requested from meld chat")
             elif line.startswith("/directive "):
                 do_post("DIRECTIVE", _next_id(board, _DIR_RE, "dir"), line[len("/directive "):])
+            elif line == "/recent" or line.startswith("/recent "):
+                count = line[len("/recent"):].strip() or "10"
+                if not count.isdigit():
+                    raise PostError("/recent takes a count, like /recent 20")
+                _, board = build_status(ctx)
+                for text in thread_lines(board, last=int(count)):
+                    out(text)
             elif line.split(" ", 1)[0] in ("/provided", "/resolved", "/revert"):
                 verb, _, rest = line[1:].partition(" ")
                 ref, _, text = rest.partition(" ")
-                if not ref.startswith("#"):
-                    raise PostError(f"/{verb} needs an issue or PR ref like #13")
+                # A NEEDS-HUMAN names an issue, but a BUDGET names budget-<n> and a DIRECTIVE dir-<n>: any ref the
+                # grammar would accept is answerable from here, not only #N (handoff residual 13).
+                if not _REF_RE.match(ref):
+                    raise PostError(f"/{verb} needs a ref like #13 or budget-1, then the text")
                 do_post(verb.upper(), ref, text or f"{verb} from meld chat")
             elif line.split(" ", 1)[0] == "/challenge":
                 parts = line.split(" ", 3)
@@ -155,7 +177,7 @@ def run_chat(ctx, lines: Iterable[str], out: Callable[[str], None], *, verbose: 
                 out(json.dumps(plan_approve(ctx)))
                 _, board = build_status(ctx)
             elif line.startswith("/"):
-                raise PostError(f"unknown command {line.split()[0]}; try /inbox /wait /halt /resume /directive /provided /resolved /revert /ack /approve /challenge /quit")
+                raise PostError(f"unknown command {line.split()[0]}; try /inbox /recent /wait /halt /resume /directive /provided /resolved /revert /ack /approve /challenge /quit")
             else:
                 do_post("ASK", next_ask_id(board), line)
         except (PostError, Refused, DispatchError, GitHubError, ValueError) as e:

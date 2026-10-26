@@ -20,7 +20,7 @@ from meld.assemble import BoardError
 from meld.audit import audit as do_audit, reopen as do_reopen
 from meld.board import HELD_CATEGORIES
 from meld.challenge import challenge as do_challenge
-from meld.chat import inbox as build_inbox, run_chat
+from meld.chat import inbox as build_inbox, run_chat, thread_lines
 from meld.config import ConfigError, load_config
 from meld.context import Context, find_config, load_context, refuse_worker
 from meld.dispatch import DispatchError, collect as do_collect, dispatch as do_dispatch, reap as do_reap, tick as do_tick
@@ -402,6 +402,21 @@ def inbox(ctx: click.Context) -> None:
         _, board = build_status(c)
         return build_inbox(board, c.cfg, datetime.now(timezone.utc))
     emit(_guard(run), ctx.obj["pretty"])
+
+
+@main.command()
+@click.option("--last", default=30, show_default=True, help="How many of the newest coordination comments to print; 0 prints the whole thread.")
+@click.pass_context
+def thread(ctx: click.Context, last: int) -> None:
+    """Print the coordination thread as text, oldest first: every parsed, authorized comment with its id and time.
+    Reads every page, where a bare `gh api` stops at thirty."""
+    c = _load(ctx)
+
+    def run() -> list[str]:
+        _, board = build_status(c)
+        return thread_lines(board, last=None if last == 0 else last)
+    for block in _guard(run):
+        click.echo(block + "\n")
 
 
 @main.command()

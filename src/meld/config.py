@@ -549,12 +549,22 @@ class Config:
 
     def group_for_bot(self, login: str) -> GroupConfig | None:
         for g in self.groups.values():
-            if g.bot == login:
+            if same_login(g.bot, login):
                 return g
         return None
 
     def is_human(self, login: str) -> bool:
-        return login in self.humans
+        return any(same_login(h, login) for h in self.humans)
+
+    def is_party(self, login: str) -> bool:
+        """A configured bot or a listed human: the only logins that may speak in the grammar."""
+        return self.group_for_bot(login) is not None or self.is_human(login)
+
+
+def same_login(a: str, b: str) -> bool:
+    """GitHub logins are case-insensitive, so every comparison of one against `.meld.toml` goes through here (spec 21
+    item 20): an entry typed `Smidley` must still match the `smidley` GitHub reports."""
+    return a.lower() == b.lower()
 
 
 def load_config(path: Path) -> Config:

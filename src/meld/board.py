@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import re
+
+from meld.config import same_login
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from fnmatch import fnmatch
@@ -422,7 +424,7 @@ class Board:
         if issue_closed:
             candidates.sort(key=lambda p: (not p.merged, p.state != "open", -p.number))
         else:
-            candidates.sort(key=lambda p: (p.state != "open", p.author != holder, -p.number))
+            candidates.sort(key=lambda p: (p.state != "open", holder is None or not same_login(p.author, holder), -p.number))
         return candidates[0] if candidates else None
 
     def _issue_for(self, pr: PullRequest) -> Issue | None:

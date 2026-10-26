@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from typing import Sequence
 
-from meld.config import Config, Party
+from meld.config import Config, Party, same_login
 
 ORCHESTRATOR_VERBS = frozenset({
     "ROSTER", "ROSTER-CHANGE", "CONFIG", "PROPOSE", "AMEND", "AGREE", "DISSENT", "DRAFT", "ACK",
@@ -108,7 +108,7 @@ def is_authorized(author: str, header: Header, cfg: Config) -> bool:
     if p.kind == "joint":
         return cfg.group_for_bot(author) is not None
     group = cfg.groups.get(p.group or "")
-    return group is not None and group.bot == author
+    return group is not None and same_login(group.bot, author)
 
 
 def parse_comment(raw: dict, cfg: Config) -> ParsedComment:
@@ -174,7 +174,7 @@ def agreement_for(comments: Sequence[ParsedComment], ref: str, cfg: Config) -> A
                 continue
             joint_posted, joint_verb, joint_author, joint_id = True, h.verb, cmt.author, cmt.id
             closed = text is not None and (agreed | set(dissent)) >= set(cfg.group_names)
-            joint_verified = closed and proposer is not None and cmt.author == cfg.groups[proposer].bot
+            joint_verified = closed and proposer is not None and same_login(cmt.author, cfg.groups[proposer].bot)
             continue
         if joint_posted:
             # A [joint] comment closes the ref, verified or not: nothing posted after it can reopen the round or

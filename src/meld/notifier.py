@@ -59,7 +59,8 @@ def last_nudge(events: list[dict], nudgers: set[str]) -> datetime | None:
     the item for exactly one `notify.repeat_after_minutes` window, which is the most plausible reading of that
     act. Any other login (a passing collaborator, another tool's bot) still does not count."""
     stamps = [_stamp(e.get("created_at")) for e in events
-              if e.get("event") == "labeled" and (e.get("label") or {}).get("name") == NUDGED_LABEL and (e.get("actor") or {}).get("login") in nudgers]
+              if e.get("event") == "labeled" and (e.get("label") or {}).get("name") == NUDGED_LABEL
+              and ((e.get("actor") or {}).get("login") or "").lower() in nudgers]
     stamps = [s for s in stamps if s is not None]
     return max(stamps) if stamps else None
 
@@ -87,7 +88,7 @@ def notify(ctx, board: Board, now: datetime, *, post: Callable[[str, dict], None
     and the tick that lifts a hold must not also Slack a human about it."""
     env = os.environ if env is None else env
     events_fn = events or ctx.gh.issue_events
-    nudgers = {g.bot for g in ctx.cfg.groups.values()} | set(ctx.cfg.humans)
+    nudgers = {g.bot.lower() for g in ctx.cfg.groups.values()} | {h.lower() for h in ctx.cfg.humans}   # logins are case-insensitive
     offset = _stagger_offset(ctx)
     items = sorted(({"issue": i.number, "title": i.title, "age_minutes": _age_minutes(i.updated_at, now)}
                     for i in board.issues.values() if i.status == "needs_human" and i.number not in skip), key=lambda d: d["issue"])

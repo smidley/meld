@@ -147,11 +147,10 @@ def flag_ignored_comments(ctx, board: Board, group: GroupConfig) -> dict:
     """Comments from accounts outside the configured bots and humans are ignored by the parser and flagged once
     (spec 7). The posting group's cursor advances only once its post succeeds (so a failed post is retried, never
     lost or duplicated); a group that isn't posting has nothing that can fail and always advances."""
-    known = {g.bot for g in ctx.cfg.groups.values()} | set(ctx.cfg.humans)
     path = ctx.store.state_dir / IGNORED_STATE
     state = _load(path)
     cursor = _int(state.get("last_id", 0))
-    new = sorted((c for c in board.comments if c.author not in known and c.id > cursor), key=lambda c: c.id)
+    new = sorted((c for c in board.comments if not ctx.cfg.is_party(c.author) and c.id > cursor), key=lambda c: c.id)
     if not new:
         return {"flagged": [], "posted": False}
     posted = False
@@ -183,7 +182,6 @@ def off_protocol_sweep(ctx, board: Board, group: GroupConfig) -> list[dict]:
     17). Each issue's cursor is persisted as soon as that issue is done, and advances only up to (not past) an
     event whose post failed -- a failed post on one issue is recorded, does not stop the sweep over the rest of
     the milestone, and is retried next time without duplicating anything that already posted."""
-    known = {g.bot for g in ctx.cfg.groups.values()} | set(ctx.cfg.humans)
     path = ctx.store.state_dir / OFF_PROTOCOL_STATE
     cursors = _load(path)
     out = []
@@ -202,7 +200,7 @@ def off_protocol_sweep(ctx, board: Board, group: GroupConfig) -> list[dict]:
             if eid <= last:
                 continue
             actor = (e.get("actor") or {}).get("login", "")
-            if e.get("event") not in _EVENTS or actor in known:
+            if e.get("event") not in _EVENTS or ctx.cfg.is_party(actor):
                 newest = max(newest, eid)
                 continue
             what = (e.get("label") or {}).get("name") or (e.get("assignee") or {}).get("login") or ""

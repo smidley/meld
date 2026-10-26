@@ -100,10 +100,10 @@ def mk_comment(*args, created_at: str | None = None) -> ParsedComment:
 
 
 def mk_run(group: str, issue: int, alive: bool = True, collected: bool = False, kind: str = "build",
-           tier: str = "medium", pr: int | None = None) -> RunRecord:
+           tier: str = "medium", pr: int | None = None, outcome: str | None = None, model: str = "claude-sonnet-5", effort: str = "medium") -> RunRecord:
     return RunRecord(group=group, issue=issue, kind=kind, pr=pr, pid=4242, started_at="2026-09-03T10:00:00Z",
                      worktree=f"/tmp/wt/{group}/{issue}", log_path=f"/tmp/wt/{group}/{issue}.log",
-                     model="claude-sonnet-5", effort="medium", tier=tier, milestone=3, alive=alive, collected=collected)
+                     model=model, effort=effort, tier=tier, milestone=3, alive=alive, collected=collected, outcome=outcome)
 
 
 def _keyed_by_number(items):

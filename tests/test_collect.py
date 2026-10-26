@@ -412,3 +412,18 @@ def test_collect_pushes_a_rebased_retry_under_a_lease(tmp_path):
     with pytest.raises(GitError, match="stale info|rejected"):
         collect(ctx, 11, now=NOW)
     assert sh(["git", "rev-parse", f"refs/heads/{branch}"], origin) == fix
+
+
+def test_a_failed_collect_stamps_the_record_and_a_same_tag_retry_is_refused(tmp_path):
+    """Handoff residual 5, end to end: the record of a run collected as `failed` carries that outcome through disk, and the
+    next dispatch at the unchanged model and effort is refused until the issue is re-tagged."""
+    fake, ctx, repo, origin = make_product(tmp_path)
+    claim_issue_11(fake)
+    routes_for_labels(fake, 11)
+    out = dispatch(ctx, 11, adapter=FakeAdapter(script=NO_RESULT_SCRIPT), now=NOW)
+    wait_for_exit(out["pid"])
+    assert collect(ctx, 11, now=NOW)["outcome"] == "failed"
+    rec = json.loads((tmp_path / "home" / "runs" / "claude" / "11.json").read_text())
+    assert rec["outcome"] == "failed" and rec["collected"] is True
+    with pytest.raises(Refused, match="retry at the unchanged tag"):
+        dispatch(ctx, 11, adapter=FakeAdapter(script=DONE_SCRIPT), now=NOW)

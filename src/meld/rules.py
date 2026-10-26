@@ -134,6 +134,12 @@ def _dispatch(board: Board, cfg: Config, actor: Actor, issue: Issue, models: Mod
     run = board.run_for(group.name, issue.number)
     if run is not None and (run.alive or not run.collected):
         return "a worker run already exists for this issue (running or uncollected)"
+    if run is not None and run.kind == "build" and run.outcome == "failed" and run.model == issue.model and run.effort == issue.effort:
+        # The rubric (section 9) says a retry after a failure raises effort a level or moves up a tier; the first live run's
+        # PMs re-dispatched at the unchanged tag before the orchestrator had re-tagged (handoff residual 5). A request-changes
+        # retry is not refused: the review may call for a different approach rather than more effort.
+        return (f"retry at the unchanged tag ({issue.model}/{issue.effort}) after a failed run: the orchestrator re-tags per the rubric "
+                f"first (raise effort a level or move up a tier)")
     if board.is_challenged(f"#{issue.number}"):
         return "issue has an open CHALLENGE"
     missing = [name for name, val in (("model", issue.model), ("effort", issue.effort), ("size", issue.size)) if val is None]

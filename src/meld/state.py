@@ -162,6 +162,7 @@ class StateStore:
             lease_comment=(int(data["lease_comment"]) if data.get("lease_comment") is not None else None),
             timed_out=bool(data.get("timed_out", False)), head_sha=str(data.get("head_sha", "")),
             worker=str(data.get("worker", "")), proc_start=str(data.get("proc_start", "")),
+            outcome=(str(data["outcome"]) if data.get("outcome") is not None else None),
         )
 
     def _note_error(self, note: str) -> None:

@@ -111,6 +111,66 @@ def models(ctx: click.Context, adapter: str | None) -> None:
 TIERS = ("small", "medium", "large")
 
 
+@main.command("create-app")
+@click.argument("group")
+@click.option("--name", default=None, help="The GitHub App's name (default meld-<group>; App names are global on GitHub).")
+@click.option("--open/--no-open", "open_browser", default=True, help="Open the first page in the default browser.")
+@click.option("--timeout", type=float, default=900.0, show_default=True, help="Seconds to wait for the two clicks.")
+@click.pass_context
+def create_app(ctx: click.Context, group: str, name: str | None, open_browser: bool, timeout: float) -> None:
+    """Create and install a GitHub App for GROUP, in two clicks in your browser, and write the group as an App group."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from urllib.parse import parse_qs, urlsplit
+    from meld.appsetup import AppSetup
+    c = _load(ctx)
+    if group not in c.cfg.groups:
+        raise click.ClickException(f"no [groups.{group}] in {c.repo_root / '.meld.toml'}; add it first (the page's Add a group, or by hand)")
+    owner = c.cfg.repo_name.partition("/")[0]
+    try:
+        owner_is_org = str(c.gh.get(f"users/{owner}").get("type", "")) == "Organization"
+    except GitHubError as e:
+        raise click.ClickException(f"cannot read the owner of {c.cfg.repo_name}: {e}") from e
+    server = HTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler)
+    flow = AppSetup(config_path=c.repo_root / ".meld.toml", group=group, repo=c.cfg.repo_name, owner_is_org=owner_is_org,
+                    base_url=f"http://127.0.0.1:{server.server_port}", keys_dir=c.store.home / "keys", name=name)
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):   # noqa: N802
+            parts = urlsplit(self.path)
+            status, page = flow.handle(parts.path, {k: v[0] for k, v in parse_qs(parts.query).items()})
+            body = page.encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):   # quiet
+            return
+
+    server.RequestHandlerClass = Handler
+    url = f"{flow.base_url}/"
+    click.echo(f"Creating the GitHub App {flow.app_name} for {c.cfg.repo_name}: open {url}" + (" (opening it now)" if open_browser else ""), err=True)
+    if open_browser:
+        webbrowser.open(url)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + timeout
+    try:
+        while not flow.done and flow.error is None and time.monotonic() < deadline:
+            time.sleep(0.5)
+    finally:
+        server.shutdown()
+    if flow.error:
+        raise click.ClickException(flow.error)
+    if not flow.done:
+        raise click.ClickException(f"timed out after {int(timeout)}s waiting for the App to be created and installed; run it again")
+    emit({"group": group, "app_id": flow.app["id"], "slug": flow.app["slug"], "bot": f"{flow.app['slug']}[bot]",   # type: ignore[index]
+          "installation_id": flow.installation_id, "private_key_file": str(flow.pem_path), "config": str(flow.config_path),
+          "next": [f"meld doctor", f"meld run {group} --detach"]}, ctx.obj["pretty"])
+
+
 @main.command("add-model")
 @click.argument("adapter")
 @click.argument("model_id")

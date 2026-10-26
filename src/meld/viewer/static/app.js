@@ -498,8 +498,8 @@ function renderSetup(state) {
   for (const [g, s] of Object.entries(state.setup || {})) {
     if (s.running) continue;
     const needs = [!s.cli_found && `install the ${s.cli} CLI${s.binary ? ` (\`${s.binary}\` is not on PATH)` : ""} and log in`,
-                   !s.token_set && `set ${s.token_env || "its token variable"} where meld run will see it`,
-                   "make sure its GitHub login exists and can write to the repository (meld doctor checks)"].filter(Boolean);
+                   !s.token_set && `give it a GitHub identity: run meld create-app ${g} in the product clone (two clicks, no token to paste)`,
+                   s.token_set && "make sure its GitHub login exists and can write to the repository (meld doctor checks)"].filter(Boolean);
     const li = text(document.createElement("li"), `${g} is configured but not running: ${needs.join(" · ")} · then start it in the product clone: `);
     const code = text(document.createElement("code"), `meld run ${g} --detach`);
     li.append(code);
@@ -1221,8 +1221,8 @@ function addGroupRow(into) {
     newGroups.add(n);
     renderConfig();
     const models = url ? ` Its models come from .meld/models.toml: run meld add-model ${cli.value} <model id> --tier large in the product clone, then pick them here.` : "";
-    showConfigResult(`added ${n}: check its GitHub login and token variable, then Save. A saved group starts nothing by itself: install its CLI and log in, `
-                     + `create the login and token, then run meld run ${n} --detach; the header will say what is still missing.${models}`, null);
+    showConfigResult(`added ${n}: Save, then in the product clone run meld create-app ${n} (two clicks in your browser give it a GitHub App; no token to paste), `
+                     + `make sure its CLI is installed and logged in, then meld run ${n} --detach; the header will say what is still missing.${models}`, null);
   });
   row.append(name, cli, endpoint, button);
   into.append(row);

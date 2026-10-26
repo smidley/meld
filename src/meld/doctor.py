@@ -276,7 +276,8 @@ def run_checks(cfg: Config, repo_root: Path, *, env: Mapping[str, str], gh_facto
         else:
             token = env.get(group.token_env)
             if not token:
-                checks.append(Check(f"token:{group.name}", False, f"{group.token_env} is not set", f"export {group.token_env} (from 1Password) for the orchestrator and PM processes"))
+                checks.append(Check(f"token:{group.name}", False, f"{group.token_env} is not set",
+                                    f"export {group.token_env} (from 1Password) for the orchestrator and PM processes, or run `meld create-app {group.name}` to give the group a GitHub App instead"))
                 login = None
             else:
                 try:

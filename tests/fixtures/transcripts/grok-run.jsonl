@@ -1,12 +1,6 @@
 Checking for updates... skipped
-{"type":"thought","text":"I should read the board first."}
-{"type":"text","text":"Reading the board."}
-{"type":"tool_call","id":"call_1","name":"shell","input":{"command":"meld status"}}
-{"type":"tool_call_update","id":"call_1","status":"running"}
-{"type":"tool_call_update","id":"call_1","status":"completed","output":"{\"phase\": \"executing\"}"}
-{"type":"tool_call","id":"call_2","name":"edit","input":{"file_path":"src/x.py"},"title":"Edit src/x.py"}
-{"type":"tool_call_update","id":"call_2","status":"failed","error":"file not found"}
-{"type":"usage","input_tokens":1200,"output_tokens":300,"cost_usd":0.004}
-{"type":"error","message":"rate limit exceeded; try again in 30 minutes"}
-{"type":"plan","entries":[]}
-{"type":"end","stop_reason":"end_turn"}
+{"type":"system","subtype":"init","session_id":"01a17a5b-6baa-7652-a0bf-e768e3809f7a","apiKeySource":"oauth","model":"grok-4.7","cwd":"/tmp/wt","permissionMode":"bypassPermissions","tools":["run_terminal_command","read_file","search_replace","list_dir","grep","write"],"slash_commands":["compact"]}
+{"type":"assistant","message":{"id":"msg_0","type":"message","role":"assistant","model":"grok-4.7","content":[{"type":"thinking","thinking":"List the files first.","signature":"x"},{"type":"tool_use","id":"call-1","name":"list_dir","input":{"target_directory":"/tmp/wt"}}],"stop_reason":"tool_use","stop_sequence":null,"usage":{"input_tokens":32625,"output_tokens":435}},"parent_tool_use_id":null,"session_id":"01a17a5b-6baa-7652-a0bf-e768e3809f7a","uuid":"u1"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-1","content":"{\"type\":\"ListDir\",\"Content\":{\"content\":\"- /tmp/wt/\\n  - README.md\"}}","is_error":false}]},"parent_tool_use_id":null,"session_id":"01a17a5b-6baa-7652-a0bf-e768e3809f7a","uuid":"u2"}
+{"type":"assistant","message":{"id":"msg_1","type":"message","role":"assistant","model":"grok-4.7","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":546,"output_tokens":14}},"parent_tool_use_id":null,"session_id":"01a17a5b-6baa-7652-a0bf-e768e3809f7a","uuid":"u3"}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":18163,"duration_api_ms":15945,"num_turns":2,"stop_reason":"end_turn","total_cost_usd":0.087652,"usage":{"input_tokens":33227,"output_tokens":461},"modelUsage":{"grok-4.7":{"inputTokens":33227,"outputTokens":461,"costUSD":0.087652}},"session_id":"01a17a5b-6baa-7652-a0bf-e768e3809f7a","uuid":"u4"}

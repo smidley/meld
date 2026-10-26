@@ -1,6 +1,7 @@
 """OpenAI Codex CLI adapter: one unattended `codex exec` run per launch."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from meld.adapters.base import LaunchSpec, is_limit, limit_event, open_log, parse_doc, popen_detached, raw_event, scan_skills
@@ -41,6 +42,21 @@ def uv_cache_dir(env: dict[str, str], home: Path) -> Path:
     return Path(env["UV_CACHE_DIR"]).expanduser() if env.get("UV_CACHE_DIR") else home / ".cache" / "uv"
 
 
+def _toml_value(value) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return json.dumps(str(value))   # a JSON string is a TOML basic string for every character Codex's -c will meet
+
+
+def override_args(cli_config: dict) -> list[str]:
+    """`-c key=value` per [groups.<g>.cli_config] entry, in key order: a custom `model_providers.<id>` block plus a
+    `model_provider` is how an ephemeral `codex exec` (which reads no config file) reaches an OpenAI-compatible
+    endpoint such as Ollama's."""
+    return [arg for key, value in sorted(cli_config.items()) for arg in ("-c", f"{key}={_toml_value(value)}")]
+
+
 def sandbox_args(role: str, cwd: Path, env: dict[str, str], home: Path) -> list[str]:
     if role in TRUSTED_ROLES:
         return ["-s", "danger-full-access"]
@@ -63,6 +79,7 @@ class CodexAdapter:
             self.binary, "exec",
             "-m", spec.model,
             "-c", f'model_reasoning_effort="{spec.effort}"',
+            *override_args(spec.cli_config),
             *sandbox_args(spec.role, spec.cwd, spec.env, self.home),
             "-C", str(spec.cwd),
             "--json",

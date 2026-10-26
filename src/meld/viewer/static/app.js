@@ -935,6 +935,38 @@ function isUnknownPath(path) {
   return false;
 }
 
+function mapField(into, path, value, label, hint) {
+  // A table of key = value pairs as one box, a pair per line: a group's extra environment, a CLI's own settings.
+  const labelEl = document.createElement("label");
+  labelEl.className = "map";
+  const span = text(document.createElement("span"), label);
+  span.title = `${path} — ${hint}`;
+  const input = document.createElement("textarea");
+  input.rows = Math.max(2, Object.keys(value || {}).length + 1);
+  input.placeholder = hint;
+  input.value = Object.entries(value || {}).map(([k, v]) => `${k}=${v}`).join("\n");
+  input.dataset.path = path;
+  input.dataset.kind = "map";
+  labelEl.append(span, input);
+  into.append(labelEl);
+  return input;
+}
+
+function parseMap(textValue, typed) {
+  // `KEY=value` per line; blank lines and # comments skipped; with `typed`, true/false and whole numbers become
+  // themselves (a Codex setting), otherwise every value is a string (an environment variable).
+  const out = {};
+  for (const raw of textValue.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim(), v = line.slice(eq + 1).trim();
+    out[key] = typed && (v === "true" || v === "false") ? v === "true" : (typed && /^-?\d+$/.test(v) ? Number(v) : v);
+  }
+  return out;
+}
+
 function field(into, path, value, { readonly = false, choices = null, label = path } = {}) {
   // One control per scalar, generated from the payload: a field the schema gains appears here without a line
   // of JavaScript. A list becomes a comma-separated text box; a table is walked, never rendered as a value --
@@ -1093,12 +1125,16 @@ function renderGroup(into, name, group) {
       // Another CLI means another catalogue: the roles take that CLI's defaults and the card redraws.
       input.addEventListener("change", () => {
         configState.config = collectConfig().config;
-        const g = configState.config.groups[name], t = newGroupTemplate(name, input.value);
+        const g = configState.config.groups[name], t = newGroupTemplate(name, input.value, "");
         Object.assign(g, { cli: t.cli, orchestrator: t.orchestrator, pm: t.pm });
         renderConfig();
       });
     }
   }
+  mapField(card, `groups.${name}.env`, group.env, "extra environment for its launches",
+           "NAME=value per line, e.g. ANTHROPIC_BASE_URL=<your model server> — never a secret: this file is committed");
+  mapField(card, `groups.${name}.cli_config`, group.cli_config, "its CLI's own settings",
+           "key=value per line: Codex -c overrides such as model_provider=ollama, Claude --settings keys");
   for (const role of ["orchestrator", "pm"].filter((r) => group[r])) {
     const r = group[role];
     const modelInput = field(card, `groups.${name}.${role}.model`, r.model, { choices: modelChoices(group.cli), label: `${role} model` });
@@ -1112,14 +1148,29 @@ function adapterNames() {
   return configState.adapters || Object.keys(configState.models || {});
 }
 
-function newGroupTemplate(name, cli) {
+function endpointSettings(cli, name, url) {
+  // What points a CLI at another model server (plan 28). Codex reads no config file in its ephemeral mode, so a custom
+  // provider arrives as -c overrides; Claude Code takes a base URL and a placeholder token (Ollama ignores it). The
+  // key variable named here is a placeholder for a keyless server: for a keyed provider, delete that line and export
+  // the real key in the shell that runs meld run, because this file is committed.
+  if (cli === "codex") {
+    return { env: { OPENAI_API_KEY: "ollama" },
+             cli_config: { model_provider: name, [`model_providers.${name}.name`]: name, [`model_providers.${name}.base_url`]: url,
+                           [`model_providers.${name}.env_key`]: "OPENAI_API_KEY", [`model_providers.${name}.wire_api`]: "responses" } };
+  }
+  if (cli === "claude") return { env: { ANTHROPIC_BASE_URL: url, ANTHROPIC_AUTH_TOKEN: "ollama" }, cli_config: {} };
+  return { env: {}, cli_config: {} };
+}
+
+function newGroupTemplate(name, cli, endpoint) {
   // A group block with the catalogue's defaults for that CLI: its first large-tier model at a high effort for both
   // roles, the conventional bot login and token variable, and the default concurrencies. Everything is editable.
   const specs = (configState.models || {})[cli] || [];
   const pick = specs.find((s) => s.tier === "large") || specs[0] || { id: "", efforts: ["medium"] };
   const effort = pick.efforts.includes("high") ? "high" : pick.efforts[pick.efforts.length - 1];
+  const extra = endpoint ? endpointSettings(cli, name, endpoint) : { env: {}, cli_config: {} };
   return { cli, bot: `meld-${name}-bot`, token_env: `MELD_TOKEN_${name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`, auth: "pat",
-           concurrency: 8, review_concurrency: 4, orchestrator: { model: pick.id, effort }, pm: { model: pick.id, effort } };
+           concurrency: 8, review_concurrency: 4, orchestrator: { model: pick.id, effort }, pm: { model: pick.id, effort }, ...extra };
 }
 
 function addGroupRow(into) {
@@ -1130,6 +1181,10 @@ function addGroupRow(into) {
   name.title = "lowercase letters, digits, - or _; at most 32; it becomes the meld:claimed-by:<name> label";
   const cli = document.createElement("select");
   options(cli, adapterNames());
+  const endpoint = document.createElement("input");
+  endpoint.placeholder = "model server URL, e.g. your Ollama host on port 11434 (optional)";
+  endpoint.title = "an OpenAI-compatible (Codex) or Anthropic-compatible (Claude Code) endpoint such as Ollama's; its models come from .meld/models.toml";
+  endpoint.style.flex = "1 1 18rem";
   const button = document.createElement("button");
   button.type = "button";
   text(button, "Add a group");
@@ -1143,13 +1198,16 @@ function addGroupRow(into) {
     if (configState.config.groups && configState.config.groups[n]) { showConfigResult(`a group named ${n} already exists`, false); return; }
     configState.config = collectConfig().config;   // keep every edit made so far
     configState.config.groups = configState.config.groups || {};
-    configState.config.groups[n] = newGroupTemplate(n, cli.value);
+    const url = endpoint.value.trim().replace(/\/+$/, "");
+    if (url && !/^https?:\/\/[^\s/]+(\/\S*)?$/.test(url)) { showConfigResult("the model server must be a URL starting with http or https", false); return; }
+    configState.config.groups[n] = newGroupTemplate(n, cli.value, url);
     newGroups.add(n);
     renderConfig();
+    const models = url ? ` Its models come from .meld/models.toml: run meld add-model ${cli.value} <model id> --tier large in the product clone, then pick them here.` : "";
     showConfigResult(`added ${n}: check its GitHub login and token variable, then Save. A saved group starts nothing by itself: install its CLI and log in, `
-                     + `create the login and token, then run meld run ${n} --detach; the header will say what is still missing.`, null);
+                     + `create the login and token, then run meld run ${n} --detach; the header will say what is still missing.${models}`, null);
   });
-  row.append(name, cli, button);
+  row.append(name, cli, endpoint, button);
   into.append(row);
 }
 
@@ -1169,6 +1227,7 @@ function collectConfig() {
     if (!isTable(node)) continue;    // a quoted TOML key containing a literal "." does not shape-match its
                                       // dotted path -- skip this one field rather than break every other.
     const key = parts[parts.length - 1];
+    if (input.dataset.kind === "map") { node[key] = parseMap(input.value, key === "cli_config"); continue; }
     if (input.dataset.kind === "boolean") node[key] = input.checked;
     else if (input.dataset.kind === "number") {
       // Number("") is 0, not NaN, and Chrome hands back "" from <input type=number> for typed garbage

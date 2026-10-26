@@ -122,6 +122,7 @@ def pat_with_all_group_fields() -> dict:
         "concurrency": 3, "review_concurrency": 1, "git_name": "Nightly Bot", "git_email": "nightly@example.invalid",
         "app_id": 4911515, "installation_id": 160922345,
         "private_key_env": "MELD_APP_KEY_CLAUDE", "private_key_file": "~/.meld/keys/meld-claude.pem",
+        "env": {"ANTHROPIC_BASE_URL": "http://server:11434"}, "cli_config": {"model_provider": "ollama"},   # plan 28's two free tables
     })
     return data
 
@@ -337,3 +338,32 @@ def test_every_key_from_dict_reads_is_a_key_the_schema_knows():
 
     role = _reads_of(inspect.getsource(config_module._role))
     assert role["data"] == set(KNOWN_ROLE)
+
+
+def test_a_group_env_and_cli_settings_round_trip_and_keep_their_keys_whole(tmp_path):
+    """Plan 28: [groups.<g>.env] and [groups.<g>.cli_config] are the product's own tables (any key), written only when they
+    hold something, a dotted Codex override quoted as one key, and read back equal; a guarded name never reaches a launch."""
+    from meld.config import extra_env, unknown_keys
+    text = MINIMAL + (
+        "\n[groups.claude.env]\nANTHROPIC_BASE_URL = \"http://server:11434\"\nANTHROPIC_AUTH_TOKEN = \"ollama\"\nMELD_GROUP = \"codex\"\n"
+        "GH_TOKEN = \"nope\"\n[groups.claude.cli_config]\n\"model_providers.ollama.base_url\" = \"http://server:11434/v1\"\n"
+        "model_provider = \"ollama\"\ndisable_response_storage = true\nretries = 2\n")
+    cfg = Config.from_dict(tomllib.loads(text))
+    g = cfg.groups["claude"]
+    assert g.env["ANTHROPIC_BASE_URL"] == "http://server:11434" and g.cli_config == {
+        "model_providers.ollama.base_url": "http://server:11434/v1", "model_provider": "ollama", "disable_response_storage": True, "retries": 2}
+    assert extra_env(g) == {"ANTHROPIC_BASE_URL": "http://server:11434", "ANTHROPIC_AUTH_TOKEN": "ollama"}   # MELD_* and GH_* dropped
+    assert unknown_keys(tomllib.loads(text)) == []
+    rendered = dumps(cfg)
+    assert "[groups.claude.env]" in rendered and "[groups.claude.cli_config]" in rendered
+    assert '"model_providers.ollama.base_url" = "http://server:11434/v1"' in rendered and "retries = 2" in rendered
+    assert Config.from_dict(tomllib.loads(rendered)) == cfg
+    assert "[groups.claude.env]" not in dumps(Config.from_dict(tomllib.loads(MINIMAL)))        # empty tables are not written
+    with pytest.raises(ConfigError, match="not an environment variable name"):
+        Config.from_dict(tomllib.loads(MINIMAL + "\n[groups.claude.env]\n\"bad name\" = \"x\"\n"))
+    with pytest.raises(ConfigError, match="must be a string"):
+        Config.from_dict(tomllib.loads(MINIMAL + "\n[groups.claude.env]\nFLAG = true\n"))
+    shaped = tomllib.loads(MINIMAL)
+    shaped["groups"]["claude"]["cli_config"] = 5
+    with pytest.raises(ConfigError, match="must be a table"):
+        Config.from_dict(shaped)

@@ -17,7 +17,7 @@ from meld.adapters import Adapter, LaunchSpec, scrub_env
 from meld.adapters.base import SKILL_NAME_RE
 from meld.board import Board, RunRecord
 from meld.brief import BRIEF_FILE, FETCH_FAILED_NOTE, RESULT_FILE, ResultError, WorkerResult, read_result, recall_snippets, render_brief, select_skills
-from meld.config import GroupConfig, Party
+from meld.config import GroupConfig, Party, extra_env
 from meld.gitops import (
     GitError,
     branch_name,
@@ -255,9 +255,12 @@ def _launch(ctx, group: GroupConfig, adapter: Adapter, *, worktree: Path, brief:
     (worktree / RESULT_FILE).unlink(missing_ok=True)
     log_path = _log_path(ctx, group, kind, number, when)
     gh_dir, gitconfig = _worker_scratch(ctx, group, number)
+    # The group's own variables are added AFTER the scrub and UNDER the worker's git and gh settings: extra_env already
+    # refuses MELD_*, GIT_*, GH_* and GITHUB_* names, so a group can point its CLI at a model server but never at a token.
+    launch_env = {**worker_env(os.environ if env is None else env, identity=identity, gh_config_dir=gh_dir, git_config_global=gitconfig),
+                  **extra_env(group)}
     spec = LaunchSpec(role="worker", model=model, effort=effort, cwd=worktree, prompt=WORKER_PROMPT, log_path=log_path,
-                      timeout_seconds=timeout, max_turns=ctx.cfg.worker_max_turns,
-                      env=worker_env(os.environ if env is None else env, identity=identity, gh_config_dir=gh_dir, git_config_global=gitconfig))
+                      timeout_seconds=timeout, max_turns=ctx.cfg.worker_max_turns, env=launch_env, cli_config=dict(group.cli_config))
     try:
         proc = adapter.launch(spec)
     except OSError as e:

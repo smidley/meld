@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import IO, Iterable, Mapping, Protocol
@@ -31,6 +31,7 @@ class LaunchSpec:
     timeout_seconds: int
     env: dict[str, str]
     max_turns: int
+    cli_config: dict = field(default_factory=dict)   # the group's own settings for this CLI ([groups.<g>.cli_config])
 
 
 class Adapter(Protocol):

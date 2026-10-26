@@ -36,7 +36,7 @@ def test_parse_frontmatter_and_scan_skills(tmp_path: Path):
 
 
 def test_registry_names_and_unknown():
-    assert ADAPTER_NAMES == ("claude", "codex", "gemini", "grok")
+    assert ADAPTER_NAMES == ("claude", "codex", "gemini", "grok", "antigravity")
     with pytest.raises(UnknownAdapter):
         get_adapter("copilot")
     assert [get_adapter(n).name for n in ADAPTER_NAMES] == list(ADAPTER_NAMES)

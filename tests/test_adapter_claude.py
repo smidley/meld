@@ -207,3 +207,12 @@ def test_login_status_reads_only_the_loggedin_key():
     assert a.login_status('{"apiProvider": "firstParty"}', "", 0)[0] is None
     assert a.login_status("", "error: unknown command 'auth'", 1)[0] is None
     assert a.login_status('{"loggedIn": "yes"}', "", 0)[0] is None
+
+
+def test_cli_config_merges_under_the_frameworks_own_settings(tmp_path: Path):
+    """Plan 28: a group's Claude settings ride along, but hooks stay disabled, memory off and credentials blanked."""
+    import json as _json
+    s = spec(tmp_path, cli_config={"model": "qwen3-coder", "disableAllHooks": False, "env": {"GH_TOKEN": "leak"}})
+    argv = ClaudeAdapter().argv(s)
+    settings = _json.loads(argv[argv.index("--settings") + 1])
+    assert settings["model"] == "qwen3-coder" and settings["disableAllHooks"] is True and settings["env"]["GH_TOKEN"] == ""

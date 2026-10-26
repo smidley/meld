@@ -117,11 +117,44 @@ context_class = "large"
 efforts = ["default"]
 tier = "small"
 
-# Grok Build entries (added 2026-10-26 from xAI's published docs: grok-build-0.1 is the CLI's default model, 256K
-# context). `--effort <LEVEL>` is documented without its levels, so low/medium/high is an assumption to correct from
-# `grok --help` on an installed CLI. Not verified against an installed CLI on this machine.
+# Grok Build entries (verified 2026-10-26 against grok 1.0.70 on the owner's machine: `grok models` lists grok-4.7 as the
+# only and default model, 256K context). `--effort` is accepted without a documented value list; low/medium/high is the
+# assumption the probe ran with ("low" accepted).
 
-[grok."grok-build-0.1"]
+[grok."grok-4.7"]
 context_class = "large"
 efforts = ["low", "medium", "high"]
 tier = "large"
+
+# Antigravity CLI entries (verified 2026-10-26 against agy 1.4.7: `agy models`). `--effort` takes low|medium|high|xhigh|max.
+# The three Flash ids bake a thinking level into the model name; tiers are cost guesses to correct from use.
+
+[antigravity."gemini-3.8-flash-high"]
+context_class = "large"
+efforts = ["low", "medium", "high", "xhigh", "max"]
+tier = "medium"
+
+[antigravity."gemini-3.8-flash-medium"]
+context_class = "large"
+efforts = ["low", "medium", "high", "xhigh", "max"]
+tier = "small"
+
+[antigravity."gemini-3.8-flash-low"]
+context_class = "large"
+efforts = ["low", "medium", "high", "xhigh", "max"]
+tier = "small"
+
+[antigravity.claude-opus-4-6-thinking]
+context_class = "large"
+efforts = ["low", "medium", "high", "xhigh", "max"]
+tier = "large"
+
+[antigravity.claude-sonnet-4-6]
+context_class = "large"
+efforts = ["low", "medium", "high", "xhigh", "max"]
+tier = "medium"
+
+[antigravity.gpt-oss-120b-medium]
+context_class = "large"
+efforts = ["low", "medium", "high", "xhigh", "max"]
+tier = "medium"

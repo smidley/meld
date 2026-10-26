@@ -880,3 +880,15 @@ def test_cli_run_detach_ps_and_stop_manage_a_background_supervisor(tmp_path, mon
     finally:
         if pid_alive(pid):
             os.kill(pid, signal.SIGKILL)
+
+
+def test_role_env_adds_the_groups_own_variables_under_its_identity(tmp_path):
+    from dataclasses import replace
+    _, ctx, env = make(tmp_path)
+    group = replace(ctx.cfg.groups["claude"], env={"ANTHROPIC_BASE_URL": "http://server:11434", "MELD_GROUP": "codex"},
+                    cli_config={"model": "qwen3-coder"})
+    e = role_env(ctx, group, "pm", base_env=env)
+    assert e["ANTHROPIC_BASE_URL"] == "http://server:11434" and e["MELD_GROUP"] == "claude"
+    adapter = FakeAdapter()
+    launch_role(ctx, group, adapter, "pm", base_env=env).proc.wait(timeout=10)
+    assert adapter.launches[0].cli_config == {"model": "qwen3-coder"} and adapter.launches[0].env["ANTHROPIC_BASE_URL"] == "http://server:11434"

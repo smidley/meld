@@ -168,3 +168,13 @@ def test_login_status_reads_the_words_not_the_exit_code():
     assert a.login_status("Not logged in\n", "", 1) == (False, "not logged in")
     assert a.login_status("", "", 0)[0] is None
     assert a.login_status("error: unrecognized subcommand 'status'", "", 2)[0] is None
+
+
+def test_cli_config_becomes_c_overrides_in_key_order(tmp_path: Path):
+    """Plan 28: a custom provider for an ephemeral `codex exec`, which reads no config file."""
+    s = spec(tmp_path, cli_config={"model_providers.ollama.base_url": "http://server:11434/v1", "model_provider": "ollama",
+                                   "disable_response_storage": True, "retries": 2})
+    argv = CodexAdapter().argv(s)
+    pairs = [argv[i + 1] for i, a in enumerate(argv) if a == "-c"]
+    assert pairs == ['model_reasoning_effort="high"', "disable_response_storage=true", 'model_provider="ollama"',
+                     'model_providers.ollama.base_url="http://server:11434/v1"', "retries=2", "sandbox_workspace_write.network_access=true"]

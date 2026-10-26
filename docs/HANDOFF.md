@@ -2,7 +2,7 @@
 
 This file is rewritten at every milestone that ends in a pull request, so that any AI coding agent (or person) can pick the project up cold. Read it first, then `AGENTS.md`, then the spec.
 
-**Milestone:** plan 16 — an audit a challenge asks for is due at once, and a retry after a failed run needs a re-tag — is the last plan merged to `main`, as PR #32 (https://github.com/smidley/meld/pull/32, merge commit `e4ebe7e`). Plans 1–7, 8a, 9, 8b, 8c, 8d and 10–16 are merged; `uv run pytest -q` must be green with no warnings before every commit (**1010 passed**, measured directly for this commit). **Plan 17 (the conversation: the coordination thread on the viewer's page, each turn by its party, colour-coded, housekeeping hidden by default) is PR #33 (https://github.com/smidley/meld/pull/33, branch `plan-17-conversation`, open); plan 18 (the decisions: everything waiting on the human as one card each with its choices) is PR #34 (https://github.com/smidley/meld/pull/34, branch `plan-18-decisions`, open, stacked on #33); and plan 19 (the headline: one plain sentence on where the milestone stands) is this branch, `plan-19-headline`, stacked on #34** — all three have their sections below.
+**Milestone:** plan 19 — the headline: one plain sentence on where the milestone stands, first on the page and in `meld chat` — is the last plan merged to `main`, as PR #35 (https://github.com/smidley/meld/pull/35, merge commit `3d700bf`; plans 17 and 18 merged just before it as PRs #33 and #34, merge commits `e0ab318` and `3dcc3cd`). Plans 1–7, 8a, 9, 8b, 8c, 8d and 10–19 are merged; `uv run pytest -q` must be green with no warnings before every commit (**1011 passed**, measured directly for this commit). **Plan 20 (reading the run: transcript columns show narration by default, and a decision card jumps to its thread turn) is this branch, `plan-20-reading-the-run`**, and is the subject of the "Plan 20" section below.
 
 **The claim lock is a label.** Since plan 6b a party holds an issue with a `meld:claimed-by:<group>` label (`board.claim_label`; a human's is `meld:claimed-by:human`), so an App group claims and builds exactly like a PAT group — nothing depends any more on a bot user being an issue assignee, which GitHub never allows for an App (probe, 2026-09-09, read-only, `gh api -i repos/smidley/meld/assignees/<login>`: `smidley` → 204; `github-actions[bot]`, `dependabot[bot]`, `copilot-swe-agent[bot]` → 404 each). Meld neither reads nor writes issue assignees now: humans may assign issues to people as a courtesy, and `meld tick`'s off-protocol sweep still reports assignee changes made by strangers.
 
@@ -357,7 +357,7 @@ Residuals 7 and 5, the last two from the first live run that change what the boa
 
 **Known follow-ups:** a failure that was the environment's (a flaky test, a full disk) still costs a re-tag before the retry; `audit.challenged` is not shown on the page.
 
-## Plan 17 — the conversation (this branch)
+## Plan 17 — the conversation (landed, PR #33)
 
 The owner's direction on 2026-10-26: the UI must be very easy to use and understand, and must show the cross-agent communication. Plan: `docs/superpowers/plans/2026-10-26-plan-17-conversation.md`.
 
@@ -371,7 +371,7 @@ The owner's direction on 2026-10-26: the UI must be very easy to use and underst
 
 **Known follow-ups:** no runtime test of the page's JavaScript — the browser check is by hand, against the playground; an edited comment is not re-rendered; `audit.challenged` and the needs-human asks are not yet in the panel.
 
-## Plan 18 — the decisions (this branch, stacked on plan 17)
+## Plan 18 — the decisions (landed, PR #34)
 
 The owner's direction, later on 2026-10-26: the UI must be very guided — when something is up for human approval, present the person with a concise decision. Plan: `docs/superpowers/plans/2026-10-26-plan-18-decisions.md`.
 
@@ -383,7 +383,7 @@ The owner's direction, later on 2026-10-26: the UI must be very guided — when 
 
 **Known follow-ups:** a card's refusal stays in the card until the next poll removes or keeps it; no runtime test of the page's JavaScript — the cards were checked in a browser by rendering three samples through the page's own function.
 
-## Plan 19 — the headline (this branch, stacked on plan 18)
+## Plan 19 — the headline (landed, PR #35)
 
 The owner's "do it" on the proposal that followed plan 18. Plan: `docs/superpowers/plans/2026-10-26-plan-19-headline.md`.
 
@@ -393,6 +393,20 @@ The owner's "do it" on the proposal that followed plan 18. Plan: `docs/superpowe
 
 **Known follow-ups:** none beyond plan 18's.
 
+## Plan 20 — reading the run (this branch)
+
+The owner's "keep going" after the three page plans merged. Plan: `docs/superpowers/plans/2026-10-26-plan-20-reading-the-run.md`.
+
+**Narration by default.** A transcript column hides `tool_call`, `tool_result` and `thinking` events until "show tool calls" in the header is ticked (`#streams.narration`, CSS only; the stream and its scroll pinning are untouched), so what each agent said is what a person reads first.
+
+**A card jumps to its turn.** Every decision carries `comment_id` — the inbox's needs-human items gained it, and the plan awaiting approval uses the verified `[joint]` comment's id — and the card's title scrolls the conversation to that turn, widening the filter when the turn is hidden, with a short highlight.
+
+**The handoff caught up**: plans 17–19 are marked landed (PRs #33–#35) rather than "this branch".
+
+**Decisions for the owner (each reversible):** the checkbox is page-wide; tool traffic is hidden on the page, never dropped from the stream.
+
+**Known follow-ups:** a card whose ask was never posted has no jump; no runtime test of the page's JavaScript.
+
 ## What is next
 
 - **Plan 8 is finished: transcripts, the viewer, the human verbs and the form.** 8a (normalized transcripts), 8b (the read-only viewer), 8c (the human verbs from the page) and 8d (the configuration form) have all landed — see their sections above — closing out spec section 22 end to end.
@@ -401,7 +415,7 @@ The owner's "do it" on the proposal that followed plan 18. Plan: `docs/superpowe
 - **The rest of spec section 21's "Carried into plan 6."** Item 3, the App-compatible claim lock, is what plan 6b landed and items 11–13 are plan 7's; the remainder stands, in the order it is written there: App creation through GitHub's manifest flow (item 1); item 2, the per-CLI login-status check, is plan 10's `cli-login:<group>` and no longer stands; a unique temp name for `atomic.write_atomic`, the collision `appauth.TokenCache.save` already shed (item 4); a `meld doctor` warning when an App group also sets `token_env` (item 5); gating the App check run on the granted permissions if the current warning proves insufficient (item 6); a memory index if the 2 MB warning ever fires (item 7); and the three recorded-not-fixed residuals — housekeeping's single poster (item 8) and the two nudge residuals (items 9–10). Plan 5b's whole-branch review added three more: full-URL closer neutralisation (item 18), a `meld doctor` warning when a product skill is dropped for colliding with a worker's name (item 19), and case-insensitive login matching (item 20, landed in plan 11). Plan 6b's own whole-branch review added three residuals of the label lock, all accepted rather than fixed: a stale claim label whose holder never comes back (and an `in_progress` issue with no claimant) still needs a human `meld release`, because no lease exists to expire — a lease-like age rule for claim labels is the seam (item 21); a human-held issue has no holder login, so `pr_for_issue` falls back to the highest open PR number (item 22); and a contested issue's two costs — a legal `dispatch` refused with a `PROTOCOL-VIOLATION` while it lasts, and a winner's finished run collected as `superseded` when a loser's undo never ran (item 23).
 - **Still excluded from v1** (spec section 21): a third adapter to prove the N-group claims end to end, and webhooks for an always-on box. Also on that list: per-group machines with a shared `$MELD_HOME`, a read-only worker token, and the partial PID-reuse detection.
 - **Upgrading a product mid-milestone** (plan 6b, decision 10): there is no migration tooling. An issue that was claimed under the old assignee lock carries no `meld:claimed-by:*` label, so it reads as unclaimed on the first `meld status` after the upgrade and has to be claimed once more; a worker still running on such an issue is collected as `superseded`. No product is mid-flight today, which is why this was left to a sentence rather than a converter.
-- **Plans 1–7, the live-run hotfixes (PRs #12–#17 on 2026-09-11, PR #18 on 2026-09-12), plan 8a, plan 9, plan 8b, plan 8c, plan 8d and plans 10–16 are on `main`.** PR #10 (plan 6b) and PR #11 (plan 7) were merged with merge commits on 2026-09-10; **plan 8a merged as `8be02cf`** (PR #20, "docs/plan-8-observability"), not left open on its own branch as this section once said. **Plan 9 (run reliability) merged as PR #22, merge commit `93be370`** (cut from `f76e648`; see "Plan 9 — run reliability" above): all five tasks done. **Plan 8b (the loopback viewer) merged as PR #23, merge commit `deb7c83`** — see its section above. **Plan 8c (the human verbs from the page) merged as PR #24, merge commit `197ee85`** — see its section above. **Plan 8d (the configuration form) merged as PR #25, merge commit `a09f568`**, **plan 10 (demo readiness) as PR #26, merge commit `a51587e`**, **plan 11 (live-run readiness) as PR #27, merge commit `6024f0a`**, **plan 12 (`legal` is the rule) as PR #28, merge commit `7d8ca4a`**, **plan 13 (the human in the loop) as PR #29, merge commit `5720726`**, **plan 14 (the console) as PR #30, merge commit `7b28419`**, **plan 15 (the launcher) as PR #31, merge commit `3a21fa3`**, and **plan 16 (the audit a challenge asks for, and the retry a failure earns) as PR #32, merge commit `e4ebe7e`** — see their sections above. **Plan 17 (the conversation) is PR #33, open on `plan-17-conversation`; plan 18 (the decisions) is PR #34, open on `plan-18-decisions`, stacked on it; and plan 19 (the headline) is this branch, `plan-19-headline`, stacked on #34** — see their sections above. Delete the stale `plan-*` remote branches when the owner says so.
+- **Plans 1–7, the live-run hotfixes (PRs #12–#17 on 2026-09-11, PR #18 on 2026-09-12), plan 8a, plan 9, plan 8b, plan 8c, plan 8d and plans 10–19 are on `main`.** PR #10 (plan 6b) and PR #11 (plan 7) were merged with merge commits on 2026-09-10; **plan 8a merged as `8be02cf`** (PR #20, "docs/plan-8-observability"), not left open on its own branch as this section once said. **Plan 9 (run reliability) merged as PR #22, merge commit `93be370`** (cut from `f76e648`; see "Plan 9 — run reliability" above): all five tasks done. **Plan 8b (the loopback viewer) merged as PR #23, merge commit `deb7c83`** — see its section above. **Plan 8c (the human verbs from the page) merged as PR #24, merge commit `197ee85`** — see its section above. **Plan 8d (the configuration form) merged as PR #25, merge commit `a09f568`**, **plan 10 (demo readiness) as PR #26, merge commit `a51587e`**, **plan 11 (live-run readiness) as PR #27, merge commit `6024f0a`**, **plan 12 (`legal` is the rule) as PR #28, merge commit `7d8ca4a`**, **plan 13 (the human in the loop) as PR #29, merge commit `5720726`**, **plan 14 (the console) as PR #30, merge commit `7b28419`**, **plan 15 (the launcher) as PR #31, merge commit `3a21fa3`**, and **plan 16 (the audit a challenge asks for, and the retry a failure earns) as PR #32, merge commit `e4ebe7e`** — see their sections above. **Plans 17, 18 and 19 (the conversation, the decisions, the headline) merged as PRs #33, #34 and #35, merge commits `e0ab318`, `3dcc3cd` and `3d700bf`** — see their sections above. **Plan 20 (reading the run) is this branch, `plan-20-reading-the-run`** — see its section above. Delete the stale `plan-*` remote branches when the owner says so.
 
 ## Git and identity conventions (from `AGENTS.md`)
 

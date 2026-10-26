@@ -1128,3 +1128,17 @@ def test_the_page_is_guided_in_plain_words_and_follows_the_conversation(tmp_path
         assert marker in css, marker
     state = body(get(v, "/api/state"))
     assert all("worker" in r for r in state["status"]["runs"])
+
+
+def test_the_tag_form_offers_every_clis_models_and_sends_only_what_changed(tmp_path):
+    """Plan 23: the one verb that had no form. The bar's tag intent draws model and effort choices from the catalogue
+    the configuration form already serves, grouped by CLI, and a row's `tag` renders as a button at last."""
+    v, ctx, _ = viewer_for(tmp_path)
+    html = get(v, "/").body.decode()
+    for marker in ('id="tag-model"', 'id="tag-effort"', 'id="tag-size"', 'id="tag-worker"', "leave as is"):
+        assert marker in html, marker
+    js = get(v, "/static/app.js").body.decode()
+    assert '"tag": ["ref", "tag"]' in js and "fillTagChoices" in js and 'tag: "tag"' in js and "effortChoices(cli, id)" in js and "innerHTML" not in js
+    assert "payload.model = model" in js and '["worker", "tag-worker"]' in js
+    config = body(get(v, "/api/config"))
+    assert set(config["models"]) >= {"claude", "codex"} and all("efforts" in spec for specs in config["models"].values() for spec in specs)

@@ -32,6 +32,7 @@ const FIELDS = {
   "claim": ["ref"], "release": ["ref"], "merge": ["ref"], "decide": ["ref"],
   "plan-ack": ["ref"], "plan-approve": [],
   "remember": ["ref", "text"], "challenge": ["ref", "verb", "text"], "post": ["ref", "verb", "text"],
+  "tag": ["ref", "tag"],
 };
 const POST_VERBS = ["ASK", "DIRECTIVE", "HALT", "RESUME", "REVERT", "PROVIDED", "RESOLVED", "ACK", "AMEND",
                     "APPROVE", "NEEDS-HUMAN"];
@@ -78,12 +79,14 @@ const INTENTS = {
              explain: "Adds meld:plan-approved and makes every planned issue ready to claim." },
   ack: { label: "acknowledge a plan addition", action: "plan-ack", fields: ["ref"], ref: "which addition, e.g. plan-add-1",
          explain: "Makes that addition's issues ready." },
+  tag: { label: "adjust an issue's tag: worker, model, effort, size", action: "tag", fields: ["ref", "tag"], ref: "which issue, e.g. #12",
+         explain: "Rewrites the issue's worker, model, effort and size labels; a field left as is keeps its label. The next dispatch on the issue uses them, and a retry after a failed run needs a changed model or effort." },
   other: { label: "something else: post a header verb (advanced)", action: "post", fields: ["verb", "ref", "text"], ref: "ref, if the verb takes one",
            text: "your message", explain: "Posts the chosen verb as [human] on the coordination issue, exactly as `meld post` would." },
 };
 // A row's verb button names the dispatch name; this is the intent it opens in the bar.
 const INTENT_FOR_ACTION = { claim: "claim", release: "release", merge: "merge", "plan-ack": "ack", "plan-approve": "approve",
-                            post: "other", challenge: "challenge" };
+                            post: "other", challenge: "challenge", tag: "tag" };
 // Identity is `meld setup`'s, not a running page's: changing a repo, a human, or a group's bot/auth mid-milestone
 // orphans that group's claims and its open PRs. Shown, never editable (spec 22). The API still accepts them, so
 // what the form sends back is what it was given, with only the editable values replaced.
@@ -292,10 +295,45 @@ function options(select, values) {
   }
 }
 
+async function fillTagChoices() {
+  // The tag form offers every CLI's models from the same catalogue the configuration form shows, grouped by CLI: a
+  // person tags an issue for whichever group will claim it, and `meld tag` validates a human's choice against nothing.
+  if (!configState) await loadConfig();
+  const model = el("tag-model");
+  if (model.options.length > 1) return;
+  for (const [cli, specs] of Object.entries((configState && configState.models) || {})) {
+    const group = document.createElement("optgroup");
+    group.label = cli;
+    for (const spec of specs) {
+      const o = document.createElement("option");
+      o.value = `${cli}|${spec.id}`;
+      text(o, spec.id);
+      group.append(o);
+    }
+    model.append(group);
+  }
+  model.addEventListener("change", () => {
+    const [cli, id] = (model.value || "|").split("|");
+    const effort = el("tag-effort");
+    effort.replaceChildren();
+    const keep = document.createElement("option");
+    keep.value = "";
+    text(keep, "effort: leave as is");
+    effort.append(keep);
+    for (const e of id ? effortChoices(cli, id) : []) {
+      const o = document.createElement("option");
+      o.value = e;
+      text(o, e);
+      effort.append(o);
+    }
+  });
+}
+
 function showFields() {
   const intent = INTENTS[el("action").value] || INTENTS.other;
-  for (const name of ["ref", "verb", "text"]) el(name).classList.toggle("hidden", !intent.fields.includes(name));
+  for (const name of ["ref", "verb", "text", "tag"]) el(name).classList.toggle("hidden", !intent.fields.includes(name));
   if (intent.fields.includes("verb")) options(el("verb"), POST_VERBS);
+  if (intent.fields.includes("tag")) fillTagChoices();
   el("ref").placeholder = intent.ref || "which issue or PR, e.g. #13";
   el("text").placeholder = intent.text || "your message";
   text(el("explain"), intent.explain);
@@ -402,6 +440,14 @@ async function runAction() {
     if (n) payload.number = Number(n[1]);
   }
   if (intent.fields.includes("text")) payload.text = el("text").value;
+  if (intent.fields.includes("tag")) {
+    const model = (el("tag-model").value || "|").split("|")[1];
+    if (model) payload.model = model;
+    for (const [key, id] of [["effort", "tag-effort"], ["size", "tag-size"], ["worker", "tag-worker"]]) {
+      const value = el(id).value.trim();
+      if (value) payload[key] = value;
+    }
+  }
   // Both the header verb `post` carries and the five `challenge` actions travel as `action`: the body's own
   // `verb` key is the dispatch name (`post`, `challenge`), so a second meaning for it cannot fit in one object.
   if (intent.verb) payload.action = intent.verb;

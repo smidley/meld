@@ -16,12 +16,10 @@ from meld.github import GitHubError
 from meld.grammar import agreement_for
 from meld.plan import parse_plan_items, plan_ack, plan_approve
 from meld.rules import Actor, challenge_rule, plan_rule
-from meld.posting import PostError, post
+from meld.posting import PostError, next_ref, post
 from meld.status import _age_minutes, build_status
 from meld.waiting import wait_for_change
 
-_ASK_RE = re.compile(r"^ask-(\d+)$")
-_DIR_RE = re.compile(r"^dir-(\d+)$")
 _REF_RE = re.compile(r"^(#\d+|[a-z][a-z0-9]*(?:-[a-z0-9]+)*-\d+)$")   # #13, budget-1, plan-add-2, audit-40-1
 # The verbs a reader catching up can skip: liveness and bookkeeping the framework and the PMs post on a cadence. The
 # viewer's conversation panel hides them by default; the classification is made here so the page keeps no verb lists.
@@ -102,7 +100,7 @@ def decisions(board: Board, cfg: Config, actor: Actor, now: datetime) -> list[di
     for item in box["budget"]:
         ref = item["ref"]
         choice = ({"label": "Resolved", "body": {"verb": "post", "action": "RESOLVED", "ref": ref}, "needs_text": True} if ref
-                  else {"label": "Give a directive", "body": {"verb": "post", "action": "DIRECTIVE", "ref": _next_id(board, _DIR_RE, "dir")}, "needs_text": True})
+                  else {"label": "Give a directive", "body": {"verb": "post", "action": "DIRECTIVE", "ref": next_ref(board, "dir")}, "needs_text": True})
         out.append({"id": f"budget:{item['comment_id']}", "kind": "budget", "ref": ref, "age_minutes": item["age_minutes"], "comment_id": item["comment_id"],
                     "title": f"{item['group']} hit its budget" + (f" ({ref})" if ref else ""), "summary": _lines(item["text"]),
                     "choices": [{**choice, "hint": "raise the cap under Configuration first if the group should continue"}]})
@@ -111,7 +109,7 @@ def decisions(board: Board, cfg: Config, actor: Actor, now: datetime) -> list[di
         out.append({"id": f"disagree:{ref}", "kind": "disagree", "ref": ref, "age_minutes": _age_minutes(cmt.created_at, now) if cmt else None, "comment_id": item["comment_id"],
                     "title": f"The groups disagree on {ref} ({item['verb']})", "summary": _lines(cmt.text if cmt else "", 6),
                     "choices": [{"label": "Approve as proposed", "body": {"verb": "post", "action": "APPROVE", "ref": ref}, "needs_text": False},
-                                {"label": "Give a directive", "body": {"verb": "post", "action": "DIRECTIVE", "ref": _next_id(board, _DIR_RE, "dir")}, "needs_text": True},
+                                {"label": "Give a directive", "body": {"verb": "post", "action": "DIRECTIVE", "ref": next_ref(board, "dir")}, "needs_text": True},
                                 {"label": "Amend", "body": {"verb": "post", "action": "AMEND", "ref": ref}, "needs_text": True}]})
     for item in box["plan_add"]:
         ref, cmt = item["ref"], by_id.get(item["comment_id"])
@@ -159,13 +157,8 @@ def headline(status: dict, decisions: list[dict]) -> str:
     return f"Executing milestone {milestone}: " + "; ".join(bits) + f"; {you}."
 
 
-def _next_id(board: Board, pattern: re.Pattern, prefix: str) -> str:
-    n = max((int(m.group(1)) for c in board.comments if c.header and c.header.ref for m in [pattern.match(c.header.ref)] if m), default=0)
-    return f"{prefix}-{n + 1}"
-
-
 def next_ask_id(board: Board) -> str:
-    return _next_id(board, _ASK_RE, "ask")
+    return next_ref(board, "ask")
 
 
 def _render_inbox(box: dict) -> str:
@@ -250,7 +243,7 @@ def run_chat(ctx, lines: Iterable[str], out: Callable[[str], None], *, verbose: 
             elif line == "/resume":
                 do_post("RESUME", None, "resume requested from meld chat")
             elif line.startswith("/directive "):
-                do_post("DIRECTIVE", _next_id(board, _DIR_RE, "dir"), line[len("/directive "):])
+                do_post("DIRECTIVE", next_ref(board, "dir"), line[len("/directive "):])
             elif line == "/recent" or line.startswith("/recent "):
                 count = line[len("/recent"):].strip() or "10"
                 if not count.isdigit():

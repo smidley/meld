@@ -374,7 +374,7 @@ def test_the_page_has_a_config_form_that_reads_and_writes_the_known_schema(tmp_p
     # R25: the visible label is relative to its heading (e.g. "orchestrator.model" under [groups.claude]),
     # so two sibling fields that only differ in their last segment don't both truncate to the same text; the
     # full dotted path stays in the title and in dataset.path, which collectConfig still walks unchanged.
-    assert "field(into, `groups.${name}.${role}.model`" in js and "label: `${role}.model`" in js
+    assert "field(card, `groups.${name}.${role}.model`" in js and "label: `${role} model`" in js
 
 
 def test_the_config_form_does_not_write_a_silent_zero_and_keeps_effort_choices_in_sync(tmp_path):
@@ -1200,3 +1200,37 @@ def test_the_work_lanes_show_the_flow(tmp_path):
     css = get(v, "/static/app.css").body.decode()
     for marker in (".flowline", ".flowline.flowing", "@keyframes flow", "@keyframes settle", ".icard .iprogress", "prefers-reduced-motion"):
         assert marker in css, marker
+
+
+def test_the_form_adds_a_group_for_another_ai(tmp_path):
+    """Plan 25: the configuration form is sections in plain words with one card per AI group, and a group for another
+    AI (Gemini, Grok) is added from the adapters the server names, with that CLI's catalogue defaults, then saved through
+    the same validated PUT as any other change."""
+    from meld.adapters import ADAPTER_NAMES
+    v, _, _ = viewer_for(tmp_path)
+    out = body(get(v, "/api/config"))
+    assert out["adapters"] == list(ADAPTER_NAMES) and "gemini" in out["models"] and "grok" in out["models"]
+    js = get(v, "/static/app.js").body.decode()
+    for marker in ("const WORDS", "GROUP_WORDS", "Add a group", "newGroupTemplate", "adapterNames", "gcard", "newGroups", '"Remove"', ".gcard.removed"):
+        assert marker in js, marker
+    css = get(v, "/static/app.css").body.decode()
+    assert ".gcard" in css and ".gadd" in css and ".gcard.fresh" in css
+    # the template the page builds, applied server-side: a gemini group with the catalogue's large model saves
+    candidate = out["config"]
+    for g in candidate["groups"].values():     # the fixture's own groups name a model the catalogue never had ("gpt-x")
+        known = out["models"][g["cli"]][0]
+        for role in ("orchestrator", "pm"):
+            g[role] = {"model": known["id"], "effort": known["efforts"][0]}
+    large = next(m for m in out["models"]["gemini"] if m["tier"] == "large")
+    candidate["groups"]["gemini"] = {"cli": "gemini", "bot": "meld-gemini-bot", "token_env": "MELD_TOKEN_GEMINI", "auth": "pat",
+                                     "concurrency": 8, "review_concurrency": 4,
+                                     "orchestrator": {"model": large["id"], "effort": large["efforts"][-1]}, "pm": {"model": large["id"], "effort": large["efforts"][-1]}}
+    resp = put(v, {"config": candidate, "version": out["version"]})
+    assert resp.status == 200, resp.body
+    text = (tmp_path / ".meld.toml").read_text()
+    assert "[groups.gemini]" in text and 'cli = "gemini"' in text and f'model = "{large["id"]}"' in text
+    # ... and removing it again (what the card's Remove does on Save) is the same PUT without the key
+    again = body(get(v, "/api/config"))
+    del again["config"]["groups"]["gemini"]
+    assert put(v, {"config": again["config"], "version": again["version"]}).status == 200
+    assert "[groups.gemini]" not in (tmp_path / ".meld.toml").read_text()

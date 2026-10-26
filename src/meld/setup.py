@@ -155,7 +155,7 @@ def setup(gh: GitHub, *, repo: str, goal: str, milestone_title: str, human: str,
     coordination, issue_how = ensure_coordination_issue(gh, milestone, milestone_title, goal)
     installed = installed_adapters(which)
     if not installed:
-        warnings.append("no CLI found on PATH for any adapter (claude, codex); every [groups.*] block is commented out -- install a CLI and uncomment its block")
+        warnings.append(f"no CLI found on PATH for any adapter ({', '.join(ADAPTER_NAMES)}); every [groups.*] block is commented out -- install a CLI and uncomment its block")
     groups = []
     for name in installed:
         _, commented = _group_block(name, registry, commented=False, app=app)

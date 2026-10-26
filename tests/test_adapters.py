@@ -36,10 +36,10 @@ def test_parse_frontmatter_and_scan_skills(tmp_path: Path):
 
 
 def test_registry_names_and_unknown():
-    assert ADAPTER_NAMES == ("claude", "codex")
+    assert ADAPTER_NAMES == ("claude", "codex", "gemini", "grok")
     with pytest.raises(UnknownAdapter):
-        get_adapter("gemini")
-    assert get_adapter("claude").name == "claude" and get_adapter("codex").name == "codex"
+        get_adapter("copilot")
+    assert [get_adapter(n).name for n in ADAPTER_NAMES] == list(ADAPTER_NAMES)
 
 
 def test_fake_adapter_launches_detached_process_and_logs(tmp_path: Path):
@@ -199,9 +199,8 @@ def test_codex_exec_passes_no_approval_flag_and_sandboxes_by_role(tmp_path: Path
 
 
 def test_every_required_flag_is_one_the_adapter_actually_passes(tmp_path: Path):
-    from meld.adapters.claude import ClaudeAdapter
-    from meld.adapters.codex import CodexAdapter
-    for adapter in (ClaudeAdapter(binary="claude"), CodexAdapter(binary="codex")):
+    from meld.adapters import ADAPTER_NAMES, get_adapter
+    for adapter in (get_adapter(n) for n in ADAPTER_NAMES):
         passed = set(adapter.argv(_spec("pm", tmp_path))) | set(adapter.argv(_spec("worker", tmp_path)))
         assert set(adapter.required_flags()) <= passed, adapter.name
         assert adapter.help_argv()[0] == adapter.version_argv()[0]

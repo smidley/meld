@@ -91,3 +91,37 @@ tier = "medium"
 context_class = "large"
 efforts = ["low", "medium", "high", "xhigh", "max"]
 tier = "small"
+
+# Gemini CLI entries (added 2026-10-26 from the CLI's published reference: the `pro`, `flash` and `flash-lite` aliases
+# and the Gemini 3 preview it names). The CLI has no per-run effort setting, so each lists the one effort `default`,
+# which the adapter does not pass. Not verified against an installed CLI on this machine -- `meld doctor` and the first
+# run are the proof; edit here if the id or the tier is wrong.
+
+[gemini.gemini-3-pro-preview]
+context_class = "large"
+efforts = ["default"]
+tier = "large"
+
+[gemini."gemini-2.5-pro"]
+context_class = "large"
+efforts = ["default"]
+tier = "large"
+
+[gemini."gemini-2.5-flash"]
+context_class = "large"
+efforts = ["default"]
+tier = "medium"
+
+[gemini."gemini-2.5-flash-lite"]
+context_class = "large"
+efforts = ["default"]
+tier = "small"
+
+# Grok Build entries (added 2026-10-26 from xAI's published docs: grok-build-0.1 is the CLI's default model, 256K
+# context). `--effort <LEVEL>` is documented without its levels, so low/medium/high is an assumption to correct from
+# `grok --help` on an installed CLI. Not verified against an installed CLI on this machine.
+
+[grok."grok-build-0.1"]
+context_class = "large"
+efforts = ["low", "medium", "high"]
+tier = "large"

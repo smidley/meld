@@ -244,15 +244,15 @@ def test_status_reports_the_audit_schedule_for_the_calling_group():
     codex = render_status(board, CFG2, CODEX_PM, REG, now)["audit"]
     # No issues are tracked on this board fixture: a milestone with no issues yet is NOT complete (planning; the vacuous
     # reading told the first live run's PM the milestone was done), and codex's batch is due on merge count/age alone.
-    assert codex == {"pending": [19], "merges_pending": 1, "oldest_pending_hours": 6.0, "due": True, "milestone_complete": False}
+    assert codex == {"pending": [19], "merges_pending": 1, "oldest_pending_hours": 6.0, "due": True, "milestone_complete": False, "challenged": []}
     claude = render_status(board, CFG2, CLAUDE_PM, REG, now)["audit"]
-    assert claude == {"pending": [], "merges_pending": 0, "oldest_pending_hours": None, "due": False, "milestone_complete": False}
+    assert claude == {"pending": [], "merges_pending": 0, "oldest_pending_hours": None, "due": False, "milestone_complete": False, "challenged": []}
     fresh = replace(merged, merged_at="2026-09-03T11:30:00Z")
     # An open issue keeps the milestone incomplete, so this checks the age/batch-count gate alone (spec 21 item 10
     # would otherwise make a fresh, low-volume merge due anyway once the milestone reads as finished).
     still_open = mk_board(CFG2, issues=[mk_issue(11)], pulls=[fresh])
     assert render_status(still_open, CFG2, CODEX_PM, REG, now)["audit"] == {
-        "pending": [19], "merges_pending": 1, "oldest_pending_hours": 0.5, "due": False, "milestone_complete": False}
+        "pending": [19], "merges_pending": 1, "oldest_pending_hours": 0.5, "due": False, "milestone_complete": False, "challenged": []}
     done = replace(board, audits={19: {"codex": "pass"}})
     assert render_status(done, CFG2, CODEX_PM, REG, now)["audit"]["pending"] == []
     assert render_status(board, CFG2, HUMAN, REG, now)["audit"]["pending"] == []
@@ -265,10 +265,10 @@ def test_audit_schedule_excludes_merged_memory_prs():
     ordinary = replace(mk_pr(19, 9, committer="meld-claude-bot", state="closed", merged=True), merged_at="2026-09-03T06:00:00Z")
     now = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
     both = render_status(mk_board(CFG2, pulls=[memory, ordinary]), CFG2, CODEX_PM, REG, now)
-    assert both["audit"] == {"pending": [19], "merges_pending": 1, "oldest_pending_hours": 6.0, "due": True, "milestone_complete": False}
+    assert both["audit"] == {"pending": [19], "merges_pending": 1, "oldest_pending_hours": 6.0, "due": True, "milestone_complete": False, "challenged": []}
     assert {p["number"]: p["legal"] for p in both["pulls"]} == {19: ["audit", "remember"], 40: ["remember"]}
     only_memory = render_status(mk_board(CFG2, pulls=[memory]), CFG2, CODEX_PM, REG, now)["audit"]
-    assert only_memory == {"pending": [], "merges_pending": 0, "oldest_pending_hours": None, "due": False, "milestone_complete": False}
+    assert only_memory == {"pending": [], "merges_pending": 0, "oldest_pending_hours": None, "due": False, "milestone_complete": False, "challenged": []}
     # a marker smuggled into an ordinary build PR's body (head meld/9-slug) does not exempt it from audit (N1)
     smuggled = replace(ordinary, body=body)
     assert render_status(mk_board(CFG2, pulls=[smuggled]), CFG2, CODEX_PM, REG, now)["audit"]["pending"] == [19]
@@ -342,3 +342,18 @@ def test_audits_skip_pull_requests_authored_by_a_human():
     assert audit_summary(board, CFG2, CODEX_PM, now)["pending"] == [31]
     refusal = pr_refusal(board, CFG2, CODEX_PM, Verb.AUDIT, human_pr)
     assert refusal is not None and "not authored by a group" in refusal.rule
+
+
+def test_an_audit_a_challenge_asks_for_is_due_at_once():
+    """Handoff residual 7: a merged PR under an open CHALLENGE (or whose issue is) waited for the batch heuristic like any
+    other; it is due now, and `audit.challenged` names it so the PM audits it first."""
+    fresh = replace(mk_pr(19, 9, committer="meld-claude-bot", state="closed", merged=True), merged_at="2026-09-03T11:30:00Z")
+    now = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
+    quiet = mk_board(CFG2, issues=[mk_issue(11)], pulls=[fresh])
+    assert render_status(quiet, CFG2, CODEX_PM, REG, now)["audit"]["due"] is False
+    on_pr = replace(quiet, open_challenges=frozenset({"#19"}))
+    assert render_status(on_pr, CFG2, CODEX_PM, REG, now)["audit"] == {
+        "pending": [19], "merges_pending": 1, "oldest_pending_hours": 0.5, "due": True, "milestone_complete": False, "challenged": [19]}
+    on_issue = replace(quiet, open_challenges=frozenset({"#9"}))
+    assert render_status(on_issue, CFG2, CODEX_PM, REG, now)["audit"]["challenged"] == [19]
+    assert render_status(on_pr, CFG2, CLAUDE_PM, REG, now)["audit"]["challenged"] == []      # claude authored it: owes no audit

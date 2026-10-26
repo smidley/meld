@@ -342,3 +342,20 @@ def test_reopen_needs_a_fail_audit_newer_than_the_issues_last_close():
     assert rule(b, HUMAN, Verb.REOPEN, closed_again) is None
     undated = mk_issue(9, state="closed")
     assert rule(mk_board(CFG2, issues=[undated], pulls=[pr], comments=[audit]), CODEX_PM, Verb.REOPEN, undated) is None
+
+
+def test_dispatch_refuses_a_retry_at_the_unchanged_tag_after_a_failed_run():
+    """Handoff residual 5: the rubric's "raise effort a level or move up a tier" on a retry after a failure was prompt-only,
+    and the first live run's PMs re-dispatched at the unchanged tag before the orchestrator re-tagged. Enforced for a
+    build run collected as `failed`; a blocked, no-change or done run, or a re-tag, dispatches as before."""
+    same = mk_issue(12, status="in_progress", claimed_by="claude", model="claude-sonnet-5", effort="medium")
+    failed = {"claude": {12: mk_run("claude", 12, alive=False, collected=True, outcome="failed")}, "codex": {}}
+    why = rule(mk_board(CFG2, issues=[same], runs=failed), CLAUDE_PM, Verb.DISPATCH, same)
+    assert why == ("retry at the unchanged tag (claude-sonnet-5/medium) after a failed run: the orchestrator re-tags per the rubric first "
+                   "(raise effort a level or move up a tier)")
+    assert "dispatch" not in legal_issue_verbs(mk_board(CFG2, issues=[same], runs=failed), CFG2, CLAUDE_PM, same, REG)
+    retagged = mk_issue(12, status="in_progress", claimed_by="claude", model="claude-sonnet-5", effort="high")
+    assert rule(mk_board(CFG2, issues=[retagged], runs=failed), CLAUDE_PM, Verb.DISPATCH, retagged) is None
+    for outcome in ("blocked", "no_change", "done", "superseded", None):
+        runs = {"claude": {12: mk_run("claude", 12, alive=False, collected=True, outcome=outcome)}, "codex": {}}
+        assert rule(mk_board(CFG2, issues=[same], runs=runs), CLAUDE_PM, Verb.DISPATCH, same) is None, outcome

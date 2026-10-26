@@ -666,7 +666,7 @@ def _collect_build(ctx, board: Board, group: GroupConfig, rec: RunRecord, issue,
         wt = Path(rec.worktree)
         if wt.is_dir():
             detach_head(wt)
-        ctx.store.write_run(replace(rec, collected=True))
+        ctx.store.write_run(replace(rec, collected=True, outcome="superseded"))
         return {"collected": number, "outcome": "superseded",
                 "reason": f"issue is {issue.status} and claimed by {holder}; {group.name} no longer holds it"}
     wt = Path(rec.worktree)
@@ -678,7 +678,7 @@ def _collect_build(ctx, board: Board, group: GroupConfig, rec: RunRecord, issue,
         ctx.gh.create_comment(board.coordination_issue, compose(Header(Party("pm", group.name), "NEEDS-HUMAN", f"#{number}", None),
                                                                 f"{ask}\n\nWorker summary: {result.summary}\nverified-by: {result.verified_by}"))
         ctx.gh.create_comment(number, f"Meld: `{group.name}` worker is blocked and needs a human: {ask}")
-        ctx.store.write_run(replace(rec, collected=True))
+        ctx.store.write_run(replace(rec, collected=True, outcome="blocked"))
         return {"collected": number, "outcome": "blocked", "needs_human": ask}
     commits: list[str] = []
     if reason is None:
@@ -690,7 +690,7 @@ def _collect_build(ctx, board: Board, group: GroupConfig, rec: RunRecord, issue,
         summary = f"\n\nWorker summary: {result.summary}" if result else ""
         ctx.gh.create_comment(number, f"Meld: `{group.name}` worker did not complete #{number}: {reason}.{summary}\n\n"
                                       f"Last {ctx.cfg.worker_log_tail_lines} log events:\n\n{fenced(tail)}")
-        ctx.store.write_run(replace(rec, collected=True))
+        ctx.store.write_run(replace(rec, collected=True, outcome="failed"))
         return {"collected": number, "outcome": "failed", "reason": reason}
     assert result is not None
     existing = board.pr_for_issue(number)
@@ -701,7 +701,7 @@ def _collect_build(ctx, board: Board, group: GroupConfig, rec: RunRecord, issue,
         ctx.gh.create_comment(number, cap_body(f"Meld: `{group.name}` worker reported done but pushed nothing new since PR #{existing.number}'s "
                                                f"head {existing.head_sha[:7]}; #{number} stays in progress for a retry that addresses the review.\n\n"
                                                f"Worker summary: {_pr_body_text(result.summary)}"))
-        ctx.store.write_run(replace(rec, collected=True))
+        ctx.store.write_run(replace(rec, collected=True, outcome="no_change"))
         return {"collected": number, "outcome": "no_change", "pr": existing.number}
     # A worker that rebased onto the default branch (as decision drift-1 asks) made its branch non-fast-forward, and the
     # first live run's collect failed on it twice until a PM force-pushed by hand. The PR's branch is rewritten only
@@ -726,7 +726,7 @@ def _collect_build(ctx, board: Board, group: GroupConfig, rec: RunRecord, issue,
     ctx.gh.create_comment(number, cap_body(finish))
     ctx.gh.create_comment(board.coordination_issue, compose(Header(Party("pm", group.name), "REVIEW-REQUEST", f"#{pr_number}", None),
                                                             f"Issue #{number}, head {sha[:7]}. Please dispatch a reviewer."))
-    ctx.store.write_run(replace(rec, collected=True, pr=pr_number))
+    ctx.store.write_run(replace(rec, collected=True, pr=pr_number, outcome="done"))
     return {"collected": number, "outcome": "done", "pr": pr_number, "commits": len(commits)}
 
 

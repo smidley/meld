@@ -20,6 +20,17 @@ COMMAND_CEILING_SECONDS = 600   # conservative; not documented
 REQUIRED_FLAGS = ("-p", "--model", "--effort", "--output-format", "--dangerously-skip-permissions")
 
 
+LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+
+def baked_level(model: str) -> str | None:
+    """The thinking level some Antigravity ids carry in their name (`gemini-3.8-flash-high`, `gpt-oss-120b-medium`). The
+    CLI refuses a separate `--effort` for those (agy 1.4.7: "--model gemini-3.8-flash-high conflicts with --effort=low",
+    found by the first smoke run), so the adapter passes none and the catalogue lists that level as the model's one effort."""
+    tail = model.rsplit("-", 1)[-1]
+    return tail if tail in LEVELS else None
+
+
 def _summary(params: dict) -> str:
     for key in ("CommandLine", "command", "AbsolutePath", "TargetFile", "file_path", "path", "Query", "query", "pattern"):
         if isinstance(params.get(key), str) and params[key]:
@@ -39,7 +50,8 @@ class AntigravityAdapter:
     def argv(self, spec: LaunchSpec) -> list[str]:
         # Print mode cannot prompt, so a worker needs every tool approved up front; `--dangerously-skip-permissions` is
         # the CLI's own name for that, and the environment scrub (section 18) is the isolation, as for Claude Code.
-        return [self.binary, "-p", spec.prompt, "--model", spec.model, "--effort", spec.effort,
+        effort = [] if baked_level(spec.model) else ["--effort", spec.effort]
+        return [self.binary, "-p", spec.prompt, "--model", spec.model, *effort,
                 "--output-format", "stream-json", "--dangerously-skip-permissions"]
 
     def env_for(self, spec: LaunchSpec) -> dict[str, str]:

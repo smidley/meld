@@ -126,22 +126,23 @@ context_class = "large"
 efforts = ["low", "medium", "high"]
 tier = "large"
 
-# Antigravity CLI entries (verified 2026-10-26 against agy 1.4.7: `agy models`). `--effort` takes low|medium|high|xhigh|max.
-# The three Flash ids bake a thinking level into the model name; tiers are cost guesses to correct from use.
+# Antigravity CLI entries (verified 2026-10-26 against agy 1.4.7: `agy models`). `--effort` takes low|medium|high|xhigh|max,
+# but an id that ends in a level (the three Flash ids, gpt-oss-120b-medium) bakes it in and refuses a separate --effort,
+# so those list that one level and the adapter passes none. Tiers are cost guesses to correct from use.
 
 [antigravity."gemini-3.8-flash-high"]
 context_class = "large"
-efforts = ["low", "medium", "high", "xhigh", "max"]
+efforts = ["high"]
 tier = "medium"
 
 [antigravity."gemini-3.8-flash-medium"]
 context_class = "large"
-efforts = ["low", "medium", "high", "xhigh", "max"]
+efforts = ["medium"]
 tier = "small"
 
 [antigravity."gemini-3.8-flash-low"]
 context_class = "large"
-efforts = ["low", "medium", "high", "xhigh", "max"]
+efforts = ["low"]
 tier = "small"
 
 [antigravity.claude-opus-4-6-thinking]
@@ -156,5 +157,5 @@ tier = "medium"
 
 [antigravity.gpt-oss-120b-medium]
 context_class = "large"
-efforts = ["low", "medium", "high", "xhigh", "max"]
+efforts = ["medium"]
 tier = "medium"

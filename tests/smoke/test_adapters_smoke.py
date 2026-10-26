@@ -26,7 +26,7 @@ def _repo(tmp_path: Path) -> Path:
 
 
 @pytest.mark.parametrize("name,model", [("claude", "claude-sonnet-5"), ("codex", "gpt-5.6-terra"),
-                                        ("grok", "grok-4.7"), ("antigravity", "gemini-3.8-flash-high"), ("gemini", "gemini-2.5-flash")])
+                                        ("grok", "grok-4.7"), ("antigravity", "gemini-3.8-flash-low"), ("gemini", "gemini-2.5-flash")])
 def test_adapter_creates_a_file(tmp_path: Path, name: str, model: str):
     adapter = get_adapter(name)
     binary = adapter.version_argv()[0]          # the adapter's binary, which is not always its name (`agy` for antigravity)

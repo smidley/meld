@@ -36,7 +36,7 @@ from meld.prompts import ROLES
 from meld.results import ResultsError
 from meld.runners import freeze_path, read_record, supervisor_path
 from meld.state import liveness, pid_alive, proc_start_of
-from meld.chat import decisions, thread_entries
+from meld.chat import decisions, headline, thread_entries
 from meld.status import build_status
 from meld.transcript import total_bytes
 from meld.viewer import actions as va
@@ -264,7 +264,7 @@ class Viewer:
         except OSError:
             free_mb = None
         return _json(200, {"status": status, "supervisors": supervisors, "frozen": frozen, "thread": thread_entries(board, last=THREAD_LAST),
-                           "decisions": decisions(board, cfg, self.ctx.actor(), now),
+                           "decisions": (pending := decisions(board, cfg, self.ctx.actor(), now)), "headline": headline(status, pending),
                            "disk": {"free_mb": free_mb, "warn_free_mb": cfg.logs_warn_free_mb},
                            "logs": {"total_mb": total_bytes(home / "logs") // (1024 * 1024), "warn_total_mb": cfg.logs_warn_total_mb},
                            "generated_at": self.now()})

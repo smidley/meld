@@ -574,6 +574,7 @@ function renderState(state) {
   text(el("stamp"), `as of ${state.generated_at}`);
   text(el("error"), "");
 
+  text(el("headline"), state.headline || "");
   groupOrder = Object.keys(state.supervisors || {});
   renderDecisions(state.decisions);
   renderThread(state.thread);
@@ -593,13 +594,9 @@ function renderState(state) {
     }
     sup.append(span);
   }
+  // The needs-human items are decision cards now (plan 18); this row carries only the state errors below.
   const nh = el("needs-human");
   nh.replaceChildren();
-  for (const item of s.needs_human || []) {
-    const line = text(document.createElement("span"), `needs human: #${item.issue} ${item.title} (${item.age_minutes}m)`);
-    line.className = "bad";
-    nh.append(line);
-  }
   // The non-fatal read problems `meld status` warns a PM about (a corrupt run record, an unreadable result file).
   for (const err of s.state_errors || []) {
     const line = text(document.createElement("span"), `state error: ${err}`);

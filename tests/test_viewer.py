@@ -1072,3 +1072,14 @@ def test_state_carries_the_decisions_and_the_page_renders_them_as_cards(tmp_path
     assert 'id="decisions"' in html and 'id="card"' in html
     js = get(v, "/static/app.js").body.decode()
     assert "renderDecisions" in js and "postAction" in js and "state.decisions" in js and "innerHTML" not in js
+
+
+def test_state_carries_the_headline_and_the_page_shows_it(tmp_path):
+    """Plan 19: one plain sentence under the header, composed on the server from the same board."""
+    v, ctx, _ = viewer_for(tmp_path)
+    state = body(get(v, "/api/state"))
+    assert isinstance(state["headline"], str) and state["headline"].endswith(".") and "milestone" in state["headline"].lower()
+    html = get(v, "/").body.decode()
+    assert 'id="headline"' in html
+    js = get(v, "/static/app.js").body.decode()
+    assert "state.headline" in js and "innerHTML" not in js

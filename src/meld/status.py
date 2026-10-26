@@ -52,7 +52,7 @@ def render_status(board: Board, cfg: Config, actor: Actor, models: ModelRegistry
         for i in sorted(board.issues.values(), key=lambda i: i.number)
     ]
     pulls = [
-        {"number": p.number, "issue": p.issue_number, "state": p.state, "head_sha": p.head_sha,
+        {"number": p.number, "title": p.title, "issue": p.issue_number, "state": p.state, "head_sha": p.head_sha,
          "committer_party": committer_party(cfg, p), "approvals": sorted(approving_parties(cfg, p)),
          "changes_requested": sorted({q for q in (party_of_login(cfg, a) for a in p.changes_requested_on_head()) if q}),
          "checks": p.checks, "pingpong_exceeded": pingpong_exceeded(cfg, p),

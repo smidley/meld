@@ -48,7 +48,7 @@ li.synthesized .text { color: var(--dim); font-style: italic; }
 .panel { flex: 1 1 0; min-width: 0; max-height: 22vh; overflow-y: auto; background: var(--panel);
   border: 1px solid var(--line); border-radius: 4px; }
 .panel h2 { margin: 0; padding: 6px 10px; font-size: 13px; border-bottom: 1px solid var(--line); }
-.brow { display: grid; grid-template-columns: 4.5rem 1fr auto; gap: 8px; padding: 2px 10px; align-items: baseline; }
+.brow { display: grid; grid-template-columns: fit-content(9rem) 1fr auto; gap: 8px; padding: 2px 10px; align-items: baseline; }
 .brow:hover { background: #1d212b; }
 .rid { color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rwhat { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

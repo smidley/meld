@@ -156,3 +156,15 @@ def test_parse_events_recognises_a_limit_on_a_bare_stderr_line():
     (event,) = CodexAdapter().parse_events(
         "2026-09-12T02:11:19Z ERROR codex_core: quota exceeded for this organization", "2026-09-12T02:11:19Z")
     assert event.kind == "usage_limit"
+
+
+def test_login_status_reads_the_words_not_the_exit_code():
+    """`meld doctor`'s cli-login probe: `codex login status` says `Logged in using ...` or `Not logged in`; anything
+    else is an answer nobody read -- None, so doctor reports NOT MEASURED rather than trusting the exit code."""
+    a = CodexAdapter()
+    assert a.login_argv() == ["codex", "login", "status"]
+    assert a.login_status("Logged in using ChatGPT\n", "", 0) == (True, "Logged in using ChatGPT")
+    assert a.login_status("", "Logged in using API key\n", 0) == (True, "Logged in using API key")
+    assert a.login_status("Not logged in\n", "", 1) == (False, "not logged in")
+    assert a.login_status("", "", 0)[0] is None
+    assert a.login_status("error: unrecognized subcommand 'status'", "", 2)[0] is None

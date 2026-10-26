@@ -1,7 +1,9 @@
 """meld doctor: verify the machine, the tokens, the config, and the product repo before running a group (spec 20 step 2, 21 item 2).
 
-Read-only, apart from the opt-in status probe. Every check is a Check(ok=True|False|None): None is a warning or a check that
-could not run. Nothing here prints or stores a token value -- only variable names and account logins.
+Read-only, apart from the opt-in status probe. Every check is a Check(ok=True|False|None): None is a warning, or -- with
+measured=False -- a check that could not run, which `summary` lists under `not_measured` rather than `warnings` so that a
+green doctor never passes off "nothing was read" as "verified" (spec 21 item 14). Nothing here prints or stores a token
+value -- only variable names and account logins.
 
 For a PAT group (spec 18), `token:<g>` and `token-permissions:<g>` verify the token is set, owned by the configured bot,
 and carries the needed permissions. For a GitHub App group (plan 6a), those two checks are replaced by `app:<g>` (the
@@ -52,26 +54,43 @@ class Check:
     ok: bool | None
     detail: str
     fix: str = ""
+    measured: bool = True   # False: the check could not run or could not read its answer, so `ok` is None and means nothing
+
+
+def _run(argv: list[str], run=subprocess.run) -> subprocess.CompletedProcess | None:
+    try:
+        return run(argv, capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
 
 
 def _version(argv: list[str], run=subprocess.run) -> str | None:
-    try:
-        proc = run(argv, capture_output=True, text=True, timeout=20)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if proc.returncode != 0:
+    proc = _run(argv, run)
+    if proc is None or proc.returncode != 0:
         return None
     return (proc.stdout or proc.stderr or "").strip().splitlines()[0] if (proc.stdout or proc.stderr) else "ok"
 
 
 def _help_text(argv: list[str], run=subprocess.run) -> str | None:
-    try:
-        proc = run(argv, capture_output=True, text=True, timeout=20)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if proc.returncode != 0:
+    proc = _run(argv, run)
+    if proc is None or proc.returncode != 0:
         return None
     return (proc.stdout or "") + "\n" + (proc.stderr or "")
+
+
+def _login_check(group: GroupConfig, adapter, run=subprocess.run) -> Check:
+    """`cli-login:<g>`: the CLI's own answer to "are you logged in" (spec 20 step 2, 21 item 2). The first live run began with
+    `claude` logged out while doctor read green, because `cli:<g>` proves only that the binary answers --version. A probe
+    that cannot run, or an answer the adapter cannot read, is NOT MEASURED -- never a pass (item 14)."""
+    name, binary, argv = f"cli-login:{group.name}", adapter.version_argv()[0], adapter.login_argv()
+    if not argv:
+        return Check(name, None, f"{binary}: this adapter has no login probe", measured=False)
+    proc = _run(argv, run)
+    if proc is None:
+        return Check(name, None, f"{binary}: `{' '.join(argv[1:])}` could not run", f"run `{' '.join(argv)}` by hand", measured=False)
+    ok, detail = adapter.login_status(proc.stdout or "", proc.stderr or "", proc.returncode)
+    fix = "" if ok else (f"log in with the {group.cli} CLI as the user who runs `meld run`" if ok is False else f"run `{' '.join(argv)}` by hand")
+    return Check(name, ok, f"{binary}: {detail}", fix, measured=ok is not None)
 
 
 def missing_flags(help_text: str, flags: Sequence[str]) -> list[str]:
@@ -133,7 +152,7 @@ def _group_config_checks(cfg: Config, group: GroupConfig, registry: ModelRegistr
                     "; ".join(problems) or f"{group.orchestrator.model}/{group.orchestrator.effort}, {group.pm.model}/{group.pm.effort}",
                     "" if not problems else "pick models from `meld models`")]
     if adapter is None:
-        checks.append(Check(f"timeout-ceiling:{group.name}", None, "skipped (unknown cli)"))
+        checks.append(Check(f"timeout-ceiling:{group.name}", None, "skipped (unknown cli)", measured=False))
     else:
         ceiling = adapter.command_timeout_ceiling_seconds()
         ok = ceiling > cfg.wait_timeout_seconds
@@ -208,6 +227,9 @@ def run_checks(cfg: Config, repo_root: Path, *, env: Mapping[str, str], gh_facto
                                         f"{binary}: all {len(flags)} flags Meld passes are listed by {' '.join(help_argv[1:])}" if not missing
                                         else f"{binary} no longer lists {', '.join(missing)}; every launch would fail at once",
                                         "" if not missing else f"upgrade Meld's {group.cli} adapter (or pin the CLI version it was written for)"))
+            # 2c. the CLI is logged in -- the CLI's own answer, read by its adapter; see _login_check
+            if found and version:
+                checks.append(_login_check(group, adapter, run))
         # 3. token present and owned by the configured bot (PAT groups); key/JWT/slug and installation token (App groups)
         if group.is_app:
             login = None
@@ -247,7 +269,8 @@ def run_checks(cfg: Config, repo_root: Path, *, env: Mapping[str, str], gh_facto
                                "Checks: read & write recommended) and install it on the repo")
                     elif no_checks:
                         fix = "grant the App Checks: read & write"
-                    checks.append(Check(f"app-installation:{group.name}", False if bad else (None if unverified or no_checks else True), detail, fix))
+                    checks.append(Check(f"app-installation:{group.name}", False if bad else (None if unverified or no_checks else True), detail, fix,
+                                        measured=not unverified))
                 except AppAuthError as e:
                     checks.append(Check(f"app-installation:{group.name}", False, f"installation token failed: {e}", "check installation_id (from the installation URL) and that the App is installed on the repo"))
         else:
@@ -301,7 +324,7 @@ def run_checks(cfg: Config, repo_root: Path, *, env: Mapping[str, str], gh_facto
                 checks.append(Check(f"token-permissions:{group.name}", not missing, detail,
                                     "" if not missing else "re-mint the token with Contents, Issues, Pull requests, Commit statuses: read and write"))
             else:
-                checks.append(Check(f"token-permissions:{group.name}", None, "skipped (token or default-branch head unavailable)"))
+                checks.append(Check(f"token-permissions:{group.name}", None, "skipped (token or default-branch head unavailable)", measured=False))
     # 8. settings.json env blocks that would re-inject a token or party into a worker
     hits = _settings_env_names([user_home / ".claude" / "settings.json", repo_root / ".claude" / "settings.json", repo_root / ".claude" / "settings.local.json"])
     checks.append(Check("settings-env", None if hits else True,
@@ -328,7 +351,7 @@ def run_checks(cfg: Config, repo_root: Path, *, env: Mapping[str, str], gh_facto
     try:
         free_mb = disk_usage(home).free // (1024 * 1024)
     except OSError as e:
-        checks.append(Check("disk-free", None, f"cannot read free space on {home}: {e}"))
+        checks.append(Check("disk-free", None, f"cannot read free space on {home}: {e}", measured=False))
     else:
         low = free_mb < cfg.logs_warn_free_mb
         checks.append(Check("disk-free", None if low else True, f"{free_mb} MB free on the volume holding {home}",
@@ -343,13 +366,16 @@ def run_checks(cfg: Config, repo_root: Path, *, env: Mapping[str, str], gh_facto
         url = git(["remote", "get-url", "origin"], repo_root)
         checks.append(Check("origin-https", True if url.startswith("https://") else None, url, "" if url.startswith("https://") else "use an HTTPS origin so workers cannot push with the host's SSH keys"))
     except GitError as e:
-        checks.append(Check("origin-https", None, f"cannot read origin: {e}"))
+        checks.append(Check("origin-https", None, f"cannot read origin: {e}", measured=False))
     return checks
 
 
 def summary(checks: list[Check]) -> dict:
+    """`ok` is "nothing failed"; `not_measured` names the checks whose answer could not be read, which a green `ok` has
+    therefore not verified. They are kept out of `warnings`, which is for a measured condition that does not block."""
     return {"checks": [asdict(c) for c in checks], "failed": [c.name for c in checks if c.ok is False],
-            "warnings": [c.name for c in checks if c.ok is None], "ok": all(c.ok is not False for c in checks)}
+            "warnings": [c.name for c in checks if c.ok is None and c.measured],
+            "not_measured": [c.name for c in checks if not c.measured], "ok": all(c.ok is not False for c in checks)}
 
 
 def sweep(home: Path, cfg: Config, *, repo_root: Path, pull_states: Mapping[int, str] | None = None, older_than_days: int = 7,

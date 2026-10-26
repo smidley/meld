@@ -103,6 +103,19 @@ class CodexAdapter:
     def required_flags(self) -> tuple[str, ...]:
         return REQUIRED_FLAGS
 
+    def login_argv(self) -> list[str]:
+        return [self.binary, "login", "status"]
+
+    def login_status(self, stdout: str, stderr: str, returncode: int) -> tuple[bool | None, str]:
+        """`codex login status` prints `Logged in using ...` or `Not logged in`; the words are the oracle, not the exit code."""
+        text = ((stdout or "") + "\n" + (stderr or "")).strip()
+        first = text.splitlines()[0].strip() if text else ""
+        if first.lower().startswith("not logged in"):
+            return False, "not logged in"
+        if first.lower().startswith("logged in"):
+            return True, first
+        return None, f"unrecognised `login status` answer (exit {returncode})"
+
     def parse_events(self, line: str, now: str) -> list[Event]:
         """One `--json` line as events. `turn.started` and an in-progress message carry nothing."""
         doc, stripped = parse_doc(line)

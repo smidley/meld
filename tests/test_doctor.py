@@ -541,3 +541,50 @@ def test_missing_flags_matches_whole_tokens_only():
     text = "  -s, --sandbox <MODE>\n      --settings <JSON>\n      --json"
     assert missing_flags(text, ["-s", "--settings", "--json"]) == []
     assert missing_flags(text, ["-a", "--set", "-json"]) == ["-a", "--set", "-json"]
+
+
+def test_doctor_login_check_reads_each_clis_own_answer_and_never_passes_one_it_could_not_read(tmp_path):
+    """The first live run began with `claude` logged out while doctor read green, because cli:<g> proves only that the
+    binary answers --version (spec 21 item 2). cli-login:<g> now asks the CLI itself through its adapter, and an answer
+    the adapter cannot read is NOT MEASURED -- `ok` None with measured=False, listed by `summary` under `not_measured`
+    and never under `warnings` (item 14), so a green doctor can no longer pass off "nothing was read" as "verified"."""
+    healthy = by_name(run(tmp_path, fakes()))
+    assert healthy["cli-login:claude"].ok is True and healthy["cli-login:claude"].measured
+    assert "logged in" in healthy["cli-login:claude"].detail
+    adapters = {"claude": FakeAdapter(ceiling=600, name="claude", login=False), "codex": FakeAdapter(ceiling=600, name="codex", login=None)}
+    checks = by_name(run(tmp_path, fakes(), adapters=adapters))
+    assert checks["cli-login:claude"].ok is False and checks["cli-login:claude"].measured
+    assert "not logged in" in checks["cli-login:claude"].detail and "log in with the claude CLI" in checks["cli-login:claude"].fix
+    assert checks["cli-login:codex"].ok is None and checks["cli-login:codex"].measured is False
+    s = summary(run(tmp_path, fakes(), adapters=adapters))
+    assert "cli-login:claude" in s["failed"] and "cli-login:codex" in s["not_measured"]
+    assert "cli-login:codex" not in s["warnings"] and s["ok"] is False
+    # a probe that cannot even start is NOT MEASURED too, and a CLI that is not installed gets no login check at all
+    class NoSuchProbe(FakeAdapter):
+        def login_argv(self):
+            return [str(tmp_path / "no-such-binary"), "login", "status"]
+    checks = by_name(run(tmp_path, fakes(), adapters={"claude": NoSuchProbe(ceiling=600, name="claude"), "codex": FakeAdapter(ceiling=600, name="codex")}))
+    assert checks["cli-login:claude"].ok is None and not checks["cli-login:claude"].measured and "could not run" in checks["cli-login:claude"].detail
+    assert "cli-login:claude" not in by_name(run(tmp_path, fakes(), which=lambda b: None))
+
+
+def test_doctor_summary_keeps_a_check_that_could_not_run_out_of_warnings(tmp_path):
+    """The pre-existing "skipped"/"cannot read" outcomes are NOT MEASURED now, not warnings: timeout-ceiling on an unknown
+    cli, token-permissions without a head, disk-free and origin-https when the machine cannot answer."""
+    bad_cfg = Config.from_dict(tomllib.loads(PROJECT_TOML.replace('cli = "codex"', 'cli = "bogus"')))
+
+    def adapter_for(name):
+        if name == "bogus":
+            raise UnknownAdapter(name)
+        return FakeAdapter(ceiling=600, name=name)
+
+    def no_disk(_path):
+        raise OSError("statvfs failed")
+    by_token = fakes()
+    s = summary(run_checks(bad_cfg, tmp_path, env={"MELD_TOKEN_CLAUDE": "tok-c", "MELD_TOKEN_CODEX": "tok-x"},
+                           gh_factory=lambda token: GitHub("acme/widgets", token=token, run=by_token[token]),
+                           registry=ModelRegistry.load(), adapter_for=adapter_for, which=lambda b: "/bin/" + b,
+                           home=tmp_path / "home", user_home=tmp_path / "userhome", disk_usage=no_disk))
+    assert {"timeout-ceiling:codex", "disk-free"} <= set(s["not_measured"])
+    assert not ({"timeout-ceiling:codex", "disk-free"} & set(s["warnings"]))
+    assert all(c["measured"] is False for c in s["checks"] if c["name"] in s["not_measured"])

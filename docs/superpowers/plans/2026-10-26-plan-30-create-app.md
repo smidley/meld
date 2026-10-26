@@ -21,3 +21,7 @@
 ## Verification
 
 `uv run pytest -q` green with no warnings; the flow driven in tests without a socket or a browser. The real two clicks are the owner's, on `smidley/meld-playground`, for `gemini` and `grok`.
+
+## The first App group (added the same day)
+
+`meld create-app gemini` on `smidley/meld-playground` created and installed `meld-gemini[bot]` first time, in the two clicks. Its first launch found the manifest short of one permission: Checks, without which `GET .../check-runs` answers 403 and every `meld status` of the roles died, sending both roles reading Meld's source for a cause. Two fixes followed on this branch: the board now degrades a forbidden check-runs read to `checks = "unreadable"` (recorded once per PR; doctor says where to grant the permission), and the manifest asks for Checks write. After the first fix, without a restart, the group posted its `CONFIG` and `ROSTER` and its PM dispatched an audit of PR #50: the first Antigravity worker on a real board. Found on the way: the viewer's token changed at every restart and the owner's tab went blank, so it now persists under `$MELD_HOME/state/viewer-token`.

@@ -505,7 +505,9 @@ Plan: `docs/superpowers/plans/2026-10-26-plan-29-journey.md`. `chat.journey(issu
 
 Plan: `docs/superpowers/plans/2026-10-26-plan-30-create-app.md`. `meld create-app <group>` runs `appsetup.AppSetup` behind a one-shot loopback `http.server`: `/` submits the manifest to GitHub (an org's or a user's apps page, by the owner's type from `GET users/<owner>`), `/callback` converts the code (`convert_manifest`, injectable), stores the key 0600 under `$MELD_HOME/keys/<group>.pem` and redirects to the install page, `/installed` takes the installation id from GitHub's `setup_url` redirect (else `list_installations` as the App) and `write_group` rewrites `[groups.<g>]` as an App group (PAT fields dropped, `bot = <slug>[bot]`). `meld doctor`'s missing-token fix and the page's not-running line name the command.
 
-**Known follow-ups:** the two real clicks on the playground; `meld setup --app`'s printed manual steps could now say "run meld create-app" instead.
+The owner ran it for `gemini`: first time, two clicks. The first launch found the manifest short of Checks (every `meld status` died on a 403 reading check runs), so `assemble._pull` now degrades that read to `checks = "unreadable"` with a recorded note, the manifest asks for Checks write, and doctor's `app-installation` says what the gap costs; the group then posted `CONFIG` and `ROSTER` and dispatched an audit on its own. `viewer.server.stable_token` keeps the viewer's URL across restarts.
+
+**Known follow-ups:** `grok` has not been through it yet; `meld setup --app`'s printed manual steps could now say "run meld create-app"; the gemini orchestrator posted `CONFIG` twice at its first launch.
 
 ## What is next
 

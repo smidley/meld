@@ -91,14 +91,17 @@ function verbControls(into, legal, { ref, number }) {
   }
 }
 
-function boardRow(into, id, what, legal, keys) {
+function boardRow(into, id, what, legal, keys, refused) {
   const row = el("row").content.firstElementChild.cloneNode(true);
   // Both tracks truncate: an agreement ref is a model-authored token of any length and a title can be long.
   // The full text stays reachable on hover, which is what the freeze badge does with its reset instant.
   const rid = text(row.querySelector(".rid"), id);
   const rwhat = text(row.querySelector(".rwhat"), what);
   rid.title = id;
-  rwhat.title = what;
+  // Hovering the row also says why each verb that is missing from `legal` is missing: the rule `meld status`
+  // reports under `refused`, verbatim, so a person never has to guess why there is no merge button.
+  const why = Object.entries(refused || {}).map(([verb, rule]) => `${verb}: ${rule}`);
+  rwhat.title = why.length ? `${what}\n\nnot legal now:\n${why.join("\n")}` : what;
   verbControls(row.querySelector(".rverbs"), legal, keys);
   into.append(row);
 }
@@ -115,7 +118,7 @@ function renderBoard(s) {
   for (const i of s.issues || []) {
     const held = [i.status, i.claimed_by && `claimed by ${i.claimed_by}`, i.worker && `worker ${i.worker}`, i.challenged && "challenged"];
     boardRow(issues, `#${i.number}`, `${i.title} — ${held.filter(Boolean).join(", ")}`, i.legal,
-             { ref: `#${i.number}`, number: i.number });
+             { ref: `#${i.number}`, number: i.number }, i.refused);
   }
   const pulls = el("pulls");
   pulls.replaceChildren();
@@ -124,7 +127,7 @@ function renderBoard(s) {
     const how = [p.merged ? "merged" : p.state, p.issue && `closes #${p.issue}`, !p.merged && (p.checks === "pending" || p.checks === "failure") && `checks ${p.checks}`,
                  p.approvals.length && `approved by ${p.approvals.join(", ")}`,
                  p.changes_requested.length && `changes requested by ${p.changes_requested.join(", ")}`];
-    boardRow(pulls, `#${p.number}`, `${p.title} — ${how.filter(Boolean).join(", ")}`, p.legal, { ref: `#${p.number}`, number: p.number });
+    boardRow(pulls, `#${p.number}`, `${p.title} — ${how.filter(Boolean).join(", ")}`, p.legal, { ref: `#${p.number}`, number: p.number }, p.refused);
   }
   const agreements = el("agreements");
   agreements.replaceChildren();

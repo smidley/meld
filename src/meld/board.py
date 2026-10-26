@@ -138,6 +138,7 @@ class Issue:
     milestone: int | None
     created_at: str = ""
     updated_at: str = ""
+    closed_at: str = ""   # GitHub's `closed_at`: empty while open, the last close otherwise (rules._reopen reads it)
 
     @property
     def status(self) -> str:

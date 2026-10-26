@@ -75,3 +75,13 @@ def test_legal_pr_verbs_reports_the_author_groups_comment_review_path():
     own_head = mk_pr(21, 12, committer="meld-claude-bot", author="meld-claude-bot")
     board2 = mk_board(pulls={21: own_head}, issues={12: mk_issue(12, "in_review")})
     assert "approve" not in legal_pr_verbs(board2, CFG2, CLAUDE_PM, own_head)
+
+
+def test_decide_rule_refuses_once_the_memory_pr_has_merged():
+    """Handoff residual 15: `legal` listed `decide` for a ref whose decision file had already landed, because this rule
+    looked only at open memory PRs and the merged one was found only by memory.decide reading origin."""
+    pr = mk_pr(40, 0, head_sha="mem0001", author="meld-claude-bot", state="closed", merged=True)
+    pr = pr.__class__(**{**pr.__dict__, "head_ref": "meld/memory-dec-1", "body": "meld-memory: decision dec-1 " + "a" * 64, "issue_number": None})
+    board = mk_board(comments=decision_thread(), pulls={40: pr})
+    assert decide_rule(board, CFG2, CLAUDE, "dec-1") == "dec-1 is already recorded or has an open memory PR"
+    assert legal_agreement_verbs(board, CFG2, CLAUDE, "dec-1") == []

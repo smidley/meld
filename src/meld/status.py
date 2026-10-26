@@ -14,8 +14,8 @@ from meld.rules import (
     approving_parties,
     committer_party,
     legal_agreement_verbs,
-    legal_issue_verbs,
-    legal_pr_verbs,
+    issue_verb_rules,
+    pr_verb_rules,
     party_of_login,
     pingpong_exceeded,
 )
@@ -38,6 +38,12 @@ def _lease_json(board: Board, issue) -> dict | None:
     return {"group": lease.group, "until": lease.until, "expired": board.lease_expired(issue.number)}
 
 
+def _verbs(rules: dict[str, str | None]) -> dict:
+    """`legal` and `refused` from one rule table: a verb absent from `legal` is in `refused` with the rule that keeps it
+    out, so neither a PM nor the page has to guess why a button is missing (handoff residuals 8 and 15)."""
+    return {"legal": [v for v, rule in rules.items() if rule is None], "refused": {v: rule for v, rule in rules.items() if rule}}
+
+
 def render_status(board: Board, cfg: Config, actor: Actor, models: ModelRegistry, now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     needs_human = sorted(
@@ -48,7 +54,7 @@ def render_status(board: Board, cfg: Config, actor: Actor, models: ModelRegistry
     issues = [
         {"number": i.number, "title": i.title, "status": i.status, "claimed_by": i.claimed_by, "claimants": list(i.claimants),
          "worker": i.worker, "model": i.model, "effort": i.effort, "size": i.size, "challenged": board.is_challenged(f"#{i.number}"),
-         "legal": legal_issue_verbs(board, cfg, actor, i, models), "lease": _lease_json(board, i)}
+         **_verbs(issue_verb_rules(board, cfg, actor, i, models)), "lease": _lease_json(board, i)}
         for i in sorted(board.issues.values(), key=lambda i: i.number)
     ]
     pulls = [
@@ -59,7 +65,7 @@ def render_status(board: Board, cfg: Config, actor: Actor, models: ModelRegistry
          "merged": p.merged, "merged_at": p.merged_at, "files": len(p.files),
          "touches_security_paths": p.touches(cfg.security_paths), "audited_by": dict(board.audits.get(p.number, {})),
          "scope_violations": list(board.scope_violations(p)), "blocked_deletions": list(board.blocked_deletions(p)),
-         "legal": legal_pr_verbs(board, cfg, actor, p)}
+         **_verbs(pr_verb_rules(board, cfg, actor, p))}
         for p in sorted(board.pulls.values(), key=lambda p: p.number)
     ]
     runs = [

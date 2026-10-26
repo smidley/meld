@@ -267,8 +267,11 @@ def test_the_page_references_nothing_off_the_machine_and_renders_text_as_text(tm
     html, css, js = (get(v, p).body.decode() for p in ("/", "/static/app.css", "/static/app.js"))
     for text in (html, css, js):
         # The SVG namespace is a name createElementNS needs, not a reference: nothing is fetched from it.
-        scrubbed = text.replace("http://www.w3.org/2000/svg", "")
+        # ... and GitHub is where the page's references point: a link a person opens, never a resource the page loads
+        # (ghUrl is the one place that spells the host, pinned below).
+        scrubbed = text.replace("http://www.w3.org/2000/svg", "").replace("https://github.com/", "")
         assert "http://" not in scrubbed and "https://" not in scrubbed and "//cdn" not in scrubbed and "@import" not in scrubbed
+    assert js.count("https://github.com/") == 1 and "<link" not in html.lower().replace('<link rel="stylesheet" href="/static/app.css', "")
     assert "innerHTML" not in js and "textContent" in js and "EventSource" in js
     assert 'className = "badge' not in js
     assert "classList" in js
@@ -1234,3 +1237,16 @@ def test_the_form_adds_a_group_for_another_ai(tmp_path):
     del again["config"]["groups"]["gemini"]
     assert put(v, {"config": again["config"], "version": again["version"]}).status == 200
     assert "[groups.gemini]" not in (tmp_path / ".meld.toml").read_text()
+
+
+def test_every_reference_on_the_page_links_to_github(tmp_path):
+    """Plan 26: the repository, the milestone, each issue and pull request number, each thread comment and each decision
+    card link to the thing itself on GitHub, opened in a new tab with no referrer; without a repository they stay text."""
+    v, _, _ = viewer_for(tmp_path)
+    js = get(v, "/static/app.js").body.decode()
+    for marker in ("function ghUrl", "function link(", "function refLink", "/milestone/${id}", "/issues/${id}", "#issuecomment-${id}",
+                   'a.target = "_blank"', 'a.rel = "noopener noreferrer"', 'ghUrl("repo")', 'ghUrl("milestone", s.milestone)',
+                   'ghUrl("issue", i.number)', 'ghUrl("issue", pr.number)', 'ghUrl("comment", t.id)', 'ghUrl("comment", d.comment_id)',
+                   "if (!href) return text(parent, value);"):
+        assert marker in js, marker
+    assert "lastStatus = s;   // first" in js                    # the repository is known before anything links through it

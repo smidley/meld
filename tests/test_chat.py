@@ -318,6 +318,8 @@ def test_decisions_present_everything_waiting_on_the_human_with_its_choices():
     assert [c["body"]["action"] for c in by_kind["disagree"]["choices"]] == ["APPROVE", "DIRECTIVE", "AMEND"] and "claude: A" in by_kind["disagree"]["summary"]
     assert by_kind["plan_add"]["choices"] == [{"label": "Acknowledge", "body": {"verb": "plan-ack", "ref": "plan-add-1"}, "needs_text": False}]
     assert [c["body"] for c in by_kind["challenge"]["choices"]] == [{"verb": "challenge", "action": "uphold", "ref": "#13"}, {"verb": "challenge", "action": "dismiss", "ref": "#13"}]
+    # plan 20: each card knows the comment it came from, so the page can jump to that turn
+    assert {k: d["comment_id"] for k, d in by_kind.items()} == {"needs_human": 1, "budget": 2, "disagree": 5, "plan_add": 8, "challenge": 9}
     assert "names no command" in by_kind["challenge"]["summary"] and "codex" in by_kind["challenge"]["title"]
     # the plan awaiting approval, in planning, with a verified [joint] PLAN
     plan = "- id: a | title: Add health endpoint | worker: backend | model: claude-sonnet-5 | effort: medium | size: S\n- id: b | title: Docs | worker: docs | model: claude-sonnet-5 | effort: low | size: S"
@@ -328,6 +330,7 @@ def test_decisions_present_everything_waiting_on_the_human_with_its_choices():
     approve = decisions(planning, CFG2, HUMAN, NOW)
     assert [d["kind"] for d in approve] == ["plan_approve"]
     assert approve[0]["summary"] == "2 item(s): Add health endpoint; Docs" and approve[0]["choices"] == [{"label": "Approve the plan", "body": {"verb": "plan-approve"}, "needs_text": False}]
+    assert approve[0]["comment_id"] == 3
     assert decisions(mk_board(CFG2), CFG2, HUMAN, NOW) == []
 
 

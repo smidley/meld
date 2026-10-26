@@ -130,6 +130,7 @@ function renderThread(turns) {
     // `housekeeping` and `agreement` are the server's classification (chat.thread_entries): the page keeps no verb lists.
     li.className = [t.kind, t.housekeeping && "housekeeping", t.agreement && "agreement"].filter(Boolean).join(" ");
     li.title = `comment ${t.id}`;
+    li.id = `turn-${t.id}`;
     const head = document.createElement("div");
     head.className = "head";
     const party = cell("party", t.party);
@@ -215,6 +216,19 @@ async function postAction(payload) {
   return { ok: false, message: `${payload.verb}: ${response.status} ${out.error || ""}` };
 }
 
+function showTurn(id) {
+  // A card's title jumps to the thread turn it came from; a turn the filter hides is shown by widening the filter.
+  const li = document.getElementById(`turn-${id}`);
+  if (!li) return;
+  if (li.offsetParent === null) {
+    el("convo-filter").value = "all";
+    el("conversation").dataset.filter = "all";
+  }
+  li.scrollIntoView({ block: "center" });
+  li.classList.add("flash");
+  setTimeout(() => li.classList.remove("flash"), 1500);
+}
+
 let lastDecisions = "";
 function renderDecisions(list) {
   // Rebuilt only when the set changes, so a message being typed into a card survives the ten-second poll.
@@ -226,7 +240,12 @@ function renderDecisions(list) {
   root.classList.toggle("hidden", !(list && list.length));
   for (const d of list || []) {
     const card = el("card").content.firstElementChild.cloneNode(true);
-    text(card.querySelector(".ctitle"), d.age_minutes != null ? `${d.title} (${d.age_minutes} min)` : d.title);
+    const title = text(card.querySelector(".ctitle"), d.age_minutes != null ? `${d.title} (${d.age_minutes} min)` : d.title);
+    if (d.comment_id) {
+      title.classList.add("link");
+      title.title = "show this in the conversation";
+      title.addEventListener("click", () => showTurn(d.comment_id));
+    }
     text(card.querySelector(".csummary"), d.summary);
     const choices = card.querySelector(".cchoices");
     const outcome = card.querySelector(".coutcome");
@@ -701,6 +720,8 @@ async function pollStreams() {
 }
 
 el("convo-filter").addEventListener("change", (e) => { el("conversation").dataset.filter = e.target.value; });
+el("streams").classList.add("narration");
+el("show-tools").addEventListener("change", (e) => { el("streams").classList.toggle("narration", !e.target.checked); });
 options(el("action"), Object.keys(FIELDS));
 showFields();
 el("action").addEventListener("change", showFields);

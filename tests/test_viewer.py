@@ -1083,3 +1083,15 @@ def test_state_carries_the_headline_and_the_page_shows_it(tmp_path):
     assert 'id="headline"' in html
     js = get(v, "/static/app.js").body.decode()
     assert "state.headline" in js and "innerHTML" not in js
+
+
+def test_the_page_shows_narration_by_default_and_a_card_jumps_to_its_turn(tmp_path):
+    """Plan 20: the transcript columns hide tool traffic until "show tool calls" is ticked, and a decision card's title
+    scrolls the conversation to the comment it came from."""
+    v, ctx, _ = viewer_for(tmp_path)
+    html = get(v, "/").body.decode()
+    assert 'id="show-tools"' in html
+    js = get(v, "/static/app.js").body.decode()
+    assert "showTurn" in js and 'classList.add("narration")' in js and "innerHTML" not in js
+    css = get(v, "/static/app.css").body.decode()
+    assert "#streams.narration li.tool_call" in css

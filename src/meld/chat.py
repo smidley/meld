@@ -46,7 +46,8 @@ def inbox(board: Board, cfg: Config, now: datetime) -> dict:
         last_id = asks[-1].id if asks else 0
         if asks and _later_human(comments, last_id, ("PROVIDED", "RESOLVED"), f"#{i.number}"):
             continue
-        needs_human.append({"issue": i.number, "title": i.title, "age_minutes": _age_minutes(i.updated_at, now), "ask": asks[-1].text if asks else ""})
+        needs_human.append({"issue": i.number, "title": i.title, "age_minutes": _age_minutes(i.updated_at, now), "ask": asks[-1].text if asks else "",
+                            "comment_id": asks[-1].id if asks else None})
     budget = []
     for c in comments:
         if c.header.verb != "BUDGET":
@@ -84,15 +85,16 @@ def decisions(board: Board, cfg: Config, actor: Actor, now: datetime) -> list[di
     out: list[dict] = []
     plan_ref = f"plan-{board.milestone}"
     if board.phase == "planning" and plan_rule(board, cfg, actor, "approve", plan_ref) is None:
-        items, _ = parse_plan_items(agreement_for(board.comments, plan_ref, cfg).text or "")
-        out.append({"id": f"plan:{plan_ref}", "kind": "plan_approve", "ref": plan_ref, "age_minutes": None,
+        agreement = agreement_for(board.comments, plan_ref, cfg)
+        items, _ = parse_plan_items(agreement.text or "")
+        out.append({"id": f"plan:{plan_ref}", "kind": "plan_approve", "ref": plan_ref, "age_minutes": None, "comment_id": agreement.joint_comment_id,
                     "title": f"The plan for milestone {board.milestone} is ready for your approval",
                     "summary": f"{len(items)} item(s): " + "; ".join(i.title for i in items) if items else "the agreed plan",
                     "choices": [{"label": "Approve the plan", "body": {"verb": "plan-approve"}, "needs_text": False}]})
     box = inbox(board, cfg, now)
     for item in box["needs_human"]:
         ref = f"#{item['issue']}"
-        out.append({"id": f"needs-human:{ref}", "kind": "needs_human", "ref": ref, "age_minutes": item["age_minutes"],
+        out.append({"id": f"needs-human:{ref}", "kind": "needs_human", "ref": ref, "age_minutes": item["age_minutes"], "comment_id": item["comment_id"],
                     "title": f"Issue {ref} needs you: {item['title']}", "summary": _lines(item["ask"]) or "(no ask was posted; see the issue)",
                     "choices": [{"label": "Provided", "body": {"verb": "post", "action": "PROVIDED", "ref": ref}, "needs_text": True,
                                  "hint": "say where you put it (a variable or 1Password item), never the value"},
@@ -101,12 +103,12 @@ def decisions(board: Board, cfg: Config, actor: Actor, now: datetime) -> list[di
         ref = item["ref"]
         choice = ({"label": "Resolved", "body": {"verb": "post", "action": "RESOLVED", "ref": ref}, "needs_text": True} if ref
                   else {"label": "Give a directive", "body": {"verb": "post", "action": "DIRECTIVE", "ref": _next_id(board, _DIR_RE, "dir")}, "needs_text": True})
-        out.append({"id": f"budget:{item['comment_id']}", "kind": "budget", "ref": ref, "age_minutes": item["age_minutes"],
+        out.append({"id": f"budget:{item['comment_id']}", "kind": "budget", "ref": ref, "age_minutes": item["age_minutes"], "comment_id": item["comment_id"],
                     "title": f"{item['group']} hit its budget" + (f" ({ref})" if ref else ""), "summary": _lines(item["text"]),
                     "choices": [{**choice, "hint": "raise the cap under Configuration first if the group should continue"}]})
     for item in box["disagree"]:
         ref, cmt = item["ref"], by_id.get(item["comment_id"])
-        out.append({"id": f"disagree:{ref}", "kind": "disagree", "ref": ref, "age_minutes": _age_minutes(cmt.created_at, now) if cmt else None,
+        out.append({"id": f"disagree:{ref}", "kind": "disagree", "ref": ref, "age_minutes": _age_minutes(cmt.created_at, now) if cmt else None, "comment_id": item["comment_id"],
                     "title": f"The groups disagree on {ref} ({item['verb']})", "summary": _lines(cmt.text if cmt else "", 6),
                     "choices": [{"label": "Approve as proposed", "body": {"verb": "post", "action": "APPROVE", "ref": ref}, "needs_text": False},
                                 {"label": "Give a directive", "body": {"verb": "post", "action": "DIRECTIVE", "ref": _next_id(board, _DIR_RE, "dir")}, "needs_text": True},
@@ -114,13 +116,13 @@ def decisions(board: Board, cfg: Config, actor: Actor, now: datetime) -> list[di
     for item in box["plan_add"]:
         ref, cmt = item["ref"], by_id.get(item["comment_id"])
         choices = [{"label": "Acknowledge", "body": {"verb": "plan-ack", "ref": ref}, "needs_text": False}] if plan_rule(board, cfg, actor, "ack", ref) is None else []
-        out.append({"id": f"plan-add:{ref}", "kind": "plan_add", "ref": ref, "age_minutes": _age_minutes(cmt.created_at, now) if cmt else None,
+        out.append({"id": f"plan-add:{ref}", "kind": "plan_add", "ref": ref, "age_minutes": _age_minutes(cmt.created_at, now) if cmt else None, "comment_id": item["comment_id"],
                     "title": f"Plan addition {ref} awaits your acknowledgement", "summary": _lines(cmt.text if cmt else "", 6), "choices": choices})
     for ref, ch in sorted(board.challenges.items()):
         if challenge_rule(board, cfg, actor, "uphold", ref) is not None:
             continue
         cmt = by_id.get(ch.comment_id)
-        out.append({"id": f"challenge:{ref}", "kind": "challenge", "ref": ref, "age_minutes": _age_minutes(cmt.created_at, now) if cmt else None,
+        out.append({"id": f"challenge:{ref}", "kind": "challenge", "ref": ref, "age_minutes": _age_minutes(cmt.created_at, now) if cmt else None, "comment_id": ch.comment_id,
                     "title": f"Challenge on {ref} by {ch.challenger}: your call", "summary": _lines(cmt.text if cmt else ""),
                     "choices": [{"label": "Uphold", "body": {"verb": "challenge", "action": "uphold", "ref": ref}, "needs_text": True},
                                 {"label": "Dismiss", "body": {"verb": "challenge", "action": "dismiss", "ref": ref}, "needs_text": True}]})

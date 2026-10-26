@@ -37,6 +37,12 @@ body > * { flex: 0 0 auto; }
 #turns .verb { font-weight: 600; }
 #turns .body { margin: 4px 0 0; white-space: pre-wrap; word-break: break-word; max-height: 14rem; overflow-y: auto; }
 #conversation[data-filter="quiet"] li.housekeeping { display: none; }
+/* A transcript column shows the agent's own narration unless "show tool calls" is ticked: the tool traffic is the
+   detail, the messages are what a person follows. */
+#streams.narration li.tool_call, #streams.narration li.tool_result, #streams.narration li.thinking { display: none; }
+#detail { color: var(--dim); cursor: pointer; }
+.card .ctitle.link { cursor: pointer; text-decoration: underline dotted; }
+#turns li.flash { background: #2a2f3a; }
 #conversation[data-filter="people"] li:not(.agreement):not(.human):not(.joint) { display: none; }
 .hint { font-weight: normal; color: var(--dim); }
 .column { flex: 0 0 34rem; max-width: 46rem; display: flex; flex-direction: column; background: var(--panel);

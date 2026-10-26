@@ -1182,7 +1182,7 @@ def test_the_page_draws_its_overview_as_inline_svg(tmp_path):
         assert marker in html, marker
     js = get(v, "/static/app.js").body.decode()
     for marker in ("createElementNS", "drawMap", "drawBars", "drawTaskGraph", "state.processes", "drawEdge",
-                   "drawTimeline", "drawRing", "runFraction", "arrowFor", "showTurn(t.id)"):
+                   "drawTimeline", "drawRing", "runFraction", "arrowFor", "showTurn(t.id)", "clock12", "flowing", "animationDelay"):
         assert marker in js, marker
     assert "innerHTML" not in js and "http://www.w3.org/2000/svg" in js
     state = body(get(v, "/api/state"))

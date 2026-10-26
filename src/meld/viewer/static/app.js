@@ -267,6 +267,13 @@ let lastStatus = null;
 let lastThread = [];
 let lastGenerated = "";
 
+function clock12(ms) {
+  // A time of day the way a person says it, in the browser's own zone: "9:05 pm". The page's other stamps stay UTC
+  // because they are the server's record; the timeline is read, not quoted.
+  const d = new Date(ms), h = d.getHours(), m = String(d.getMinutes()).padStart(2, "0");
+  return `${h % 12 || 12}:${m} ${h < 12 ? "am" : "pm"}`;
+}
+
 const ATTENTION = new Set(["NEEDS-HUMAN", "BUDGET", "PROTOCOL-VIOLATION", "CHALLENGE", "DRIFT", "HALT"]);
 function drawTimeline(state) {
   // The thread as a strip: one dot per post, a lane per voice, time left to right over the last ninety minutes (or the
@@ -297,7 +304,7 @@ function drawTimeline(state) {
   const step = 15 * 60 * 1000;
   for (let t = Math.ceil(from / step) * step; t <= now; t += step) {
     const x = xOf(new Date(t).toISOString());
-    svgText(svg, x, height - 4, new Date(t).toISOString().slice(11, 16), "tick").setAttribute("text-anchor", "middle");
+    svgText(svg, x, height - 4, clock12(t), "tick").setAttribute("text-anchor", "middle");
   }
   svgEl("line", { class: "now", x1: width - right, y1: top, x2: width - right, y2: height - 16 }, svg);
   for (const t of shown) {
@@ -306,7 +313,8 @@ function drawTimeline(state) {
     const color = t.group ? colorFor("group", t.group) : (t.kind === "human" ? "#d29922" : "#8b949e");
     const dot = svgEl("circle", { class: "dot" + (attention ? " attention" : ""), cx: xOf(t.at), cy: y,
                                   r: attention ? 5 : (t.housekeeping ? 2.5 : 4), fill: color, "fill-opacity": t.housekeeping ? 0.45 : 1 }, svg);
-    svgEl("title", {}, dot).textContent = `${t.at.slice(11, 16)} [${t.party}] ${t.verb}${t.ref ? " " + t.ref : ""}${t.qualifier ? " " + t.qualifier : ""}`;
+    svgEl("title", {}, dot).textContent = `${clock12(Date.parse(t.at))} [${t.party}] ${t.verb}${t.ref ? " " + t.ref : ""}${t.qualifier ? " " + t.qualifier : ""}`;
+    dot.style.animationDelay = `-${(t.id % 29) * 0.11}s`;   // each dot breathes on its own beat, never all together
     dot.addEventListener("click", () => showTurn(t.id));
   }
 }
@@ -334,11 +342,21 @@ function arrowFor(svg) {
   }
   return `url(#${id})`;
 }
-function drawEdge(parent, x1, y1, x2, y2, label) {
+function drawEdge(parent, x1, y1, x2, y2, label, { flowing = false } = {}) {
+  // A cubic curve from the right edge of one node to the left edge of the next. A flowing edge carries moving dashes:
+  // that is the page's picture of communication in progress, in the direction it goes. The label sits as a pill
+  // three quarters of the way along, where curves into different targets have already parted.
   const mx = (x1 + x2) / 2;
   const svg = parent.ownerSVGElement || parent;
-  svgEl("path", { class: "edge", d: `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`, "marker-end": arrowFor(svg) }, parent);
-  if (label) svgText(parent, mx, (y1 + y2) / 2 - 5, label, "elabel").setAttribute("text-anchor", "middle");
+  svgEl("path", { class: "edge" + (flowing ? " flowing" : ""), d: `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`, "marker-end": arrowFor(svg) }, parent);
+  if (label) {
+    const t = 0.72, u = 1 - t;
+    const px = u * u * u * x1 + 3 * u * u * t * mx + 3 * u * t * t * mx + t * t * t * x2;
+    const py = u * u * u * y1 + 3 * u * u * t * y1 + 3 * u * t * t * y2 + t * t * t * y2;
+    const w = label.length * 6.2 + 10;
+    svgEl("rect", { class: "pill", x: px - w / 2, y: py - 8, width: w, height: 15, rx: 7 }, parent);
+    svgText(parent, px, py + 3.5, label, "elabel").setAttribute("text-anchor", "middle");
+  }
 }
 function drawRing(parent, cx, cy, r, fraction, color) {
   // How far through its time a run is: a thin arc that fills clockwise from the top; red once it is past its deadline.
@@ -374,10 +392,10 @@ function drawMap(state) {
   const s = state.status || {};
   const groups = Object.keys(state.supervisors || {});
   const running = (s.runs || []).filter((r) => r.state === "running");
-  const rowH = 62, left = 8, groupW = 120, roleW = 160, workW = 200, gap = 26;
+  const rowH = 62, left = 8, groupW = 120, roleW = 160, workW = 200, gap = 26, gapW = 76;
   const rows = Math.max(1, groups.length);
   const widest = Math.max(1, ...groups.map((g) => running.filter((r) => r.group === g).length));
-  const width = left + groupW + gap + roleW + gap + widest * (workW + 10) + 8;
+  const width = left + groupW + gap + roleW + gapW + widest * (workW + 10) + 8;
   svg.setAttribute("viewBox", `0 0 ${Math.max(width, 640)} ${rows * rowH + 4}`);
   svg.setAttribute("width", Math.max(width, 640));   // drawn at its own size, never scaled up to the page width
   svg.setAttribute("height", rows * rowH + 4);
@@ -393,15 +411,15 @@ function drawMap(state) {
       const ry = y + ri * 27;
       const liveRole = info.state === "alive";
       const r = drawNode(svg, rx, ry, roleW, 24, liveRole ? color : null, `${role} · ${info.frozen ? "frozen" : (info.state === "alive" ? "awake" : info.state)}`, null, { live: liveRole });
-      drawEdge(svg, node.x + node.w, node.y + node.h / 2, r.x, r.y + r.h / 2);
+      drawEdge(svg, node.x + node.w, node.y + node.h / 2, r.x, r.y + r.h / 2, "", { flowing: liveRole });
       ri++;
     }
-    const wx = rx + roleW + gap;
+    const wx = rx + roleW + gapW;
     running.filter((r) => r.group === g).forEach((r, k) => {
       const what = r.kind === "build" ? `building #${r.issue}` : `${r.kind === "audit" ? "auditing" : "reviewing"} PR #${r.issue}`;
       const w = drawNode(svg, wx + k * (workW + 10), y + 14, workW, 36, color, what, `${r.worker || r.kind} · ${r.model || ""}`, { live: true,
                          ring: runFraction(r), onclick: r.kind === "build" ? () => openTask(r.issue) : () => showTranscript(r) });
-      drawEdge(svg, rx + roleW, y + 27 + 12, w.x, w.y + w.h / 2, k === 0 ? "dispatched" : "");
+      drawEdge(svg, rx + roleW, y + 27 + 12, w.x, w.y + w.h / 2, k === 0 ? "dispatched" : "", { flowing: true });
     });
   });
 }
@@ -452,8 +470,13 @@ function drawTaskGraph(number) {
   const builds = runs.filter((r) => r.kind === "build" && r.issue === number);
   const prs = (s.pulls || []).filter((p) => p.issue === number);
   const checks = prs.flatMap((p) => runs.filter((r) => (r.kind === "review" || r.kind === "audit") && r.issue === p.number).map((r) => ({ ...r, pr: p.number })));
-  const colW = 200, gapX = 50, rowH = 60;
-  const rows = Math.max(1, builds.length, prs.length, checks.length);
+  // The third column is every run on a PR plus every audit verdict on the thread whose run is gone, one row each.
+  const verdicts = prs.flatMap((p) => Object.entries(p.audited_by || {})
+    .filter(([group]) => !checks.some((r) => r.kind === "audit" && r.pr === p.number && r.group === group))
+    .map(([group, verdict]) => ({ pr: p.number, group, verdict })));
+  const third = [...checks.map((r) => ({ run: r })), ...verdicts.map((v) => ({ verdict: v }))];
+  const colW = 200, gapX = 70, rowH = 60;
+  const rows = Math.max(1, builds.length, prs.length, third.length);
   const width = 4 * (colW + gapX), height = rows * rowH + 10;
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
   svg.setAttribute("width", width);      // its own size: the dialog grows to it and scrolls past the viewport
@@ -467,7 +490,7 @@ function drawTaskGraph(number) {
     const n = drawNode(svg, col(1), y(i, builds.length), colW, 44, colorFor("group", r.group), `${r.group} ${r.worker || "build"} · ${r.state === "running" ? "running" : (r.outcome || r.state)}`,
                        `${r.model || ""}/${r.effort || ""} · ${(r.started_at || "").slice(11, 16)}`,
                        { live: r.state === "running", ring: r.state === "running" ? runFraction(r) : null, onclick: () => showTranscript(r) });
-    drawEdge(svg, root.x + root.w, root.y + root.h / 2, n.x, n.y + n.h / 2, "built by");
+    drawEdge(svg, root.x + root.w, root.y + root.h / 2, n.x, n.y + n.h / 2, "built by", { flowing: r.state === "running" });
     return n;
   });
   const prNodes = prs.map((p, i) => {
@@ -478,19 +501,22 @@ function drawTaskGraph(number) {
     drawEdge(svg, from.x + from.w, from.y + from.h / 2, n.x, n.y + n.h / 2, "opened");
     return [p.number, n];
   });
-  checks.forEach((r, i) => {
-    const n = drawNode(svg, col(3), y(i, checks.length), colW, 44, colorFor("group", r.group), `${r.group} ${r.kind} · ${r.state === "running" ? "running" : (r.outcome || r.state)}`,
-                       `${r.worker || r.kind} · ${r.model || ""}/${r.effort || ""}`,
-                       { live: r.state === "running", ring: r.state === "running" ? runFraction(r) : null, onclick: () => showTranscript(r) });
-    const [, from] = prNodes.find(([num]) => num === r.pr) || [null, root];
-    drawEdge(svg, from.x + from.w, from.y + from.h / 2, n.x, n.y + n.h / 2, r.kind === "audit" ? "audited by" : "reviewed by");
+  third.forEach((item, i) => {
+    const yy = y(i, third.length);
+    if (item.run) {
+      const r = item.run;
+      const n = drawNode(svg, col(3), yy, colW, 44, colorFor("group", r.group), `${r.group} ${r.kind} · ${r.state === "running" ? "running" : (r.outcome || r.state)}`,
+                         `${r.worker || r.kind} · ${r.model || ""}/${r.effort || ""}`,
+                         { live: r.state === "running", ring: r.state === "running" ? runFraction(r) : null, onclick: () => showTranscript(r) });
+      const [, from] = prNodes.find(([num]) => num === r.pr) || [null, root];
+      drawEdge(svg, from.x + from.w, from.y + from.h / 2, n.x, n.y + n.h / 2, r.kind === "audit" ? "audited by" : "reviewed by", { flowing: r.state === "running" });
+    } else {
+      const v = item.verdict;
+      const n = drawNode(svg, col(3), yy, colW, 44, colorFor("group", v.group), `${v.group} audit · ${v.verdict}`, "on the thread");
+      const [, from] = prNodes.find(([num]) => num === v.pr) || [null, root];
+      drawEdge(svg, from.x + from.w, from.y + from.h / 2, n.x, n.y + n.h / 2, "audited by");
+    }
   });
-  for (const p of prs) for (const [group, verdict] of Object.entries(p.audited_by || {})) {
-    const i = checks.length;
-    const n = drawNode(svg, col(3), y(i, checks.length + 1), colW, 44, colorFor("group", group), `${group} audit · ${verdict}`, "");
-    const [, from] = prNodes.find(([num]) => num === p.number) || [null, root];
-    drawEdge(svg, from.x + from.w, from.y + from.h / 2, n.x, n.y + n.h / 2, "audited by");
-  }
 }
 
 function treeItem(parent, who, color, metaText, run) {

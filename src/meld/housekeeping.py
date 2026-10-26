@@ -13,6 +13,7 @@ from meld.grammar import Header, compose
 from meld.rules import party_of_login
 
 CI_RED_STATE = "ci-red.json"
+HUMAN_HEAD_STATE = "human-head.json"
 IGNORED_STATE = "ignored.json"
 OFF_PROTOCOL_STATE = "off-protocol.json"
 _EVENTS = ("labeled", "unlabeled", "assigned", "unassigned")
@@ -54,46 +55,44 @@ def _safe(text: str) -> str:
     return f"`{text}`"
 
 
-def _normalize_ci_red_record(value) -> dict:
-    """Read one PR's ci-red state entry. An older `pr -> head` string entry is treated as fully complete (both
-    sub-steps done), for backward compatibility with state files written before the two-sub-step tracking."""
+def _normalize_head_record(value) -> dict:
+    """Read one PR's per-head state entry. An older `pr -> head` string entry is treated as fully complete (both
+    sub-steps done for that head); anything that is not a dict with a string head reads as no record."""
     if isinstance(value, str):
         return {"head": value, "commented": True, "swapped": True}
-    if isinstance(value, dict):
-        return {"head": value.get("head"), "commented": bool(value.get("commented", False)), "swapped": bool(value.get("swapped", False))}
+    if isinstance(value, dict) and isinstance(value.get("head"), str):
+        return {"head": value["head"], "commented": bool(value.get("commented")), "swapped": bool(value.get("swapped"))}
     return {"head": None, "commented": False, "swapped": False}
 
 
-def ci_red_sweep(ctx, board: Board, group: GroupConfig) -> list[dict]:
-    """A red check on one of our open PRs is a request for changes: the linked issue goes back to in-progress once
-    per head, and the comment naming the PR is posted once per head as the durable evidence of it.
+def _head_sweep(ctx, board: Board, *, state_file: str, wanted, reprocess_when: str, post, add: str, remove: tuple[str, ...]) -> list[dict]:
+    """Once per head, over our open PRs: for each one `wanted(pr)` selects, `post(pr)` the comment that is the durable
+    evidence, then swap the linked issue's labels (`add`, `remove`).
 
     The comment is posted BEFORE the label swap, deliberately: a comment failure never changes the issue's visible
-    status, so a fresh board on the next tick still shows it `in_review` and the retry guard still fires. Posting
-    the comment first and swapping second means the only way the swap can ever run without the comment having
-    already succeeded is if this function does it -- and it never does. Each PR's progress is tracked as
-    `{"head", "commented", "swapped"}`, persisted the moment a sub-step succeeds, so a `GitHubError` (including
-    `RateLimited`) on either sub-step is recorded on the returned item rather than raised, leaving exactly the
-    missing sub-step(s) for the next tick to complete -- without ever re-posting the comment or re-running a
-    sub-step that already succeeded. A PR is reprocessed when its issue is `in_review` and its recorded head
-    differs (or there is no complete record for the current head), OR when there is an incomplete record for the
-    current exact head regardless of the issue's current status (the swap may already have moved it out of
-    `in_review`)."""
-    from meld.dispatch import IN_REVIEW, _swap_labels  # local import: dispatch imports this module
-    path = ctx.store.state_dir / CI_RED_STATE
+    status, so a fresh board on the next tick still shows the status `reprocess_when` names and the sweep fires
+    again. Each PR's progress is tracked as `{"head", "commented", "swapped"}` in `state_file`, persisted the moment
+    a sub-step succeeds, so a `GitHubError` (including `RateLimited`) on either sub-step is recorded on the returned
+    item rather than raised, leaving exactly the missing sub-step(s) for the next tick -- without ever re-posting the
+    comment or re-running a sub-step that already succeeded. A PR is processed when its issue's status is
+    `reprocess_when` and its recorded head differs (or there is no complete record for the current head), OR when
+    there is an incomplete record for the current exact head regardless of the issue's status (the swap may already
+    have moved it on). Records for PRs no longer open are pruned."""
+    from meld.dispatch import _swap_labels  # local import: dispatch imports this module
+    path = ctx.store.state_dir / state_file
     raw = _load(path)
     out = []
     for pr in sorted(board.pulls.values(), key=lambda p: p.number):
-        if pr.state != "open" or pr.checks != "red" or party_of_login(ctx.cfg, pr.author) != group.name or pr.issue_number is None:
+        if pr.state != "open" or pr.issue_number is None or not wanted(pr):
             continue
         issue = board.issues.get(pr.issue_number)
         if issue is None:
             continue
         key = str(pr.number)
-        record = _normalize_ci_red_record(raw.get(key))
+        record = _normalize_head_record(raw.get(key))
         same_head = record["head"] == pr.head_sha
         complete = same_head and record["commented"] and record["swapped"]
-        should_process = (not complete) if same_head else (issue.status == "in_review")
+        should_process = (not complete) if same_head else (issue.status == reprocess_when)
         if not should_process:
             continue
         if not same_head:
@@ -101,8 +100,7 @@ def ci_red_sweep(ctx, board: Board, group: GroupConfig) -> list[dict]:
         error = None
         if not record["commented"]:
             try:
-                ctx.gh.create_comment(pr.issue_number, f"Meld: CI is red on PR #{pr.number} (head `{pr.head_sha[:7]}`); treated as request-changes. "
-                                                       f"The next build run on this issue fixes the checks; the PR moves back to review when they pass.")
+                post(pr)
             except GitHubError as e:
                 error = type(e).__name__
             else:
@@ -114,7 +112,7 @@ def ci_red_sweep(ctx, board: Board, group: GroupConfig) -> list[dict]:
                     pass
         if error is None and record["commented"] and not record["swapped"]:
             try:
-                _swap_labels(ctx, pr.issue_number, IN_PROGRESS, (IN_REVIEW,))
+                _swap_labels(ctx, pr.issue_number, add, remove)
             except GitHubError as e:
                 error = type(e).__name__
             else:
@@ -141,6 +139,46 @@ def ci_red_sweep(ctx, board: Board, group: GroupConfig) -> list[dict]:
         except OSError:
             pass
     return out
+
+
+def ci_red_sweep(ctx, board: Board, group: GroupConfig) -> list[dict]:
+    """A red check on one of our open PRs is a request for changes: the linked issue goes back to in-progress once
+    per head, and the comment naming the PR is posted once per head as the durable evidence of it (_head_sweep)."""
+    from meld.dispatch import IN_REVIEW  # local import: dispatch imports this module
+    return _head_sweep(
+        ctx, board, state_file=CI_RED_STATE,
+        wanted=lambda pr: pr.checks == "red" and party_of_login(ctx.cfg, pr.author) == group.name,
+        reprocess_when="in_review",
+        post=lambda pr: ctx.gh.create_comment(pr.issue_number, f"Meld: CI is red on PR #{pr.number} (head `{pr.head_sha[:7]}`); treated as request-changes. "
+                                                               f"The next build run on this issue fixes the checks; the PR moves back to review when they pass."),
+        add=IN_PROGRESS, remove=(IN_REVIEW,))
+
+
+def human_head_sweep(ctx, board: Board, group: GroupConfig) -> list[dict]:
+    """A listed human's push to one of our open PRs is a head nobody collected: the linked issue goes to in-review and
+    a `REVIEW-REQUEST` names the head, once per head, so reviewers look at what the person pushed instead of the PM
+    dispatching a retry worker on top of it (handoff residual 10). A head committed by a bot is `collect`'s or
+    `review`'s business, and an issue with a live build run is left to that run's `collect`."""
+    from meld.dispatch import IN_REVIEW  # local import: dispatch imports this module
+    from meld.rules import committer_party
+
+    def wanted(pr) -> bool:
+        if party_of_login(ctx.cfg, pr.author) != group.name:
+            return False
+        who = committer_party(ctx.cfg, pr)
+        if who is None or not who.startswith("human:"):
+            return False
+        rec = board.run_for(group.name, pr.issue_number)
+        return rec is None or not rec.alive
+
+    def post(pr) -> None:
+        who = (committer_party(ctx.cfg, pr) or "human:").partition(":")[2]
+        ctx.gh.create_comment(board.coordination_issue,
+                              compose(Header(Party("pm", group.name), "REVIEW-REQUEST", f"#{pr.number}", None),
+                                      f"Issue #{pr.issue_number}, head {pr.head_sha[:7]} pushed by `{who}` (human). Please dispatch a reviewer."))
+
+    return _head_sweep(ctx, board, state_file=HUMAN_HEAD_STATE, wanted=wanted, reprocess_when="in_progress", post=post,
+                       add=IN_REVIEW, remove=(IN_PROGRESS,))
 
 
 def flag_ignored_comments(ctx, board: Board, group: GroupConfig) -> dict:

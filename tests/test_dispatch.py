@@ -729,3 +729,38 @@ def test_dispatch_records_the_process_start_time_beside_the_pid(tmp_path, monkey
     out = dispatch(ctx, 11, adapter=FakeAdapter(script=DONE_SCRIPT), now=NOW)
     rec = json.loads((tmp_path / "home" / "runs" / "claude" / "11.json").read_text())
     assert rec["proc_start"] == f"started-{out['pid']}"
+
+
+def test_dispatch_fast_forwards_a_reused_worktree_to_what_a_person_pushed(tmp_path):
+    """Handoff residual 10: a reused worktree never fetched, so a retry built over a person's push to the PR branch and
+    its own push was then refused. The worktree now fast-forwards to origin/<branch> when it is strictly behind, and
+    reports "current" when it is not."""
+    from meld.dispatch import collect
+    from tests.test_collect import routes_for_labels
+    fake, ctx, repo, origin = make_product(tmp_path)
+    claim_issue_11(fake)
+    routes_for_labels(fake, 11)
+    fake.route("POST", R + "pulls", {"number": 21, "html_url": "https://github.com/acme/widgets/pull/21"})
+    first = dispatch(ctx, 11, adapter=FakeAdapter(script=DONE_SCRIPT), now=NOW)
+    wait_for_exit(first["pid"])
+    assert collect(ctx, 11, now=NOW)["outcome"] == "done"          # pushes the branch and opens PR #21
+    branch = "meld/11-add-health-endpoint"
+    person = tmp_path / "person"
+    sh(["git", "clone", "-q", "-b", branch, str(origin), str(person)], tmp_path)
+    sh(["git", "config", "user.name", "Person"], person)
+    sh(["git", "config", "user.email", "person@example.com"], person)
+    (person / "health.py").write_text("OK = True\nPORT = 8080\n")
+    sh(["git", "commit", "-q", "-am", "fix: port"], person)
+    sh(["git", "push", "-q", "origin", branch], person)
+    pushed = sh(["git", "rev-parse", "HEAD"], person)
+    second = dispatch(ctx, 11, adapter=FakeAdapter(), now=NOW)
+    assert second["worktree_mode"] == "reused" and second["branch_refresh"] == "fast-forwarded"
+    assert head_sha(Path(second["worktree"])) == pushed
+    wait_for_exit(second["pid"])
+    rec_path = tmp_path / "home" / "runs" / "claude" / "11.json"
+    rec = json.loads(rec_path.read_text())
+    rec["collected"] = True
+    rec_path.write_text(json.dumps(rec))
+    third = dispatch(ctx, 11, adapter=FakeAdapter(), now=NOW)
+    assert third["branch_refresh"] == "current"
+    wait_for_exit(third["pid"])

@@ -124,7 +124,7 @@ function renderBoard(s) {
   pulls.replaceChildren();
   for (const p of s.pulls || []) {
     // A failing or pending check is the usual reason a merge button is missing, so the row says so.
-    const how = [p.merged ? "merged" : p.state, p.issue && `closes #${p.issue}`, !p.merged && (p.checks === "pending" || p.checks === "failure") && `checks ${p.checks}`,
+    const how = [p.merged ? "merged" : p.state, p.issue && `closes #${p.issue}`, !p.merged && (p.checks === "pending" || p.checks === "red") && `checks ${p.checks}`,
                  p.approvals.length && `approved by ${p.approvals.join(", ")}`,
                  p.changes_requested.length && `changes requested by ${p.changes_requested.join(", ")}`];
     boardRow(pulls, `#${p.number}`, `${p.title} — ${how.filter(Boolean).join(", ")}`, p.legal, { ref: `#${p.number}`, number: p.number }, p.refused);

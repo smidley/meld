@@ -31,6 +31,7 @@ from meld.gitops import (
     git,
     head_sha,
     noreply_email,
+    fast_forward_to_remote,
     is_ancestor,
     push_branch,
     remove_worktree,
@@ -38,7 +39,7 @@ from meld.gitops import (
     worktree_exists,
 )
 from meld.grammar import Header, compose
-from meld.housekeeping import ci_red_sweep, flag_ignored_comments, off_protocol_sweep
+from meld.housekeeping import ci_red_sweep, flag_ignored_comments, human_head_sweep, off_protocol_sweep
 from meld.notifier import notify
 from meld.results import cap_body, store_result
 from meld.roster import WorkerType, roster
@@ -438,6 +439,9 @@ def _dispatch_build(ctx, board: Board, actor: Actor, number: int, adapter: Adapt
     branch = branch_name(number, issue.title)
     wt = _worktree(ctx, group, f"{number}-{slugify(issue.title)}")
     mode = "reused" if worktree_exists(ctx.repo_root, wt) else create_worktree(ctx.repo_root, wt, branch, ctx.cfg.default_branch)
+    # A reused worktree never fetched, so a person's push to the PR branch (or a reviewer's push-fix) was built over and
+    # the retry's own push then refused. Fast-forward to origin/<branch> when strictly behind; local work is never dropped.
+    refresh = fast_forward_to_remote(ctx.repo_root, wt, branch) if mode == "reused" else None
     exclude_paths(wt)
     skills_result = materialise_skills(wt, adp, [w for w in ctx.roster_entries() if w.source == "product-skill"])
     recall_hits, recall_note = _recall_for_brief(ctx, f"{issue.title}\n{issue.body}")
@@ -467,6 +471,8 @@ def _dispatch_build(ctx, board: Board, actor: Actor, number: int, adapter: Adapt
               "lease_until": until, "worktree_mode": mode, "skills_materialised": skills_result}
     if recall_note:
         result["recall_note"] = recall_note
+    if refresh:
+        result["branch_refresh"] = refresh
     return result
 
 
@@ -596,6 +602,7 @@ def tick(ctx, *, now: datetime | None = None, sleep=time.sleep, env: Mapping[str
     out["notified"] = notified["notified"]
     out["notify_errors"] = notified.get("errors", [])   # a failed Slack post or state write is reported here, never raised
     out["ci_red"] = ci_red_sweep(ctx, board, group)
+    out["human_head"] = human_head_sweep(ctx, board, group)
     out["ignored"] = flag_ignored_comments(ctx, board, group)
     out["off_protocol"] = off_protocol_sweep(ctx, board, group)
     return out

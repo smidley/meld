@@ -2,7 +2,8 @@ import json
 from datetime import datetime, timezone
 
 from meld.github import GitHubError
-from meld.housekeeping import CI_RED_STATE, IGNORED_STATE, OFF_PROTOCOL_STATE, ci_red_sweep, flag_ignored_comments, off_protocol_sweep
+from meld.housekeeping import (CI_RED_STATE, HUMAN_HEAD_STATE, IGNORED_STATE, OFF_PROTOCOL_STATE, ci_red_sweep, flag_ignored_comments,
+                               human_head_sweep, off_protocol_sweep)
 from meld.status import build_status
 from tests.productfixtures import R, fixture, make_product
 from tests.test_collect import routes_for_labels
@@ -362,3 +363,45 @@ def test_ci_red_sweep_prunes_records_for_prs_that_left_the_board(tmp_path):
     assert {"pr": 99, "pruned": True} in out
     remaining = json.loads(path.read_text())
     assert "20" in remaining and "99" not in remaining
+
+
+HUMAN_HEAD = [{"sha": "abc123", "author": {"login": "empowerScott"}, "committer": {"login": "empowerScott"}}]
+
+
+def issues_with_13_in_progress():
+    issues = fixture("issues.json")
+    for i in issues:
+        if i["number"] == 13:
+            i["labels"] = [{**l, "name": "meld:in-progress"} if l["name"] == "meld:in-review" else l for l in i["labels"]]
+    return issues
+
+
+def test_a_humans_push_sends_the_issue_to_review_once_per_head(tmp_path):
+    """Handoff residual 10: a person's push to a PR branch moved nothing, so the PM's next dispatch built a retry over
+    it. The author group's tick now posts REVIEW-REQUEST for the human's head and moves the issue to in-review, once
+    per head; another group's PR and a bot's head are left alone."""
+    fake, codex, repo, origin = make_product(tmp_path, group="codex")      # PR #20 (issue #13) is codex's
+    fake.route("GET", R + "issues", issues_with_13_in_progress())
+    fake.route("GET", R + "pulls/20/commits", HUMAN_HEAD)
+    routes_for_labels(fake, 13)
+    _, board = build_status(codex)
+    group = codex.cfg.groups["codex"]
+    assert board.issues[13].status == "in_progress" and board.pulls[20].head_committer == "empowerScott"
+    out = human_head_sweep(codex, board, group)
+    assert out == [{"pr": 20, "issue": 13, "head": "abc123"}]
+    assert [c.body for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/13/labels"] == [{"labels": ["meld:in-review"]}]
+    assert ("DELETE", R + "issues/13/labels/meld%3Ain-progress") in [(c.method, c.endpoint) for c in fake.calls]
+    request = [c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/10/comments"][-1]
+    assert request.startswith("[codex:pm] REVIEW-REQUEST #20\n") and "abc123" in request and "empowerScott" in request
+    assert json.loads((codex.store.state_dir / HUMAN_HEAD_STATE).read_text()) == {"20": {"head": "abc123", "commented": True, "swapped": True}}
+    assert human_head_sweep(codex, board, group) == []                            # same head: nothing more
+    fake2, claude, *_ = make_product(tmp_path / "c")                              # claude did not author #20: not its job
+    fake2.route("GET", R + "issues", issues_with_13_in_progress())
+    fake2.route("GET", R + "pulls/20/commits", HUMAN_HEAD)
+    _, board2 = build_status(claude)
+    assert human_head_sweep(claude, board2, claude.cfg.groups["claude"]) == []
+    fake3, codex3, *_ = make_product(tmp_path / "b", group="codex")             # a bot's head is collect's or review's business
+    fake3.route("GET", R + "issues", issues_with_13_in_progress())
+    _, board3 = build_status(codex3)
+    assert board3.pulls[20].head_committer != "empowerScott"
+    assert human_head_sweep(codex3, board3, codex3.cfg.groups["codex"]) == []

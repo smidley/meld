@@ -106,6 +106,27 @@ def is_ancestor(path: Path, ancestor: str, descendant: str = "HEAD", run: RunFn 
     return True
 
 
+def fast_forward_to_remote(repo_root: Path, path: Path, branch: str, run: RunFn = subprocess.run) -> str:
+    """Bring a reused checkout up to origin/<branch> when it is strictly behind: fetch that branch, then fast-forward,
+    so a retry starts from what a person (or a reviewer's push-fix) pushed since the last run. Returns what happened:
+    "fast-forwarded", "current", "diverged" (HEAD has commits origin lacks -- left alone, the retry continues from the
+    local work), "dirty" (uncommitted changes -- left alone) or "unfetched" (the fetch failed, or origin has no such
+    branch yet)."""
+    try:
+        git(["fetch", "--quiet", "origin", branch], repo_root, run)
+    except GitError:
+        return "unfetched"
+    if is_dirty(path, run):
+        return "dirty"
+    remote = f"origin/{branch}"
+    if head_sha(path, run) == git(["rev-parse", remote], path, run):
+        return "current"
+    if not is_ancestor(path, "HEAD", remote, run):
+        return "diverged"
+    git(["merge", "--ff-only", "--quiet", remote], path, run)
+    return "fast-forwarded"
+
+
 def push_branch(path: Path, branch: str, token: str | None, run: RunFn = subprocess.run, base_env: dict | None = None,
                 force_with_lease: bool = False) -> None:
     """Push HEAD to origin/<branch>. The refspec is HEAD:refs/heads/<branch> rather than the bare branch name so a

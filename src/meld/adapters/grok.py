@@ -9,12 +9,13 @@ ACP session updates with one token per line, which no stateless line parser can 
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from meld.adapters.base import LaunchSpec, open_log, popen_detached, scan_skills
 from meld.adapters.claude import ClaudeAdapter
 from meld.roster import WorkerType
-from meld.transcript import Event
+from meld.transcript import Event, cap
 
 COMMAND_CEILING_SECONDS = 600   # conservative; not documented
 REQUIRED_FLAGS = ("-p", "-m", "--effort", "--output-format", "--always-approve", "--cwd", "--max-turns")
@@ -74,7 +75,37 @@ class GrokAdapter:
         return None, f"unrecognised `models` answer (exit {returncode})"
 
     def parse_events(self, line: str, now: str) -> list[Event]:
-        return self._parser.parse_events(line, now)
+        return [_humanise(e) for e in self._parser.parse_events(line, now)]
+
+
+def _humanise(event: Event) -> Event:
+    """Grok wraps a tool's result in its own envelope -- `{"type":"Bash","output":[69,114,...]}` with the output as a byte
+    array, `{"type":"ReadFile","FileContent":{"content":...}}`, `{"type":"ListDir","Content":{"content":...}}` -- which the
+    Claude parser keeps as JSON text, so a transcript showed numbers where a command's output should be. Unwrap the
+    shapes seen on the owner's machine; anything else stays as it came."""
+    if event.kind != "tool_result" or not event.text.startswith("{"):
+        return event
+    try:
+        doc = json.loads(event.text)
+    except ValueError:
+        return event
+    if not isinstance(doc, dict):
+        return event
+    text: str | None = None
+    out = doc.get("output")
+    if isinstance(out, list) and all(isinstance(b, int) and 0 <= b < 256 for b in out):
+        text = bytes(out).decode("utf-8", errors="replace")
+    elif isinstance(out, str):
+        text = out
+    else:
+        for key in ("FileContent", "Content", "EditsApplied"):
+            inner = doc.get(key)
+            if isinstance(inner, dict):
+                text = next((str(inner[k]) for k in ("content", "tool_output_for_prompt", "new_string") if inner.get(k)), None)
+                break
+    if text is None:
+        return event
+    return Event(seq=event.seq, at=event.at, kind=event.kind, text=cap(text), tool=event.tool, ok=event.ok, meta={**event.meta, "envelope": str(doc.get("type", ""))})
 
 
 ADAPTER = GrokAdapter()

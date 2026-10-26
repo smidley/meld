@@ -195,3 +195,15 @@ def test_an_error_result_about_a_limit_is_still_a_usage_limit():
             '"result":"You have reached your usage limit for this model. It resets at 6pm."}')
     (event,) = ClaudeAdapter().parse_events(line, "2026-09-16T02:11:19Z")
     assert event.kind == "usage_limit" and event.meta["resets_at"] == "2026-09-16T18:00:00Z"
+
+
+def test_login_status_reads_only_the_loggedin_key():
+    """`meld doctor`'s cli-login probe: the `loggedIn` key of `claude auth status --json` is the oracle. Exit 0 with no
+    such key, or output that is not JSON, is an answer nobody read -- None, so doctor reports NOT MEASURED, not a pass."""
+    a = ClaudeAdapter()
+    assert a.login_argv() == ["claude", "auth", "status", "--json"]
+    assert a.login_status('{\n  "loggedIn": true,\n  "authMethod": "claude.ai",\n  "apiProvider": "firstParty"\n}\n', "", 0) == (True, "logged in (claude.ai)")
+    assert a.login_status('{"loggedIn": false, "authMethod": null}', "", 1) == (False, "not logged in")
+    assert a.login_status('{"apiProvider": "firstParty"}', "", 0)[0] is None
+    assert a.login_status("", "error: unknown command 'auth'", 1)[0] is None
+    assert a.login_status('{"loggedIn": "yes"}', "", 0)[0] is None

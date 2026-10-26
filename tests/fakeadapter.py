@@ -18,6 +18,7 @@ class FakeAdapter:
     ceiling: int = 600
     name: str = "fake"
     launches: list[LaunchSpec] = field(default_factory=list)
+    login: bool | None = True   # what the fake CLI answers `login_argv`: True/False, or None for an answer nobody can read
 
     def launch(self, spec: LaunchSpec):
         self.launches.append(spec)
@@ -44,6 +45,13 @@ class FakeAdapter:
 
     def version_argv(self) -> list[str]:
         return [sys.executable, "--version"]
+
+    def login_argv(self) -> list[str]:
+        return [sys.executable, "-c", f"print({self.login!r})"]
+
+    def login_status(self, stdout: str, stderr: str, returncode: int) -> tuple[bool | None, str]:
+        word = stdout.strip()
+        return {"True": True, "False": False}.get(word), {"True": "logged in", "False": "not logged in"}.get(word, "unrecognised answer")
 
     def parse_events(self, line: str, now: str) -> list[Event]:
         """The fake CLI writes plain text, so every line is one message -- except a line saying the quota is gone,

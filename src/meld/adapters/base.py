@@ -52,6 +52,12 @@ class Adapter(Protocol):
 
     def required_flags(self) -> tuple[str, ...]: ...  # flags `meld doctor` checks against that help text
 
+    def login_argv(self) -> list[str]: ...         # the command that reports whether the CLI itself is logged in; [] when it has none
+
+    def login_status(self, stdout: str, stderr: str, returncode: int) -> tuple[bool | None, str]: ...
+    # (True, detail) logged in, (False, detail) logged out, (None, detail) an answer the adapter cannot read -- the words
+    # are the oracle, never the exit code alone, so `meld doctor` can report NOT MEASURED rather than guess
+
     def parse_events(self, line: str, now: str) -> list[Event]: ...
 
 

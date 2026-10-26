@@ -97,6 +97,21 @@ class ClaudeAdapter:
     def required_flags(self) -> tuple[str, ...]:
         return REQUIRED_FLAGS
 
+    def login_argv(self) -> list[str]:
+        return [self.binary, "auth", "status", "--json"]
+
+    def login_status(self, stdout: str, stderr: str, returncode: int) -> tuple[bool | None, str]:
+        """`claude auth status --json` answers `{"loggedIn": bool, "authMethod": ..., ...}`; that one key is the oracle."""
+        try:
+            doc = json.loads(stdout or "")
+        except ValueError:
+            doc = None
+        if not isinstance(doc, dict) or not isinstance(doc.get("loggedIn"), bool):
+            return None, f"unrecognised `auth status --json` answer (exit {returncode})"
+        if doc["loggedIn"]:
+            return True, f"logged in ({doc.get('authMethod') or 'unknown method'})"
+        return False, "not logged in"
+
     def parse_events(self, line: str, now: str) -> list[Event]:
         """One `stream-json` line as events. A content array is many events, which is why this is plural."""
         doc, stripped = parse_doc(line)

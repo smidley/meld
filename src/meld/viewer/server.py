@@ -62,8 +62,29 @@ def _iso_now() -> str:
 
 
 def new_token() -> str:
-    """A 32-byte URL-safe token, minted once per `meld watch`; it lives in the process and in the printed URL."""
+    """A 32-byte URL-safe token; it lives in the process and in the printed URL."""
     return secrets.token_urlsafe(32)
+
+
+def stable_token(home: Path) -> str:
+    """The token `meld watch` prints, kept at `$MELD_HOME/state/viewer-token` (0600) so a restart keeps the same URL: the
+    owner's open tab went blank at every restart of the viewer during the second live run. The file is as private as
+    the rest of `$MELD_HOME`; delete it to mint a new token. An unreadable or unwritable file falls back to a fresh one."""
+    path = home / "state" / "viewer-token"
+    try:
+        token = path.read_text().strip()
+        if len(token) >= 32 and all(c.isalnum() or c in "-_" for c in token):
+            return token
+    except OSError:
+        pass
+    token = new_token()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(token)
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return token
 
 
 THREAD_LAST = 200   # the newest coordination comments /api/state carries; the page appends what is new by id

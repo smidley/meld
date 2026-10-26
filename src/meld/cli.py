@@ -41,7 +41,7 @@ from meld.state import CHANGE_KINDS, StateStore, liveness, meld_home, pid_alive,
 from meld.status import build_status
 from meld.tagging import tag as do_tag
 from meld.transcript import Tail, newest_log, render_line
-from meld.viewer.server import Viewer, new_token, serve, url
+from meld.viewer.server import Viewer, new_token, serve, url, stable_token
 from meld.waiting import wait_for_change
 
 RUN = subprocess.run  # tests monkeypatch this with a FakeGh
@@ -738,7 +738,7 @@ def watch(ctx: click.Context, port: int | None, open_browser: bool | None) -> No
         raise click.ClickException(f"meld watch is the human's console, not {actor.party.label}'s; "
                                    "unset MELD_GROUP (groups talk through meld post)")
     config_path = ctx.obj["config_path"] or _guard(lambda: find_config(Path.cwd()))
-    viewer = Viewer(c, token=new_token(), port=0, config_path=config_path)
+    viewer = Viewer(c, token=stable_token(c.store.home), port=0, config_path=config_path)
     wanted = port if port is not None else c.cfg.viewer_port
     try:
         httpd = SERVE(viewer, port=wanted)

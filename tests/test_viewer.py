@@ -1328,3 +1328,20 @@ def test_the_cards_draw_each_issues_journey_and_the_bar_says_what_is_left(tmp_pa
     for marker in ("lastJourneys", 'className = "journey"', "jstep ${step.state}", "state.progress", '"jnow"'):
         assert marker in js, marker
     assert ".icard .jstep.now" in css and ".icard .jstep.done" in css
+
+
+def test_the_viewers_token_survives_a_restart(tmp_path):
+    """The owner's open tab went blank at every restart during the second live run: the token now lives at
+    $MELD_HOME/state/viewer-token (0600) and a restart prints the same URL; deleting the file mints a new one."""
+    import stat
+    from meld.viewer.server import stable_token
+    home = tmp_path / "home"
+    a = stable_token(home)
+    assert len(a) >= 32 and stable_token(home) == a
+    path = home / "state" / "viewer-token"
+    assert path.read_text() == a and stat.S_IMODE(path.stat().st_mode) == 0o600
+    path.write_text("short")                           # a damaged file is replaced, never used
+    b = stable_token(home)
+    assert b != "short" and len(b) >= 32 and path.read_text() == b
+    path.unlink()
+    assert stable_token(home) not in (a, b)

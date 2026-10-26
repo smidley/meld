@@ -35,6 +35,7 @@ Design: `docs/superpowers/specs/2026-09-03-meld-design.md`. Plans: `docs/superpo
 | `meld recall QUERY [--limit N]` | Search decisions, lessons, and past coordination issues |
 | `meld plan issues REF [--dry-run]` \| `approve` \| `ack REF` | The plan gate: the proposer orchestrator creates `meld:planned` issues from a verified `[joint] PLAN`/`PLAN-ADD` (`--dry-run` reports what it would create); the human's `approve` adds `meld:plan-approved` and flips every planned issue to ready; the human's `ack REF` does the same for one `PLAN-ADD` |
 | `meld inbox` | What needs a person: needs-human items, budget alerts, disagreements, plan additions, open asks |
+| `meld thread [--last N]` | The coordination thread as text, oldest first: every parsed, authorized comment with its id and time, the newest N (default 30; 0 for all) — the one paginated reader, for a person catching up or a restarted role rebuilding its picture |
 | `meld chat [--once TEXT] [--verbose]` | A REPL that posts `[human] ASK` for plain text and the human verbs for slash commands; `--once` scripts one line and exits (non-zero when that line failed) |
 | `meld notify [--dry-run]` | Send the Slack nudge for needs-human items now (a PM's `tick` also does this on its own) |
 | `meld roster` | List the worker types available to the calling party |
@@ -76,7 +77,7 @@ A fourth guardrail protects memory itself: a wrong or stale decision or lesson i
 
 ## The human console
 
-`meld inbox` lists what needs a person; `meld chat` is a REPL: plain text posts `[human] ASK ask-<n>`, slash commands post the human verbs (`/halt`, `/resume`, `/directive`, `/provided`, `/resolved`, `/revert`, `/ack`, `/approve`, `/challenge`), `/wait` prints new coordination comments. With `[notify] slack_dm_webhook_env` set, each PM's `tick` sends one Slack message listing every due needs-human issue and repeats an issue only after `repeat_after_minutes`. The throttle is shared through a `meld:nudged` label on the issue, read back from GitHub's own label events, so it is one nudge per window however many PMs are running; the label is cleared once the issue stops needing a person.
+`meld inbox` lists what needs a person; `meld chat` is a REPL: plain text posts `[human] ASK ask-<n>`, slash commands post the human verbs (`/halt`, `/resume`, `/directive`, `/provided`, `/resolved`, `/revert`, `/ack`, `/approve`, `/challenge`), `/wait` prints new coordination comments, and `/recent [N]` prints the newest N (default 10). `/provided`, `/resolved` and `/revert` take any ref the grammar accepts — `#13`, `budget-1`, `dir-2` — so a budget alert is answered from the same console as a needs-human item. With `[notify] slack_dm_webhook_env` set, each PM's `tick` sends one Slack message listing every due needs-human issue and repeats an issue only after `repeat_after_minutes`. The throttle is shared through a `meld:nudged` label on the issue, read back from GitHub's own label events, so it is one nudge per window however many PMs are running; the label is cleared once the issue stops needing a person.
 
 ## Product standards
 

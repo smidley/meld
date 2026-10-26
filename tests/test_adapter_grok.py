@@ -45,3 +45,18 @@ def test_parse_events_renders_a_whole_grok_run_through_the_claude_parser():
     assert [e.kind for e in events] == ["raw", "run_started", "thinking", "tool_call", "tool_result", "message", "run_finished"]
     assert events[1].meta["model"] == "grok-4.7" and events[3].tool == "list_dir" and events[4].ok is True
     assert events[5].text == "ok" and events[6].ok is True and events[6].meta["cost_usd"] == 0.087652 and events[6].meta["num_turns"] == 2
+
+
+def test_a_tool_result_envelope_is_unwrapped_into_the_text_a_person_would_read():
+    """grok 1.0.70 wraps a command's output as a byte array inside its own envelope; the transcript showed numbers."""
+    a = GrokAdapter()
+    line = ('{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"c1","content":'
+            '"{\\"type\\":\\"Bash\\",\\"output\\":[104,105,10]}","is_error":false}]}}')
+    (e,) = a.parse_events(line, NOW)
+    assert e.kind == "tool_result" and e.text == "hi\n" and e.meta["envelope"] == "Bash"
+    line2 = ('{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"c2","content":'
+             '"{\\"type\\":\\"ReadFile\\",\\"FileContent\\":{\\"content\\":\\"# tally\\"}}","is_error":false}]}}')
+    (e2,) = a.parse_events(line2, NOW)
+    assert e2.text == "# tally" and e2.meta["envelope"] == "ReadFile"
+    (plain,) = a.parse_events('{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"c3","content":"just text","is_error":true}]}}', NOW)
+    assert plain.text == "just text" and plain.ok is False

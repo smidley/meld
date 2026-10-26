@@ -31,10 +31,13 @@
 <main id="live">
   <section id="conversation" class="column" data-filter="quiet">
     <h2><span class="who">Conversation</span> <span class="hint">what the agents are saying to each other</span>
-      <select id="convo-filter" aria-label="conversation filter">
-        <option value="quiet">without housekeeping</option>
-        <option value="all">everything</option>
-        <option value="people">agreements and humans</option>
+      <button type="button" id="newest" class="hidden" title="You scrolled up; press to follow the newest turn again.">↓ newest</button>
+      <label class="hint" for="convo-filter">show</label>
+      <select id="convo-filter" aria-label="conversation filter"
+              title="Status reports and bookkeeping (the PMs' STATUS posts, leases, liveness notes) are hidden unless you choose everything.">
+        <option value="quiet">the conversation</option>
+        <option value="all">everything, including status reports</option>
+        <option value="people">decisions and your messages</option>
       </select></h2>
     <ol id="turns" class="events"></ol>
   </section>
@@ -65,13 +68,14 @@
   <div id="agreements-panel" class="tabpane hidden"><div class="panel"><h2>Agreements <span class="hint">what the groups proposed and settled</span></h2><div id="agreements"></div></div></div>
   <div id="act" class="tabpane hidden">
     <form id="bar" autocomplete="off">
-      <span class="strong" title="Everything here is posted as you, the human party; the rules decide it exactly as on the CLI.">You, as the human:</span>
-      <select id="action" aria-label="action"></select>
+      <label class="strong" for="action" title="Everything here is posted as you, the human party; the rules decide it exactly as on the CLI.">I want to</label>
+      <select id="action" aria-label="what to do"></select>
       <select id="verb" aria-label="header verb" class="hidden"></select>
-      <input id="ref" placeholder="ref, e.g. #13 or plan-add-1" aria-label="ref">
-      <input id="text" placeholder="message (post, challenge, remember)" aria-label="message">
+      <input id="ref" placeholder="which issue or PR, e.g. #13" aria-label="ref">
+      <input id="text" placeholder="your message" aria-label="message">
       <button id="run" type="submit" title="Nothing runs until you press Run.">Run</button>
       <span id="result" class="dim"></span>
+      <p id="explain" class="hint"></p>
     </form>
   </div>
   <details id="config" class="tabpane hidden">

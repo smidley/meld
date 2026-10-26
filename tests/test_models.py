@@ -55,3 +55,17 @@ def test_packaged_registry_loads_and_has_claude_models():
     assert "claude-opus-5" in ids
     assert "claude-sonnet-5" in ids
     assert reg.for_adapter("codex"), "codex adapter must have at least one model"
+
+
+def test_the_catalogue_carries_the_current_families():
+    """Plan 22: the Claude 5.5 family and Fable 5.1 (Anthropic's list of 2026-10-06) and Codex's gpt-6 family (its own
+    `codex debug models` on 2026-10-26), with the efforts each CLI accepts; the older entries stay for configs that name them."""
+    from meld.models import ModelRegistry
+    reg = ModelRegistry.load()
+    for adapter, model, tier in (("claude", "claude-fable-5-1", "large"), ("claude", "claude-opus-5-5", "large"), ("claude", "claude-sonnet-5-5", "medium"),
+                                 ("claude", "claude-haiku-5-5", "small"), ("codex", "gpt-6.1-sol", "large"), ("codex", "gpt-6-sol", "large"),
+                                 ("codex", "gpt-6-astra", "medium"), ("codex", "gpt-6-luna", "small"), ("claude", "claude-opus-5", "large"), ("codex", "gpt-5.6-sol", "large")):
+        spec = reg.get(adapter, model)
+        assert spec is not None and spec.tier == tier, (adapter, model)
+    assert "xhigh" in reg.get("claude", "claude-opus-5-5").efforts and "ultra" in reg.get("codex", "gpt-6-astra").efforts
+    assert "ultra" not in reg.get("codex", "gpt-6-luna").efforts and reg.validate("claude", "claude-sonnet-5-5", "xhigh") == []

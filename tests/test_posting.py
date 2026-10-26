@@ -365,3 +365,19 @@ def test_released_is_framework_only(tmp_path):
     fake, ctx, repo, origin = make_product(tmp_path, group="claude", role="orchestrator")
     with pytest.raises(PostError, match="RELEASED"):
         post(ctx, "RELEASED", ref="#11", text="x")
+
+
+def test_post_numbers_an_ask_or_a_directive_when_given_no_ref(tmp_path):
+    """Plan 22: the page's guided form sends an ASK or a DIRECTIVE without a ref and meld numbers it, as `meld chat`
+    always has -- the next unused ask-<n>/dir-<n> among the board's comments. A ref given explicitly is kept."""
+    from meld.posting import next_ref, post
+    from tests.productfixtures import R, make_product
+    fake, human, repo, origin = make_product(tmp_path, group=None)
+    first = post(human, "ASK", text="why postgres?")
+    assert first["header"] == "[human] ASK ask-1"
+    fake.route("GET", R + "issues/10/comments", [{"id": 501, "user": {"login": "empowerScott"}, "created_at": "2026-09-03T12:00:00Z", "body": "[human] ASK ask-1\n\nwhy postgres?"},
+                                                 {"id": 502, "user": {"login": "empowerScott"}, "created_at": "2026-09-03T12:01:00Z", "body": "[human] DIRECTIVE dir-3\n\nship it"}])
+    assert post(human, "ASK", text="and redis?")["header"] == "[human] ASK ask-2"
+    assert post(human, "DIRECTIVE", text="tests first")["header"] == "[human] DIRECTIVE dir-4"
+    assert post(human, "DIRECTIVE", ref="dir-9", text="explicit")["header"] == "[human] DIRECTIVE dir-9"
+    assert post(human, "HALT", text="stop")["header"] == "[human] HALT"

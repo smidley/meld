@@ -1,6 +1,8 @@
 """Post a coordination comment in the header grammar, including verified [joint] comments."""
 from __future__ import annotations
 
+import re
+
 from typing import NoReturn
 
 from meld.actions import refuse
@@ -58,6 +60,17 @@ def _joint_body(agreement: Agreement, ref: str, qualifier: str | None, text: str
     return f"## Positions\n{proposal}\n{_dissent_section(agreement.dissent)}\n\n{addendum}".strip()
 
 
+NUMBERED_VERBS = {"ASK": "ask", "DIRECTIVE": "dir"}   # refs meld numbers itself when the caller gives none
+
+
+def next_ref(board, prefix: str) -> str:
+    """The next unused `<prefix>-<n>` among the board's comment refs: how `meld chat` numbers an ASK or a DIRECTIVE and,
+    since plan 22, how `meld post` does when handed none -- so the page never asks a person to invent one."""
+    pattern = re.compile(rf"^{re.escape(prefix)}-(\d+)$")
+    n = max((int(m.group(1)) for c in board.comments if c.header and c.header.ref for m in [pattern.match(c.header.ref)] if m), default=0)
+    return f"{prefix}-{n + 1}"
+
+
 def post(ctx, verb: str, ref: str | None = None, qualifier: str | None = None, text: str = "", joint: bool = False) -> dict:
     _, board = build_status(ctx)
     actor = ctx.actor()
@@ -69,6 +82,8 @@ def post(ctx, verb: str, ref: str | None = None, qualifier: str | None = None, t
     if verb in COMMAND_VERBS:
         raise PostError(f"{verb} is posted through `meld challenge <open|evidence|retract|uphold|dismiss> REF -m ...`, not meld post")
     party = Party("joint") if joint else actor.party
+    if not joint and not ref and verb in NUMBERED_VERBS:
+        ref = next_ref(board, NUMBERED_VERBS[verb])
     if verb not in allowed_verbs(party):
         raise PostError(f"{verb} is not a verb {party.label} may post (allowed: {', '.join(sorted(allowed_verbs(party)))})")
     body_text = text

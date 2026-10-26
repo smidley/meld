@@ -127,6 +127,36 @@ def decisions(board: Board, cfg: Config, actor: Actor, now: datetime) -> list[di
     return out
 
 
+def headline(status: dict, decisions: list[dict]) -> str:
+    """One plain sentence about where the milestone stands and whether anything waits on the person, from `meld status`'s
+    own JSON and the decisions: the first thing a person reads on the page, and the first line `meld chat` prints."""
+    n = len(decisions)
+    you = "nothing waits on you" if n == 0 else ("1 decision waits on you" if n == 1 else f"{n} decisions wait on you")
+    if status.get("halted"):
+        return f"Halted by a human: nothing moves until a RESUME; {you}."
+    milestone = status.get("milestone")
+    if status.get("phase") == "planning":
+        if any(d["kind"] == "plan_approve" for d in decisions):
+            return f"Planning milestone {milestone}: the groups have agreed a plan and it is ready for your approval."
+        return f"Planning milestone {milestone}: the groups are agreeing a plan on the coordination issue; {you}."
+    issues = status.get("issues", [])
+    if issues and all(i["status"] == "closed" for i in issues):
+        return f"Milestone {milestone} is complete: every issue is closed; {you}."
+    counts: dict[str, int] = {}
+    for i in issues:
+        counts[i["status"]] = counts.get(i["status"], 0) + 1
+    words = (("in_progress", "in progress"), ("in_review", "in review"), ("ready", "ready"), ("blocked", "blocked"),
+             ("needs_human", "waiting on a person"), ("closed", "closed"))
+    parts = [f"{counts[key]} {word}" for key, word in words if counts.get(key)]
+    running = sum(1 for r in status.get("runs", []) if r.get("state") == "running")
+    open_prs = [p for p in status.get("pulls", []) if p.get("state") == "open" and not p.get("merged")]
+    mergeable = sum(1 for p in open_prs if "merge" in (p.get("legal") or []))
+    bits = ["issues: " + (", ".join(parts) if parts else "none yet"),
+            f"{running} worker{'' if running == 1 else 's'} running",
+            f"{len(open_prs)} open PR{'' if len(open_prs) == 1 else 's'}" + (f" ({mergeable} ready to merge)" if mergeable else "")]
+    return f"Executing milestone {milestone}: " + "; ".join(bits) + f"; {you}."
+
+
 def _next_id(board: Board, pattern: re.Pattern, prefix: str) -> str:
     n = max((int(m.group(1)) for c in board.comments if c.header and c.header.ref for m in [pattern.match(c.header.ref)] if m), default=0)
     return f"{prefix}-{n + 1}"
@@ -185,7 +215,9 @@ def run_chat(ctx, lines: Iterable[str], out: Callable[[str], None], *, verbose: 
     posted: list[str] = []
     errors: list[str] = []
     last_seen = max((c.id for c in board.comments), default=0)
-    out(_render_inbox(inbox(board, ctx.cfg, datetime.now(timezone.utc))))
+    now = datetime.now(timezone.utc)
+    out(headline(data, decisions(board, ctx.cfg, actor, now)))
+    out(_render_inbox(inbox(board, ctx.cfg, now)))
 
     def do_post(verb: str, ref: str | None, text: str, qualifier: str | None = None) -> None:
         nonlocal board, last_seen

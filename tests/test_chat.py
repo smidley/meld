@@ -247,8 +247,8 @@ def test_run_chat_recent_prints_the_thread_and_resolved_takes_any_grammar_ref(tm
     out_lines: list[str] = []
     result = run_chat(human, ["/recent 2", "/resolved budget-1 raised the cap", "/provided #13 the key is in 1Password", "/resolved fix it now", "/recent x", "/quit"], out_lines.append)
     newest = [f"#{c.id} {c.created_at} {c.header.party.label} {c.header.verb}" for c in ok[-2:]]
-    assert [line.split("\n")[0][:len(n)] for line, n in zip(out_lines[1:3], newest)] == newest   # the inbox is line 0
-    assert f"#{ok[0].id} " not in "".join(out_lines[1:3])
+    assert [line.split("\n")[0][:len(n)] for line, n in zip(out_lines[2:4], newest)] == newest   # the headline is line 0, the inbox line 1
+    assert f"#{ok[0].id} " not in "".join(out_lines[2:4])
     posted = [c.body["body"].splitlines()[0] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/10/comments"]
     assert posted == ["[human] RESOLVED budget-1", "[human] PROVIDED #13"]
     assert len(result["errors"]) == 2 and "needs a ref like #13 or budget-1" in result["errors"][0] and "/recent takes a count" in result["errors"][1]
@@ -329,3 +329,29 @@ def test_decisions_present_everything_waiting_on_the_human_with_its_choices():
     assert [d["kind"] for d in approve] == ["plan_approve"]
     assert approve[0]["summary"] == "2 item(s): Add health endpoint; Docs" and approve[0]["choices"] == [{"label": "Approve the plan", "body": {"verb": "plan-approve"}, "needs_text": False}]
     assert decisions(mk_board(CFG2), CFG2, HUMAN, NOW) == []
+
+
+def test_headline_says_where_the_milestone_stands_in_plain_words():
+    """Plan 19: the first sentence a person reads, from meld status's own JSON and the decisions."""
+    from dataclasses import replace
+    from meld.chat import headline
+    from meld.config import Party
+    from meld.rules import Actor
+    from meld.status import render_status
+    from tests.factories import REG, mk_pr, mk_run
+    HUMAN = Actor(Party("human"), "empowerScott")
+    planning = render_status(mk_board(CFG2, phase="planning"), CFG2, HUMAN, REG, NOW)
+    assert headline(planning, []) == "Planning milestone 3: the groups are agreeing a plan on the coordination issue; nothing waits on you."
+    assert headline(planning, [{"kind": "plan_approve"}]) == "Planning milestone 3: the groups have agreed a plan and it is ready for your approval."
+    board = mk_board(CFG2, issues=[mk_issue(11), mk_issue(12, status="in_progress", claimed_by="claude"), mk_issue(13, status="in_review", claimed_by="codex"),
+                                   mk_issue(14, status="needs_human"), mk_issue(9, status="closed", state="closed")],
+                     pulls=[mk_pr(20, 13, committer="meld-codex-bot")],
+                     runs={"claude": {12: mk_run("claude", 12, alive=True)}, "codex": {}})
+    executing = render_status(board, CFG2, HUMAN, REG, NOW)
+    assert headline(executing, [{"kind": "needs_human"}, {"kind": "budget"}]) == (
+        "Executing milestone 3: issues: 1 in progress, 1 in review, 1 ready, 1 waiting on a person, 1 closed; 1 worker running; 1 open PR; "
+        "2 decisions wait on you.")
+    assert headline(executing, [{"kind": "needs_human"}]).endswith("1 decision waits on you.")
+    assert headline(render_status(replace(board, halted=True), CFG2, HUMAN, REG, NOW), []).startswith("Halted by a human: nothing moves until a RESUME;")
+    done = render_status(mk_board(CFG2, issues=[mk_issue(9, status="closed", state="closed")]), CFG2, HUMAN, REG, NOW)
+    assert headline(done, []) == "Milestone 3 is complete: every issue is closed; nothing waits on you."

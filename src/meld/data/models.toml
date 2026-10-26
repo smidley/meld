@@ -16,6 +16,31 @@ context_class = "medium"
 efforts = ["low", "medium", "high"]
 tier = "small"
 
+# The Claude 5.5 family and Fable 5.1 (added 2026-10-26, from Anthropic's published model list of 2026-10-06; every id
+# is the complete string, never date-suffixed). Claude Code's `--effort` accepts low, medium, high, xhigh and max, and
+# `CLAUDE_CODE_EFFORT_LEVEL` (what the adapter sets) takes the same levels. Fable 5.1 is priced above Opus and sits in
+# the large tier with it; Haiku 5.5 is the small tier with a 1M context.
+
+[claude.claude-fable-5-1]
+context_class = "large"
+efforts = ["low", "medium", "high", "xhigh", "max"]
+tier = "large"
+
+[claude.claude-opus-5-5]
+context_class = "large"
+efforts = ["low", "medium", "high", "xhigh", "max"]
+tier = "large"
+
+[claude.claude-sonnet-5-5]
+context_class = "large"
+efforts = ["low", "medium", "high", "xhigh", "max"]
+tier = "medium"
+
+[claude.claude-haiku-5-5]
+context_class = "large"
+efforts = ["low", "medium", "high", "xhigh", "max"]
+tier = "small"
+
 # Codex entries, sourced from the installed CLI on this machine (codex-cli 0.144.6):
 # `codex debug models` (the "any codex models-style subcommand" listed by `codex --help`)
 # renders the live model catalog as JSON. `~/.codex/config.toml` has this install's active
@@ -25,6 +50,32 @@ tier = "small"
 # date (2026-08-31) already past today (2026-09-03). gpt-reserve and codex-auto-review are
 # excluded: both are marked visibility "hide" in the catalog (internal/reserved, not
 # offered to users). See task-3-report.md for the full evidence trail.
+
+# The gpt-6 family (added 2026-10-26 from `codex debug models` on codex-cli 0.159.1; gpt-reserve and codex-auto-review
+# stay excluded as visibility "hide"). The sol/luna names follow the 5.6 pattern (large/small); gpt-6-astra is new, has no
+# terra sibling and a default effort of low, so it is placed in the medium tier -- an inference about cost, not a fact
+# from the catalogue, and one line to change here if it turns out to be the flagship. The owner's own Codex default is
+# gpt-6-astra at ultra.
+
+[codex."gpt-6.1-sol"]
+context_class = "large"
+efforts = ["low", "medium", "high", "xhigh", "max", "ultra"]
+tier = "large"
+
+[codex."gpt-6-sol"]
+context_class = "large"
+efforts = ["low", "medium", "high", "xhigh", "max", "ultra"]
+tier = "large"
+
+[codex."gpt-6-astra"]
+context_class = "large"
+efforts = ["low", "medium", "high", "xhigh", "max", "ultra"]
+tier = "medium"
+
+[codex."gpt-6-luna"]
+context_class = "large"
+efforts = ["low", "medium", "high", "xhigh", "max"]
+tier = "small"
 
 [codex."gpt-5.6-sol"]
 context_class = "large"

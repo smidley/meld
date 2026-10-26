@@ -36,6 +36,54 @@ const FIELDS = {
 const POST_VERBS = ["ASK", "DIRECTIVE", "HALT", "RESUME", "REVERT", "PROVIDED", "RESOLVED", "ACK", "AMEND",
                     "APPROVE", "NEEDS-HUMAN"];
 const CHALLENGE_ACTIONS = ["open", "evidence", "retract", "uphold", "dismiss"];
+// What a person can do from the page, in plain words. Each intent is one request the bar sends: `action` is the dispatch
+// name /api/action takes, `verb` the header verb (post) or the challenge action, `fields` what the person must give,
+// `explain` what will happen, shown under the form before Run. An ASK or a DIRECTIVE carries no ref: meld numbers it.
+const INTENTS = {
+  ask: { label: "ask the agents a question", action: "post", verb: "ASK", fields: ["text"], text: "your question",
+         explain: "Posts [human] ASK on the coordination issue; the groups answer it together as a [joint] ANSWER." },
+  directive: { label: "give the agents a directive", action: "post", verb: "DIRECTIVE", fields: ["text"], text: "what they must do",
+               explain: "Posts [human] DIRECTIVE; every group must ACK it, and the orchestrators treat it as overriding their plan." },
+  halt: { label: "pause all work", action: "post", verb: "HALT", fields: [],
+          explain: "Posts [human] HALT: no claim, dispatch, review or merge happens until you resume." },
+  resume: { label: "resume work", action: "post", verb: "RESUME", fields: [], explain: "Posts [human] RESUME and lifts the halt." },
+  provided: { label: "say I provided what was asked", action: "post", verb: "PROVIDED", fields: ["ref", "text"], ref: "which issue, e.g. #14",
+              text: "where you put it (a variable or 1Password item), never the value",
+              explain: "Posts [human] PROVIDED on that issue; it leaves needs-human on the next tick and the work resumes." },
+  resolved: { label: "say something is resolved", action: "post", verb: "RESOLVED", fields: ["ref", "text"], ref: "which ref, e.g. #14 or budget-1",
+              text: "what you decided", explain: "Posts [human] RESOLVED on that ref: an ask, a budget alert, or a hold on an issue." },
+  revert: { label: "ask for a merged PR to be reverted", action: "post", verb: "REVERT", fields: ["ref", "text"], ref: "which PR, e.g. #21", text: "why",
+            explain: "Posts [human] REVERT on that pull request; the groups revert it." },
+  approve_proposal: { label: "approve a proposal as it stands", action: "post", verb: "APPROVE", fields: ["ref"], ref: "which ref, e.g. ans-1",
+                      explain: "Posts [human] APPROVE on that ref: the proposer's text stands, ending a disagreement." },
+  amend: { label: "amend a proposal", action: "post", verb: "AMEND", fields: ["ref", "text"], ref: "which ref, e.g. plan-add-2", text: "the amended text",
+           explain: "Posts [human] AMEND with your text; the round restarts on it." },
+  challenge: { label: "challenge a claim", action: "challenge", verb: "open", fields: ["ref", "text"], ref: "which issue or PR, e.g. #13", text: "what you doubt",
+               explain: "Opens a CHALLENGE on it: dispatch and merge stop on that issue or PR until the challenge is settled." },
+  evidence: { label: "add evidence to a challenge", action: "challenge", verb: "evidence", fields: ["ref", "text"], ref: "the challenged ref",
+              text: "the evidence, with a verified-by: line", explain: "Posts EVIDENCE on the open challenge." },
+  retract: { label: "withdraw a challenge", action: "challenge", verb: "retract", fields: ["ref", "text"], ref: "the challenged ref", text: "why",
+             explain: "Retracts the open challenge and clears the label." },
+  uphold: { label: "settle a challenge: uphold it", action: "challenge", verb: "uphold", fields: ["ref", "text"], ref: "the challenged ref", text: "your ruling",
+            explain: "Upholds the challenge; the claim is treated as wrong." },
+  dismiss: { label: "settle a challenge: dismiss it", action: "challenge", verb: "dismiss", fields: ["ref", "text"], ref: "the challenged ref", text: "your ruling",
+             explain: "Dismisses the challenge; the claim stands and the label clears." },
+  claim: { label: "claim an issue for myself", action: "claim", fields: ["ref"], ref: "which issue, e.g. #11",
+           explain: "Labels the issue claimed by you; no group will dispatch it while you hold it." },
+  release: { label: "release an issue", action: "release", fields: ["ref"], ref: "which issue, e.g. #11",
+             explain: "Removes every claim label; the issue is ready for a group again." },
+  merge: { label: "merge a pull request", action: "merge", fields: ["ref"], ref: "which PR, e.g. #21",
+           explain: "Squash-merges it, if the review quorum, the checks and no open challenge all hold." },
+  approve: { label: "approve the plan", action: "plan-approve", fields: [],
+             explain: "Adds meld:plan-approved and makes every planned issue ready to claim." },
+  ack: { label: "acknowledge a plan addition", action: "plan-ack", fields: ["ref"], ref: "which addition, e.g. plan-add-1",
+         explain: "Makes that addition's issues ready." },
+  other: { label: "something else: post a header verb (advanced)", action: "post", fields: ["verb", "ref", "text"], ref: "ref, if the verb takes one",
+           text: "your message", explain: "Posts the chosen verb as [human] on the coordination issue, exactly as `meld post` would." },
+};
+// A row's verb button names the dispatch name; this is the intent it opens in the bar.
+const INTENT_FOR_ACTION = { claim: "claim", release: "release", merge: "merge", "plan-ack": "ack", "plan-approve": "approve",
+                            post: "other", challenge: "challenge" };
 // Identity is `meld setup`'s, not a running page's: changing a repo, a human, or a group's bot/auth mid-milestone
 // orphans that group's claims and its open PRs. Shown, never editable (spec 22). The API still accepts them, so
 // what the form sends back is what it was given, with only the editable values replaced.
@@ -118,15 +166,24 @@ function boardRow(into, id, what, legal, keys, refused) {
 
 let lastBoard = "";
 let lastTurn = 0;
-function renderThread(turns) {
-  // Append what is new by comment id; never rebuild, so the list keeps its scroll position and only follows the
-  // newest turn while the reader is already at the bottom (the same rule the transcript columns use).
+let following = true;   // the list follows the newest turn until the reader scrolls up; "newest" resumes it
+function followNewest() {
   const list = el("turns");
-  const pinned = lastTurn === 0 || list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+  list.scrollTop = list.scrollHeight;
+  following = true;
+  el("newest").classList.add("hidden");
+}
+function renderThread(turns) {
+  // Append what is new by comment id; never rebuild, so the list keeps its place. New turns slide in, and the list
+  // scrolls to the newest one unless the reader has scrolled up to read, in which case "newest" brings them back.
+  const list = el("turns");
+  let added = false;
   for (const t of turns || []) {
     if (t.id <= lastTurn) continue;
     lastTurn = t.id;
+    added = true;
     const li = document.createElement("li");
+    if (lastTurn > 0 && list.children.length) li.classList.add("fresh");
     // `housekeeping` and `agreement` are the server's classification (chat.thread_entries): the page keeps no verb lists.
     li.className = [t.kind, t.housekeeping && "housekeeping", t.agreement && "agreement"].filter(Boolean).join(" ");
     li.title = `comment ${t.id}`;
@@ -139,14 +196,18 @@ function renderThread(turns) {
     li.append(head, cell("body", t.text));
     list.append(li);
   }
-  if (pinned) list.scrollTop = list.scrollHeight;
+  if (added && following) requestAnimationFrame(followNewest);
 }
 
 const LANES = [["To do", ["planned", "ready", "unlabeled"]], ["In progress", ["in_progress", "blocked", "needs_human"]],
                ["In review", ["in_review"]], ["Done", ["closed"]]];
-function issueCard(i) {
+let prevLane = new Map();   // issue number -> lane name at the last render, so a card that moved can slide in
+let liveRuns = [];          // the running worker runs from the last state, by group and issue
+function issueCard(i, lane) {
   const card = document.createElement("div");
-  card.className = "icard" + (i.status === "blocked" || i.status === "needs_human" || i.challenged ? " attention" : "");
+  const runs = liveRuns.filter((r) => r.issue === i.number && r.kind === "build");
+  card.className = "icard" + (i.status === "blocked" || i.status === "needs_human" || i.challenged ? " attention" : "")
+                 + (runs.length ? " working" : "") + (prevLane.has(i.number) && prevLane.get(i.number) !== lane ? " moved" : "");
   const head = document.createElement("div");
   head.className = "ihead";
   head.append(cell("inum", `#${i.number}`), cell("ititle", i.title));
@@ -160,21 +221,37 @@ function issueCard(i) {
   const flags = [i.worker, i.status === "planned" && "planned", i.status === "blocked" && "blocked",
                  i.status === "needs_human" && "needs a person", i.challenged && "challenged"].filter(Boolean);
   if (flags.length) badges.append(text(document.createElement("span"), (i.claimed_by ? " · " : "") + flags.join(" · ")));
+  for (const r of runs) {
+    const line = cell("iactivity", `${r.group}'s ${r.worker || "build"} worker is building this now`);
+    line.style.color = colorFor("group", r.group);
+    card.append(head, badges, line);
+  }
+  if (!runs.length) card.append(head, badges);
+  const pr = (lastPulls || []).find((p) => p.issue === i.number && p.state === "open");
+  if (pr) {
+    const reviewing = liveRuns.filter((r) => r.pr === pr.number && (r.kind === "review" || r.kind === "audit")).map((r) => `${r.group} reviewing`);
+    const state = [pr.approvals.length && `approved by ${pr.approvals.join(", ")}`, pr.changes_requested.length && `changes requested by ${pr.changes_requested.join(", ")}`,
+                   (pr.checks === "pending" || pr.checks === "red") && `checks ${pr.checks}`, ...reviewing].filter(Boolean);
+    card.append(cell("ipr", `PR #${pr.number}` + (state.length ? ` · ${state.join(" · ")}` : " · awaiting review")));
+  }
   const verbs = document.createElement("div");
   verbs.className = "rverbs";
   verbControls(verbs, i.legal, { ref: `#${i.number}`, number: i.number });
   const why = Object.entries(i.refused || {}).map(([verb, rule]) => `${verb}: ${rule}`);
   card.title = why.length ? `not legal now:\n${why.join("\n")}` : "";
-  card.append(head, badges, verbs);
+  card.append(verbs);
   return card;
 }
+let lastPulls = [];
 
 function renderBoard(s) {
   // Rebuilding every row on every poll swallowed a click that landed mid-rebuild and dropped focus from a control;
   // most polls change nothing, so a board identical to the one already drawn is left alone.
-  const key = JSON.stringify([s.issues, s.pulls, s.coordination && s.coordination.agreements]);
+  const key = JSON.stringify([s.issues, s.pulls, s.coordination && s.coordination.agreements, s.runs]);
   if (key === lastBoard) return;
   lastBoard = key;
+  liveRuns = (s.runs || []).filter((r) => r.state === "running");
+  lastPulls = s.pulls || [];
   // The work, as four lanes an issue moves through; a card is the issue, its holder in that group's colour, and
   // its verb buttons (hover the card for why the others are missing).
   const issues = el("issues");
@@ -184,9 +261,10 @@ function renderBoard(s) {
     lane.className = "lane";
     const items = (s.issues || []).filter((i) => statuses.includes(i.status));
     lane.append(text(document.createElement("h3"), `${name} · ${items.length}`));
-    for (const i of items) lane.append(issueCard(i));
+    for (const i of items) lane.append(issueCard(i, name));
     issues.append(lane);
   }
+  prevLane = new Map((s.issues || []).map((i) => [i.number, (LANES.find(([, statuses]) => statuses.includes(i.status)) || [""])[0]]));
   const pulls = el("pulls");
   pulls.replaceChildren();
   for (const p of s.pulls || []) {
@@ -215,9 +293,12 @@ function options(select, values) {
 }
 
 function showFields() {
-  const wants = FIELDS[el("action").value] || [];
-  for (const name of ["ref", "verb", "text"]) el(name).classList.toggle("hidden", !wants.includes(name));
-  if (wants.includes("verb")) options(el("verb"), el("action").value === "challenge" ? CHALLENGE_ACTIONS : POST_VERBS);
+  const intent = INTENTS[el("action").value] || INTENTS.other;
+  for (const name of ["ref", "verb", "text"]) el(name).classList.toggle("hidden", !intent.fields.includes(name));
+  if (intent.fields.includes("verb")) options(el("verb"), POST_VERBS);
+  el("ref").placeholder = intent.ref || "which issue or PR, e.g. #13";
+  el("text").placeholder = intent.text || "your message";
+  text(el("explain"), intent.explain);
 }
 
 function showResult(message, ok) {
@@ -311,19 +392,20 @@ function renderDecisions(list) {
 }
 
 async function runAction() {
-  const action = el("action").value;
-  const wants = FIELDS[action] || [];
+  const intent = INTENTS[el("action").value] || INTENTS.other;
+  const action = intent.action;
   const payload = { party: "human", verb: action };
-  if (wants.includes("ref")) {
+  if (intent.fields.includes("ref")) {
     const ref = el("ref").value.trim();
     payload.ref = ref;
     const n = /^#?(\d+)$/.exec(ref);
     if (n) payload.number = Number(n[1]);
   }
-  if (wants.includes("text")) payload.text = el("text").value;
+  if (intent.fields.includes("text")) payload.text = el("text").value;
   // Both the header verb `post` carries and the five `challenge` actions travel as `action`: the body's own
   // `verb` key is the dispatch name (`post`, `challenge`), so a second meaning for it cannot fit in one object.
-  if (wants.includes("verb")) payload.action = el("verb").value;
+  if (intent.verb) payload.action = intent.verb;
+  else if (intent.fields.includes("verb")) payload.action = el("verb").value;
   showResult(`${action} …`, true);
   // One request in flight at a time: two quick Enters on a form whose submit button was still live sent two
   // identical `post`s, and a comment is not idempotent. Re-enabled in `finally`, so no failure -- a dropped
@@ -640,6 +722,12 @@ function renderState(state) {
     const dot = cell("dot", "●");
     dot.style.color = colorFor("group", group);
     span.append(dot, text(document.createElement("span"), group), badge(document.createElement("span"), live.state, WORDS[live.state] || live.state));
+    // what the group is doing right now, from its running worker runs
+    const busy = (s.runs || []).filter((r) => r.group === group && r.state === "running");
+    if (busy.length) {
+      span.classList.add("busy");
+      span.append(cell("doing", busy.map((r) => r.kind === "build" ? `building #${r.issue}` : `${r.kind === "audit" ? "auditing" : "reviewing"} PR #${r.pr}`).join(", ")));
+    }
     for (const [role, freeze] of Object.entries(state.frozen[group] || {})) {
       if (freeze) {
         const f = badge(document.createElement("span"), "frozen", `${role} frozen`);
@@ -755,7 +843,13 @@ async function pollStreams() {
   setTimeout(pollStreams, STREAMS_EVERY_MS);
 }
 
-el("convo-filter").addEventListener("change", (e) => { el("conversation").dataset.filter = e.target.value; });
+el("convo-filter").addEventListener("change", (e) => { el("conversation").dataset.filter = e.target.value; followNewest(); });
+el("turns").addEventListener("scroll", () => {
+  const list = el("turns");
+  following = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+  el("newest").classList.toggle("hidden", following);
+});
+el("newest").addEventListener("click", followNewest);
 el("streams").classList.add("narration");
 // The drawer: one tab open at a time, or none; the Configuration tab opens its <details>, whose toggle loads the form.
 function openTab(name) {
@@ -768,7 +862,12 @@ for (const b of document.querySelectorAll("#tabs .tab")) {
   b.addEventListener("click", () => openTab(b.classList.contains("active") ? null : b.dataset.tab));
 }
 el("show-tools").addEventListener("change", (e) => { el("streams").classList.toggle("narration", !e.target.checked); });
-options(el("action"), Object.keys(FIELDS));
+for (const [key, intent] of Object.entries(INTENTS)) {
+  const o = document.createElement("option");
+  o.value = key;
+  text(o, intent.label);
+  el("action").append(o);
+}
 showFields();
 el("action").addEventListener("change", showFields);
 el("bar").addEventListener("submit", (e) => { e.preventDefault(); runAction(); });
@@ -783,7 +882,7 @@ document.addEventListener("click", (e) => {
   // practice. Kept so the two staying in sync is enforced twice, not assumed once.
   if (!b || !FIELDS[b.dataset.action]) return;
   openTab("act");
-  el("action").value = b.dataset.action;
+  el("action").value = INTENT_FOR_ACTION[b.dataset.action] || "other";
   showFields();
   el("ref").value = b.dataset.ref || "";
   el(FIELDS[b.dataset.action]?.includes("text") ? "text" : "run").focus();

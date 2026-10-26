@@ -1110,3 +1110,21 @@ def test_the_page_is_laid_out_as_header_decisions_conversation_work_and_a_tab_dr
     assert "LANES" in js and "issueCard" in js and "openTab" in js and 'openTab("act")' in js and "innerHTML" not in js
     css = get(v, "/static/app.css").body.decode()
     assert "#issues.kanban" in css and "#drawer.closed" in css and "system-ui" in css
+
+
+def test_the_page_is_guided_in_plain_words_and_follows_the_conversation(tmp_path):
+    """Plan 22: the bar is a list of things a person can do, each explained before Run; the conversation filter is worded
+    for a person and the list follows the newest turn; the board shows who is working on what, animated."""
+    v, ctx, _ = viewer_for(tmp_path)
+    html = get(v, "/").body.decode()
+    for marker in ('id="explain"', 'id="newest"', "the conversation", "everything, including status reports", "decisions and your messages", 'for="action"'):
+        assert marker in html, marker
+    js = get(v, "/static/app.js").body.decode()
+    for marker in ("INTENTS", "INTENT_FOR_ACTION", "followNewest", "following", "liveRuns", "prevLane", '" working"', '" moved"', "is building this now", "awaiting review"):
+        assert marker in js, marker
+    assert "innerHTML" not in js
+    css = get(v, "/static/app.css").body.decode()
+    for marker in (".icard.working", ".icard.moved", "#turns li.fresh", "@keyframes pulse", "#supervisors .agent.busy"):
+        assert marker in css, marker
+    state = body(get(v, "/api/state"))
+    assert all("worker" in r for r in state["status"]["runs"])

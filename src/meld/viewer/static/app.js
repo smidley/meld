@@ -1668,7 +1668,7 @@ function renderWizard(info) {
     cb.checked = !!(c.found && c.logged_in !== false && c.default_model);
     cb.disabled = !c.found;
     const state = !c.found ? "not installed" : c.logged_in === false ? "installed, not logged in" : c.logged_in ? "installed and logged in" : "installed";
-    label.append(cb, text(document.createElement("span"), c.name), text(document.createElement("span"), `${state}${c.default_model ? ` · ${c.default_model}` : " · no models in the catalogue"}`));
+    label.append(cb, text(document.createElement("span"), c.title || c.name), text(document.createElement("span"), `${state}${c.default_model ? ` · ${c.default_model}` : " · no models in the catalogue"}`));
     label.lastChild.className = "hint";
     label.title = c.detail || "";
     box.append(label);

@@ -73,6 +73,9 @@ def test_facts_say_what_this_machine_has(tmp_path):
     assert by["claude"]["found"] and by["claude"]["logged_in"] is True and by["claude"]["default_model"] and by["claude"]["models"]
     assert by["codex"]["found"] and by["codex"]["logged_in"] is False and "not logged in" in by["codex"]["detail"]
     assert by["grok"]["found"] is False and by["grok"]["logged_in"] is None and "not on PATH" in by["grok"]["detail"]
+    # two of the five are Google's Gemini, said so by title; an Antigravity group starts on a Gemini model, not the first large one
+    assert by["antigravity"]["title"].startswith("Gemini, through Google's Antigravity") and by["gemini"]["title"].startswith("Gemini CLI")
+    assert by["antigravity"]["default_model"].startswith("gemini-") and by["claude"]["title"] == "Claude Code (Anthropic)"
 
 
 def test_create_runs_the_repository_setup_for_the_chosen_ais_only(tmp_path):

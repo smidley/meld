@@ -32,7 +32,8 @@ def _tally(events) -> dict:
     for e in events:
         usage = e.meta.get("usage") if isinstance(e.meta.get("usage"), dict) else None
         if e.kind in ("usage", "run_finished") and usage:
-            t["input_tokens"] += int(usage.get("input_tokens") or 0)
+            # Claude Code's `input_tokens` is only the uncached part; what it wrote into the cache is input too.
+            t["input_tokens"] += int(usage.get("input_tokens") or 0) + int(usage.get("cache_creation_input_tokens") or 0)
             t["output_tokens"] += int(usage.get("output_tokens") or 0)
             t["cached_tokens"] += int(usage.get("cache_read_input_tokens") or usage.get("cached_input_tokens") or usage.get("cache_read_tokens") or 0)
         if e.kind == "run_finished":

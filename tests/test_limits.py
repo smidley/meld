@@ -54,7 +54,7 @@ def test_usage_totals_sum_every_transcript_through_the_groups_adapter_and_cache_
     home = tmp_path / "home"
     logs = home / "logs" / "claude"
     logs.mkdir(parents=True)
-    (logs / "pm-1.log").write_text(json.dumps({"usage": {"input_tokens": 1000, "output_tokens": 50, "cache_read_input_tokens": 400}, "at": "2026-10-26T20:00:00Z"}) + "\n"
+    (logs / "pm-1.log").write_text(json.dumps({"usage": {"input_tokens": 900, "output_tokens": 50, "cache_read_input_tokens": 400, "cache_creation_input_tokens": 100}, "at": "2026-10-26T20:00:00Z"}) + "\n"
                                    + json.dumps({"done": 0.25, "u": {"input_tokens": 10, "output_tokens": 5}, "at": "2026-10-26T20:10:00Z"}) + "\n")
     (logs / "build-11.log").write_text(json.dumps({"done": 1.5, "u": {"input_tokens": 100, "output_tokens": 20, "cached_input_tokens": 60}, "at": "2026-10-26T21:00:00Z"}) + "\n")
     (home / "logs" / "codex").mkdir()

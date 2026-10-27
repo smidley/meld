@@ -35,7 +35,9 @@ def test_the_start_page_posts_the_manifest_to_github_for_an_org_or_a_user(tmp_pa
     f = flow(tmp_path)
     status, page = f.handle("/", {})
     assert status == 200 and f"state={f.state}" in page and "/organizations/acme/settings/apps/new" in page
-    assert 'name="manifest"' in page and "meld-claude" in page and "document.getElementById('f').submit()" in page
+    assert 'name="manifest"' in page and "widgets-claude" in page and "document.getElementById('f').submit()" in page
+    assert f.app_name == "widgets-claude" and flow(tmp_path, name="custom").app_name == "custom"   # <repository>-<group>: meld-claude was taken
+    assert len(flow(tmp_path, repo="acme/" + "w" * 40).app_name) == 34
     assert "/settings/apps/new?" in flow(tmp_path, owner_is_org=False).github_form_url() and "/organizations/" not in flow(tmp_path, owner_is_org=False).github_form_url()
 
 

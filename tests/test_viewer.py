@@ -1265,7 +1265,7 @@ def test_a_configured_group_that_is_not_running_says_what_it_still_needs(tmp_pat
     assert all(s["cli_found"] and s["token_set"] for s in body(get(found, "/api/state"))["setup"].values())
     html, js = get(v, "/").body.decode(), get(v, "/static/app.js").body.decode()
     assert 'id="setup"' in html
-    for marker in ("function renderSetup", "is configured but not running", "meld run ${g} --detach", "state.config_error", "install the ${s.cli} CLI"):
+    for marker in ("function renderSetup", "is configured but not running", "meld run ${g} --detach", "state.config_error", "install the ${s.cli} CLI", "give it a GitHub identity (two clicks)", "/setup/app/${g}/"):
         assert marker in js, marker
 
 

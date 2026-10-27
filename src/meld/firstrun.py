@@ -9,6 +9,7 @@ CLI or GitHub.
 """
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -20,6 +21,7 @@ from meld.adapters import ADAPTER_NAMES, UnknownAdapter, get_adapter
 from meld.appsetup import AppSetup
 from meld.config import GROUP_NAME_RE, RESERVED_PARTY_NAMES
 from meld.github import GitHub, GitHubError
+from meld.gitops import _CREDENTIAL_HELPER
 from meld.models import ModelRegistry
 from meld.setup import SetupError, setup as setup_repo
 
@@ -134,21 +136,41 @@ class SetupSession:
         gh = self.gh_factory(repo)
         try:
             info = gh.get_repo()
-            return {"created": False, "private": bool(info.get("private", False)), "default_branch": str(info.get("default_branch") or "main")}
         except GitHubError as e:
             if e.status != 404:
                 raise
+        else:
+            # Created earlier but never pushed (a wizard run that failed at the push, a repository made by hand): empty is
+            # as good as new for the push step. Branches that cannot be read are taken as present, so nothing is pushed over.
+            try:
+                branches = gh.get(f"repos/{repo}/branches", use_cache=False)
+                empty = isinstance(branches, list) and not branches
+            except GitHubError:
+                empty = False
+            return {"created": False, "empty": empty, "private": bool(info.get("private", False)), "default_branch": str(info.get("default_branch") or "main")}
         owner, _, name = repo.partition("/")
         login = gh.viewer_login()
         body = {"name": name, "private": True, "auto_init": False, "description": "coordinated by meld"}
         made = gh.post("user/repos", body) if owner.lower() == login.lower() else gh.post(f"orgs/{owner}/repos", body)
-        return {"created": True, "private": True, "default_branch": str((made or {}).get("default_branch") or "main")}
+        return {"created": True, "empty": True, "private": True, "default_branch": str((made or {}).get("default_branch") or "main")}
+
+    def _gh_token(self) -> str:
+        """The token `gh` is logged in with -- the same login the wizard reads GitHub as -- for the one push the wizard makes."""
+        try:
+            proc = self.run(["gh", "auth", "token"], capture_output=True, text=True, timeout=20)
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        return (proc.stdout or "").strip() if proc.returncode == 0 else ""
 
     def ensure_pushed(self, repo: str, default_branch: str) -> dict:
         """This folder on that repository's default branch: `git init` when it is not a repository, an initial commit when
-        it has none (a README when it is empty), `origin` when it has no remote, then a push. The push uses the person's
-        own git credentials, as the setup PR does; a push that fails is reported, never retried."""
-        out = {"initialised": False, "committed": False, "remote_added": False, "pushed": False}
+        it has none (a README when it is empty), `origin` set to the repository's HTTPS URL (added, or rewritten from an
+        SSH spelling of the same repository, because Meld's own roles fetch through `origin` and an SSH remote needs a
+        key this machine may not have -- the first real run failed exactly there), then one push over HTTPS with the
+        token `gh` is logged in with, through the same inline credential helper every Meld push uses, never in argv.
+        A push that fails is reported, never retried."""
+        out = {"initialised": False, "committed": False, "remote_added": False, "remote_rewritten": False, "pushed": False}
+        https = f"https://github.com/{repo}.git"
         if self._git("rev-parse", "--git-dir").returncode != 0:
             self._git("init", "-q", "-b", default_branch)
             out["initialised"] = True
@@ -158,13 +180,35 @@ class SetupSession:
                 readme.write_text(f"# {repo.partition('/')[2]}\n")
             self._git("add", "-A")
             out["committed"] = self._git("commit", "-q", "-m", "Initial commit").returncode == 0
-        if self._git("remote", "get-url", "origin").returncode != 0:
-            self._git("remote", "add", "origin", f"https://github.com/{repo}.git")
+        current = self._git("remote", "get-url", "origin")
+        if current.returncode != 0:
+            self._git("remote", "add", "origin", https)
             out["remote_added"] = True
-        pushed = self._git("push", "-q", "-u", "origin", f"HEAD:{default_branch}")
-        out["pushed"] = pushed.returncode == 0
+        elif (current.stdout or "").strip() != https:
+            self._git("remote", "set-url", "origin", https)
+            out["remote_rewritten"] = True
+        out.update(self._push(default_branch))
+        return out
+
+    def _push(self, default_branch: str) -> dict:
+        """HEAD to origin's default branch over HTTPS, with the token `gh` is logged in with through the inline helper."""
+        token = self._gh_token()
+        creds = ["-c", "credential.helper=", "-c", f"credential.helper={_CREDENTIAL_HELPER}"] if token else []
+        env = {**os.environ, "MELD_PUSH_TOKEN": token} if token else None
+        pushed = self.run(["git", "-C", str(self.target_dir), *creds, "push", "-q", "--set-upstream", "origin", f"HEAD:refs/heads/{default_branch}"],
+                          capture_output=True, text=True, timeout=120, env=env)
+        out = {"pushed": pushed.returncode == 0}
         if not out["pushed"]:
             out["push_error"] = (pushed.stderr or "").strip()[-300:]
+        return out
+
+    def commit_setup_files(self, files: list[str], default_branch: str) -> dict:
+        """The files `setup.setup` wrote (`.meld.toml`, CODEOWNERS, STANDARDS) committed on the default branch and pushed, as
+        the person: the roles read `.meld.toml` from the clone and fetch through `origin`, so a file that exists only in
+        this folder is a board only this machine can see. Nothing to commit (a second run) is not an error."""
+        self._git("add", "--", *files)
+        committed = self._git("commit", "-q", "-m", "meld: set up the board").returncode == 0
+        out = {"committed": committed, **self._push(default_branch)}
         return out
 
     def create(self, *, repo: str, goal: str, milestone_title: str, groups: list[str], allow_public: bool = False) -> dict:
@@ -182,7 +226,7 @@ class SetupSession:
             if not GROUP_NAME_RE.match(g) or g in RESERVED_PARTY_NAMES:
                 raise SetupError(f"{g!r} cannot name a group")
         repository = self.ensure_repository(repo)
-        if repository["created"]:
+        if repository["created"] or repository.get("empty"):
             repository["push"] = self.ensure_pushed(repo, repository["default_branch"])
             if not repository["push"]["pushed"]:
                 raise SetupError(f"created {repo} on GitHub but could not push this folder to it: {repository['push'].get('push_error') or 'git push failed'}")
@@ -195,6 +239,11 @@ class SetupSession:
         self.created = setup_repo(gh, repo=repo, goal=goal, milestone_title=milestone_title or "M1", human=human, target_dir=self.target_dir,
                                   registry=self.registry, allow_public=allow_public, which=which, force=False, protect=True, pr=False, run=self.run)
         self.created["repository"] = repository
+        files = [".meld.toml", *(self.created.get("files") or [])]
+        self.created["setup_commit"] = self.commit_setup_files(files, repository["default_branch"])
+        if not self.created["setup_commit"]["pushed"]:
+            self.created["warnings"] = self.created.get("warnings", []) + [
+                f"the setup files are written here but not pushed: {self.created['setup_commit'].get('push_error') or 'git push failed'}; commit and push them yourself"]
         missing = [g for g in groups if g not in self.created.get("groups", [])]
         if missing:
             self.created["warnings"] = self.created.get("warnings", []) + [f"not configured (CLI not found or no models): {', '.join(missing)}"]

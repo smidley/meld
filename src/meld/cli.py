@@ -115,7 +115,7 @@ TIERS = ("small", "medium", "large")
 
 @main.command("create-app")
 @click.argument("group")
-@click.option("--name", default=None, help="The GitHub App's name (default meld-<group>; App names are global on GitHub).")
+@click.option("--name", default=None, help="The GitHub App's name (default <repository>-<group>; App names are global on GitHub).")
 @click.option("--open/--no-open", "open_browser", default=True, help="Open the first page in the default browser.")
 @click.option("--timeout", type=float, default=900.0, show_default=True, help="Seconds to wait for the two clicks.")
 @click.pass_context
@@ -785,7 +785,13 @@ def watch(ctx: click.Context, port: int | None, open_browser: bool | None) -> No
         raise click.ClickException(f"meld watch is the human's console, not {actor.party.label}'s; "
                                    "unset MELD_GROUP (groups talk through meld post)")
     config_path = ctx.obj["config_path"] or _guard(lambda: find_config(Path.cwd()))
-    viewer = Viewer(c, token=stable_token(c.store.home), port=0, config_path=config_path)
+    # The board carries a setup session too, so a group that still lacks its GitHub identity can get it with the same two
+    # clicks the wizard offers (/setup/app/<group>/...), after the wizard is gone.
+    from meld.firstrun import SetupSession
+    session = SetupSession(target_dir=config_path.parent, home=c.store.home, registry=c.models, gh_factory=lambda repo: GitHub(repo, token=None, run=RUN),
+                           adapter_for=ADAPTER_FOR, launcher=lambda g: detach_supervisor(config_path, g, c.store.home, config_path.parent),
+                           created={"repo": c.cfg.repo_name, "groups": list(c.cfg.groups)})
+    viewer = Viewer(c, token=stable_token(c.store.home), port=0, config_path=config_path, setup=session)
     wanted = port if port is not None else c.cfg.viewer_port
     try:
         httpd = SERVE(viewer, port=wanted)
@@ -794,6 +800,7 @@ def watch(ctx: click.Context, port: int | None, open_browser: bool | None) -> No
         # (or 0, and letting the OS choose), not a traceback to read.
         raise click.ClickException(f"cannot bind 127.0.0.1:{wanted}: {e}")
     link = url(httpd, viewer.token)
+    session.base_url, session.token = link.partition("/?")[0], viewer.token
     click.echo(link)                                  # the one line this prints to stdout
     wants_browser = c.cfg.viewer_open_browser if open_browser is None else open_browser
     if wants_browser:

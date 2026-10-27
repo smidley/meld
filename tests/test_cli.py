@@ -212,6 +212,9 @@ def test_bare_meld_is_start_which_is_watch_here_and_the_wizard_elsewhere(tmp_pat
     # with a configuration: start is watch
     result, seen, opened = _watch(tmp_path, monkeypatch, [])
     assert result.exit_code == 0 and seen["viewer"].ctx is not None
+    # the board carries a setup session too, so /setup/app/<group>/ works after the wizard is gone
+    board = seen["viewer"]
+    assert board.setup is not None and board.setup.created["groups"] == list(board.ctx.cfg.groups) and board.setup.base_url == "http://127.0.0.1:4321"
     # without one: a Viewer in setup mode over a SetupSession, served and opened the same way
     fake = FakeGh()
     fake.route("GET", "user", {"login": "empowerScott"})

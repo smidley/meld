@@ -23,7 +23,8 @@ def freeze_view(cfg: Config, home: Path, now: str) -> dict[str, dict[str, dict]]
                 continue
             until = freeze_deadline(freeze, cfg.runners_limit_retry_minutes)
             out.setdefault(g, {})[r] = {"at": freeze.get("at", ""), "resets_at": freeze.get("resets_at") or None, "text": str(freeze.get("text") or ""),
-                                        "until": until, "posted": bool(freeze.get("posted")), "expired": not until or until <= now}
+                                        "until": until, "posted": bool(freeze.get("posted")), "expired": not until or until <= now,
+                                        "retry_minutes": freeze.get("retry_minutes") if isinstance(freeze.get("retry_minutes"), int) else cfg.runners_limit_retry_minutes}
     return out
 
 

@@ -29,7 +29,9 @@ class UsageAdapter:
 def test_freeze_deadline_is_the_named_instant_capped_or_the_retry():
     assert freeze_deadline({"at": "2026-10-26T23:39:50Z"}, 30) == "2026-10-27T00:09:50Z"
     assert freeze_deadline({"at": "2026-10-26T23:39:50Z", "resets_at": "2026-10-27T01:00:00Z"}, 30) == "2026-10-27T01:00:00Z"
-    assert freeze_deadline({"at": "2026-10-26T23:39:50Z", "resets_at": "2026-11-03T00:00:00Z"}, 30) == "2026-10-27T05:39:50Z"   # six hours at most
+    assert freeze_deadline({"at": "2026-10-26T23:39:50Z", "resets_at": "2026-11-03T00:00:00Z"}, 30) == "2026-11-03T00:00:00Z"   # a week is believed
+    assert freeze_deadline({"at": "2026-10-26T23:39:50Z", "resets_at": "2026-12-25T00:00:00Z"}, 30) == "2026-11-03T23:39:50Z"   # eight days at most
+    assert freeze_deadline({"at": "2026-10-26T23:39:50Z", "retry_minutes": 120}, 30) == "2026-10-27T01:39:50Z"              # the record's own interval wins
     assert freeze_deadline({"at": "junk"}, 30) == "" and freeze_deadline({}, 30) == ""
 
 

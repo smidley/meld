@@ -399,6 +399,8 @@ class Board:
     ignored_comments: int
     leases: dict[int, Lease] = field(default_factory=dict)
     plan_text: str = ""
+    goal: str = ""          # the coordination issue's body: the human's `## Goal` and `## Context` (plan 36b: `meld status` carries it)
+    goal_title: str = ""
     now: str = ""
     challenges: dict[str, Challenge] = field(default_factory=dict)
     audits: dict[int, dict[str, str]] = field(default_factory=dict)   # PR number -> group -> "pass" | "fail"

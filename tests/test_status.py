@@ -376,3 +376,12 @@ def test_audits_stay_inside_the_active_milestone():
     assert pr_refusal(board, CFG2, CODEX_PM, Verb.AUDIT, mine) is None
     # Planning: no issues on the board yet, nothing can be told apart (the older fixtures rely on this).
     assert audit_summary(mk_board(CFG2, pulls=[old]), CFG2, CODEX_PM, now)["pending"] == [19]
+
+
+def test_status_carries_the_goal_so_no_role_has_to_go_looking_for_it():
+    """The first wizard-made product's codex orchestrator could not read the goal: status did not carry the coordination
+    issue's body, thread prints only comments, and gh is off limits. Now `goal` is on the board and in status."""
+    board = replace(mk_board(CFG2), goal="## Goal\n\nA greet tool.\n\n## Context\n\nRead docs/ first.", goal_title="Coordination: M1")
+    out = render_status(board, CFG2, CLAUDE_PM, REG, datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc))
+    assert out["goal"] == {"title": "Coordination: M1", "body": "## Goal\n\nA greet tool.\n\n## Context\n\nRead docs/ first."}
+    assert render_status(mk_board(CFG2), CFG2, CLAUDE_PM, REG, datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc))["goal"] == {"title": "", "body": ""}

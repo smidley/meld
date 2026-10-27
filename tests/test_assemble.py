@@ -176,3 +176,12 @@ def test_missing_checks_permission_degrades_to_unreadable_checks(board1_gh):
     assert note.startswith("PR #20: check runs unavailable (") and "HTTP 403" in note and note.endswith("grant the token or App Checks: read")
     build_board(gh, CFG2, {}, {}, errors=errors)
     assert len(errors) == 1
+
+
+def test_the_board_carries_the_coordination_issues_body_as_the_goal(board1_gh):
+    import json as _json
+    from pathlib import Path as _P
+    fake, gh = board1_gh
+    board = build_board(gh, CFG2, {}, {})
+    raw = next(i for i in _json.loads((_P(__file__).parent / "fixtures" / "board1" / "issues.json").read_text()) if i["number"] == board.coordination_issue)
+    assert board.goal == (raw.get("body") or "") and board.goal_title == raw["title"]

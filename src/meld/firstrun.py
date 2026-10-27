@@ -187,14 +187,28 @@ class SetupSession:
         elif (current.stdout or "").strip() != https:
             self._git("remote", "set-url", "origin", https)
             out["remote_rewritten"] = True
+        out.update(self._push(default_branch))
+        return out
+
+    def _push(self, default_branch: str) -> dict:
+        """HEAD to origin's default branch over HTTPS, with the token `gh` is logged in with through the inline helper."""
         token = self._gh_token()
         creds = ["-c", "credential.helper=", "-c", f"credential.helper={_CREDENTIAL_HELPER}"] if token else []
         env = {**os.environ, "MELD_PUSH_TOKEN": token} if token else None
         pushed = self.run(["git", "-C", str(self.target_dir), *creds, "push", "-q", "--set-upstream", "origin", f"HEAD:refs/heads/{default_branch}"],
                           capture_output=True, text=True, timeout=120, env=env)
-        out["pushed"] = pushed.returncode == 0
+        out = {"pushed": pushed.returncode == 0}
         if not out["pushed"]:
             out["push_error"] = (pushed.stderr or "").strip()[-300:]
+        return out
+
+    def commit_setup_files(self, files: list[str], default_branch: str) -> dict:
+        """The files `setup.setup` wrote (`.meld.toml`, CODEOWNERS, STANDARDS) committed on the default branch and pushed, as
+        the person: the roles read `.meld.toml` from the clone and fetch through `origin`, so a file that exists only in
+        this folder is a board only this machine can see. Nothing to commit (a second run) is not an error."""
+        self._git("add", "--", *files)
+        committed = self._git("commit", "-q", "-m", "meld: set up the board").returncode == 0
+        out = {"committed": committed, **self._push(default_branch)}
         return out
 
     def create(self, *, repo: str, goal: str, milestone_title: str, groups: list[str], allow_public: bool = False) -> dict:
@@ -225,6 +239,11 @@ class SetupSession:
         self.created = setup_repo(gh, repo=repo, goal=goal, milestone_title=milestone_title or "M1", human=human, target_dir=self.target_dir,
                                   registry=self.registry, allow_public=allow_public, which=which, force=False, protect=True, pr=False, run=self.run)
         self.created["repository"] = repository
+        files = [".meld.toml", *(self.created.get("files") or [])]
+        self.created["setup_commit"] = self.commit_setup_files(files, repository["default_branch"])
+        if not self.created["setup_commit"]["pushed"]:
+            self.created["warnings"] = self.created.get("warnings", []) + [
+                f"the setup files are written here but not pushed: {self.created['setup_commit'].get('push_error') or 'git push failed'}; commit and push them yourself"]
         missing = [g for g in groups if g not in self.created.get("groups", [])]
         if missing:
             self.created["warnings"] = self.created.get("warnings", []) + [f"not configured (CLI not found or no models): {', '.join(missing)}"]

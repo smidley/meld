@@ -88,8 +88,10 @@ def test_create_runs_the_repository_setup_for_the_chosen_ais_only(tmp_path):
         s.create(repo="acme/widgets", goal="Ship it", milestone_title="M1", groups=[])
     with pytest.raises(SetupError, match="owner/name"):
         s.create(repo="widgets", goal="Ship it", milestone_title="M1", groups=["claude"])
+    fake.route("GET", R + "branches", [{"name": "main"}])
     out = s.create(repo="acme/widgets", goal="Ship a widget catalogue", milestone_title="M1", groups=["claude"])
     assert out["milestone"] == 1 and out["coordination_issue"] == 2 and out["groups"] == ["claude"]      # codex is installed but was not chosen
+    assert "repository" in out and out["repository"]["created"] is False and "setup_commit" in out
     text = (tmp_path / ".meld.toml").read_text()
     assert "[groups.claude]" in text and "[groups.codex]" not in text.replace("# [groups.codex]", "")
     assert s.facts()["created"]["groups"] == ["claude"] and s.facts()["config_exists"]
@@ -220,6 +222,10 @@ def test_create_makes_the_repository_first_and_reports_it(tmp_path):
     out = s.create(repo="acme/widgets", goal="Ship it", milestone_title="M1", groups=["claude"])
     assert out["repository"]["created"] is True and out["repository"]["push"]["pushed"] is True and out["groups"] == ["claude"]
     assert [c.endpoint for c in fake.calls if c.method == "POST"][0] == "orgs/acme/repos"
+    # the setup files are committed on the default branch and pushed, as the person, so the roles' clones can read them
+    assert out["setup_commit"] == {"committed": True, "pushed": True}
+    adds = [g for g in run.git if g[:2] == ["add", "--"]]
+    assert adds and ".meld.toml" in adds[-1] and any(".github/CODEOWNERS" in a for a in adds[-1]) and ["commit", "-q", "-m", "meld: set up the board"] in run.git
     # a push that fails is the error, before anything else is set up
     fake2 = CreatingFake()
     fake2.route("GET", "user", {"login": "acme"})

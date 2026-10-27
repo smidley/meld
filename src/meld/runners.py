@@ -150,8 +150,11 @@ def processes(cfg, home: Path, *, alive: Callable[[int], bool] = pid_alive, star
     from meld.prompts import ROLES
     out = {}
     for g in cfg.groups:
-        roles = {r: {**liveness(read_record(role_run_path(home, g, r)), alive=alive, start_of=start_of), "frozen": read_record(freeze_path(home, g, r))}
-                 for r in ROLES}
+        roles = {}
+        for r in ROLES:
+            rec = read_record(role_run_path(home, g, r))
+            roles[r] = {**liveness(rec, alive=alive, start_of=start_of), "frozen": read_record(freeze_path(home, g, r)),
+                        "launch_no": (rec or {}).get("launch_no")}   # how many times this role has been launched: 649 was invisible
         out[g] = {"supervisor": liveness(read_record(supervisor_path(home, g)), alive=alive, start_of=start_of), "roles": roles}
     return out
 
@@ -455,8 +458,16 @@ def run_group(ctx, *, adapter: Adapter | None = None, once: bool = False, cycles
             if limited is not False:
                 _freeze(ctx, group, role, resets_at=limited or None, now=now, text=limit_text(rp.log_path, adp, now))
                 return                           # do not relaunch; the next cycle re-checks the freeze
-            if code == 0 and clock() - rp.started >= CLEAN_EXIT_SECONDS:
+            lived = clock() - rp.started
+            if code == 0 and lived >= CLEAN_EXIT_SECONDS:
                 restarts, reason = 0, "exit"
+                # Plan 39: a role is relaunched no sooner than one wait timeout after it was launched. A session that
+                # ends its turn early (a 45-second wait, or "nothing to do") would otherwise cost a full prompt every
+                # couple of minutes -- the scratch product's codex orchestrator launched 649 times overnight -- and
+                # nothing on the board moves faster than the wait would have blocked for anyway.
+                floor = float(ctx.cfg.wait_timeout_seconds)
+                if lived < floor:
+                    _pause(floor - lived)
             else:
                 restarts, reason = rp.restarts + 1, ("exit" if code == 0 else "crash")
                 _pause(min(5.0 * (2 ** rp.restarts), _MAX_BACKOFF))

@@ -1190,6 +1190,7 @@ def test_the_page_draws_its_overview_as_inline_svg(tmp_path):
     assert "innerHTML" not in js and "http://www.w3.org/2000/svg" in js
     state = body(get(v, "/api/state"))
     assert set(state["processes"]) == set(state["supervisors"]) and all("roles" in v for v in state["processes"].values())
+    assert all("launch_no" in r for p in state["processes"].values() for r in p["roles"].values()) and "launch ${info.launch_no}" in js
 
 
 def test_the_work_lanes_show_the_flow(tmp_path):

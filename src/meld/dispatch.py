@@ -441,10 +441,10 @@ def _dispatch_build(ctx, board: Board, actor: Actor, number: int, adapter: Adapt
         refuse(ctx, board, Refusal(Verb.DISPATCH, f"#{number}", f"worker type '{issue.worker}' is not in {group.name}'s roster"))
     branch = branch_name(number, issue.title)
     wt = _worktree(ctx, group, f"{number}-{slugify(issue.title)}")
-    mode = "reused" if worktree_exists(ctx.repo_root, wt) else create_worktree(ctx.repo_root, wt, branch, ctx.cfg.default_branch)
+    mode = "reused" if worktree_exists(ctx.repo_root, wt) else create_worktree(ctx.repo_root, wt, branch, ctx.cfg.default_branch, token=ctx.gh.token)
     # A reused worktree never fetched, so a person's push to the PR branch (or a reviewer's push-fix) was built over and
     # the retry's own push then refused. Fast-forward to origin/<branch> when strictly behind; local work is never dropped.
-    refresh = fast_forward_to_remote(ctx.repo_root, wt, branch) if mode == "reused" else None
+    refresh = fast_forward_to_remote(ctx.repo_root, wt, branch, token=ctx.gh.token) if mode == "reused" else None
     exclude_paths(wt)
     skills_result = materialise_skills(wt, adp, [w for w in ctx.roster_entries() if w.source == "product-skill"])
     recall_hits, recall_note = _recall_for_brief(ctx, f"{issue.title}\n{issue.body}")
@@ -502,9 +502,9 @@ def _dispatch_pr(ctx, board: Board, actor: Actor, number: int, kind: str, adapte
         remove_worktree(ctx.repo_root, wt)
     at_merge = kind == "audit" and bool(pr.merge_commit_sha)
     if at_merge:
-        checkout_sha(ctx.repo_root, wt, pr.merge_commit_sha)  # type: ignore[arg-type]
+        checkout_sha(ctx.repo_root, wt, pr.merge_commit_sha, token=ctx.gh.token)  # type: ignore[arg-type]
     else:
-        checkout_pr_head(ctx.repo_root, wt, pr.head_ref)
+        checkout_pr_head(ctx.repo_root, wt, pr.head_ref, token=ctx.gh.token)
     exclude_paths(wt)
     skills_result = materialise_skills(wt, adp, [w for w in ctx.roster_entries() if w.source == "product-skill"])
     model, effort = group.orchestrator.model, group.orchestrator.effort

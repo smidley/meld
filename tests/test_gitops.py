@@ -199,6 +199,11 @@ def test_a_fetch_authenticates_with_the_groups_token_like_a_push(tmp_path):
         argv, env = fetches[0]
         assert argv[:5] == ["git", "-c", "credential.helper=", "-c", 'credential.helper=!f() { echo username=x-access-token; echo "password=$MELD_PUSH_TOKEN"; }; f']
         assert env["MELD_PUSH_TOKEN"] == "ghs_token" and "ghs_token" not in " ".join(argv)
+    from meld.gitops import fetch_origin, remote_branch_exists
+    calls.clear()
+    remote_branch_exists(tmp_path, "meld/1-x", run=run, token="ghs_token")
+    fetch_origin(tmp_path, "ghs_token", "main", run=run)
+    assert all(a[1:3] == ["-c", "credential.helper="] and e["MELD_PUSH_TOKEN"] == "ghs_token" for a, e in calls) and calls[0][0][5] == "ls-remote" and calls[1][0][-1] == "main"
     calls.clear()
     try:
         create_worktree(tmp_path, tmp_path / "wt2", "meld/2-y", "main", run=run)

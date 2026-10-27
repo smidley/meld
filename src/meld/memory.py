@@ -12,7 +12,7 @@ from meld.board import MEMORY_BRANCH_PREFIX, MEMORY_MARKER_RE as MARKER_RE
 from meld.brief import FETCH_FAILED_NOTE, STATUS_RE, SUPERSEDES_RE, _local_hits, _terms, recall_snippets
 from meld.config import Party
 from meld.dispatch import DispatchError, _iso, _now, git_identity, neutralise_closers
-from meld.gitops import GitError, create_worktree, git, push_branch, remove_worktree, slugify
+from meld.gitops import GitError, create_worktree, git, push_branch, remove_worktree, slugify, fetch_origin
 from meld.grammar import Agreement, Header, agreement_for, compose, verified_joint
 from meld.rules import Refusal, Verb, decide_rule, remember_rule
 from meld.status import build_status
@@ -41,7 +41,7 @@ def _default_branch_files(ctx, subdir: str) -> list[str]:
     working copy (which nothing ever pulls forward). A fetch keeps this current; ls-tree normally just prints
     nothing for a subdir that doesn't exist yet on that ref, but GitError is still caught defensively so a
     genuinely missing branch degrades to "nothing recorded" rather than raising."""
-    git(["fetch", "--quiet", "origin"], ctx.repo_root)
+    fetch_origin(ctx.repo_root, ctx.gh.token)
     try:
         out = git(["ls-tree", "-r", "--name-only", f"origin/{ctx.cfg.default_branch}", "--", subdir], ctx.repo_root)
     except GitError:
@@ -239,7 +239,7 @@ def recall(ctx, query: str, *, limit: int = 10) -> list[dict]:
     ref: str | None = f"origin/{ctx.cfg.default_branch}"
     note: str | None = None
     try:
-        git(["fetch", "--quiet", "origin"], ctx.repo_root)
+        fetch_origin(ctx.repo_root, ctx.gh.token)
     except GitError:
         # Fixed wording, never the GitError's own text: that is git's stderr, and a failed fetch's stderr names
         # the remote URL (which can carry a token or an internal hostname) in something a human is shown.

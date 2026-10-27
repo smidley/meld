@@ -141,16 +141,13 @@ def test_dispatch_falls_back_to_the_working_copy_when_the_origin_fetch_fails(tmp
     (repo / ".meld" / "memory").mkdir(parents=True)
     (repo / ".meld" / "memory" / "lessons.md").write_text("# Lessons\n\n## 2026-09-01 — #7 (codex)\n\nHealth endpoints must not touch the database.\n")
 
-    def failing_fetch(args, cwd, *a, **kw):
-        # meld.dispatch.git has exactly two direct callers: _tracked_in_worktree's `ls-files` (unaffected here --
-        # this dispatch has no product skills to materialise) and _recall_for_brief's `fetch`, which is the one
-        # this test needs to fail. create_worktree's own earlier fetch runs through gitops.py's own `git` name,
-        # a separate binding this patch never touches, so the worktree itself is still created normally.
-        if args[:1] == ["fetch"]:
-            raise GitError("simulated offline")
-        return real_git(args, cwd, *a, **kw)
+    def failing_fetch(repo_root, token=None, branch=None, run=None):
+        # _recall_for_brief's fetch is the one this test needs to fail (plan 37: it is `fetch_origin`, bound in
+        # meld.dispatch); create_worktree's own earlier fetch runs through gitops.py's own name, a separate binding
+        # this patch never touches, so the worktree itself is still created normally.
+        raise GitError("simulated offline")
 
-    monkeypatch.setattr("meld.dispatch.git", failing_fetch)
+    monkeypatch.setattr("meld.dispatch.fetch_origin", failing_fetch)
     out = dispatch(ctx, 11, adapter=FakeAdapter(), now=NOW)
     assert out["dispatched"] == 11 and out["recall_note"] == "origin fetch failed; recall used the local checkout"
     text = (Path(out["worktree"]) / BRIEF_FILE).read_text()

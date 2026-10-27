@@ -208,6 +208,24 @@ def limit_of(log_path: Path, adapter: Adapter, now: str) -> str | None | bool:
     return False
 
 
+def limit_text(log_path: Path, adapter: Adapter, now: str) -> str:
+    """What the CLI said when it hit its limit -- the last `usage_limit` event's text -- for the freeze record and the page."""
+    reader = Tail(log_path)
+    events = reader.read(adapter.parse_events, now) + reader.flush(adapter.parse_events, now)
+    for event in reversed(events):
+        if event.kind == "usage_limit":
+            return event.text
+    return ""
+
+
+def freeze_deadline(freeze: dict, retry_minutes: int) -> str:
+    """The instant a freeze runs until: the earlier of the instant the CLI named and MAX_FREEZE_MINUTES after it began,
+    else `retry_minutes` after it began; "" when the record carries no usable instant (so it reads as passed)."""
+    at = freeze.get("at") or ""
+    named = _plus_minutes(freeze.get("resets_at") or "", 0)   # validated: "" for absent, malformed, or not a string
+    return min(named, _plus_minutes(at, MAX_FREEZE_MINUTES)) if named else _plus_minutes(at, retry_minutes)
+
+
 def _announce(ctx, group: GroupConfig, role: str, *, resets_at: str | None) -> bool:
     """Post the one LIMITED notice for a freeze. True when it reached the board.
 
@@ -227,7 +245,7 @@ def _announce(ctx, group: GroupConfig, role: str, *, resets_at: str | None) -> b
     return True
 
 
-def _freeze(ctx, group: GroupConfig, role: str, *, resets_at: str | None, now: str) -> None:
+def _freeze(ctx, group: GroupConfig, role: str, *, resets_at: str | None, now: str, text: str = "") -> None:
     """Remember the freeze, and tell the board.
 
     The freeze matters more than the announcement, so a notice that could not be posted -- a supervisor
@@ -239,6 +257,8 @@ def _freeze(ctx, group: GroupConfig, role: str, *, resets_at: str | None, now: s
     payload: dict = {"at": now, "posted": False, "announce_attempted_at": now}
     if resets_at:
         payload["resets_at"] = resets_at
+    if text:
+        payload["text"] = text[:500]   # the provider's own words, for the page's limits view
     payload["posted"] = _announce(ctx, group, role, resets_at=resets_at)
     write_freeze(freeze_path(ctx.store.home, group.name, role), payload)
 
@@ -258,10 +278,7 @@ def _frozen(ctx, group: GroupConfig, role: str, *, now: str) -> str:
     freeze = read_freeze(path)
     if freeze is None:
         return ""
-    at = freeze.get("at") or ""
-    named = _plus_minutes(freeze.get("resets_at") or "", 0)   # validated: "" for absent, malformed, or not a string
-    deadline = (min(named, _plus_minutes(at, MAX_FREEZE_MINUTES)) if named
-                else _plus_minutes(at, ctx.cfg.runners_limit_retry_minutes))
+    deadline = freeze_deadline(freeze, ctx.cfg.runners_limit_retry_minutes)
     if not (deadline and now < deadline):             # ISO-8601 Z strings sort chronologically
         path.unlink(missing_ok=True)
         return ""
@@ -411,7 +428,7 @@ def run_group(ctx, *, adapter: Adapter | None = None, once: bool = False, cycles
             # from a clean finish, and relaunching it is the bug this branch exists to stop.
             limited = limit_of(rp.log_path, adp, now)
             if limited is not False:
-                _freeze(ctx, group, role, resets_at=limited or None, now=now)
+                _freeze(ctx, group, role, resets_at=limited or None, now=now, text=limit_text(rp.log_path, adp, now))
                 return                           # do not relaunch; the next cycle re-checks the freeze
             if code == 0 and clock() - rp.started >= CLEAN_EXIT_SECONDS:
                 restarts, reason = 0, "exit"

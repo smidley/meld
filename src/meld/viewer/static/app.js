@@ -485,6 +485,52 @@ function drawMap(state) {
   });
 }
 
+function fmtTokens(n) {
+  if (!n) return "0";
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${Math.round(n / 1e3)}k`;
+  return String(n);
+}
+
+function renderLimits(state) {
+  // Usage and limits, one line per group: tokens in and out (and served from cache), dollars where the CLI reports
+  // them, runs counted; and, for a frozen role, the provider's own words, when the freeze ends and when the supervisor
+  // tries again. The owner watched two groups freeze with nothing on the page saying why or until when.
+  const list = el("limits");
+  list.replaceChildren();
+  const lim = state.limits || {};
+  for (const [g, u] of Object.entries(lim.usage || {})) {
+    const li = document.createElement("li");
+    const name = text(document.createElement("span"), g);
+    name.className = "lgroup";
+    name.style.color = colorFor("group", g);
+    li.append(name);
+    const bits = u.unknown ? ["usage unknown (no adapter)"]
+      : [`${fmtTokens(u.input_tokens)} in / ${fmtTokens(u.output_tokens)} out` + (u.cached_tokens ? ` (${fmtTokens(u.cached_tokens)} cached)` : ""),
+         u.cost_usd ? `$${u.cost_usd.toFixed(2)}` : null, u.runs ? `${u.runs} run${u.runs === 1 ? "" : "s"}` : null];
+    text(li.appendChild(document.createElement("span")), ` · ${bits.filter(Boolean).join(" · ")}`);
+    li.title = "summed from the transcripts kept on this machine; dollars only where the CLI reports them";
+    list.append(li);
+  }
+  for (const [g, roles] of Object.entries(lim.frozen || {})) {
+    for (const [role, f] of Object.entries(roles)) {
+      if (f.expired) continue;
+      const li = document.createElement("li");
+      li.className = "frozen";
+      const name = text(document.createElement("span"), `${g}'s ${role}`);
+      name.className = "lgroup";
+      name.style.color = colorFor("group", g);
+      li.append(name);
+      const since = clock12(Date.parse(f.at || ""));
+      const when = f.resets_at ? `the provider resets it at ${clock12(Date.parse(f.resets_at))}` : `no reset time was given, so the supervisor tries again every ${lim.retry_minutes} min`;
+      text(li.appendChild(document.createElement("span")), ` is frozen on a usage limit since ${since}: `);
+      if (f.text) text(li.appendChild(document.createElement("q")), f.text);
+      text(li.appendChild(document.createElement("span")), ` · ${when} · next try ${clock12(Date.parse(f.until || ""))}`);
+      list.append(li);
+    }
+  }
+}
+
 function renderSetup(state) {
   // A configured group that is not running, and what this machine says it still needs: the owner added two groups
   // through the form and saw nothing, because a saved group starts nothing by itself.
@@ -1393,6 +1439,7 @@ function renderState(state) {
   lastStatus = state.status;
   drawBars(state);
   drawMap(state);
+  renderLimits(state);
   renderSetup(state);
   drawTimeline(state);
   renderDecisions(state.decisions);

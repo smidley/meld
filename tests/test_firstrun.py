@@ -250,3 +250,42 @@ def test_create_makes_the_repository_first_and_reports_it(tmp_path):
     from meld.github import GitHubError
     with pytest.raises(GitHubError):
         session(tmp_path, fake3).ensure_repository("acme/widgets")
+
+
+def test_an_installed_app_checks_and_starts_its_group_by_itself_and_doctor_can_refuse(tmp_path):
+    """Plan 36: nothing after the two clicks is a command. The install redirect runs the group's doctor checks and, when
+    they pass, its supervisor; failing checks are reported on the page and the group is not started."""
+    fake = FakeGh()
+    routes_for_create(fake)
+    launched = []
+    verdict = {"ok": True}
+    def doctor(group):
+        return [{"name": f"app:{group}", "ok": verdict["ok"], "detail": "fine" if verdict["ok"] else "App 7 is not the configured bot", "fix": "" if verdict["ok"] else "run meld create-app"}]
+    s = session(tmp_path, fake, launcher=lambda g: launched.append(g) or {"group": g, "pid": 5, "detached": True})
+    s.doctor = doctor
+    s.create(repo="acme/widgets", goal="Ship it", milestone_title="M1", groups=["claude", "codex"])
+    flow = s.app_flow("claude")
+    flow.convert = lambda code: {"id": 7, "slug": "meld-claude", "pem": PEM, "html_url": "u"}
+    flow.handle("/callback", {"state": flow.state, "code": "c"})
+    status, page = flow.handle("/installed", {"installation_id": "99"})
+    assert status == 200 and "Checked and started" in page and "pid 5" in page and launched == ["claude"]
+    assert s.started["claude"]["pid"] == 5 and s.started["claude"]["checks"][0]["ok"] is True
+    # codex: doctor fails -> reported, not started
+    verdict["ok"] = False
+    flow2 = s.app_flow("codex")
+    flow2.convert = lambda code: {"id": 8, "slug": "meld-codex", "pem": PEM, "html_url": "u"}
+    flow2.handle("/callback", {"state": flow2.state, "code": "c"})
+    status, page = flow2.handle("/installed", {"installation_id": "100"})
+    assert status == 200 and "Not started: doctor: app:codex: App 7 is not the configured bot (run meld create-app)" in page and launched == ["claude"]
+    assert s.started["codex"]["error"].startswith("doctor:")
+    # the board's own start, one group at a time, retries a group that failed and skips one already running
+    verdict["ok"] = True
+    out = s.start(["codex"])
+    assert launched == ["claude", "codex"] and out["codex"]["pid"] == 5 and out["claude"]["pid"] == 5
+    # a group whose identity is in the file (an earlier run) is ready even when no flow ran in this process
+    fresh = session(tmp_path, fake, launcher=lambda g: launched.append(g) or {"group": g, "pid": 6, "detached": True})
+    fresh.created = {"repo": "acme/widgets", "groups": ["claude", "codex"]}
+    assert fresh._has_identity("claude") is True and fresh.start(["claude"])["claude"]["pid"] == 6
+    blank = session(tmp_path / "nowhere", fake)
+    blank.created = {"repo": "acme/widgets", "groups": ["claude"]}
+    assert blank.start()["claude"]["error"] == "its GitHub App is not installed yet"

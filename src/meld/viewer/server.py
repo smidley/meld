@@ -291,8 +291,10 @@ class Viewer:
                                         context=str(body.get("context") or ""))
                 return _json(200, {"created": out})
             if step == "start":
-                started = self.setup.start()
+                only = body.get("group")
+                started = self.setup.start([str(only)] if only else None)
                 adopted = self._adopt_context()
+                self._state_cache = None
                 return _json(200, {"started": started, "board": adopted})
         except (SetupError, GitHubError, ConfigError, OSError, ValueError) as e:
             return _json(400, {"error": str(e)})

@@ -548,13 +548,27 @@ function renderSetup(state) {
                    s.token_set && "make sure its GitHub login exists and can write to the repository (meld doctor checks)"].filter(Boolean);
     const li = text(document.createElement("li"), `${g} is configured but not running: ${needs.length ? needs.join(" · ") + " · " : ""}`);
     if (!s.token_set) {
-      // The same two clicks the wizard offers, served by this page: no command, no token to paste.
-      link(li, "give it a GitHub identity (two clicks)", api(`/setup/app/${g}/`), "create and install a GitHub App for this group");
-      text(li.appendChild(document.createElement("span")), " · ");
+      // The same two clicks the wizard offers, served by this page: no command, no token to paste. Once installed, the
+      // group is checked and started by itself.
+      link(li, "give it a GitHub identity (two clicks, then it starts by itself)", api(`/setup/app/${g}/`), "create and install a GitHub App for this group");
+    } else if (s.cli_found) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "start";
+      text(b, `check and start ${g}`);
+      b.title = "runs meld doctor for this group, then its supervisor; nothing to type";
+      b.addEventListener("click", async () => {
+        b.disabled = true;
+        text(b, `checking ${g} …`);
+        try {
+          const out = await postJSON("/api/setup", { step: "start", group: g });
+          const r = (out.started || {})[g] || {};
+          text(b, r.error ? `not started: ${r.error}` : `started (pid ${r.pid})`);
+          if (!r.error) setTimeout(pollState, 3000);
+        } catch (e) { text(b, e.message); b.disabled = false; }
+      });
+      li.append(b);
     }
-    text(li.appendChild(document.createElement("span")), "then start it in the product clone: ");
-    const code = text(document.createElement("code"), `meld run ${g} --detach`);
-    li.append(code);
     list.append(li);
   }
 }

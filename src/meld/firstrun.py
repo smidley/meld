@@ -25,6 +25,13 @@ from meld.setup import SetupError, setup as setup_repo
 
 _REMOTE_RE = re.compile(r"github\.com[:/]([^/\s]+)/([^/\s]+?)(?:\.git)?/?$")
 
+#: What each adapter is, for a person choosing: adapters are named after their binaries, and two of them are Google's
+#: Gemini (the Antigravity CLI replaced the older `gemini` binary for most accounts in June 2026).
+TITLES = {"claude": "Claude Code (Anthropic)", "codex": "Codex CLI (OpenAI)", "grok": "Grok Build (xAI)",
+          "antigravity": "Gemini, through Google's Antigravity CLI (agy)", "gemini": "Gemini CLI (the older `gemini` binary)"}
+#: The model a group of this adapter starts with: the vendor's own first, then the first large-tier entry.
+PREFERRED_MODEL_PREFIX = {"antigravity": "gemini-"}
+
 
 def repo_from_remote(target_dir: Path, run=subprocess.run) -> str | None:
     """`owner/name` from `git remote get-url origin`, or None when there is no git remote to GitHub here."""
@@ -73,7 +80,7 @@ class SetupSession:
         try:
             adapter = self.adapter_for(name)
         except UnknownAdapter:
-            return {"name": name, "found": False, "logged_in": None, "detail": "no adapter in this build", "models": []}
+            return {"name": name, "title": TITLES.get(name, name), "found": False, "logged_in": None, "detail": "no adapter in this build", "models": []}
         binary = adapter.version_argv()[0]
         found = bool(self.which(binary))
         logged_in: bool | None = None
@@ -85,9 +92,12 @@ class SetupSession:
             except (OSError, subprocess.SubprocessError) as e:
                 logged_in, detail = None, f"login probe could not run: {e}"
         specs = self.registry.for_adapter(name)
-        large = next((s for s in specs if s.tier == "large"), specs[0] if specs else None)
-        return {"name": name, "binary": binary, "found": found, "logged_in": logged_in, "detail": detail,
-                "models": [s.id for s in specs], "default_model": large.id if large else None}
+        prefix = PREFERRED_MODEL_PREFIX.get(name)
+        own = [s for s in specs if prefix and s.id.startswith(prefix)]
+        pick = (next((s for s in own if s.tier != "small"), own[0] if own else None)
+                or next((s for s in specs if s.tier == "large"), specs[0] if specs else None))
+        return {"name": name, "title": TITLES.get(name, name), "binary": binary, "found": found, "logged_in": logged_in, "detail": detail,
+                "models": [s.id for s in specs], "default_model": pick.id if pick else None}
 
     @staticmethod
     def _app_state(flow: AppSetup) -> dict:

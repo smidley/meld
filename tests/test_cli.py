@@ -226,7 +226,7 @@ def test_bare_meld_is_start_which_is_watch_here_and_the_wizard_elsewhere(tmp_pat
     monkeypatch.setattr(cli, "SERVE", fake_serve)
     opened2 = []
     monkeypatch.setattr(cli.webbrowser, "open", lambda link: opened2.append(link) or True)
-    empty = tmp_path / "empty"
+    empty = tmp_path.with_name(tmp_path.name + "-empty")   # a sibling, not a child: find_config searches upward and would find _watch's file
     empty.mkdir()
     monkeypatch.chdir(empty)
     env = {k: v for k, v in env_for(tmp_path, group=None).items() if k != "MELD_HOME"}

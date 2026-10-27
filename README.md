@@ -120,6 +120,16 @@ The calling party comes from `MELD_GROUP` and `MELD_ROLE` (`orchestrator` or `pm
 
 ## Quick start
 
+The shortest path: in a clone of the product repository, with at least one supported CLI installed and logged in,
+
+```bash
+uv run meld
+```
+
+opens the page as a setup wizard: say what you want built, tick which AIs build it, and it sets the repository up, gives each AI its GitHub App in two clicks, starts them and turns into the board. The steps below are the long way, which still works.
+
+### The long way
+
 Bootstrapping a fresh product repo, start to finish:
 
 1. `uv sync`.

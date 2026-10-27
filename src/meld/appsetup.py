@@ -62,6 +62,7 @@ class AppSetup:
     base_url: str                      # this process's loopback origin, e.g. http://127.0.0.1:51234
     keys_dir: Path
     name: str | None = None
+    suffix: str = ""                   # appended to the redirect URLs, e.g. the viewer's `?t=<token>` so GitHub's redirects pass its gate
     convert: Callable[[str], dict] = convert_manifest
     installations: Callable[[int, str], list[dict]] = list_installations
     state: str = field(default_factory=lambda: secrets.token_urlsafe(16))
@@ -81,7 +82,7 @@ class AppSetup:
         return f"https://github.com{path}?" + urlencode({"state": self.state})
 
     def manifest(self) -> dict:
-        return manifest(self.app_name, self.repo, f"{self.base_url}/callback", f"{self.base_url}/installed")
+        return manifest(self.app_name, self.repo, f"{self.base_url}/callback{self.suffix}", f"{self.base_url}/installed{self.suffix}")
 
     def start_page(self) -> str:
         """A page that submits the manifest to GitHub the moment it loads (GitHub takes the manifest as a POSTed form field)."""

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import hmac
 import json
 import secrets
@@ -31,6 +32,7 @@ from meld.config import Config, ConfigError, dotted_key, dumps, load_config, unk
 from meld.dispatch import DispatchError
 from meld.doctor import config_checks
 from meld.github import GitHubError
+from meld.setup import SetupError
 from meld.gitops import GitError
 from meld.posting import PostError
 from meld.prompts import ROLES
@@ -200,11 +202,15 @@ class Viewer:
     """One `meld watch`: its token, its port, and the routes. Reads, and posts the one human verb `/api/action`
     carries; holds no legality logic."""
 
-    ROUTES: dict[str, str] = {"/": "page", "/static/app.css": "asset_css", "/static/app.js": "asset_js",
+    #: Setup mode (plan 32): a Viewer built with `ctx=None` and a `firstrun.SetupSession` serves the page, its assets,
+    #: `/api/setup` and the per-group App flow under `/setup/app/<group>/...`; every other route answers 409 until the
+    #: session has written `.meld.toml` and started the groups, when the viewer loads a context and becomes the board.
+    SETUP_APP_RE = re.compile(r"^/setup/app/([a-z0-9][a-z0-9_-]{0,31})/(callback|installed)?$")
+    ROUTES: dict[str, str] = {"/": "page", "/static/app.css": "asset_css", "/static/app.js": "asset_js", "/api/setup": "api_setup",
                               "/api/state": "api_state", "/api/streams": "api_streams", "/api/events": "api_events",
                               "/api/action": "api_action", "/api/config": "api_config"}
     #: The routes that are not plain GETs. `/api/config` is the one route that answers two methods.
-    METHODS: dict[str, str | tuple[str, ...]] = {"/api/action": "POST", "/api/config": ("GET", "PUT")}
+    METHODS: dict[str, str | tuple[str, ...]] = {"/api/action": "POST", "/api/config": ("GET", "PUT"), "/api/setup": ("GET", "POST")}
 
     def __init__(self, ctx, *, token: str, port: int, config_path: Path | None = None,
                  now: Callable[[], str] = _iso_now, clock: Callable[[], float] = time.monotonic,
@@ -212,8 +218,12 @@ class Viewer:
                  start_of: Callable[[int], str] = proc_start_of, disk_usage: Callable[[Path], object] = shutil.disk_usage,
                  state_ttl: float = STATE_TTL_SECONDS, interval: float = 1.0, check_every: int = st.CHECK_EVERY,
                  max_polls: int | None = None, which: Callable[[str], str | None] = shutil.which,
-                 env: Mapping[str, str] | None = None, usage_async: bool = True, usage_every: float = 60.0) -> None:
+                 env: Mapping[str, str] | None = None, usage_async: bool = True, usage_every: float = 60.0,
+                 setup=None, load_ctx: Callable[[Path], object] | None = None) -> None:
+        if ctx is None and setup is None:
+            raise ValueError("a Viewer needs a context, or a SetupSession to make one")
         self.ctx = ctx
+        self.setup, self.load_ctx = setup, load_ctx
         self.token = token
         self.port = port
         self.config_path = config_path
@@ -249,13 +259,66 @@ class Viewer:
         refused = self.admitted(req)
         if refused is not None:
             return refused
+        m = self.SETUP_APP_RE.match(req.path)
+        if m is not None:
+            return self.setup_app(req, m.group(1), m.group(2) or "")
         name = self.ROUTES.get(req.path)
         if name is None:
             return _json(404, {"error": f"no route {req.path}"})
         allowed = self.METHODS.get(req.path, "GET")
         if req.method not in ({allowed} if isinstance(allowed, str) else set(allowed)):
             return _json(405, {"error": f"{req.method} is not allowed on {req.path}"})
+        if self.ctx is None and name not in ("page", "asset_css", "asset_js", "api_setup"):
+            return _json(409, {"error": "this repository is not set up yet; the page is in setup mode", "setup": True})
         return getattr(self, name)(req)
+
+    # ---- setup mode (plan 32) ----------------------------------------------------------------------------
+
+    def api_setup(self, req: Request) -> Response:
+        if self.setup is None:
+            return _json(200, {"mode": "board"})
+        if req.method == "GET":
+            return _json(200, {"mode": "board" if self.ctx is not None else "setup", **self.setup.facts()})
+        try:
+            body = json.loads(req.body or b"")
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            return _json(400, {"error": f"the request body is not JSON: {e}"})
+        step = body.get("step") if isinstance(body, dict) else None
+        try:
+            if step == "create":
+                out = self.setup.create(repo=str(body.get("repo") or ""), goal=str(body.get("goal") or ""), milestone_title=str(body.get("milestone") or "M1"),
+                                        groups=[str(g) for g in (body.get("groups") or [])], allow_public=bool(body.get("allow_public")))
+                return _json(200, {"created": out})
+            if step == "start":
+                started = self.setup.start()
+                adopted = self._adopt_context()
+                return _json(200, {"started": started, "board": adopted})
+        except (SetupError, GitHubError, ConfigError, OSError, ValueError) as e:
+            return _json(400, {"error": str(e)})
+        return _json(400, {"error": "step must be create or start"})
+
+    def setup_app(self, req: Request, group: str, page: str) -> Response:
+        if self.setup is None:
+            return _json(404, {"error": "no setup in progress"})
+        try:
+            flow = self.setup.app_flow(group)
+        except SetupError as e:
+            return _json(400, {"error": str(e)})
+        status, html = flow.handle("/" + page if page else "/", {k: v[0] for k, v in req.query.items() if v})
+        return Response(status, html.encode(), "text/html; charset=utf-8")
+
+    def _adopt_context(self) -> bool:
+        """Once the file is written and the groups are started, become the board: load a context and serve as always."""
+        if self.ctx is not None or self.setup is None or self.load_ctx is None:
+            return self.ctx is not None
+        path = self.setup.target_dir / ".meld.toml"
+        if not path.exists():
+            return False
+        self.ctx = self.load_ctx(path)
+        self.config_path = path
+        self._config_stamp = self._config_mtime()
+        self._state_cache = None
+        return True
 
     # ---- routes -----------------------------------------------------------------------------------------
 

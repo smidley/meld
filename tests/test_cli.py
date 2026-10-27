@@ -202,3 +202,38 @@ def test_tail_follows_until_the_sleep_hook_stops_it(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert calls == [0.5]
     assert "Checking the board first." in result.output
+
+
+def test_bare_meld_is_start_which_is_watch_here_and_the_wizard_elsewhere(tmp_path, monkeypatch):
+    """Plan 32: `meld` with no subcommand opens the board when a .meld.toml is found and the setup wizard when it is not."""
+    import os
+    from tests.fakeadapter import FakeAdapter
+    monkeypatch.setattr(cli, "ADAPTER_FOR", lambda name: FakeAdapter())
+    # with a configuration: start is watch
+    result, seen, opened = _watch(tmp_path, monkeypatch, [])
+    assert result.exit_code == 0 and seen["viewer"].ctx is not None
+    # without one: a Viewer in setup mode over a SetupSession, served and opened the same way
+    fake = FakeGh()
+    fake.route("GET", "user", {"login": "empowerScott"})
+    monkeypatch.setattr(cli, "RUN", fake)
+    seen2 = {}
+
+    def fake_serve(viewer, *, host="127.0.0.1", port=0):
+        seen2["viewer"], seen2["port"] = viewer, port
+        viewer.port = 4321
+        return _ServerStandIn()
+
+    monkeypatch.setattr(cli, "SERVE", fake_serve)
+    opened2 = []
+    monkeypatch.setattr(cli.webbrowser, "open", lambda link: opened2.append(link) or True)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.chdir(empty)
+    env = {k: v for k, v in env_for(tmp_path, group=None).items() if k != "MELD_HOME"}
+    env["MELD_HOME"] = str(tmp_path / "home")
+    result = CliRunner().invoke(main, [], env=env)
+    assert result.exit_code == 0, result.output
+    v = seen2["viewer"]
+    assert v.ctx is None and v.setup is not None and v.setup.target_dir == empty and seen2["port"] == 8765
+    assert v.setup.base_url == "http://127.0.0.1:4321" and v.setup.token == v.token
+    assert result.output.strip() == f"http://127.0.0.1:4321/?t={v.token}" and opened2 == [result.output.strip()]

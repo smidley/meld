@@ -1365,3 +1365,60 @@ def test_the_state_carries_usage_and_limits_and_the_page_shows_them(tmp_path):
     for marker in ("function renderLimits", "function fmtTokens", "frozen on a usage limit since", "li.title =", "state.limits", "next try"):
         assert marker in js, marker
     assert "#limits li.frozen" in css
+
+
+def test_the_viewer_in_setup_mode_serves_the_wizard_the_app_flow_and_then_becomes_the_board(tmp_path):
+    """Plan 32: `meld start` in a repository with no .meld.toml serves the page in setup mode; the wizard's three steps
+    run through /api/setup and /setup/app/<group>/...; once the groups start, the viewer loads a context and the board
+    routes answer. Until then they answer 409 and say so."""
+    from meld.context import load_context
+    from meld.firstrun import SetupSession
+    from meld.github import GitHub
+    from meld.models import ModelRegistry
+    from tests.fakeadapter import FakeAdapter
+    from tests.test_firstrun import PEM, ProbeRun, routes_for_create
+    fake = FakeGh()
+    routes_for_create(fake)
+    load_board1_routes(fake)
+    launched = []
+
+    def post(path, payload):
+        return v.handle(Request.parse("POST", f"{path}?t={TOKEN}", {"Host": "127.0.0.1:8765", "Content-Type": "application/json"}, json.dumps(payload).encode()))
+    session = SetupSession(target_dir=tmp_path, home=tmp_path / "home", registry=ModelRegistry.load(),
+                           gh_factory=lambda repo: GitHub(repo, token=None, run=fake), adapter_for=lambda name: FakeAdapter(),
+                           launcher=lambda g: launched.append(g) or {"group": g, "pid": 7, "detached": True},
+                           which=lambda b: "/bin/" + b if b in ("claude", "codex") else None, run=ProbeRun(logged={"claude": True, "codex": True}),
+                           base_url="http://127.0.0.1:8765", token=TOKEN)
+    v = Viewer(None, token=TOKEN, port=8765, config_path=None, setup=session, now=lambda: NOW, clock=Clock(), sleep=lambda s: None,
+               alive=lambda pid: True, start_of=lambda pid: "T0", disk_usage=lambda p: SimpleNamespace(total=0, used=0, free=3 * 1024 ** 3),
+               check_every=1, max_polls=1, usage_async=False, which=lambda b: None, env={},
+               load_ctx=lambda p: load_context(p, env=env_for(tmp_path, group=None), run=fake, adapter_for=lambda name: FakeAdapter()))
+    with pytest.raises(ValueError):
+        Viewer(None, token=TOKEN, port=1)
+    assert get(v, "/").status == 200 and get(v, "/api/state").status == 409 and body(get(v, "/api/state"))["setup"] is True
+    facts = body(get(v, "/api/setup"))
+    assert facts["mode"] == "setup" and facts["repo"] == "acme/widgets" and facts["created"] is None
+    html, js, css = (get(v, p).body.decode() for p in ("/", "/static/app.js", "/static/app.css"))
+    assert 'id="wizard"' in html and 'id="wz-goal"' in html and 'id="wz-clis"' in html
+    for marker in ("async function boot", "function renderWizard", "function showWizardSteps", '"/api/setup"', "/setup/app/${g}/", "Start the AIs"):
+        assert marker in js, marker
+    assert "body.setup > :not(#wizard)" in css
+    # step 1: create
+    bad = post("/api/setup", {"step": "create", "repo": "acme/widgets", "goal": "", "groups": ["claude"]})
+    assert bad.status == 400 and "say what you want built" in body(bad)["error"]
+    ok = post("/api/setup", {"step": "create", "repo": "acme/widgets", "goal": "Ship it", "milestone": "M1", "groups": ["claude", "codex"]})
+    assert ok.status == 200 and body(ok)["created"]["groups"] == ["claude", "codex"]
+    # step 2: each group's App, served by the viewer itself with the token on GitHub's redirects
+    page = get(v, "/setup/app/claude/")
+    assert page.status == 200 and b"settings/apps/new" in page.body and b"callback?t=" in page.body
+    assert get(v, "/setup/app/nope/").status == 400 and get(v, "/setup/app/claude/callback", token=None).status == 403
+    for g in ("claude", "codex"):
+        flow = session.app_flow(g)
+        flow.convert = lambda code, g=g: {"id": 7, "slug": f"meld-{g}", "pem": PEM, "html_url": "u"}
+        assert get(v, f"/setup/app/{g}/callback?state={flow.state}&code=c").status == 200
+        assert get(v, f"/setup/app/{g}/installed?installation_id=99").status == 200
+    assert body(get(v, "/api/setup"))["apps"]["codex"]["installed"] is True
+    # step 3: start, and the viewer becomes the board
+    out = body(post("/api/setup", {"step": "start"}))
+    assert launched == ["claude", "codex"] and out["board"] is True
+    assert body(get(v, "/api/setup"))["mode"] == "board" and get(v, "/api/state").status == 200

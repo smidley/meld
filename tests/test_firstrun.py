@@ -1,0 +1,131 @@
+"""Plan 32: `meld start` -- open Meld in a repository and say what you want built -- driven without a socket, a browser,
+a CLI or GitHub."""
+import json
+import stat
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from meld.firstrun import SetupSession, repo_from_remote
+from meld.github import GitHub
+from meld.models import ModelRegistry
+from meld.setup import SetupError
+from tests.fakegh import FakeGh
+from tests.test_setup import R, route_repo
+
+PEM = "-----BEGIN RSA PRIVATE KEY-----\nfake\n-----END RSA PRIVATE KEY-----\n"
+
+
+class ProbeRun:
+    """A subprocess.run stand-in: git's origin URL, and each CLI's login answer."""
+    def __init__(self, remote="git@github.com:acme/widgets.git", logged={"claude": True, "codex": False}):
+        self.remote, self.logged, self.calls = remote, logged, []
+
+    def __call__(self, argv, **kw):
+        self.calls.append(argv)
+        if argv[:2] == ["git", "-C"]:
+            return SimpleNamespace(returncode=0 if self.remote else 2, stdout=self.remote or "", stderr="")
+        binary = argv[0]
+        if binary == "claude":
+            return SimpleNamespace(returncode=0, stdout=json.dumps({"loggedIn": self.logged.get("claude", False), "authMethod": "oauth"}), stderr="")
+        if binary == "codex":
+            return SimpleNamespace(returncode=0, stdout="Not logged in" if not self.logged.get("codex") else "Logged in using ChatGPT", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unknown")
+
+
+def routes_for_create(fake: FakeGh) -> None:
+    route_repo(fake)
+    fake.route("GET", R + "labels", [])
+    fake.route("POST", R + "labels", {"name": "x"}, status=201)
+    fake.route("GET", R + "milestones", [])
+    fake.route("POST", R + "milestones", {"number": 1, "title": "M1"}, status=201)
+    fake.route("GET", R + "issues", [])
+    fake.route("POST", R + "issues", {"number": 2}, status=201)
+    fake.route("GET", "users/acme", {"login": "acme", "type": "Organization"})
+
+
+def session(tmp_path: Path, fake: FakeGh | None = None, which=None, run=None, launcher=None) -> SetupSession:
+    fake = fake or FakeGh()
+    launched = []
+    return SetupSession(target_dir=tmp_path, home=tmp_path / "home", registry=ModelRegistry.load(),
+                        gh_factory=lambda repo: GitHub(repo, token=None, run=fake),
+                        adapter_for=__import__("meld.adapters", fromlist=["get_adapter"]).get_adapter,
+                        launcher=launcher or (lambda g: launched.append(g) or {"group": g, "pid": 100 + len(launched), "detached": True}),
+                        which=which or (lambda b: "/bin/" + b if b in ("claude", "codex") else None), run=run or ProbeRun(),
+                        base_url="http://127.0.0.1:5", token="tok")
+
+
+def test_repo_from_remote_reads_ssh_and_https_origins(tmp_path):
+    assert repo_from_remote(tmp_path, ProbeRun("git@github.com:acme/widgets.git")) == "acme/widgets"
+    assert repo_from_remote(tmp_path, ProbeRun("https://github.com/acme/widgets")) == "acme/widgets"
+    assert repo_from_remote(tmp_path, ProbeRun("https://github.com/acme/widgets.git/")) == "acme/widgets"
+    assert repo_from_remote(tmp_path, ProbeRun("")) is None and repo_from_remote(tmp_path, ProbeRun("https://gitlab.com/a/b")) is None
+
+
+def test_facts_say_what_this_machine_has(tmp_path):
+    fake = FakeGh()
+    fake.route("GET", "user", {"login": "empowerScott"})
+    f = session(tmp_path, fake).facts()
+    assert f["repo"] == "acme/widgets" and f["gh_login"] == "empowerScott" and f["config_exists"] is False and f["created"] is None
+    by = {c["name"]: c for c in f["clis"]}
+    assert set(by) == {"claude", "codex", "gemini", "grok", "antigravity"}
+    assert by["claude"]["found"] and by["claude"]["logged_in"] is True and by["claude"]["default_model"] and by["claude"]["models"]
+    assert by["codex"]["found"] and by["codex"]["logged_in"] is False and "not logged in" in by["codex"]["detail"]
+    assert by["grok"]["found"] is False and by["grok"]["logged_in"] is None and "not on PATH" in by["grok"]["detail"]
+
+
+def test_create_runs_the_repository_setup_for_the_chosen_ais_only(tmp_path):
+    fake = FakeGh()
+    routes_for_create(fake)
+    s = session(tmp_path, fake)
+    with pytest.raises(SetupError, match="say what you want built"):
+        s.create(repo="acme/widgets", goal="  ", milestone_title="M1", groups=["claude"])
+    with pytest.raises(SetupError, match="choose at least one AI"):
+        s.create(repo="acme/widgets", goal="Ship it", milestone_title="M1", groups=[])
+    with pytest.raises(SetupError, match="owner/name"):
+        s.create(repo="widgets", goal="Ship it", milestone_title="M1", groups=["claude"])
+    out = s.create(repo="acme/widgets", goal="Ship a widget catalogue", milestone_title="M1", groups=["claude"])
+    assert out["milestone"] == 1 and out["coordination_issue"] == 2 and out["groups"] == ["claude"]      # codex is installed but was not chosen
+    text = (tmp_path / ".meld.toml").read_text()
+    assert "[groups.claude]" in text and "[groups.codex]" not in text.replace("# [groups.codex]", "")
+    assert s.facts()["created"]["groups"] == ["claude"] and s.facts()["config_exists"]
+
+
+def test_the_app_flow_per_group_carries_the_viewers_token_and_writes_the_group(tmp_path):
+    fake = FakeGh()
+    routes_for_create(fake)
+    s = session(tmp_path, fake)
+    with pytest.raises(SetupError, match="create the repository setup first"):
+        s.app_flow("claude")
+    s.create(repo="acme/widgets", goal="Ship it", milestone_title="M1", groups=["claude"])
+    with pytest.raises(SetupError, match="not one of the configured groups"):
+        s.app_flow("codex")
+    flow = s.app_flow("claude")
+    assert flow is s.app_flow("claude") and flow.owner_is_org is True
+    m = flow.manifest()
+    assert m["redirect_url"] == "http://127.0.0.1:5/setup/app/claude/callback?t=tok" and m["setup_url"] == "http://127.0.0.1:5/setup/app/claude/installed?t=tok"
+    flow.convert = lambda code: {"id": 7, "slug": "meld-claude", "pem": PEM, "html_url": "u"}
+    assert flow.handle("/callback", {"state": flow.state, "code": "c"})[0] == 200
+    assert flow.handle("/installed", {"installation_id": "99"})[0] == 200 and flow.done
+    assert s.facts()["apps"] == {"claude": {"created": True, "installed": True, "slug": "meld-claude", "error": None}}
+    assert stat.S_IMODE((tmp_path / "home" / "keys" / "claude.pem").stat().st_mode) == 0o600
+
+
+def test_start_launches_only_groups_whose_app_is_installed(tmp_path):
+    fake = FakeGh()
+    routes_for_create(fake)
+    launched = []
+    s = session(tmp_path, fake, launcher=lambda g: launched.append(g) or {"group": g, "pid": 42, "detached": True})
+    with pytest.raises(SetupError):
+        s.start()
+    s.create(repo="acme/widgets", goal="Ship it", milestone_title="M1", groups=["claude", "codex"])
+    assert s.start() == {"claude": {"error": "its GitHub App is not installed yet"}, "codex": {"error": "its GitHub App is not installed yet"}} and launched == []
+    for g in ("claude", "codex"):
+        flow = s.app_flow(g)
+        flow.convert = lambda code, g=g: {"id": 7, "slug": f"meld-{g}", "pem": PEM, "html_url": "u"}
+        flow.handle("/callback", {"state": flow.state, "code": "c"})
+        flow.handle("/installed", {"installation_id": "99"})
+    out = s.start()
+    assert launched == ["claude", "codex"] and out["claude"]["pid"] == 42 and out["codex"]["pid"] == 42
+    assert s.start() == out and launched == ["claude", "codex"]                      # started once; a second start launches nothing twice

@@ -1642,6 +1642,121 @@ document.addEventListener("click", (e) => {
 el("config").addEventListener("toggle", () => { if (el("config").open && !configState) loadConfig(); });
 el("config-save").addEventListener("click", saveConfig);
 
-pollState();
-pollStreams();
-openFeed();
+// ---- setup mode (plan 32): until this repository is set up, the page is a wizard, not a board ----
+let wizardFacts = null;
+
+async function boot() {
+  let info = { mode: "board" };
+  try { info = await getJSON("/api/setup"); } catch (e) { /* an older server: the board as always */ }
+  if (info.mode !== "setup") { pollState(); pollStreams(); openFeed(); return; }
+  document.body.classList.add("setup");
+  el("wizard").classList.remove("hidden");
+  wizardFacts = info;
+  renderWizard(info);
+}
+
+function renderWizard(info) {
+  text(el("wz-where"), `in ${info.target_dir}` + (info.gh_login ? `, as ${info.gh_login} on GitHub` : info.gh_error ? `; gh is not logged in (${info.gh_error})` : ""));
+  if (info.repo && !el("wz-repo").value) el("wz-repo").value = info.repo;
+  const box = el("wz-clis");
+  for (const old of [...box.querySelectorAll("label")]) old.remove();
+  for (const c of info.clis || []) {
+    const label = document.createElement("label");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.value = c.name;
+    cb.checked = !!(c.found && c.logged_in !== false && c.default_model);
+    cb.disabled = !c.found;
+    const state = !c.found ? "not installed" : c.logged_in === false ? "installed, not logged in" : c.logged_in ? "installed and logged in" : "installed";
+    label.append(cb, text(document.createElement("span"), c.name), text(document.createElement("span"), `${state}${c.default_model ? ` · ${c.default_model}` : " · no models in the catalogue"}`));
+    label.lastChild.className = "hint";
+    label.title = c.detail || "";
+    box.append(label);
+  }
+  if (info.created) showWizardSteps(info);
+}
+
+function showWizardSteps(info) {
+  el("wz-form").classList.add("hidden");
+  el("wz-steps").classList.remove("hidden");
+  const created = info.created || {};
+  const li1 = el("wz-step-created");
+  li1.className = "done";
+  text(li1, `Repository set up: milestone ${created.milestone} with coordination issue #${created.coordination_issue}, labels, .meld.toml and ${(created.files || []).length} files written for ${(created.groups || []).join(", ")}.`
+            + ((created.warnings || []).length ? ` Warnings: ${created.warnings.join("; ")}` : ""));
+  const li2 = el("wz-step-apps");
+  li2.replaceChildren();
+  const apps = info.apps || {};
+  const groups = created.groups || [];
+  const allInstalled = groups.length > 0 && groups.every((g) => apps[g] && apps[g].installed);
+  li2.className = allInstalled ? "done" : "";
+  text(li2.appendChild(document.createElement("span")), "Give each AI its GitHub identity, two clicks each in a new tab: ");
+  for (const g of groups) {
+    const a = document.createElement("a");
+    const state = apps[g] || {};
+    a.href = api(`/setup/app/${g}/`);
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    text(a, state.installed ? `${g} ✓ ${state.slug}[bot]` : state.created ? `${g}: created, now install it` : `create ${g}'s App`);
+    li2.append(a, text(document.createElement("span"), "  "));
+    if (state.error) text(li2.appendChild(document.createElement("span")), ` (${state.error})`);
+  }
+  const li3 = el("wz-step-start");
+  li3.replaceChildren();
+  const started = info.started || {};
+  const running = groups.filter((g) => started[g] && !started[g].error);
+  if (running.length === groups.length && groups.length) {
+    li3.className = "done";
+    text(li3, "All groups started. Opening the board …");
+    setTimeout(() => location.reload(), 1500);
+    return;
+  }
+  const b = document.createElement("button");
+  b.type = "button";
+  text(b, allInstalled ? "Start the AIs" : "Start the AIs (once every App is installed)");
+  b.disabled = !allInstalled;
+  b.addEventListener("click", async () => {
+    b.disabled = true;
+    try {
+      const out = await postJSON("/api/setup", { step: "start" });
+      const errors = Object.entries(out.started || {}).filter(([, r]) => r.error).map(([g, r]) => `${g}: ${r.error}`);
+      if (errors.length) text(li3.appendChild(document.createElement("span")), ` ${errors.join("; ")}`);
+      wizardFacts = await getJSON("/api/setup");
+      renderWizard(wizardFacts);
+    } catch (e) {
+      text(li3.appendChild(document.createElement("span")), ` ${e.message}`);
+      b.disabled = false;
+    }
+  });
+  li3.append(b);
+  if (!allInstalled) {
+    // Keep asking until every App is installed: the two clicks happen in another tab.
+    setTimeout(async () => { try { wizardFacts = await getJSON("/api/setup"); renderWizard(wizardFacts); } catch (e) { /* next time */ } }, 4000);
+  }
+}
+
+async function postJSON(path, payload) {
+  const response = await fetch(api(path), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+  const out = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(out.error || `${response.status}`);
+  return out;
+}
+
+el("wz-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const groups = [...el("wz-clis").querySelectorAll("input:checked")].map((cb) => cb.value);
+  const button = el("wz-create");
+  button.disabled = true;
+  text(el("wz-result"), "setting up …");
+  try {
+    await postJSON("/api/setup", { step: "create", repo: el("wz-repo").value.trim(), goal: el("wz-goal").value, milestone: el("wz-milestone").value.trim(), groups });
+    wizardFacts = await getJSON("/api/setup");
+    text(el("wz-result"), "");
+    renderWizard(wizardFacts);
+  } catch (err) {
+    text(el("wz-result"), err.message);
+    button.disabled = false;
+  }
+});
+
+boot();

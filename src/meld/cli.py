@@ -54,15 +54,17 @@ def emit(data: object, pretty: bool) -> None:
     click.echo(json.dumps(data, indent=2 if pretty else None))
 
 
-@click.group()
+@click.group(invoke_without_command=True)
 @click.version_option(__version__, prog_name="meld")
 @click.option("--config", "config_path", type=click.Path(path_type=Path), default=None,
               help="Path to .meld.toml (default: search upward from the current directory).")
 @click.option("--pretty/--compact", default=True, help="Pretty-print JSON output.")
 @click.pass_context
 def main(ctx: click.Context, config_path: Path | None, pretty: bool) -> None:
-    """Meld: multi-AI coordination over a GitHub repo."""
+    """Meld: multi-AI coordination over a GitHub repo. Bare `meld` is `meld start`: the board here, or the setup wizard."""
     ctx.obj = {"config_path": config_path, "pretty": pretty}
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(start)
 
 
 def _load(ctx: click.Context) -> Context:
@@ -541,12 +543,7 @@ def run(ctx: click.Context, group: str, once: bool, detach: bool) -> None:
         state = liveness(read_record(supervisor_path(home, group)), alive=ALIVE, start_of=START_OF)
         if state["state"] == "alive":
             raise click.ClickException(f"a supervisor for {group} is already running ({state['reason']}); `meld stop {group}` first")
-        log = home / "logs" / group / "supervisor.log"
-        log.parent.mkdir(parents=True, exist_ok=True)
-        with open(log, "ab") as handle:
-            proc = subprocess.Popen(detach_argv(ctx.obj["config_path"], group), cwd=str(Path.cwd()), env=dict(os.environ),
-                                    stdin=subprocess.DEVNULL, stdout=handle, stderr=handle, start_new_session=True)
-        emit({"group": group, "pid": proc.pid, "log": str(log), "detached": True}, ctx.obj["pretty"])
+        emit(detach_supervisor(ctx.obj["config_path"], group, home, Path.cwd()), ctx.obj["pretty"])
         return
     emit(_guard(lambda: run_group(c, once=once, base_env=env)), ctx.obj["pretty"])
 
@@ -554,6 +551,17 @@ def run(ctx: click.Context, group: str, once: bool, detach: bool) -> None:
 ALIVE = pid_alive          # seams for the tests, which stand a sleeping python in for a supervisor and never run `ps`
 START_OF = proc_start_of
 SLEEP = time.sleep
+
+
+def detach_supervisor(config_path: Path | None, group: str, home: Path, cwd: Path) -> dict:
+    """What `meld run <group> --detach` does once the liveness check has passed: the supervisor in its own session with
+    its output on `$MELD_HOME/logs/<group>/supervisor.log`. Shared by `run` and the setup wizard's start step."""
+    log = home / "logs" / group / "supervisor.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with open(log, "ab") as handle:
+        proc = subprocess.Popen(detach_argv(config_path, group), cwd=str(cwd), env=dict(os.environ),
+                                stdin=subprocess.DEVNULL, stdout=handle, stderr=handle, start_new_session=True)
+    return {"group": group, "pid": proc.pid, "log": str(log), "detached": True}
 
 
 def detach_argv(config_path: Path | None, group: str) -> list[str]:
@@ -713,6 +721,45 @@ def tail(ctx: click.Context, target: str | None, issue: int | None, follow: bool
         except KeyboardInterrupt:
             click.echo("", err=True)
             return
+
+
+@main.command()
+@click.option("--port", type=int, default=None, help="Loopback port to bind (default: [viewer] port, or 8765 before setup; 0 lets the OS choose).")
+@click.option("--open/--no-open", "open_browser", default=None, help="Open the page in the default browser.")
+@click.pass_context
+def start(ctx: click.Context, port: int | None, open_browser: bool | None) -> None:
+    """Open Meld here: the board when this repository is set up, otherwise a wizard that asks what you want built and
+    which AIs build it, then sets the repository up, gives each AI its GitHub App in two clicks, and starts them."""
+    try:
+        path = ctx.obj["config_path"] or find_config(Path.cwd())
+    except ConfigError:
+        path = None
+    if path is not None:
+        ctx.invoke(watch, port=port, open_browser=open_browser)
+        return
+    from meld.firstrun import SetupSession
+    home = meld_home(os.environ)
+    cwd = Path.cwd()
+    session = SetupSession(target_dir=cwd, home=home, registry=ModelRegistry.load(), gh_factory=lambda repo: GitHub(repo, token=None, run=RUN),
+                           adapter_for=ADAPTER_FOR, launcher=lambda g: detach_supervisor(cwd / ".meld.toml", g, home, cwd))
+    viewer = Viewer(None, token=stable_token(home), port=0, config_path=None, setup=session,
+                    load_ctx=lambda p: load_context(p, run=RUN, adapter_for=ADAPTER_FOR))
+    wanted = port if port is not None else 8765
+    try:
+        httpd = SERVE(viewer, port=wanted)
+    except OSError as e:
+        raise click.ClickException(f"cannot bind 127.0.0.1:{wanted}: {e}")
+    link = url(httpd, viewer.token)
+    session.base_url, session.token = link.partition("/?")[0], viewer.token
+    click.echo(link)
+    if open_browser is None or open_browser:
+        webbrowser.open(link)
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        httpd.server_close()
 
 
 @main.command()

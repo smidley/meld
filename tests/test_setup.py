@@ -367,3 +367,23 @@ def test_setup_app_flag_writes_app_form_and_next_steps(tmp_path):
     assert any("github.com/settings/apps/new" in step for step in out["next"]) and any("installation_id" in step for step in out["next"])
     # Final-review Minor 8: Checks is recommended, not "optional" -- the printed steps must say what is lost without it.
     assert any("check_run_error" in step for step in out["next"])
+
+
+def test_context_becomes_a_file_and_a_section_of_the_coordination_issue(tmp_path):
+    """Plan 35: what the person typed as context is .meld/CONTEXT.md (left alone when the product already has one) and a
+    `## Context` section under the goal on the coordination issue."""
+    from meld.setup import repo_files
+    written = repo_files(tmp_path, "empowerScott", "Read docs/DESIGN.md first; src/api is half built.")
+    assert ".meld/CONTEXT.md" in written and (tmp_path / ".meld" / "CONTEXT.md").read_text() == "# Product context\n\nRead docs/DESIGN.md first; src/api is half built.\n"
+    assert ".meld/CONTEXT.md" not in repo_files(tmp_path, "empowerScott", "something else")        # an existing one is the product's
+    assert (tmp_path / ".meld" / "CONTEXT.md").read_text().endswith("half built.\n")
+    assert ".meld/CONTEXT.md" not in repo_files(tmp_path / "other", "empowerScott", "   ")          # blank context writes nothing
+    fake = FakeGh()
+    fake.route("GET", R + "issues", [])
+    fake.route("POST", R + "issues", {"number": 9}, status=201)
+    ensure_coordination_issue(gh_for(fake), 1, "M1", "Ship it", "Read docs/DESIGN.md first.")
+    body = [c for c in fake.calls if c.method == "POST"][-1].body["body"]
+    assert "## Goal\n\nShip it\n\n## Context\n\nRead docs/DESIGN.md first.\n\nOrchestrators post here" in body
+    fake.calls.clear()
+    ensure_coordination_issue(gh_for(fake), 1, "M1", "Ship it")
+    assert "## Context" not in [c for c in fake.calls if c.method == "POST"][-1].body["body"]

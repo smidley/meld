@@ -287,7 +287,8 @@ class Viewer:
         try:
             if step == "create":
                 out = self.setup.create(repo=str(body.get("repo") or ""), goal=str(body.get("goal") or ""), milestone_title=str(body.get("milestone") or "M1"),
-                                        groups=[str(g) for g in (body.get("groups") or [])], allow_public=bool(body.get("allow_public")))
+                                        groups=[str(g) for g in (body.get("groups") or [])], allow_public=bool(body.get("allow_public")),
+                                        context=str(body.get("context") or ""))
                 return _json(200, {"created": out})
             if step == "start":
                 started = self.setup.start()

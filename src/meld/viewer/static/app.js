@@ -1757,7 +1757,8 @@ el("wz-form").addEventListener("submit", async (e) => {
   button.disabled = true;
   text(el("wz-result"), "setting up …");
   try {
-    await postJSON("/api/setup", { step: "create", repo: el("wz-repo").value.trim(), goal: el("wz-goal").value, milestone: el("wz-milestone").value.trim(), groups });
+    await postJSON("/api/setup", { step: "create", repo: el("wz-repo").value.trim(), goal: el("wz-goal").value, milestone: el("wz-milestone").value.trim(), groups,
+                                   context: el("wz-context").value });
     wizardFacts = await getJSON("/api/setup");
     text(el("wz-result"), "");
     renderWizard(wizardFacts);

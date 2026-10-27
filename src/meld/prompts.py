@@ -4,7 +4,7 @@ from __future__ import annotations
 from importlib import resources
 from pathlib import Path
 
-from meld.brief import product_standards
+from meld.brief import product_standards, product_context
 from meld.config import Config, GroupConfig
 from meld.roster import WorkerType, roster
 
@@ -63,6 +63,7 @@ def role_prompt(role: str, cfg: Config, group: GroupConfig, repo_root: Path, *, 
         f"- Worker timeouts: S {cfg.timeouts['S']}, M {cfg.timeouts['M']}, L {cfg.timeouts['L']}; amend cap {cfg.amend_cap}; ping-pong cap {cfg.pingpong_cap}",
         "- Budget (worker runs per tier this milestone): " + ", ".join(f"{k} {v}" for k, v in cfg.budget.items()),
         "", "## Product standards", "", product_standards(repo_root),
+        *(["", "## Product context", "", context, "", "Plan on what exists: read the files this names before proposing or claiming work."] if (context := product_context(repo_root)) else []),
         "", "## Your roster", "",
     ]
     entries = roster_entries if roster_entries is not None else roster(repo_root)

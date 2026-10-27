@@ -73,12 +73,13 @@ def ensure_milestone(gh: GitHub, title: str) -> tuple[int, str]:
     return int(created["number"]), "created"
 
 
-def ensure_coordination_issue(gh: GitHub, milestone: int, milestone_title: str, goal: str) -> tuple[int, str]:
+def ensure_coordination_issue(gh: GitHub, milestone: int, milestone_title: str, goal: str, context: str = "") -> tuple[int, str]:
     for issue in gh.list_issues(milestone):
         if COORDINATION_LABEL in {lab.get("name") for lab in issue.get("labels", [])}:
             return int(issue["number"]), "existing"
     body = (f"# Coordination: {milestone_title}\n\n## Goal\n\n{goal.strip()}\n\n"
-            "Orchestrators post here in the `[party] VERB` grammar; humans speak as `[human]`. "
+            + (f"## Context\n\n{context.strip()}\n\n" if context.strip() else "")
+            + "Orchestrators post here in the `[party] VERB` grammar; humans speak as `[human]`. "
             "Approve the plan by adding the `meld:plan-approved` label to this issue.\n")
     created = gh.create_issue(f"Coordination: {milestone_title}", body, [COORDINATION_LABEL], milestone)
     return int(created["number"]), "created"
@@ -138,7 +139,7 @@ def starter_toml(repo: str, default_branch: str, human: str, installed: list[str
 
 def setup(gh: GitHub, *, repo: str, goal: str, milestone_title: str, human: str, target_dir: Path, registry: ModelRegistry,
           allow_public: bool = False, which: Callable[[str], str | None] = shutil.which, force: bool = False,
-          protect: bool = True, pr: bool = False, run=subprocess.run, app: bool = False) -> dict:
+          protect: bool = True, pr: bool = False, run=subprocess.run, app: bool = False, context: str = "") -> dict:
     info = gh.get_repo()
     if not info.get("private", False) and not allow_public:
         raise SetupError(f"{repo} is public; meld setup refuses without --allow-public "
@@ -152,7 +153,7 @@ def setup(gh: GitHub, *, repo: str, goal: str, milestone_title: str, human: str,
         raise SetupError(f"{config_path} exists; pass --force to overwrite it")
     labels = ensure_labels(gh)
     milestone, milestone_how = ensure_milestone(gh, milestone_title)
-    coordination, issue_how = ensure_coordination_issue(gh, milestone, milestone_title, goal)
+    coordination, issue_how = ensure_coordination_issue(gh, milestone, milestone_title, goal, context)
     installed = installed_adapters(which)
     if not installed:
         warnings.append(f"no CLI found on PATH for any adapter ({', '.join(ADAPTER_NAMES)}); every [groups.*] block is commented out -- install a CLI and uncomment its block")
@@ -172,7 +173,7 @@ def setup(gh: GitHub, *, repo: str, goal: str, milestone_title: str, human: str,
         # overwriting or conflicting with those just-written files.
         _checkout_setup_branch(target_dir, default_branch, run)
     write_atomic(config_path, starter_toml(repo, default_branch, human, installed, registry, app=app))
-    files = repo_files(target_dir, human) + [".meld.toml"]
+    files = repo_files(target_dir, human, context) + [".meld.toml"]
     ci = ci_paths_warnings(target_dir)
     warnings.extend(ci)
     protection = protect_branch(gh, default_branch) if protect else {"protected": False, "skipped": True}
@@ -203,9 +204,17 @@ def setup(gh: GitHub, *, repo: str, goal: str, milestone_title: str, human: str,
 _CODEOWNERS_LINE = "/.meld/workers/ @{human}"
 
 
-def repo_files(target_dir: Path, human: str) -> list[str]:
-    """Write the repo-side files the framework relies on; return the relative paths written or extended (idempotent)."""
+def repo_files(target_dir: Path, human: str, context: str = "") -> list[str]:
+    """Write the repo-side files the framework relies on; return the relative paths written or extended (idempotent).
+    `context` (plan 35) becomes `.meld/CONTEXT.md` when given and the file does not exist; an existing one is the product's
+    and is left alone."""
     written: list[str] = []
+    if context.strip():
+        ctx_file = target_dir / ".meld" / "CONTEXT.md"
+        if not ctx_file.exists():
+            ctx_file.parent.mkdir(parents=True, exist_ok=True)
+            ctx_file.write_text("# Product context\n\n" + context.strip() + "\n")
+            written.append(".meld/CONTEXT.md")
     codeowners = target_dir / ".github" / "CODEOWNERS"
     line = _CODEOWNERS_LINE.format(human=human)
     existing = codeowners.read_text() if codeowners.exists() else ""

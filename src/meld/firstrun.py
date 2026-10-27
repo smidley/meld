@@ -211,7 +211,7 @@ class SetupSession:
         out = {"committed": committed, **self._push(default_branch)}
         return out
 
-    def create(self, *, repo: str, goal: str, milestone_title: str, groups: list[str], allow_public: bool = False) -> dict:
+    def create(self, *, repo: str, goal: str, milestone_title: str, groups: list[str], allow_public: bool = False, context: str = "") -> dict:
         """The repository on GitHub (created when it is not there, and this folder pushed to it), then labels, milestone,
         coordination issue, the repo files and a starter `.meld.toml` naming one group per chosen CLI (PAT form, which
         the App step then converts group by group)."""
@@ -237,7 +237,8 @@ class SetupSession:
         chosen = {get_adapter(g).version_argv()[0] for g in groups}
         which = lambda binary: self.which(binary) if binary in chosen else None   # noqa: E731
         self.created = setup_repo(gh, repo=repo, goal=goal, milestone_title=milestone_title or "M1", human=human, target_dir=self.target_dir,
-                                  registry=self.registry, allow_public=allow_public, which=which, force=False, protect=True, pr=False, run=self.run)
+                                  registry=self.registry, allow_public=allow_public, which=which, force=False, protect=True, pr=False, run=self.run,
+                                  context=context)
         self.created["repository"] = repository
         files = [".meld.toml", *(self.created.get("files") or [])]
         self.created["setup_commit"] = self.commit_setup_files(files, repository["default_branch"])

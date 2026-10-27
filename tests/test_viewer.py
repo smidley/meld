@@ -1399,7 +1399,7 @@ def test_the_viewer_in_setup_mode_serves_the_wizard_the_app_flow_and_then_become
     facts = body(get(v, "/api/setup"))
     assert facts["mode"] == "setup" and facts["repo"] == "acme/widgets" and facts["created"] is None
     html, js, css = (get(v, p).body.decode() for p in ("/", "/static/app.js", "/static/app.css"))
-    assert 'id="wizard"' in html and 'id="wz-goal"' in html and 'id="wz-clis"' in html
+    assert 'id="wizard"' in html and 'id="wz-goal"' in html and 'id="wz-clis"' in html and 'id="wz-context"' in html and 'context: el("wz-context").value' in js
     for marker in ("async function boot", "function renderWizard", "function showWizardSteps", '"/api/setup"', "/setup/app/${g}/", "Start the AIs"):
         assert marker in js, marker
     assert "body.setup > :not(#wizard)" in css

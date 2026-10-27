@@ -512,20 +512,21 @@ function renderLimits(state) {
     li.title = "summed from the transcripts kept on this machine; dollars only where the CLI reports them";
     list.append(li);
   }
+  // A frozen role is one short chip -- "grok pm frozen · next try 5:09 pm" -- with the provider's words, the reset
+  // time and the retry rule on hover, so the header does not fill with prose while a group waits out its quota.
   for (const [g, roles] of Object.entries(lim.frozen || {})) {
     for (const [role, f] of Object.entries(roles)) {
       if (f.expired) continue;
       const li = document.createElement("li");
       li.className = "frozen";
-      const name = text(document.createElement("span"), `${g}'s ${role}`);
+      const name = text(document.createElement("span"), `${g} ${role}`);
       name.className = "lgroup";
       name.style.color = colorFor("group", g);
       li.append(name);
+      text(li.appendChild(document.createElement("span")), ` frozen · next try ${clock12(Date.parse(f.until || ""))}`);
       const since = clock12(Date.parse(f.at || ""));
       const when = f.resets_at ? `the provider resets it at ${clock12(Date.parse(f.resets_at))}` : `no reset time was given, so the supervisor tries again every ${lim.retry_minutes} min`;
-      text(li.appendChild(document.createElement("span")), ` is frozen on a usage limit since ${since}: `);
-      if (f.text) text(li.appendChild(document.createElement("q")), f.text);
-      text(li.appendChild(document.createElement("span")), ` · ${when} · next try ${clock12(Date.parse(f.until || ""))}`);
+      li.title = `frozen on a usage limit since ${since}` + (f.text ? `: "${f.text}"` : "") + `\n${when}; next try ${clock12(Date.parse(f.until || ""))}`;
       list.append(li);
     }
   }

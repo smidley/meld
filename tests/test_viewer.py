@@ -1362,6 +1362,6 @@ def test_the_state_carries_usage_and_limits_and_the_page_shows_them(tmp_path):
     assert all(k in lim["usage"]["claude"] for k in ("input_tokens", "output_tokens", "cached_tokens", "cost_usd", "runs"))
     html, js, css = (get(v, p_).body.decode() for p_ in ("/", "/static/app.js", "/static/app.css"))
     assert 'id="limits"' in html
-    for marker in ("function renderLimits", "function fmtTokens", "is frozen on a usage limit since", "state.limits", "next try"):
+    for marker in ("function renderLimits", "function fmtTokens", "frozen on a usage limit since", "li.title =", "state.limits", "next try"):
         assert marker in js, marker
     assert "#limits li.frozen" in css

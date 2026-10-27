@@ -525,7 +525,7 @@ function renderLimits(state) {
       li.append(name);
       text(li.appendChild(document.createElement("span")), ` frozen · next try ${clock12(Date.parse(f.until || ""))}`);
       const since = clock12(Date.parse(f.at || ""));
-      const when = f.resets_at ? `the provider resets it at ${clock12(Date.parse(f.resets_at))}` : `no reset time was given, so the supervisor tries again every ${lim.retry_minutes} min`;
+      const when = f.resets_at ? `the provider resets it at ${clock12(Date.parse(f.resets_at))}` : `no reset time was given, so the supervisor tries again in ${f.retry_minutes || lim.retry_minutes} min (doubling each time it hits the limit again, up to a day)`;
       li.title = `frozen on a usage limit since ${since}` + (f.text ? `: "${f.text}"` : "") + `\n${when}; next try ${clock12(Date.parse(f.until || ""))}`;
       list.append(li);
     }

@@ -320,3 +320,15 @@ def test_limit_event_carries_the_text_and_the_reset_when_there_is_one():
     assert with_reset.kind == "usage_limit" and with_reset.meta["resets_at"] == "2026-09-12T18:00:00Z"
     (without,) = limit_event(NOW, "You've hit your spend limit.")
     assert without.kind == "usage_limit" and "resets_at" not in without.meta
+
+
+def test_reset_at_reads_compact_and_day_durations():
+    """Antigravity says "Resets in 166h54m43s"; the old parser read none of it and the supervisor re-probed every half hour."""
+    from meld.adapters.base import reset_at
+    now = "2026-10-26T23:40:00Z"
+    assert reset_at("RESOURCE_EXHAUSTED (code 429): Individual quota reached. Resets in 166h54m43s.", now) == "2026-11-02T22:34:43Z"
+    assert reset_at("rate limit hit, try again in 2h", now) == "2026-10-27T01:40:00Z"
+    assert reset_at("rate limit hit; back in 45m", now) == "2026-10-27T00:25:00Z"
+    assert reset_at("usage limit reached; resets in 3d2h", now) == "2026-10-30T01:40:00Z"
+    assert reset_at("usage limit reached; resets in 7 days", now) == "2026-11-02T23:40:00Z"
+    assert reset_at("usage limit reached, no time given", now) is None

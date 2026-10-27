@@ -388,7 +388,7 @@ def test_a_live_freeze_survives_a_supervisor_restart_without_posting_again(tmp_p
         assert read_freeze(path) == live                                 # nor rewritten, nor announced again
         # The report says the role is frozen and until when, so a frozen role is not read as one that failed to
         # launch -- and the instant it names is the six-hour cap, not the 2099 the freeze file claims.
-        assert out["roles"][role]["frozen_until"] == "2026-09-12T08:11:19Z"
+        assert out["roles"][role]["frozen_until"] == "2026-09-20T02:11:19Z"
 
 
 def test_an_untimed_freeze_reprobes_after_limit_retry_minutes(tmp_path):
@@ -497,11 +497,11 @@ def test_an_unposted_notice_is_retried_on_the_cadence_and_stops_once_it_lands(tm
     assert not _limited_posts(fake, mark)                                 # a notice that landed is never re-posted
 
 
-def test_a_named_reset_is_believed_only_up_to_the_six_hour_cap(tmp_path):
+def test_a_named_reset_is_believed_only_up_to_the_eight_day_cap(tmp_path):
     """A CLI's limit message is prose, and one stray instant in it ("...the milestone closes 2026-12-01") would
     otherwise freeze a role for months: the freeze is persisted, survives every restart, is re-probed by nothing,
     and no local surface shows it. The named instant is honoured only as far as the cap."""
-    assert MAX_FREEZE_MINUTES == 360                                      # six hours, from NOW = 02:11:19
+    assert MAX_FREEZE_MINUTES == 8 * 24 * 60                               # eight days, from NOW = 2026-09-12T02:11:19 (plan 38: six hours re-probed a week-long quota 48 times)
     fake, ctx, env = make(tmp_path)
     fake.route("POST", COMMENTS, {"id": 999, "html_url": "u"})
     path = freeze_path(ctx.store.home, "claude", "pm")
@@ -511,10 +511,10 @@ def test_a_named_reset_is_believed_only_up_to_the_six_hour_cap(tmp_path):
     out = run_group(ctx, adapter=FakeAdapter(), cycles=1, interval=0, sleep=lambda s: None, base_env=env,
                     wall=lambda: "2026-09-12T07:11:19Z")                  # five hours in: still frozen
     assert out["roles"]["pm"]["launches"] == 0 and read_freeze(path) is not None
-    assert out["roles"]["pm"]["frozen_until"] == "2026-09-12T08:11:19Z"
+    assert out["roles"]["pm"]["frozen_until"] == "2026-09-20T02:11:19Z"
 
     out = run_group(ctx, adapter=FakeAdapter(), cycles=1, interval=0, sleep=lambda s: None, base_env=env,
-                    wall=lambda: "2026-09-12T08:12:19Z")                  # six hours and a minute in: re-probed
+                    wall=lambda: "2026-09-20T02:12:19Z")                  # eight days and a minute in: re-probed
     assert out["roles"]["pm"]["reason"] == "limit" and read_freeze(path) is None
     assert out["roles"]["pm"]["frozen_until"] is None
     assert not _limited_posts(fake)                                       # a thaw announces nothing
@@ -892,3 +892,18 @@ def test_role_env_adds_the_groups_own_variables_under_its_identity(tmp_path):
     adapter = FakeAdapter()
     launch_role(ctx, group, adapter, "pm", base_env=env).proc.wait(timeout=10)
     assert adapter.launches[0].cli_config == {"model": "qwen3-coder"} and adapter.launches[0].env["ANTHROPIC_BASE_URL"] == "http://server:11434"
+
+
+def test_a_re_probe_that_hits_the_limit_again_backs_off_up_to_a_day(tmp_path):
+    """Plan 38: the second live run's Antigravity group re-probed a week-long quota every thirty minutes, emailing the
+    owner each time. The interval now doubles while re-probes keep hitting the limit, and a provider's named reset is
+    believed for days."""
+    from meld.runners import MAX_RETRY_MINUTES, last_limit_path, next_retry_minutes, write_record
+    home = tmp_path / "home"
+    assert next_retry_minutes(home, "claude", "pm", "2026-10-26T23:40:00Z", 30) == 30                    # first time: as configured
+    write_record(last_limit_path(home, "claude", "pm"), {"at": "2026-10-26T23:00:00Z", "retry_minutes": 30, "until": "2026-10-26T23:30:00Z"})
+    assert next_retry_minutes(home, "claude", "pm", "2026-10-26T23:40:00Z", 30) == 60                    # re-frozen right after the last freeze ended
+    write_record(last_limit_path(home, "claude", "pm"), {"at": "2026-10-26T20:00:00Z", "retry_minutes": 960, "until": "2026-10-27T12:00:00Z"})
+    assert next_retry_minutes(home, "claude", "pm", "2026-10-27T12:30:00Z", 30) == MAX_RETRY_MINUTES      # capped at a day
+    write_record(last_limit_path(home, "claude", "pm"), {"at": "2026-10-20T00:00:00Z", "retry_minutes": 240, "until": "2026-10-20T04:00:00Z"})
+    assert next_retry_minutes(home, "claude", "pm", "2026-10-26T23:40:00Z", 30) == 30                    # a freeze long past: start over

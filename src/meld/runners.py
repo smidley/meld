@@ -38,7 +38,8 @@ CLEAN_EXIT_SECONDS = 60.0
 # only by a person deleting limit.json. Six hours covers a Claude five-hour session window with an hour to spare,
 # and a genuine weekly limit simply re-probes four times a day -- each re-probe costing one fast-failing launch
 # and one true LIMITED, which is far cheaper than a group stranded for a month. A constant, not a config knob.
-MAX_FREEZE_MINUTES = 360
+MAX_FREEZE_MINUTES = 8 * 24 * 60   # a provider's named reset is believed up to eight days (plan 38: six hours re-probed a week-long quota 48 times)
+MAX_RETRY_MINUTES = 24 * 60         # the re-probe cadence for a limit that named no time doubles each time it hits the limit again, up to a day
 _ISO_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
 
@@ -220,13 +221,34 @@ def limit_text(log_path: Path, adapter: Adapter, now: str) -> str:
 
 def freeze_deadline(freeze: dict, retry_minutes: int) -> str:
     """The instant a freeze runs until: the earlier of the instant the CLI named and MAX_FREEZE_MINUTES after it began,
-    else `retry_minutes` after it began; "" when the record carries no usable instant (so it reads as passed)."""
+    else the record's own re-probe interval (`retry_minutes` in it, which backs off) or the configured one after it
+    began; "" when the record carries no usable instant (so it reads as passed)."""
     at = freeze.get("at") or ""
     named = _plus_minutes(freeze.get("resets_at") or "", 0)   # validated: "" for absent, malformed, or not a string
-    return min(named, _plus_minutes(at, MAX_FREEZE_MINUTES)) if named else _plus_minutes(at, retry_minutes)
+    own = freeze.get("retry_minutes")
+    retry = own if isinstance(own, int) and own > 0 else retry_minutes
+    return min(named, _plus_minutes(at, MAX_FREEZE_MINUTES)) if named else _plus_minutes(at, retry)
 
 
-def _announce(ctx, group: GroupConfig, role: str, *, resets_at: str | None) -> bool:
+def last_limit_path(home: Path, group: str, role: str) -> Path:
+    """The previous freeze's record, kept after the freeze itself is cleared, so the next one can back off."""
+    return home / "state" / group / role / "limit-last.json"
+
+
+def next_retry_minutes(home: Path, group: str, role: str, now: str, configured: int) -> int:
+    """How long to wait before re-probing a limit that named no time: the configured interval, doubled each time a
+    re-probe runs straight into the limit again (the previous freeze ended within one interval of this one), up to a
+    day. The second live run's Antigravity group re-probed a week-long quota every thirty minutes, and each probe sent
+    the owner an over-limit email."""
+    last = read_record(last_limit_path(home, group, role)) or {}
+    prev = last.get("retry_minutes")
+    until = _plus_minutes(last.get("until") or "", 0)
+    if isinstance(prev, int) and prev > 0 and until and until <= now <= _plus_minutes(until, prev):
+        return min(prev * 2, MAX_RETRY_MINUTES)
+    return configured
+
+
+def _announce(ctx, group: GroupConfig, role: str, *, resets_at: str | None, retry_minutes: int | None = None) -> bool:
     """Post the one LIMITED notice for a freeze. True when it reached the board.
 
     The role that hit the limit is already gone, so the supervisor is the only thing left that can say so
@@ -237,7 +259,7 @@ def _announce(ctx, group: GroupConfig, role: str, *, resets_at: str | None) -> b
         _, coordination = find_active_milestone(ctx.gh)
         party = Party("pm", group.name) if role == "pm" else Party("group", group.name)
         until = (f"resets: {resets_at}" if resets_at
-                 else f"resets: unknown; re-probing every {ctx.cfg.runners_limit_retry_minutes}m")
+                 else f"resets: unknown; re-probing in {retry_minutes or ctx.cfg.runners_limit_retry_minutes}m")
         ctx.gh.create_comment(coordination, compose(Header(party, "LIMITED", None, None),
                                                     f"{group.name}'s {role} hit its usage limit and is frozen.\n{until}"))
     except (GitHubError, BoardError):
@@ -254,13 +276,16 @@ def _freeze(ctx, group: GroupConfig, role: str, *, resets_at: str | None, now: s
     to remove. `announce_attempted_at` is when this first attempt was made, so the retry cadence is measured
     from it rather than restarting with the next supervisor.
     """
-    payload: dict = {"at": now, "posted": False, "announce_attempted_at": now}
+    payload: dict = {"at": now, "posted": False, "announce_attempted_at": now,
+                     "retry_minutes": next_retry_minutes(ctx.store.home, group.name, role, now, ctx.cfg.runners_limit_retry_minutes)}
     if resets_at:
         payload["resets_at"] = resets_at
     if text:
         payload["text"] = text[:500]   # the provider's own words, for the page's limits view
-    payload["posted"] = _announce(ctx, group, role, resets_at=resets_at)
+    payload["posted"] = _announce(ctx, group, role, resets_at=resets_at, retry_minutes=payload["retry_minutes"])
     write_freeze(freeze_path(ctx.store.home, group.name, role), payload)
+    write_record(last_limit_path(ctx.store.home, group.name, role),
+                 {"at": now, "retry_minutes": payload["retry_minutes"], "until": freeze_deadline(payload, payload["retry_minutes"])})
 
 
 def _frozen(ctx, group: GroupConfig, role: str, *, now: str) -> str:
@@ -289,7 +314,7 @@ def _frozen(ctx, group: GroupConfig, role: str, *, now: str) -> str:
         # (a `tried` that is not an instant reads as due, which errs towards announcing the freeze).
         tried = freeze.get("announce_attempted_at")
         if not tried or now >= _plus_minutes(tried, ctx.cfg.runners_limit_retry_minutes):
-            posted = _announce(ctx, group, role, resets_at=freeze.get("resets_at"))
+            posted = _announce(ctx, group, role, resets_at=freeze.get("resets_at"), retry_minutes=freeze.get("retry_minutes"))
             write_freeze(path, {**freeze, "posted": posted, "announce_attempted_at": now})
     return deadline
 

@@ -117,7 +117,9 @@ _NOT_LIMIT_RE = re.compile(r"\bmax[-_\s]?turns\b", re.IGNORECASE)
 _ISO_RESET_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})Z?\b")
 _CLOCK_RESET_RE = re.compile(r"\b(?:reset(?:s|ting)?|available|try\s+again|back)\b[^.]{0,20}?\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b",
                              re.IGNORECASE)
-_DURATION_RESET_RE = re.compile(r"\bin\s+(?:about\s+)?(\d{1,3})\s*(second|minute|hour)s?\b", re.IGNORECASE)
+_DURATION_RESET_RE = re.compile(r"\bin\s+(?:about\s+)?(\d{1,3})\s*(second|minute|hour|day)s?\b", re.IGNORECASE)
+# "Resets in 166h54m43s" (Antigravity), "in 2h", "in 45m", "in 3d2h": compact durations, any subset of d/h/m/s in that order.
+_COMPACT_RESET_RE = re.compile(r"\bin\s+(?:about\s+)?((?:\d{1,3}d)?(?:\d{1,3}h)?(?:\d{1,3}m)?(?:\d{1,3}s)?)(?![\w])", re.IGNORECASE)
 _ISO_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
 
@@ -159,8 +161,15 @@ def reset_at(text: str, now: str) -> str | None:
             return candidate_str
     m = _DURATION_RESET_RE.search(text or "")
     if m:
-        unit = {"second": "seconds", "minute": "minutes", "hour": "hours"}[m.group(2).lower()]
+        unit = {"second": "seconds", "minute": "minutes", "hour": "hours", "day": "days"}[m.group(2).lower()]
         return (base + timedelta(**{unit: int(m.group(1))})).strftime(_ISO_FMT)
+    m = _COMPACT_RESET_RE.search(text or "")
+    if m and m.group(1):
+        parts = re.findall(r"(\d{1,3})([dhms])", m.group(1).lower())
+        if parts:
+            delta = timedelta(**{{"d": "days", "h": "hours", "m": "minutes", "s": "seconds"}[u]: int(n) for n, u in parts})
+            if delta.total_seconds() > 0:
+                return (base + delta).strftime(_ISO_FMT)
     m = _CLOCK_RESET_RE.search(text or "")
     if m:
         hour, minute, meridiem = int(m.group(1)), int(m.group(2) or 0), (m.group(3) or "").lower()

@@ -32,6 +32,7 @@ from meld.gitops import (
     head_sha,
     noreply_email,
     fast_forward_to_remote,
+    fetch_origin,
     is_ancestor,
     push_branch,
     remove_worktree,
@@ -421,7 +422,7 @@ def _recall_for_brief(ctx, text: str) -> tuple[list[str], str | None]:
     branch, never the default branch. A fetch failure (e.g. offline) must never fail a dispatch: it falls back to
     the working copy and returns a note for the caller to fold into the dispatch result instead of raising."""
     try:
-        git(["fetch", "--quiet", "origin", ctx.cfg.default_branch], ctx.repo_root)
+        fetch_origin(ctx.repo_root, ctx.gh.token, ctx.cfg.default_branch)
     except GitError:
         return recall_snippets(ctx.repo_root, text), FETCH_FAILED_NOTE
     return recall_snippets(ctx.repo_root, text, ref=f"origin/{ctx.cfg.default_branch}"), None

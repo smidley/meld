@@ -36,8 +36,13 @@ def noreply_email(user_id: int, login: str) -> str:
     return f"{user_id}+{login}@users.noreply.github.com"
 
 
-def remote_branch_exists(repo_root: Path, branch: str, run: RunFn = subprocess.run) -> bool:
-    return bool(git(["ls-remote", "--heads", "origin", branch], repo_root, run))
+def remote_branch_exists(repo_root: Path, branch: str, run: RunFn = subprocess.run, token: str | None = None) -> bool:
+    return bool(git([*_auth(token)[0], "ls-remote", "--heads", "origin", branch], repo_root, run, env=_auth(token)[1]))
+
+
+def fetch_origin(repo_root: Path, token: str | None = None, branch: str | None = None, run: RunFn = subprocess.run) -> None:
+    """`git fetch origin [branch]` as the group: the one fetch every caller outside this module uses."""
+    git([*_auth(token)[0], "fetch", "--quiet", "origin", *([branch] if branch else [])], repo_root, run, env=_auth(token)[1])
 
 
 def worktree_exists(repo_root: Path, path: Path, run: RunFn = subprocess.run) -> bool:
@@ -55,7 +60,7 @@ def create_worktree(repo_root: Path, path: Path, branch: str, base: str, run: Ru
     git([*_auth(token)[0], "fetch", "--quiet", "origin"], repo_root, run, env=_auth(token)[1])
     git(["worktree", "prune"], repo_root, run)  # a registration whose directory is gone would otherwise refuse the add
     path.parent.mkdir(parents=True, exist_ok=True)
-    if remote_branch_exists(repo_root, branch, run):
+    if remote_branch_exists(repo_root, branch, run, token=token):
         git(["worktree", "add", "--track", "-B", branch, str(path), f"origin/{branch}"], repo_root, run)
         return "existing"
     git(["worktree", "add", "-B", branch, str(path), f"origin/{base}"], repo_root, run)

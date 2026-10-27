@@ -38,6 +38,7 @@ from meld.results import ResultsError
 from meld.runners import freeze_path, read_record, supervisor_path, processes
 from meld.state import liveness, pid_alive, proc_start_of
 from meld.chat import decisions, headline, journeys, progress_line, thread_entries
+from meld.limits import freeze_view, usage_totals
 from meld.status import build_status
 from meld.transcript import total_bytes
 from meld.viewer import actions as va
@@ -211,7 +212,7 @@ class Viewer:
                  start_of: Callable[[int], str] = proc_start_of, disk_usage: Callable[[Path], object] = shutil.disk_usage,
                  state_ttl: float = STATE_TTL_SECONDS, interval: float = 1.0, check_every: int = st.CHECK_EVERY,
                  max_polls: int | None = None, which: Callable[[str], str | None] = shutil.which,
-                 env: Mapping[str, str] | None = None) -> None:
+                 env: Mapping[str, str] | None = None, usage_async: bool = True, usage_every: float = 60.0) -> None:
         self.ctx = ctx
         self.token = token
         self.port = port
@@ -219,6 +220,12 @@ class Viewer:
         self.which, self.env = which, (os.environ if env is None else env)
         self._config_stamp = self._config_mtime()
         self._config_error: str | None = None
+        # Token and cost totals come from every transcript on disk; summing them is seconds, not milliseconds, so a
+        # thread refreshes them on its own cadence and the state carries the latest snapshot (tests compute inline).
+        self.usage_async, self.usage_every = usage_async, usage_every
+        self._usage_cache: dict = {}
+        self._usage: dict = {}
+        self._usage_thread: threading.Thread | None = None
         self.now, self.clock, self.sleep = now, clock, sleep
         self.alive, self.start_of, self.disk_usage = alive, start_of, disk_usage
         self.state_ttl, self.interval, self.check_every, self.max_polls = state_ttl, interval, check_every, max_polls
@@ -308,6 +315,22 @@ class Viewer:
                            "running": supervisors.get(g.name, {}).get("state") == "alive"}
         return out
 
+    def _usage_snapshot(self) -> dict:
+        if not self.usage_async:
+            self._usage = usage_totals(self.ctx.cfg, self.ctx.store.home, self.ctx.adapter_for, self._usage_cache, self.now())
+            return self._usage
+        if self._usage_thread is None:
+            def refresh() -> None:
+                while True:
+                    try:
+                        self._usage = usage_totals(self.ctx.cfg, self.ctx.store.home, self.ctx.adapter_for, self._usage_cache, self.now())
+                    except Exception:   # noqa: BLE001 -- the page must keep answering; totals are a convenience
+                        pass
+                    time.sleep(self.usage_every)
+            self._usage_thread = threading.Thread(target=refresh, name="meld-usage", daemon=True)
+            self._usage_thread.start()
+        return self._usage
+
     def _build_state(self) -> Response:
         self._refresh_config()
         home, cfg = self.ctx.store.home, self.ctx.cfg
@@ -329,6 +352,8 @@ class Viewer:
                            "processes": processes(cfg, home, alive=self.alive, start_of=self.start_of),
                            "setup": self._setup(cfg, supervisors), "config_error": self._config_error,
                            "journeys": journeys(status, now), "progress": progress_line(status, now),
+                           "limits": {"frozen": freeze_view(cfg, home, self.now()), "usage": self._usage_snapshot(),
+                                      "retry_minutes": cfg.runners_limit_retry_minutes},
                            "decisions": (pending := decisions(board, cfg, self.ctx.actor(), now)), "headline": headline(status, pending),
                            "disk": {"free_mb": free_mb, "warn_free_mb": cfg.logs_warn_free_mb},
                            "logs": {"total_mb": total_bytes(home / "logs") // (1024 * 1024), "warn_total_mb": cfg.logs_warn_total_mb},

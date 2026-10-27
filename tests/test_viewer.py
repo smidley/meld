@@ -1345,3 +1345,23 @@ def test_the_viewers_token_survives_a_restart(tmp_path):
     assert b != "short" and len(b) >= 32 and path.read_text() == b
     path.unlink()
     assert stable_token(home) not in (a, b)
+
+
+def test_the_state_carries_usage_and_limits_and_the_page_shows_them(tmp_path):
+    """Plan 31: the owner watched two groups freeze with nothing on the page saying why or until when."""
+    import json as _json
+    from meld.runners import freeze_path
+    v, ctx, _ = viewer_for(tmp_path, usage_async=False)
+    p = freeze_path(ctx.store.home, "codex", "pm")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(_json.dumps({"at": NOW, "posted": True, "text": "quota reached; try again later"}))
+    state = body(get(v, "/api/state"))
+    lim = state["limits"]
+    assert lim["frozen"]["codex"]["pm"]["text"] == "quota reached; try again later" and lim["frozen"]["codex"]["pm"]["expired"] is False
+    assert lim["retry_minutes"] == ctx.cfg.runners_limit_retry_minutes and set(lim["usage"]) == {"claude", "codex"}
+    assert all(k in lim["usage"]["claude"] for k in ("input_tokens", "output_tokens", "cached_tokens", "cost_usd", "runs"))
+    html, js, css = (get(v, p_).body.decode() for p_ in ("/", "/static/app.js", "/static/app.css"))
+    assert 'id="limits"' in html
+    for marker in ("function renderLimits", "function fmtTokens", "frozen on a usage limit since", "li.title =", "state.limits", "next try"):
+        assert marker in js, marker
+    assert "#limits li.frozen" in css

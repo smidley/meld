@@ -14,6 +14,8 @@
   <form id="wz-form">
     <label>Repository on GitHub <input id="wz-repo" placeholder="owner/name" required><span id="wz-repo-note" class="hint"></span></label>
     <label>What do you want built? <textarea id="wz-goal" rows="4" placeholder="One paragraph. It becomes the coordination issue the AIs plan from." required></textarea></label>
+    <label>Anything the AIs should know first? <span class="hint">optional</span>
+      <textarea id="wz-context" rows="4" placeholder="Existing documentation, partial work and where it stands, constraints, decisions already made. Name files to read first, e.g. docs/DESIGN.md, src/. It becomes .meld/CONTEXT.md, which every planner and worker reads."></textarea></label>
     <label>Milestone name <input id="wz-milestone" value="M1"></label>
     <fieldset id="wz-clis"><legend>Which AIs build it? <span class="hint">each becomes a group with its own GitHub identity</span></legend></fieldset>
     <div class="row"><button type="submit" id="wz-create">Set up the repository</button><span id="wz-result" class="dim"></span></div>

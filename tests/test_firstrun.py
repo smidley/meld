@@ -89,8 +89,10 @@ def test_create_runs_the_repository_setup_for_the_chosen_ais_only(tmp_path):
     with pytest.raises(SetupError, match="owner/name"):
         s.create(repo="widgets", goal="Ship it", milestone_title="M1", groups=["claude"])
     fake.route("GET", R + "branches", [{"name": "main"}])
-    out = s.create(repo="acme/widgets", goal="Ship a widget catalogue", milestone_title="M1", groups=["claude"])
+    out = s.create(repo="acme/widgets", goal="Ship a widget catalogue", milestone_title="M1", groups=["claude"], context="Read docs/DESIGN.md first.")
     assert out["milestone"] == 1 and out["coordination_issue"] == 2 and out["groups"] == ["claude"]      # codex is installed but was not chosen
+    assert (tmp_path / ".meld" / "CONTEXT.md").read_text().endswith("Read docs/DESIGN.md first.\n") and ".meld/CONTEXT.md" in out["files"]
+    assert "## Context\n\nRead docs/DESIGN.md first." in [c for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues"][-1].body["body"]
     assert "repository" in out and out["repository"]["created"] is False and "setup_commit" in out
     text = (tmp_path / ".meld.toml").read_text()
     assert "[groups.claude]" in text and "[groups.codex]" not in text.replace("# [groups.codex]", "")

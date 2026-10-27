@@ -44,6 +44,24 @@ Decide with industry standards, current documentation, and your own research rat
 Where a skill is available for the task at hand (design, security review, performance, a framework's conventions), use it before improvising, and say which one you used."""
 
 
+CONTEXT_FILE = ".meld/CONTEXT.md"
+MAX_CONTEXT_CHARS = 6000   # a worker brief quotes this much; a role prompt carries the whole file
+
+
+def product_context(repo_root: Path) -> str:
+    """What the AIs should know before they plan or build (.meld/CONTEXT.md, plan 35): existing documentation, partial
+    work and where it stands, constraints, files to read first. Empty when the product has none."""
+    f = repo_root / CONTEXT_FILE
+    return f.read_text().strip() if f.is_file() else ""
+
+
+def context_for_brief(repo_root: Path) -> str:
+    text = product_context(repo_root)
+    if len(text) <= MAX_CONTEXT_CHARS:
+        return text
+    return text[:MAX_CONTEXT_CHARS].rstrip() + f"\n\n(cut here; read `{CONTEXT_FILE}` in the worktree for the rest)"
+
+
 def product_standards(repo_root: Path) -> str:
     """The product's own quality bar (.meld/STANDARDS.md) when it has one, else the framework default; an empty file counts as none."""
     f = repo_root / STANDARDS_FILE
@@ -351,6 +369,9 @@ def render_brief(*, role: WorkerType, kind: str, group: str, model: str, effort:
     if recall:
         parts += ["## Relevant memory", ""] + [f"- {s[:300].strip()}" for s in recall] + ["", "Decisions and lessons from earlier work that mention what this task touches; read the files under `.meld/` before departing from them.", ""]
     parts += ["## Product standards", "", product_standards(repo_root), ""]
+    context = context_for_brief(repo_root)
+    if context:
+        parts += ["## Product context", "", context, "", "Build on what exists; read the files named here before starting.", ""]
     if skills:
         ordered = sorted(skills, key=lambda s: s.name)
         shown = ordered[:MAX_SKILLS]

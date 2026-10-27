@@ -388,3 +388,16 @@ def test_build_brief_for_a_retry_quotes_the_reviewers_request_changes(tmp_path: 
                          worktree=tmp_path, base_branch="main")
     assert "## Review feedback to address" not in fresh
     assert "No reviewer has requested changes yet" in review_feedback(mk_pr(11, 6))
+
+
+def test_product_context_reaches_the_brief_capped_and_the_role_prompt_whole(tmp_path):
+    """Plan 35: .meld/CONTEXT.md -- existing docs, partial work, files to read first -- is a section of every worker brief
+    (capped, with a pointer to the file) and of every role prompt (whole); a product without one has no such section."""
+    from meld.brief import CONTEXT_FILE, MAX_CONTEXT_CHARS, context_for_brief, product_context
+    assert product_context(tmp_path) == "" and context_for_brief(tmp_path) == ""
+    (tmp_path / ".meld").mkdir(exist_ok=True)
+    (tmp_path / CONTEXT_FILE).write_text("# Product context\n\nThe API is half built in src/api; read docs/DESIGN.md first.\n")
+    assert product_context(tmp_path).startswith("# Product context") and "docs/DESIGN.md" in context_for_brief(tmp_path)
+    (tmp_path / CONTEXT_FILE).write_text("x" * (MAX_CONTEXT_CHARS + 500))
+    capped = context_for_brief(tmp_path)
+    assert len(capped) < MAX_CONTEXT_CHARS + 100 and capped.endswith("for the rest)") and CONTEXT_FILE in capped

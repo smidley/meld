@@ -1658,6 +1658,8 @@ async function boot() {
 function renderWizard(info) {
   text(el("wz-where"), `in ${info.target_dir}` + (info.gh_login ? `, as ${info.gh_login} on GitHub` : info.gh_error ? `; gh is not logged in (${info.gh_error})` : ""));
   if (info.repo && !el("wz-repo").value) el("wz-repo").value = info.repo;
+  text(el("wz-repo-note"), info.repo_exists === false ? "not on GitHub yet: it will be created private, and this folder pushed to it"
+                           : info.repo_exists ? "exists on GitHub" : info.repo ? "" : "name one; it will be created private if it does not exist");
   const box = el("wz-clis");
   for (const old of [...box.querySelectorAll("label")]) old.remove();
   for (const c of info.clis || []) {
@@ -1682,7 +1684,8 @@ function showWizardSteps(info) {
   const created = info.created || {};
   const li1 = el("wz-step-created");
   li1.className = "done";
-  text(li1, `Repository set up: milestone ${created.milestone} with coordination issue #${created.coordination_issue}, labels, .meld.toml and ${(created.files || []).length} files written for ${(created.groups || []).join(", ")}.`
+  const repoWord = created.repository && created.repository.created ? `Repository ${created.repo} created on GitHub and this folder pushed to it; set up: ` : "Repository set up: ";
+  text(li1, `${repoWord}milestone ${created.milestone} with coordination issue #${created.coordination_issue}, labels, .meld.toml and ${(created.files || []).length} files written for ${(created.groups || []).join(", ")}.`
             + ((created.warnings || []).length ? ` Warnings: ${created.warnings.join("; ")}` : ""));
   const li2 = el("wz-step-apps");
   li2.replaceChildren();

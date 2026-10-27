@@ -71,8 +71,16 @@ class SetupSession:
             gh_error = str(e)
         else:
             gh_error = None
+        repo_exists: bool | None = None
+        if repo and login:
+            try:
+                self.gh_factory(repo).get_repo()
+                repo_exists = True
+            except GitHubError as e:
+                repo_exists = False if e.status == 404 else None
         clis = [self._cli(name) for name in ADAPTER_NAMES]
-        return {"repo": repo, "target_dir": str(self.target_dir), "gh_login": login, "gh_error": gh_error, "clis": clis,
+        return {"repo": repo, "repo_exists": repo_exists, "git": self._git_state(), "target_dir": str(self.target_dir),
+                "gh_login": login, "gh_error": gh_error, "clis": clis,
                 "created": self.created, "apps": {g: self._app_state(f) for g, f in self.flows.items()}, "started": self.started,
                 "config_exists": (self.target_dir / ".meld.toml").exists()}
 
@@ -105,9 +113,64 @@ class SetupSession:
 
     # ---- the steps ------------------------------------------------------------------------------------------
 
+    # ---- the repository itself (plan 34) ---------------------------------------------------------------------
+
+    def _git(self, *args: str):
+        return self.run(["git", "-C", str(self.target_dir), *args], capture_output=True, text=True, timeout=120)
+
+    def _git_state(self) -> dict:
+        try:
+            is_repo = self._git("rev-parse", "--git-dir").returncode == 0
+            commits = is_repo and self._git("rev-parse", "--verify", "HEAD").returncode == 0
+            remote = is_repo and self._git("remote", "get-url", "origin").returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            return {"initialised": None, "commits": None, "remote": None}
+        return {"initialised": is_repo, "commits": bool(commits), "remote": bool(remote)}
+
+    def ensure_repository(self, repo: str) -> dict:
+        """The repository on GitHub, created private when it is not there: under the person's own account when the owner
+        is their login, else under that organisation. A 404 is the one answer that means "create"; anything else is
+        reported as the error it is."""
+        gh = self.gh_factory(repo)
+        try:
+            info = gh.get_repo()
+            return {"created": False, "private": bool(info.get("private", False)), "default_branch": str(info.get("default_branch") or "main")}
+        except GitHubError as e:
+            if e.status != 404:
+                raise
+        owner, _, name = repo.partition("/")
+        login = gh.viewer_login()
+        body = {"name": name, "private": True, "auto_init": False, "description": "coordinated by meld"}
+        made = gh.post("user/repos", body) if owner.lower() == login.lower() else gh.post(f"orgs/{owner}/repos", body)
+        return {"created": True, "private": True, "default_branch": str((made or {}).get("default_branch") or "main")}
+
+    def ensure_pushed(self, repo: str, default_branch: str) -> dict:
+        """This folder on that repository's default branch: `git init` when it is not a repository, an initial commit when
+        it has none (a README when it is empty), `origin` when it has no remote, then a push. The push uses the person's
+        own git credentials, as the setup PR does; a push that fails is reported, never retried."""
+        out = {"initialised": False, "committed": False, "remote_added": False, "pushed": False}
+        if self._git("rev-parse", "--git-dir").returncode != 0:
+            self._git("init", "-q", "-b", default_branch)
+            out["initialised"] = True
+        if self._git("rev-parse", "--verify", "HEAD").returncode != 0:
+            readme = self.target_dir / "README.md"
+            if not readme.exists():
+                readme.write_text(f"# {repo.partition('/')[2]}\n")
+            self._git("add", "-A")
+            out["committed"] = self._git("commit", "-q", "-m", "Initial commit").returncode == 0
+        if self._git("remote", "get-url", "origin").returncode != 0:
+            self._git("remote", "add", "origin", f"https://github.com/{repo}.git")
+            out["remote_added"] = True
+        pushed = self._git("push", "-q", "-u", "origin", f"HEAD:{default_branch}")
+        out["pushed"] = pushed.returncode == 0
+        if not out["pushed"]:
+            out["push_error"] = (pushed.stderr or "").strip()[-300:]
+        return out
+
     def create(self, *, repo: str, goal: str, milestone_title: str, groups: list[str], allow_public: bool = False) -> dict:
-        """Labels, milestone, coordination issue, the repo files and a starter `.meld.toml` naming one group per chosen
-        CLI (PAT form, which the App step then converts group by group)."""
+        """The repository on GitHub (created when it is not there, and this folder pushed to it), then labels, milestone,
+        coordination issue, the repo files and a starter `.meld.toml` naming one group per chosen CLI (PAT form, which
+        the App step then converts group by group)."""
         if not repo or "/" not in repo:
             raise SetupError("the repository must be owner/name")
         if not goal.strip():
@@ -118,6 +181,11 @@ class SetupSession:
         for g in groups:
             if not GROUP_NAME_RE.match(g) or g in RESERVED_PARTY_NAMES:
                 raise SetupError(f"{g!r} cannot name a group")
+        repository = self.ensure_repository(repo)
+        if repository["created"]:
+            repository["push"] = self.ensure_pushed(repo, repository["default_branch"])
+            if not repository["push"]["pushed"]:
+                raise SetupError(f"created {repo} on GitHub but could not push this folder to it: {repository['push'].get('push_error') or 'git push failed'}")
         gh = self.gh_factory(repo)
         human = gh.viewer_login()
         # setup.setup asks `which` about each real adapter's binary (`setup.installed_adapters` uses the registry, not this
@@ -126,6 +194,7 @@ class SetupSession:
         which = lambda binary: self.which(binary) if binary in chosen else None   # noqa: E731
         self.created = setup_repo(gh, repo=repo, goal=goal, milestone_title=milestone_title or "M1", human=human, target_dir=self.target_dir,
                                   registry=self.registry, allow_public=allow_public, which=which, force=False, protect=True, pr=False, run=self.run)
+        self.created["repository"] = repository
         missing = [g for g in groups if g not in self.created.get("groups", [])]
         if missing:
             self.created["warnings"] = self.created.get("warnings", []) + [f"not configured (CLI not found or no models): {', '.join(missing)}"]

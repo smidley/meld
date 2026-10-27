@@ -132,3 +132,92 @@ def test_start_launches_only_groups_whose_app_is_installed(tmp_path):
     out = s.start()
     assert launched == ["claude", "codex"] and out["claude"]["pid"] == 42 and out["codex"]["pid"] == 42
     assert s.start() == out and launched == ["claude", "codex"]                      # started once; a second start launches nothing twice
+
+
+class GitRun(ProbeRun):
+    """ProbeRun plus a git that remembers: no repository, then a commit, a remote and a push, as the session asks for them."""
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.git_state = {"repo": False, "head": False, "origin": False}
+        self.git = []
+
+    def __call__(self, argv, **kw):
+        if argv[:2] == ["git", "-C"]:
+            sub = argv[3:]
+            self.git.append(sub)
+            s = self.git_state
+            if sub[:2] == ["rev-parse", "--git-dir"]: return SimpleNamespace(returncode=0 if s["repo"] else 128, stdout="", stderr="")
+            if sub[:2] == ["rev-parse", "--verify"]: return SimpleNamespace(returncode=0 if s["head"] else 128, stdout="", stderr="")
+            if sub[:2] == ["remote", "get-url"]: return SimpleNamespace(returncode=0 if s["origin"] else 2, stdout=self.remote if s["origin"] else "", stderr="")
+            if sub[0] == "init": s["repo"] = True
+            if sub[0] == "commit": s["head"] = True
+            if sub[:2] == ["remote", "add"]: s["origin"] = True; self.remote = sub[3]
+            if sub[0] == "push": return SimpleNamespace(returncode=0 if s["origin"] and s["head"] else 1, stdout="", stderr="no upstream")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return super().__call__(argv, **kw)
+
+
+class CreatingFake(FakeGh):
+    """A fake GitHub on which the repository appears once it has been created."""
+    def __call__(self, cmd, input=None, **kw):
+        out = super().__call__(cmd, input=input, **kw)
+        last = self.calls[-1]
+        if last.method == "POST" and last.endpoint in ("user/repos", "orgs/acme/repos"):
+            self.route("GET", "repos/acme/widgets", {"private": True, "default_branch": "main", "full_name": "acme/widgets"})
+        return out
+
+
+def test_the_repository_is_created_private_when_it_is_not_on_github(tmp_path):
+    """Plan 34: "if a repo isn't already created, meld should create it" -- under the person's account when they own it,
+    else under the organisation, private, and this folder pushed to its default branch."""
+    fake = CreatingFake()
+    fake.route("GET", "user", {"login": "acme"})                                  # the owner is the person
+    fake.route("POST", "user/repos", {"full_name": "acme/widgets", "default_branch": "main"}, status=201)
+    run = GitRun(remote="")
+    s = session(tmp_path, fake, run=run)
+    assert s.facts()["repo_exists"] is None and s.facts()["git"] == {"initialised": False, "commits": False, "remote": False}   # no origin: no repo to ask about
+    made = s.ensure_repository("acme/widgets")
+    assert made == {"created": True, "private": True, "default_branch": "main"}
+    assert [c for c in fake.calls if c.method == "POST"][0].body == {"name": "widgets", "private": True, "auto_init": False, "description": "coordinated by meld"}
+    assert s.ensure_repository("acme/widgets")["created"] is False                 # there now
+    push = s.ensure_pushed("acme/widgets", "main")
+    assert push == {"initialised": True, "committed": True, "remote_added": True, "pushed": True}
+    assert (tmp_path / "README.md").read_text() == "# widgets\n" and ["push", "-q", "-u", "origin", "HEAD:main"] in run.git
+    assert ["remote", "add", "origin", "https://github.com/acme/widgets.git"] in run.git and ["init", "-q", "-b", "main"] in run.git
+
+
+def test_create_makes_the_repository_first_and_reports_it(tmp_path):
+    fake = CreatingFake()
+    fake.route("GET", "user", {"login": "empowerScott"})                          # acme is an organisation to this person
+    fake.route("POST", "orgs/acme/repos", {"full_name": "acme/widgets", "default_branch": "main"}, status=201)
+    fake.route("GET", "users/acme", {"login": "acme", "type": "Organization"})
+    for method, endpoint, body, status in (("GET", R + "labels", [], 200), ("POST", R + "labels", {"name": "x"}, 201), ("GET", R + "milestones", [], 200),
+                                           ("POST", R + "milestones", {"number": 1, "title": "M1"}, 201), ("GET", R + "issues", [], 200), ("POST", R + "issues", {"number": 2}, 201)):
+        fake.route(method, endpoint, body, status=status)
+    run = GitRun(remote="")
+    s = session(tmp_path, fake, run=run)
+    out = s.create(repo="acme/widgets", goal="Ship it", milestone_title="M1", groups=["claude"])
+    assert out["repository"]["created"] is True and out["repository"]["push"]["pushed"] is True and out["groups"] == ["claude"]
+    assert [c.endpoint for c in fake.calls if c.method == "POST"][0] == "orgs/acme/repos"
+    # a push that fails is the error, before anything else is set up
+    fake2 = CreatingFake()
+    fake2.route("GET", "user", {"login": "acme"})
+    fake2.route("POST", "user/repos", {"full_name": "acme/widgets"}, status=201)
+    broken = GitRun(remote="")
+    original = broken.__call__
+    def no_push(argv, **kw):
+        if argv[:2] == ["git", "-C"] and argv[3] == "push":
+            return SimpleNamespace(returncode=1, stdout="", stderr="fatal: could not read Username")
+        return original(argv, **kw)
+    broken.__call__ = no_push
+    s2 = SetupSession(target_dir=tmp_path / "two", home=tmp_path / "home", registry=ModelRegistry.load(), gh_factory=lambda repo: GitHub(repo, token=None, run=fake2),
+                      adapter_for=s.adapter_for, launcher=s.launcher, which=s.which, run=no_push)
+    (tmp_path / "two").mkdir()
+    with pytest.raises(SetupError, match="could not push this folder"):
+        s2.create(repo="acme/widgets", goal="Ship it", milestone_title="M1", groups=["claude"])
+    # an answer other than 404 is never taken as "create"
+    fake3 = FakeGh()
+    fake3.route("GET", "repos/acme/widgets", {"message": "bad credentials"}, status=401)
+    from meld.github import GitHubError
+    with pytest.raises(GitHubError):
+        session(tmp_path, fake3).ensure_repository("acme/widgets")

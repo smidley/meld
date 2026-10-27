@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 import shutil
 import subprocess
 from pathlib import Path
@@ -168,3 +169,40 @@ def test_push_branch_pushes_head_from_attached_and_detached_checkouts(tmp_path):
     sh(["git", "commit", "-q", "-m", "reviewer fix"], detached)
     push_branch(detached, "meld/3-a", token=None)  # a bare branch name here would push the clone's local branch, not HEAD
     assert sh(["git", "ls-remote", "--heads", "origin", "meld/3-a"], repo).split()[0] == head_sha(detached)
+
+
+def test_a_fetch_authenticates_with_the_groups_token_like_a_push(tmp_path):
+    """The first wizard-made product was private with no collaborators: the PM's `git fetch origin` ran with the machine's
+    own credentials and answered "repository not found", while the group's App token could read it. Every fetch a group
+    makes now carries the token through the inline helper, never in argv; without a token, git's own credentials apply."""
+    from meld.gitops import _auth, checkout_pr_head, checkout_sha, create_worktree, fast_forward_to_remote
+    calls = []
+
+    def run(argv, cwd=None, capture_output=True, text=True, env=None, **kw):
+        calls.append((argv, env))
+        return SimpleNamespace(returncode=0, stdout="abc123\n", stderr="")
+
+    args, env = _auth("ghs_token")
+    assert args == ["-c", "credential.helper=", "-c", 'credential.helper=!f() { echo username=x-access-token; echo "password=$MELD_PUSH_TOKEN"; }; f'] and env["MELD_PUSH_TOKEN"] == "ghs_token"
+    assert _auth(None) == ([], None) and "ghs_token" not in " ".join(args)
+    for call in (lambda: create_worktree(tmp_path, tmp_path / "wt", "meld/1-x", "main", run=run, token="ghs_token"),
+                 lambda: checkout_pr_head(tmp_path, tmp_path / "wt", "meld/1-x", run=run, token="ghs_token"),
+                 lambda: checkout_sha(tmp_path, tmp_path / "wt", "abc123", run=run, token="ghs_token"),
+                 lambda: fast_forward_to_remote(tmp_path, tmp_path / "wt", "meld/1-x", run=run, token="ghs_token")):
+        calls.clear()
+        try:
+            call()
+        except Exception:   # noqa: BLE001 -- the fake git answers every command the same; only the fetch's shape matters here
+            pass
+        fetches = [(a, e) for a, e in calls if "fetch" in a]
+        assert fetches, call
+        argv, env = fetches[0]
+        assert argv[:5] == ["git", "-c", "credential.helper=", "-c", 'credential.helper=!f() { echo username=x-access-token; echo "password=$MELD_PUSH_TOKEN"; }; f']
+        assert env["MELD_PUSH_TOKEN"] == "ghs_token" and "ghs_token" not in " ".join(argv)
+    calls.clear()
+    try:
+        create_worktree(tmp_path, tmp_path / "wt2", "meld/2-y", "main", run=run)
+    except Exception:   # noqa: BLE001
+        pass
+    argv, env = [(a, e) for a, e in calls if "fetch" in a][0]
+    assert argv[:3] == ["git", "fetch", "--quiet"] and env is None

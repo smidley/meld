@@ -99,7 +99,7 @@ def _open_memory_pr(ctx, board, group, *, branch: str, writes: list[tuple[str, s
     wt = ctx.store.home / "worktrees" / group.name / branch.removeprefix("meld/")
     if wt.exists():
         remove_worktree(ctx.repo_root, wt)
-    create_worktree(ctx.repo_root, wt, branch, ctx.cfg.default_branch)
+    create_worktree(ctx.repo_root, wt, branch, ctx.cfg.default_branch, token=ctx.gh.token)
     try:
         for path, text, mode in writes:
             target = wt / path

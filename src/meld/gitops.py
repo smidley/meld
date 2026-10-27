@@ -50,9 +50,9 @@ def worktree_exists(repo_root: Path, path: Path, run: RunFn = subprocess.run) ->
     return any(line.startswith("worktree ") and Path(line[len("worktree "):]).resolve() == target for line in listing.splitlines())
 
 
-def create_worktree(repo_root: Path, path: Path, branch: str, base: str, run: RunFn = subprocess.run) -> str:
+def create_worktree(repo_root: Path, path: Path, branch: str, base: str, run: RunFn = subprocess.run, token: str | None = None) -> str:
     """Create `path` on `branch`: reuse the remote branch when it exists (a retry), else branch from origin/<base>."""
-    git(["fetch", "--quiet", "origin"], repo_root, run)
+    git([*_auth(token)[0], "fetch", "--quiet", "origin"], repo_root, run, env=_auth(token)[1])
     git(["worktree", "prune"], repo_root, run)  # a registration whose directory is gone would otherwise refuse the add
     path.parent.mkdir(parents=True, exist_ok=True)
     if remote_branch_exists(repo_root, branch, run):
@@ -62,17 +62,17 @@ def create_worktree(repo_root: Path, path: Path, branch: str, base: str, run: Ru
     return "new"
 
 
-def checkout_pr_head(repo_root: Path, path: Path, branch: str, run: RunFn = subprocess.run) -> None:
-    git(["fetch", "--quiet", "origin", branch], repo_root, run)
+def checkout_pr_head(repo_root: Path, path: Path, branch: str, run: RunFn = subprocess.run, token: str | None = None) -> None:
+    git([*_auth(token)[0], "fetch", "--quiet", "origin", branch], repo_root, run, env=_auth(token)[1])
     git(["worktree", "prune"], repo_root, run)
     path.parent.mkdir(parents=True, exist_ok=True)
     git(["worktree", "add", "--detach", str(path), f"origin/{branch}"], repo_root, run)
 
 
-def checkout_sha(repo_root: Path, path: Path, sha: str, run: RunFn = subprocess.run) -> None:
+def checkout_sha(repo_root: Path, path: Path, sha: str, run: RunFn = subprocess.run, token: str | None = None) -> None:
     """Detached worktree at an exact commit (an audit's merge commit). Fetches first so a commit that landed on the
     default branch since our last fetch is present; a sha the remote no longer reaches raises GitError."""
-    git(["fetch", "--quiet", "origin"], repo_root, run)
+    git([*_auth(token)[0], "fetch", "--quiet", "origin"], repo_root, run, env=_auth(token)[1])
     git(["worktree", "prune"], repo_root, run)
     path.parent.mkdir(parents=True, exist_ok=True)
     git(["worktree", "add", "--detach", str(path), sha], repo_root, run)
@@ -106,14 +106,14 @@ def is_ancestor(path: Path, ancestor: str, descendant: str = "HEAD", run: RunFn 
     return True
 
 
-def fast_forward_to_remote(repo_root: Path, path: Path, branch: str, run: RunFn = subprocess.run) -> str:
+def fast_forward_to_remote(repo_root: Path, path: Path, branch: str, run: RunFn = subprocess.run, token: str | None = None) -> str:
     """Bring a reused checkout up to origin/<branch> when it is strictly behind: fetch that branch, then fast-forward,
     so a retry starts from what a person (or a reviewer's push-fix) pushed since the last run. Returns what happened:
     "fast-forwarded", "current", "diverged" (HEAD has commits origin lacks -- left alone, the retry continues from the
     local work), "dirty" (uncommitted changes -- left alone) or "unfetched" (the fetch failed, or origin has no such
     branch yet)."""
     try:
-        git(["fetch", "--quiet", "origin", branch], repo_root, run)
+        git([*_auth(token)[0], "fetch", "--quiet", "origin", branch], repo_root, run, env=_auth(token)[1])
     except GitError:
         return "unfetched"
     if is_dirty(path, run):
@@ -127,6 +127,18 @@ def fast_forward_to_remote(repo_root: Path, path: Path, branch: str, run: RunFn 
     return "fast-forwarded"
 
 
+def _auth(token: str | None, base_env: dict | None = None) -> tuple[list[str], dict | None]:
+    """git arguments and environment that authenticate as `token` through the inline helper (the token never appears in
+    argv); nothing when there is no token, so git's own configured credentials apply. Used by every fetch and push a
+    group makes: the first wizard-made product was private with no collaborators, and a fetch with the machine's own
+    credentials answered "repository not found" while the group's token could read it fine."""
+    if not token:
+        return [], (dict(base_env) if base_env is not None else None)
+    env = dict(os.environ if base_env is None else base_env)
+    env["MELD_PUSH_TOKEN"] = token
+    return ["-c", "credential.helper=", "-c", f"credential.helper={_CREDENTIAL_HELPER}"], env
+
+
 def push_branch(path: Path, branch: str, token: str | None, run: RunFn = subprocess.run, base_env: dict | None = None,
                 force_with_lease: bool = False) -> None:
     """Push HEAD to origin/<branch>. The refspec is HEAD:refs/heads/<branch> rather than the bare branch name so a
@@ -136,11 +148,8 @@ def push_branch(path: Path, branch: str, token: str | None, run: RunFn = subproc
     without one, git's own configured credentials apply. `force_with_lease` rewrites origin/<branch> only while it is
     still at the commit this checkout's remote-tracking ref recorded, so a push nobody here has fetched (a reviewer's
     push-fix) refuses the rewrite instead of being lost."""
-    env = dict(os.environ if base_env is None else base_env)
-    args: list[str] = []
-    if token:
-        env["MELD_PUSH_TOKEN"] = token
-        args += ["-c", "credential.helper=", "-c", f"credential.helper={_CREDENTIAL_HELPER}"]
+    args, env = _auth(token, base_env)
+    env = env if env is not None else dict(os.environ)
     lease = ["--force-with-lease"] if force_with_lease else []
     git([*args, "push", *lease, "--set-upstream", "origin", f"HEAD:refs/heads/{branch}"], path, run, env=env)
 

@@ -142,9 +142,13 @@ class GitRun(ProbeRun):
         self.git = []
 
     def __call__(self, argv, **kw):
+        if argv[:3] == ["gh", "auth", "token"]:
+            return SimpleNamespace(returncode=0, stdout="ghp_token\n", stderr="")
         if argv[:2] == ["git", "-C"]:
-            sub = argv[3:]
+            sub = [a for a in argv[3:] if not a.startswith("credential.helper")]
+            sub = [a for a in sub if a != "-c"]
             self.git.append(sub)
+            self.envs = getattr(self, "envs", []) + [kw.get("env")]
             s = self.git_state
             if sub[:2] == ["rev-parse", "--git-dir"]: return SimpleNamespace(returncode=0 if s["repo"] else 128, stdout="", stderr="")
             if sub[:2] == ["rev-parse", "--verify"]: return SimpleNamespace(returncode=0 if s["head"] else 128, stdout="", stderr="")
@@ -152,6 +156,7 @@ class GitRun(ProbeRun):
             if sub[0] == "init": s["repo"] = True
             if sub[0] == "commit": s["head"] = True
             if sub[:2] == ["remote", "add"]: s["origin"] = True; self.remote = sub[3]
+            if sub[:2] == ["remote", "set-url"]: self.remote = sub[3]
             if sub[0] == "push": return SimpleNamespace(returncode=0 if s["origin"] and s["head"] else 1, stdout="", stderr="no upstream")
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         return super().__call__(argv, **kw)
@@ -177,13 +182,29 @@ def test_the_repository_is_created_private_when_it_is_not_on_github(tmp_path):
     s = session(tmp_path, fake, run=run)
     assert s.facts()["repo_exists"] is None and s.facts()["git"] == {"initialised": False, "commits": False, "remote": False}   # no origin: no repo to ask about
     made = s.ensure_repository("acme/widgets")
-    assert made == {"created": True, "private": True, "default_branch": "main"}
+    assert made == {"created": True, "empty": True, "private": True, "default_branch": "main"}
     assert [c for c in fake.calls if c.method == "POST"][0].body == {"name": "widgets", "private": True, "auto_init": False, "description": "coordinated by meld"}
     assert s.ensure_repository("acme/widgets")["created"] is False                 # there now
     push = s.ensure_pushed("acme/widgets", "main")
-    assert push == {"initialised": True, "committed": True, "remote_added": True, "pushed": True}
-    assert (tmp_path / "README.md").read_text() == "# widgets\n" and ["push", "-q", "-u", "origin", "HEAD:main"] in run.git
+    assert push == {"initialised": True, "committed": True, "remote_added": True, "remote_rewritten": False, "pushed": True}
+    assert (tmp_path / "README.md").read_text() == "# widgets\n" and ["push", "-q", "--set-upstream", "origin", "HEAD:refs/heads/main"] in run.git
     assert ["remote", "add", "origin", "https://github.com/acme/widgets.git"] in run.git and ["init", "-q", "-b", "main"] in run.git
+    assert run.envs[-1]["MELD_PUSH_TOKEN"] == "ghp_token"                        # the push authenticates with gh's token, never in argv
+    # an SSH origin naming the same repository is rewritten to HTTPS: Meld's roles fetch through origin and need no key
+    ssh = GitRun(remote="git@github.com:acme/widgets.git")
+    ssh.git_state.update({"repo": True, "head": True, "origin": True})
+    s2 = session(tmp_path, fake, run=ssh)
+    push2 = s2.ensure_pushed("acme/widgets", "main")
+    assert push2["remote_rewritten"] is True and push2["pushed"] is True and ["remote", "set-url", "origin", "https://github.com/acme/widgets.git"] in ssh.git
+    # an existing, empty repository is pushed to as if just created
+    fake4 = FakeGh()
+    fake4.route("GET", "repos/acme/widgets", {"private": True, "default_branch": "main"})
+    fake4.route("GET", "repos/acme/widgets/branches", [])
+    assert session(tmp_path, fake4).ensure_repository("acme/widgets") == {"created": False, "empty": True, "private": True, "default_branch": "main"}
+    fake5 = FakeGh()
+    fake5.route("GET", "repos/acme/widgets", {"private": True, "default_branch": "main"})
+    fake5.route("GET", "repos/acme/widgets/branches", [{"name": "main"}])
+    assert session(tmp_path, fake5).ensure_repository("acme/widgets")["empty"] is False
 
 
 def test_create_makes_the_repository_first_and_reports_it(tmp_path):
@@ -206,7 +227,7 @@ def test_create_makes_the_repository_first_and_reports_it(tmp_path):
     broken = GitRun(remote="")
     original = broken.__call__
     def no_push(argv, **kw):
-        if argv[:2] == ["git", "-C"] and argv[3] == "push":
+        if argv[:2] == ["git", "-C"] and "push" in argv:
             return SimpleNamespace(returncode=1, stdout="", stderr="fatal: could not read Username")
         return original(argv, **kw)
     broken.__call__ = no_push

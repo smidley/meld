@@ -18,3 +18,7 @@
 ## Verification
 
 `uv run pytest -q` green with no warnings; the fake GitHub grows the repository on the create call; a fake git remembers init, commit, remote and push.
+
+## Found on the first real run
+
+The wizard created `smidley/meld-scratch` and then failed to push: the folder's `origin` was an SSH URL and the machine has no SSH key for that login. The push now goes over HTTPS with the token `gh` is logged in with, through the same inline credential helper every Meld push uses (never in argv); `origin` is added as, or rewritten to, the repository's HTTPS URL, because Meld's own roles fetch through `origin`; and an existing repository with no branches is pushed to like a new one, so a run that failed at the push can simply be pressed again.

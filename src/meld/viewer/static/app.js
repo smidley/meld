@@ -545,9 +545,14 @@ function renderSetup(state) {
   for (const [g, s] of Object.entries(state.setup || {})) {
     if (s.running) continue;
     const needs = [!s.cli_found && `install the ${s.cli} CLI${s.binary ? ` (\`${s.binary}\` is not on PATH)` : ""} and log in`,
-                   !s.token_set && `give it a GitHub identity: run meld create-app ${g} in the product clone (two clicks, no token to paste)`,
                    s.token_set && "make sure its GitHub login exists and can write to the repository (meld doctor checks)"].filter(Boolean);
-    const li = text(document.createElement("li"), `${g} is configured but not running: ${needs.join(" · ")} · then start it in the product clone: `);
+    const li = text(document.createElement("li"), `${g} is configured but not running: ${needs.length ? needs.join(" · ") + " · " : ""}`);
+    if (!s.token_set) {
+      // The same two clicks the wizard offers, served by this page: no command, no token to paste.
+      link(li, "give it a GitHub identity (two clicks)", api(`/setup/app/${g}/`), "create and install a GitHub App for this group");
+      text(li.appendChild(document.createElement("span")), " · ");
+    }
+    text(li.appendChild(document.createElement("span")), "then start it in the product clone: ");
     const code = text(document.createElement("code"), `meld run ${g} --detach`);
     li.append(code);
     list.append(li);

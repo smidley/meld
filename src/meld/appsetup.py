@@ -74,7 +74,9 @@ class AppSetup:
 
     @property
     def app_name(self) -> str:
-        return self.name or f"meld-{self.group}"
+        """`<repository>-<group>` unless named: App names are global on GitHub, and `meld-claude` was taken the first time
+        the wizard ran for real. GitHub caps a name at 34 characters."""
+        return self.name or f"{self.repo.partition('/')[2]}-{self.group}"[:34]
 
     def github_form_url(self) -> str:
         owner = self.repo.partition("/")[0]

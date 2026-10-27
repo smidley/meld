@@ -55,6 +55,7 @@ class SetupSession:
     launcher: Callable[[str], dict]                     # group -> what `meld run <group> --detach` returns
     which: Callable[[str], str | None] = shutil.which
     run: Callable = subprocess.run                      # for the CLIs' login probes and git
+    doctor: Callable[[str], list[dict]] | None = None    # group -> that group's doctor checks, as dicts; None skips the check
     base_url: str = ""                                  # the viewer's origin, for the App redirects
     token: str = ""                                     # the viewer's token, carried through those redirects
     created: dict | None = None
@@ -265,22 +266,51 @@ class SetupSession:
             except GitHubError:
                 owner_is_org = False
             self.flows[group] = AppSetup(config_path=self.target_dir / ".meld.toml", group=group, repo=repo, owner_is_org=owner_is_org,
-                                         base_url=f"{self.base_url}/setup/app/{group}", keys_dir=self.home / "keys", suffix=f"?t={self.token}" if self.token else "")
+                                         base_url=f"{self.base_url}/setup/app/{group}", keys_dir=self.home / "keys", suffix=f"?t={self.token}" if self.token else "",
+                                         on_installed=lambda g: self.start([g]).get(g, {}))
         return self.flows[group]
 
-    def start(self) -> dict:
-        """Launch a supervisor per group whose App is installed (or whose token is set); the launcher is `meld run --detach`."""
+    def _has_identity(self, group: str) -> bool:
+        """The group can act as itself: its App flow finished here, or the file already names an App or a token this
+        process can see (a group given its identity by an earlier run, or by hand)."""
+        flow = self.flows.get(group)
+        if flow is not None and flow.done:
+            return True
+        try:
+            from meld.config import load_config
+            g = load_config(self.target_dir / ".meld.toml").groups.get(group)
+        except Exception:   # noqa: BLE001 -- an unloadable file is "no identity", and doctor will say why
+            return False
+        if g is None:
+            return False
+        return (g.is_app and bool(g.app_id)) or bool(g.token_env and os.environ.get(g.token_env))
+
+    def start(self, groups: list[str] | None = None) -> dict:
+        """Launch a supervisor per group that has its identity, after that group's doctor checks pass (plan 36: nothing
+        after the two clicks is a command). A group that failed doctor is reported with the failing checks and not
+        started; the launcher is what `meld run --detach` does."""
         if self.created is None:
             raise SetupError("create the repository setup first")
-        for g in self.created.get("groups", []):
+        for g in groups or self.created.get("groups", []):
             if g in self.started and not self.started[g].get("error"):
                 continue
-            flow = self.flows.get(g)
-            if flow is None or not flow.done:
+            if not self._has_identity(g):
                 self.started[g] = {"error": "its GitHub App is not installed yet"}
                 continue
+            if self.doctor is not None:
+                try:
+                    checks = self.doctor(g)
+                except Exception as e:   # noqa: BLE001
+                    checks = [{"name": f"doctor:{g}", "ok": False, "detail": str(e), "fix": ""}]
+                failed = [c for c in checks if c.get("ok") is False]
+                if failed:
+                    self.started[g] = {"error": "doctor: " + "; ".join(f"{c['name']}: {c.get('detail', '')}" + (f" ({c['fix']})" if c.get("fix") else "") for c in failed),
+                                       "checks": checks}
+                    continue
+                self.started[g] = {"checks": checks}
             try:
-                self.started[g] = self.launcher(g)
+                kept = {k: v for k, v in self.started.get(g, {}).items() if k != "error"}   # a launch clears an earlier refusal
+                self.started[g] = {**kept, **self.launcher(g)}
             except Exception as e:   # noqa: BLE001 -- one group's launch failing must not hide the others
                 self.started[g] = {"error": str(e)}
         return self.started

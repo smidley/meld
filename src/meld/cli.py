@@ -553,6 +553,18 @@ START_OF = proc_start_of
 SLEEP = time.sleep
 
 
+def group_doctor(config_path: Path, home: Path):
+    """The wizard's and the board's doctor: one group's checks from a fresh read of the file, as dicts (plan 36)."""
+    from dataclasses import asdict
+
+    def check(group: str) -> list[dict]:
+        cfg = load_config(config_path)
+        checks = run_checks(cfg, config_path.parent, env=os.environ, gh_factory=lambda token: GitHub(cfg.repo_name, token=token, run=RUN),
+                            registry=ModelRegistry.load(), adapter_for=ADAPTER_FOR, home=home)
+        return [asdict(c) for c in checks if c.name.endswith(f":{group}")]
+    return check
+
+
 def detach_supervisor(config_path: Path | None, group: str, home: Path, cwd: Path) -> dict:
     """What `meld run <group> --detach` does once the liveness check has passed: the supervisor in its own session with
     its output on `$MELD_HOME/logs/<group>/supervisor.log`. Shared by `run` and the setup wizard's start step."""
@@ -741,7 +753,8 @@ def start(ctx: click.Context, port: int | None, open_browser: bool | None) -> No
     home = meld_home(os.environ)
     cwd = Path.cwd()
     session = SetupSession(target_dir=cwd, home=home, registry=ModelRegistry.load(), gh_factory=lambda repo: GitHub(repo, token=None, run=RUN),
-                           adapter_for=ADAPTER_FOR, launcher=lambda g: detach_supervisor(cwd / ".meld.toml", g, home, cwd))
+                           adapter_for=ADAPTER_FOR, launcher=lambda g: detach_supervisor(cwd / ".meld.toml", g, home, cwd),
+                           doctor=group_doctor(cwd / ".meld.toml", home))
     viewer = Viewer(None, token=stable_token(home), port=0, config_path=None, setup=session,
                     load_ctx=lambda p: load_context(p, run=RUN, adapter_for=ADAPTER_FOR))
     wanted = port if port is not None else 8765
@@ -790,7 +803,7 @@ def watch(ctx: click.Context, port: int | None, open_browser: bool | None) -> No
     from meld.firstrun import SetupSession
     session = SetupSession(target_dir=config_path.parent, home=c.store.home, registry=c.models, gh_factory=lambda repo: GitHub(repo, token=None, run=RUN),
                            adapter_for=ADAPTER_FOR, launcher=lambda g: detach_supervisor(config_path, g, c.store.home, config_path.parent),
-                           created={"repo": c.cfg.repo_name, "groups": list(c.cfg.groups)})
+                           created={"repo": c.cfg.repo_name, "groups": list(c.cfg.groups)}, doctor=group_doctor(config_path, c.store.home))
     viewer = Viewer(c, token=stable_token(c.store.home), port=0, config_path=config_path, setup=session)
     wanted = port if port is not None else c.cfg.viewer_port
     try:

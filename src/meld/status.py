@@ -88,6 +88,7 @@ def render_status(board: Board, cfg: Config, actor: Actor, models: ModelRegistry
         "quorum": needed_approvals(board, cfg), "needs_human": needs_human,
         "budget": {"spent": board.spend, "cap": cfg.budget},
         "issues": issues, "pulls": pulls, "runs": runs,
+        "goal": {"title": board.goal_title, "body": board.goal},
         "coordination": {"comments": len(board.comments), "last_comment_id": max((c.id for c in board.comments), default=0),
                          "open_challenges": sorted(board.open_challenges), "ignored_comments": board.ignored_comments,
                          "challenges": [{"ref": c.ref, "challenger": c.challenger, "comment_id": c.comment_id, "opened_at": c.opened_at}

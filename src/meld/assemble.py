@@ -197,5 +197,5 @@ def build_board(gh: GitHub, cfg: Config, runs: dict[str, dict[int, RunRecord]], 
         leases=held_leases(derive_leases(comments), issues),
         plan_text=description, now=now or utc_now_iso(),
         challenges=challenges, audits=derive_audits(comments),
-        bots={g.name: g.bot for g in cfg.groups.values()},
+        goal=(coord_raw_list[0].get("body") or ""), goal_title=str(coord_raw_list[0].get("title") or ""), bots={g.name: g.bot for g in cfg.groups.values()},
     )

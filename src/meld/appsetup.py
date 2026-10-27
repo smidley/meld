@@ -65,6 +65,7 @@ class AppSetup:
     suffix: str = ""                   # appended to the redirect URLs, e.g. the viewer's `?t=<token>` so GitHub's redirects pass its gate
     convert: Callable[[str], dict] = convert_manifest
     installations: Callable[[int, str], list[dict]] = list_installations
+    on_installed: Callable[[str], dict] | None = None   # what to do once the group is written: the session starts it
     state: str = field(default_factory=lambda: secrets.token_urlsafe(16))
     app: dict | None = None
     pem_path: Path | None = None
@@ -141,10 +142,17 @@ class AppSetup:
             self.installation_id = int(found[-1]["id"])
         self.write_group()
         self.done = True
+        then = ""
+        if self.on_installed is not None:
+            result = self.on_installed(self.group) or {}
+            then = (f"<p>Checked and started: <b>{html.escape(self.group)}</b> is running (pid {result.get('pid')}). You can close this tab.</p>"
+                    if result.get("pid") else
+                    f"<p>Not started: {html.escape(str(result.get('error') or 'unknown'))}. The board says what to do; you can close this tab.</p>")
+        else:
+            then = f"<p>Next: <code>meld doctor</code>, then <code>meld run {html.escape(self.group)} --detach</code>. You can close this tab.</p>"
         return 200, ("<!doctype html><meta charset=\"utf-8\"><title>meld create-app</title>"
                      f"<p>Done. <b>{html.escape(self.group)}</b> now posts as <code>{html.escape(self.app['slug'])}[bot]</code> through installation "
-                     f"{self.installation_id}; <code>{html.escape(str(self.config_path))}</code> is written.</p>"
-                     f"<p>Next: <code>meld doctor</code>, then <code>meld run {html.escape(self.group)} --detach</code>. You can close this tab.</p>")
+                     f"{self.installation_id}; <code>{html.escape(str(self.config_path))}</code> is written.</p>" + then)
 
     def write_group(self) -> None:
         """`[groups.<g>]` as an App group: the PAT fields go, the App fields come, everything else stays. Validated by

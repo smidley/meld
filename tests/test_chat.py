@@ -435,3 +435,133 @@ def test_an_ask_withdrawn_by_its_own_group_leaves_the_inbox(tmp_path):
     assert [i["ref"] for i in inbox(board, CFG2, NOW)["needs_human"]] == ["#14", "service-1"]
     gone = [mk_comment(CFG2, 3, "meld-codex-bot", "[codex] RESOLVED #14\n\nback"), mk_comment(CFG2, 4, "meld-codex-bot", "[codex] RESOLVED service-1\n\nback")]
     assert inbox(mk_board(CFG2, issues=[mk_issue(14, status="needs_human")], comments=[ask, free, *gone]), CFG2, NOW)["needs_human"] == []
+
+
+def _role(state="alive", launch_no=1, reason="start", frozen=None):
+    return {"state": state, "pid": 1, "started_at": None, "proc_start": "", "frozen": frozen, "launch_no": launch_no, "reason": reason}
+
+
+def _procs(**per_group):
+    """`processes` as `runners.processes` shapes it: per group a supervisor and two roles; a group given as "dead" has nothing alive."""
+    out = {}
+    for g, spec in per_group.items():
+        if spec == "dead":
+            out[g] = {"supervisor": {"state": "dead"}, "roles": {"orchestrator": _role("dead"), "pm": _role("dead")}}
+        else:
+            out[g] = {"supervisor": {"state": "alive"}, "roles": {"orchestrator": _role(), "pm": spec if isinstance(spec, dict) else _role()}}
+    return out
+
+
+def _executing(issues=None, **kw):
+    from meld.config import Party
+    from meld.rules import Actor
+    from meld.status import render_status
+    from tests.factories import REG, mk_pr, mk_run
+    issues = [mk_issue(11), mk_issue(12, status="in_progress", claimed_by="claude"), mk_issue(9, status="closed", state="closed")] if issues is None else issues
+    board = mk_board(CFG2, issues=issues, pulls=[mk_pr(20, 12, committer="meld-claude-bot")], runs={"claude": {12: mk_run("claude", 12, alive=True)}, "codex": {}}, **kw)
+    return render_status(board, CFG2, Actor(Party("human"), "empowerScott"), REG, NOW)
+
+
+ALIVE = {"claude": None, "codex": None}
+RECENT = "2026-09-03T11:55:00Z"     # five minutes before NOW: not silence
+
+
+def test_the_status_strip_says_each_state_in_the_reviews_words():
+    """Plan 54: one line, one colour, computed beside headline(); the wording of the usability review's table."""
+    from meld.chat import status_strip
+    strip = lambda status, decisions=(), procs=None, limits=None, **kw: status_strip(   # noqa: E731
+        status, list(decisions), _procs(**ALIVE) if procs is None else procs, limits or {"frozen": {}, "usage": {}}, NOW, **{"last_post_at": RECENT, **kw})
+    planning = {"milestone": 1, "phase": "planning", "issues": [], "runs": []}
+    assert strip(planning) == {"level": "quiet", "text": "Planning milestone 1 — the groups are agreeing a plan. Nothing needs you.", "action": None, "detail": ""}
+    ready = strip(planning, [{"kind": "plan_approve", "age_minutes": None}])
+    assert ready["level"] == "attention" and ready["text"] == "The plan for milestone 1 is ready for your approval." and ready["action"] == {"verb": "plan-approve"}
+    building = strip(_executing())
+    assert building["level"] == "ok" and building["text"] == "Building milestone 3 — 1 worker running, 1 of 3 issues done. Nothing needs you."
+    asked = strip(_executing(), [{"kind": "needs_human", "age_minutes": 25}, {"kind": "budget", "age_minutes": 8}])
+    assert asked["level"] == "attention" and asked["text"] == "2 questions need you — oldest 25 min." and asked["action"] is None
+    assert strip(_executing(), [{"kind": "needs_human", "age_minutes": 3}])["text"] == "1 question needs you — oldest 3 min."
+    one_frozen = {"frozen": {"codex": {"pm": {"until": "2026-09-03T17:09:00Z", "expired": False}}}, "usage": {}}
+    frozen = strip(_executing(), limits=one_frozen)
+    assert frozen["level"] == "attention" and frozen["text"] == "codex is out of quota until 5:09 pm; claude is still building."
+    all_frozen = {"frozen": {"codex": {"pm": {"until": "2026-09-03T17:09:00Z", "expired": False}},
+                             "claude": {"orchestrator": {"until": "2026-09-03T18:00:00Z", "expired": False}}}, "usage": {}}
+    every = strip(_executing(), limits=all_frozen)
+    assert every["level"] == "bad" and every["text"] == "Every agent is out of quota; next try 5:09 pm."
+    looping = strip(_executing(), procs=_procs(claude=None, codex=_role("dead", launch_no=39, reason="crash")))
+    assert looping["level"] == "bad" and looping["text"] == "codex's PM has stopped (restarted 38 times). Open its transcript."
+    stuck = strip(_executing(issues=[mk_issue(3, status="blocked"), mk_issue(12, status="in_progress", claimed_by="claude")]))
+    assert stuck["level"] == "attention" and stuck["text"] == "#3 is blocked: the worker could not finish. 1 worker still running."
+    silent = strip(_executing(), last_post_at="2026-09-03T11:35:00Z")   # the run started 10:00, the last post 11:35
+    assert silent["level"] == "attention" and silent["text"] == "Nothing has happened for 25 min — last post 11:35 am."
+    halted = strip(_executing(halted=True))
+    assert halted["level"] == "bad" and halted["text"] == "Paused by you. Nothing moves until you resume." and halted["action"] == {"verb": "post", "action": "RESUME"}
+    done_status = {"milestone": 1, "phase": "executing", "issues": [{"number": n, "status": "closed"} for n in (1, 2, 3)], "runs": [], "audit": {"pending": [40]}}
+    done = strip(done_status, limits={"frozen": {}, "usage": {"claude": {"cost_usd": 41.2}, "codex": {"cost_usd": 0.0}}})
+    assert done == {"level": "ok", "text": "Milestone 1 is complete — 3 of 3 issues closed, $41.20 spent.", "action": None, "detail": "1 merged PR still awaits an audit."}
+    assert strip({**done_status, "audit": {"pending": []}})["text"] == "Milestone 1 is complete — 3 of 3 issues closed."
+    assert strip({**done_status, "audit": {"pending": [40, 41]}})["detail"] == "2 merged PRs still await an audit."
+
+
+def test_the_status_strip_keeps_the_reviews_precedence_and_names_the_next_state_as_the_detail():
+    from meld.chat import status_strip
+    looping = _procs(claude=None, codex=_role("dead", launch_no=39, reason="crash"))
+    frozen = {"frozen": {"claude": {"pm": {"until": "2026-09-03T17:09:00Z", "expired": False}}}, "usage": {}}
+    asks = [{"kind": "needs_human", "age_minutes": 25}]
+    everything = status_strip(_executing(halted=True, issues=[mk_issue(3, status="blocked")]), asks, looping, frozen, NOW, last_post_at="2026-09-03T10:00:00Z")
+    assert everything["text"].startswith("Paused by you.") and everything["detail"] == "1 question needs you — oldest 25 min."
+    not_halted = status_strip(_executing(issues=[mk_issue(3, status="blocked")]), asks, looping, frozen, NOW, last_post_at="2026-09-03T10:00:00Z")
+    assert not_halted["text"].startswith("1 question needs you") and not_halted["detail"].startswith("codex's PM has stopped")
+    no_asks = status_strip(_executing(issues=[mk_issue(3, status="blocked")]), [], looping, frozen, NOW, last_post_at="2026-09-03T10:00:00Z")
+    assert no_asks["text"].startswith("codex's PM has stopped") and no_asks["detail"] == "claude is out of quota until 5:09 pm; codex is still running."
+    quiet = status_strip(_executing(issues=[mk_issue(3, status="blocked")]), [], _procs(**ALIVE), {"frozen": {}, "usage": {}}, NOW, last_post_at="2026-09-03T10:00:00Z")
+    assert quiet["text"].startswith("#3 is blocked") and quiet["detail"].startswith("Nothing has happened for 120 min")
+    silent = status_strip(_executing(), [], _procs(**ALIVE), {"frozen": {}, "usage": {}}, NOW, last_post_at="2026-09-03T10:00:00Z")
+    assert silent["text"].startswith("Nothing has happened") and silent["detail"] == "Building milestone 3 — 1 worker running, 1 of 3 issues done. Nothing needs you."
+
+
+def test_a_role_is_crash_looping_past_five_launches_and_silence_starts_past_the_grace():
+    from meld.chat import status_strip
+    limits = {"frozen": {}, "usage": {}}
+    five = status_strip(_executing(), [], _procs(claude=None, codex=_role("alive", launch_no=5, reason="crash")), limits, NOW, last_post_at=RECENT)
+    assert five["level"] == "ok"
+    six = status_strip(_executing(), [], _procs(claude=None, codex=_role("alive", launch_no=6, reason="crash")), limits, NOW, last_post_at=RECENT)
+    assert six["level"] == "bad" and six["text"] == "codex's PM has stopped (restarted 5 times). Open its transcript."
+    exited = status_strip(_executing(), [], _procs(claude=None, codex=_role("alive", launch_no=6, reason="exit")), limits, NOW, last_post_at=RECENT)
+    assert exited["level"] == "ok"                                                                # six clean recycles are not a loop
+    stopped = status_strip(_executing(), [], _procs(claude=None, codex=_role("dead", launch_no=2, reason="exit")), limits, NOW, last_post_at=RECENT)
+    assert stopped["text"] == "codex's PM has stopped. Open its transcript."
+    at_grace = status_strip(_executing(), [], _procs(**ALIVE), limits, NOW, last_post_at="2026-09-03T11:45:00Z", silence_grace_minutes=15)
+    assert at_grace["level"] == "ok"                                                              # 15 min is not past a 15-min grace
+    past = status_strip(_executing(), [], _procs(**ALIVE), limits, NOW, last_post_at="2026-09-03T11:44:00Z", silence_grace_minutes=15)
+    assert past["text"] == "Nothing has happened for 16 min — last post 11:44 am."
+    wider = status_strip(_executing(), [], _procs(**ALIVE), limits, NOW, last_post_at="2026-09-03T11:44:00Z", silence_grace_minutes=30)
+    assert wider["level"] == "ok"
+    nothing_yet = status_strip({"milestone": 1, "phase": "planning", "issues": [], "runs": []}, [], _procs(**ALIVE), limits, NOW)
+    assert nothing_yet["level"] == "quiet"                                                        # no post and no run: nothing to measure from
+
+
+def test_agent_rows_say_what_each_group_is_doing_in_plain_words():
+    from meld.chat import agent_rows
+    status = _executing()
+    procs = _procs(claude=None, codex=_role("dead", launch_no=39, reason="crash"))
+    procs["gemini"] = {"supervisor": {"state": "alive"}, "roles": {"orchestrator": _role(), "pm": _role("dead", launch_no=2, reason="limit", frozen={"at": NOW})}}
+    procs["mistral"] = {"supervisor": {"state": "dead"}, "roles": {"orchestrator": _role("dead"), "pm": _role("dead")}}
+    limits = {"frozen": {"gemini": {"pm": {"until": "2026-09-03T17:09:00Z", "expired": False}}},
+              "usage": {"claude": {"input_tokens": 904000, "output_tokens": 256000, "cached_tokens": 12, "cost_usd": 28.4123, "runs": 11},
+                        "codex": {"input_tokens": 5000, "output_tokens": 100, "cached_tokens": 0, "cost_usd": 0.0, "runs": 9},
+                        "gemini": {"unknown": True}}}
+    status["budget"] = {"spent": {"claude": {"medium": 1, "large": 1}, "codex": {"large": 9}, "gemini": {}, "mistral": {}}, "cap": {"small": 200, "medium": 80, "large": 20}}
+    rows = {r["group"]: r for r in agent_rows(status, procs, limits, NOW)}
+    assert rows["claude"] == {"group": "claude", "state": "running", "summary": "running · orchestrator ok · PM ok", "doing": "building #12",
+                              "frozen_until": None, "restarts": 0, "cost_usd": 28.41, "tokens": {"in": 904000, "out": 256000, "cached": 12}, "runs": "1 of 20 large, 1 of 80 medium"}
+    assert rows["codex"]["state"] == "partly" and rows["codex"]["summary"] == "partly running · orchestrator ok · PM stopped, restarted 38 times"
+    assert rows["codex"]["restarts"] == 38 and rows["codex"]["cost_usd"] is None and rows["codex"]["runs"] == "9 of 20 large" and rows["codex"]["doing"] == ""
+    assert rows["gemini"]["state"] == "frozen" and rows["gemini"]["frozen_until"] == "5:09 pm"
+    assert rows["gemini"]["summary"] == "out of quota until 5:09 pm · orchestrator ok · PM out of quota until 5:09 pm" and rows["gemini"]["cost_usd"] is None
+    assert rows["mistral"]["state"] == "stopped" and rows["mistral"]["summary"] == "stopped · orchestrator stopped · PM stopped"
+    assert rows["mistral"]["tokens"] == {"in": 0, "out": 0, "cached": 0} and rows["mistral"]["runs"] == "" and rows["mistral"]["cost_usd"] is None
+    for word in ("awake", "dead", "frozen", "dispatched", "launch"):
+        assert not any(word in r["summary"] for r in rows.values()), word
+    reviewing = _executing()
+    reviewing["runs"] = [{"group": "codex", "kind": "review", "issue": 20, "pr": 20, "state": "running"}, {"group": "codex", "kind": "audit", "issue": 21, "state": "running"}]
+    assert {r["group"]: r["doing"] for r in agent_rows(reviewing, _procs(**ALIVE), limits, NOW)} == {"claude": "", "codex": "reviewing PR #20, checking PR #21 after merge"}

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 from typing import Callable, Iterable
 
 from meld.actions import Refused
@@ -294,6 +294,147 @@ def headline(status: dict, decisions: list[dict]) -> str:
             f"{running} worker{'' if running == 1 else 's'} running",
             f"{len(open_prs)} open PR{'' if len(open_prs) == 1 else 's'}" + (f" ({mergeable} ready to merge)" if mergeable else "")]
     return f"Executing milestone {milestone}: " + "; ".join(bits) + f"; {you}."
+
+
+
+ROLE_WORDS = {"orchestrator": "orchestrator", "pm": "PM"}
+CRASH_LOOP_LAUNCHES = 5   # a role launched more times than this, and dead or back from a crash or capacity exit, is looping
+
+
+def _clock(iso: str | None, tz: tzinfo) -> str:
+    """`5:09 pm` for an ISO stamp in `tz`, or "" for a stamp that is missing or malformed."""
+    if not iso:
+        return ""
+    try:
+        at = datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).astimezone(tz)
+    except ValueError:
+        return ""
+    return f"{at.hour % 12 or 12}:{at.minute:02d} {'am' if at.hour < 12 else 'pm'}"
+
+
+def _n(count: int, noun: str, plural: str | None = None) -> str:
+    return f"{count} {noun if count == 1 else (plural or noun + 's')}"
+
+
+def _crash_looping(role: dict) -> bool:
+    launches = role.get("launch_no") or 0
+    return launches > CRASH_LOOP_LAUNCHES and (role.get("state") == "dead" or role.get("reason") in ("crash", "capacity"))
+
+
+def _frozen_until(group: str, limits: dict) -> str | None:
+    """The latest `until` among a group's unexpired freezes (`limits.frozen[group][role]`), or None when none is live."""
+    live = [f.get("until") or "" for f in (limits.get("frozen") or {}).get(group, {}).values() if not f.get("expired")]
+    return max(live) if live else None
+
+
+def _doing(group: str, status: dict) -> str:
+    words = {"build": "building #{n}", "review": "reviewing PR #{n}", "audit": "checking PR #{n} after merge"}
+    out = []
+    for r in status.get("runs", []):
+        if r.get("group") != group or r.get("state") != "running":
+            continue
+        n = r.get("issue") if r.get("kind") == "build" else (r.get("pr") or r.get("issue"))
+        out.append(words.get(r.get("kind"), "working on #{n}").format(n=n))
+    return ", ".join(out)
+
+
+def status_strip(status: dict, decisions: list[dict], processes: dict, limits: dict, now: datetime, *,
+                 last_post_at: str | None = None, silence_grace_minutes: int = 15, tz: tzinfo = timezone.utc) -> dict:
+    """The one-line state of the run for the top of the page (plan 54): `level` is one of ok (green), attention
+    (amber), bad (red) or quiet (grey); `text` is the sentence; `action` is the `/api/action` body for the one obvious
+    act (approve the plan, resume after a halt) or None; `detail` is a second clause: what the state itself has to
+    add, else the next state down the precedence. Precedence: halted, then questions for the person, then a role that
+    has stopped or is crash-looping (`processes[g].roles[r]`: `launch_no` past CRASH_LOOP_LAUNCHES and dead or back
+    from a crash or capacity exit) or out of quota (`limits.frozen`, unexpired), then a blocked issue or silence, then
+    moving, then done. Silence is measured from the newer of `last_post_at` (the viewer passes the newest `thread[].at`;
+    `meld status` carries only `coordination.last_comment_id`, an id, so the caller supplies the stamp) and
+    `runs[].started_at`, against `silence_grace_minutes`; nothing to measure from is not silence. Times are 12-hour in `tz`. `headline()` stays as it is for `meld chat`; this is the page's line."""
+    milestone = status.get("milestone")
+    issues = status.get("issues", [])
+    running = [r for r in status.get("runs", []) if r.get("state") == "running"]
+    states: list[tuple[str, str, dict | None, str]] = []   # (level, text, action, own detail), best first
+    if status.get("halted"):
+        states.append(("bad", "Paused by you. Nothing moves until you resume.", {"verb": "post", "action": "RESUME"}, ""))
+    if decisions:
+        if all(d.get("kind") == "plan_approve" for d in decisions):
+            states.append(("attention", f"The plan for milestone {milestone} is ready for your approval.", {"verb": "plan-approve"}, ""))
+        else:
+            ages = [d["age_minutes"] for d in decisions if d.get("age_minutes") is not None]
+            oldest = f" — oldest {max(ages)} min" if ages else ""
+            states.append(("attention", f"{_n(len(decisions), 'question')} need{'s' if len(decisions) == 1 else ''} you{oldest}.", None, ""))
+    for g, proc in processes.items():
+        for role, rec in (proc.get("roles") or {}).items():
+            if _crash_looping(rec):
+                states.append(("bad", f"{g}'s {ROLE_WORDS.get(role, role)} has stopped (restarted {_n((rec.get('launch_no') or 1) - 1, 'time')}). Open its transcript.", None, ""))
+            elif rec.get("state") == "dead" and not rec.get("frozen"):
+                states.append(("bad", f"{g}'s {ROLE_WORDS.get(role, role)} has stopped. Open its transcript.", None, ""))
+    frozen = {g: until for g in processes if (until := _frozen_until(g, limits))}
+    if frozen and len(frozen) == len(processes):
+        states.append(("bad", f"Every agent is out of quota; next try {_clock(min(frozen.values()), tz)}.", None, ""))
+    elif frozen:
+        others = [g for g in processes if g not in frozen]
+        still = ", ".join(f"{g} is still {'building' if _doing(g, status) else 'running'}" for g in others)
+        states.append(("attention", "; ".join(f"{g} is out of quota until {_clock(until, tz)}" for g, until in frozen.items()) + f"; {still}.", None, ""))
+    blocked = [i["number"] for i in issues if i.get("status") == "blocked"]
+    if blocked:
+        refs = ", ".join(f"#{n}" for n in blocked)
+        states.append(("attention", f"{refs} {'is' if len(blocked) == 1 else 'are'} blocked: the worker could not finish. "
+                       f"{_n(len(running), 'worker')} still running.", None, ""))
+    last_post = last_post_at or ""
+    last_run = max((r.get("started_at") or "" for r in status.get("runs", [])), default="")
+    quiet_since = _minutes(max(last_post, last_run) or None, now)
+    done = bool(issues) and all(i["status"] == "closed" for i in issues)
+    if quiet_since is not None and quiet_since > silence_grace_minutes and not done:
+        states.append(("attention", f"Nothing has happened for {quiet_since} min — last post {_clock(last_post, tz) or 'never'}.", None, ""))
+    if status.get("phase") == "planning":
+        states.append(("quiet", f"Planning milestone {milestone} — the groups are agreeing a plan. Nothing needs you.", None, ""))
+    elif done:
+        spent = sum(float(u.get("cost_usd") or 0) for u in (limits.get("usage") or {}).values())
+        pending = (status.get("audit") or {}).get("pending") or []
+        states.append(("ok", f"Milestone {milestone} is complete — {len(issues)} of {_n(len(issues), 'issue')} closed" + (f", ${spent:.2f} spent" if spent else "") + ".",
+                       None, f"{_n(len(pending), 'merged PR')} still await{'s' if len(pending) == 1 else ''} an audit." if pending else ""))
+    else:
+        closed = sum(1 for i in issues if i["status"] == "closed")
+        states.append(("ok", f"Building milestone {milestone} — {_n(len(running), 'worker')} running, {closed} of {_n(len(issues), 'issue')} done. Nothing needs you.", None, ""))
+    level, text, action, detail = states[0]
+    return {"level": level, "text": text, "action": action, "detail": detail or (states[1][1] if len(states) > 1 else "")}
+
+
+def agent_rows(status: dict, processes: dict, limits: dict, now: datetime, *, tz: tzinfo = timezone.utc) -> list[dict]:
+    """One compact row per configured group for the page's agent rows (plan 54), in the plain words of the review's
+    table: running, stopped, out of quota until 5:09 pm, restarted 38 times. `state` is frozen when any role is out
+    of quota, stopped when the supervisor is not alive and no role is, running when the supervisor and both roles
+    are, else partly. `restarts` sums every role's `launch_no - 1`; `cost_usd` is None where the CLI gives no dollar
+    figure (unknown usage, or tokens spent with no cost reported); `runs` is spend against cap per tier used."""
+    usage = limits.get("usage") or {}
+    spent, cap = (status.get("budget") or {}).get("spent") or {}, (status.get("budget") or {}).get("cap") or {}
+    out = []
+    for g, proc in processes.items():
+        roles = proc.get("roles") or {}
+        frozen = {r: f for r, f in ((limits.get("frozen") or {}).get(g, {})).items() if not f.get("expired")}
+        until = _clock(_frozen_until(g, limits), tz) or None
+        alive = [r for r, rec in roles.items() if rec.get("state") == "alive"]
+        sup_alive = (proc.get("supervisor") or {}).get("state") == "alive"
+        state = ("frozen" if frozen else "running" if sup_alive and len(alive) == len(roles) else "stopped" if not sup_alive and not alive else "partly")
+        words = {"frozen": f"out of quota until {until}", "running": "running", "stopped": "stopped", "partly": "partly running"}
+        parts = [words[state]]
+        restarts = 0
+        for r, rec in roles.items():
+            n = max((rec.get("launch_no") or 1) - 1, 0)
+            restarts += n
+            word = (f"out of quota until {_clock(frozen[r].get('until'), tz)}" if r in frozen else "ok" if rec.get("state") == "alive"
+                    else "stopped" if rec.get("state") == "dead" else "not started")
+            parts.append(f"{ROLE_WORDS.get(r, r)} {word}" + (f", restarted {_n(n, 'time')}" if _crash_looping(rec) else ""))
+        u = usage.get(g) or {}
+        tokens_spent = int(u.get("input_tokens") or 0) + int(u.get("output_tokens") or 0)
+        # ponytail: no adapter says whether it prices runs; zero dollars over spent tokens is read as "no figure"
+        cost = None if not u or u.get("unknown") or (not u.get("cost_usd") and tokens_spent) else round(float(u.get("cost_usd") or 0), 2)
+        runs = ", ".join(f"{spent.get(g, {}).get(t, 0)} of {cap.get(t, 0)} {t}" for t in ("large", "medium", "small") if spent.get(g, {}).get(t))
+        out.append({"group": g, "state": state, "summary": " · ".join(parts), "doing": _doing(g, status), "frozen_until": until,
+                    "restarts": restarts, "cost_usd": cost,
+                    "tokens": {"in": int(u.get("input_tokens") or 0), "out": int(u.get("output_tokens") or 0), "cached": int(u.get("cached_tokens") or 0)},
+                    "runs": runs})
+    return out
 
 
 def next_ask_id(board: Board) -> str:

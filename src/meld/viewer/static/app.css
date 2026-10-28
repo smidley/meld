@@ -247,8 +247,6 @@ body.setup > :not(#wizard) { display: none; }
 .icard .inum a:hover { color: var(--link); }
 .icard .ititle { min-width: 0; font: var(--t-card); color: var(--fg); cursor: pointer; text-decoration: none; }
 .icard .ititle:hover { color: var(--link); }
-.icard .ibadges { font: var(--t-meta); color: var(--fg-3); margin-top: var(--s1); }
-.icard .iwho { font-weight: 600; }
 /* the journey: seven labelled steps from claimed to closed; done filled, the one under way in the group's colour, the rest dim */
 .icard .journey { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 3px; margin-top: var(--s3); }
 .icard .jstep { font-size: 10.5px; line-height: 1.2; letter-spacing: 0.02em; color: var(--fg-3); text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -261,7 +259,6 @@ body.setup > :not(#wizard) { display: none; }
 .icard .iactivity { font: var(--t-meta); font-weight: 500; margin-top: var(--s2); }
 .icard .iprogress { height: 3px; background: var(--bg-3); border-radius: 2px; margin-top: var(--s1); overflow: hidden; }
 .icard .ifill { height: 100%; width: 0; transition: width var(--d-fill) var(--ease); }
-.icard .ipr { font: var(--t-meta); color: var(--fg-3); margin-top: var(--s1); }
 .icard .rverbs { margin-top: var(--s2); gap: var(--s1); }
 
 /* ---- the task view: a tree of everything that touched one issue, opened by clicking its card ---- */

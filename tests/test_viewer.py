@@ -1119,7 +1119,7 @@ def test_the_page_is_laid_out_as_header_decisions_conversation_work_and_a_tab_dr
     css = get(v, "/static/app.css").body.decode()
     assert "#issues.kanban" in css and "#drawer.closed" in css and "system-ui" in css
     assert "flex-direction: column" in css.split("#live {")[1].split("}")[0] and ".icard .jstep::before" in css and "font-size: 0" not in css.split(".icard .jstep {")[1].split("}")[0]
-    assert 'step.name === "pull request" ? "PR" : step.name' in js
+    assert 'STEP_SHORT[step.name] || step.name' in js   # plan 54: short chip labels (claim, build, PR, review, merge, audit, close), the full name on hover
     # what appears or goes does so smoothly: sections carry .appears, the drawer slides, the dialog and <details> transition
     assert "allow-discrete" in css and "@starting-style" in css and "transition: height var(--d-sheet) var(--ease)" in css.split("#drawer {")[1].split("}")[0]   # plan 54: the drawer slides on the motion tokens
     assert html.count('class="hidden appears"') >= 2 and 'class="ask appears"' in html and '"icard appears"' in js

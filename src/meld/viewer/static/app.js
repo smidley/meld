@@ -242,8 +242,17 @@ function refLink(parent, ref) {
               n ? "open on GitHub" : "open the coordination issue on GitHub");
 }
 
-const LANES = [["To do", ["planned", "ready", "unlabeled"]], ["In progress", ["in_progress", "blocked", "needs_human"]],
-               ["In review", ["in_review"]], ["Done", ["closed"]]];
+// The lanes bucket by the journey's steps, not by label (plan 54): the last step the server marks done decides the lane,
+// so an issue whose PR has changes requested sits in review, not in progress. Nothing done is To do; claimed or built is
+// In progress; a pull request opened or reviewed is In review; merged, audited or closed is Done.
+const LANES = [["To do", []], ["In progress", ["claimed", "built"]], ["In review", ["pull request", "reviewed"]],
+               ["Done", ["merged", "audited", "closed"]]];
+const STEP_SHORT = { claimed: "claim", built: "build", "pull request": "PR", reviewed: "review", merged: "merge", audited: "audit", closed: "close" };
+function laneOf(i) {
+  const steps = ((lastJourneys[i.number] || {}).steps || []).filter((st) => st.state === "done").map((st) => st.name);
+  const last = steps[steps.length - 1];
+  return (LANES.find(([, names]) => names.includes(last)) || LANES[0])[0];
+}
 let prevLane = new Map();   // issue number -> lane name at the last render, so a card that moved can slide in
 let liveRuns = [];          // the running worker runs from the last state, by group and issue
 let laneFlowUntil = new Map();   // lane name -> when its flow line stops running fast after a card arrived
@@ -265,34 +274,33 @@ function issueCard(i, lane) {
   const num = document.createElement("span");
   num.className = "inum";
   link(num, `#${i.number}`, ghUrl("issue", i.number));
-  head.append(num, title);
-  const badges = document.createElement("div");
-  badges.className = "ibadges";
-  if (i.claimed_by) {
-    const who = cell("iwho", i.claimed_by);
-    who.style.color = colorFor("group", i.claimed_by);
-    card.style.setProperty("--group", colorFor("group", i.claimed_by));   // the journey's live step and the working ring take this colour
-    badges.append(who);
+  head.append(num);
+  if (pr) {
+    // The open PR's number beside the issue's, so the pull request stays one click away (the sentence below names it).
+    const pnum = document.createElement("span");
+    pnum.className = "inum";
+    link(pnum, `PR #${pr.number}`, ghUrl("issue", pr.number));
+    head.append(pnum);
   }
-  const flags = [i.worker, i.status === "planned" && "planned", i.status === "blocked" && "blocked",
-                 i.status === "needs_human" && "needs a person", i.challenged && "challenged"].filter(Boolean);
-  if (flags.length) badges.append(text(document.createElement("span"), (i.claimed_by ? " · " : "") + flags.join(" · ")));
-  card.append(head, badges);
+  head.append(title);
+  if (i.claimed_by) card.style.setProperty("--group", colorFor("group", i.claimed_by));   // the journey's live step and the working ring take this colour
+  card.append(head);
   const j = lastJourneys[i.number];
   if (j) {
     // The issue's way from claimed to closed: seven segments, filled when done, pulsing for the step under way, dim for
-    // what is still to come; the server says what is happening now and what follows (chat.journey), the page prints it.
+    // what is still to come; then the one sentence the server says about it now (chat.journey). The chip carries a short
+    // word, the full step name and its detail are the tooltip.
     const strip = document.createElement("div");
     strip.className = "journey";
     for (const step of j.steps) {
       const seg = document.createElement("span");
       seg.className = `jstep ${step.state}`;
       seg.title = `${step.name}${step.detail ? `: ${step.detail}` : ""}`;
-      text(seg, step.name === "pull request" ? "PR" : step.name);   // the label is visible now (plan 49); the long one is the tooltip
+      text(seg, STEP_SHORT[step.name] || step.name);
       strip.append(seg);
     }
     card.append(strip);
-    if (j.now || j.next) card.append(cell("jnow", [j.now && `now: ${j.now}`, j.next].filter(Boolean).join(" · ")));
+    if (j.now) card.append(cell("jnow", j.now));
   }
   for (const r of [...runs, ...checks]) {
     // Who is on it, and how far through its time that run is: a bar that fills as the deadline nears.
@@ -307,16 +315,6 @@ function issueCard(i, lane) {
     fill.style.background = colorFor("group", r.group);
     bar.append(fill);
     card.append(line, bar);
-  }
-  if (pr) {
-    const reviewing = liveRuns.filter((r) => r.pr === pr.number && (r.kind === "review" || r.kind === "audit")).map((r) => `${r.group} reviewing`);
-    const state = [pr.approvals.length && `approved by ${pr.approvals.join(", ")}`, pr.changes_requested.length && `changes requested by ${pr.changes_requested.join(", ")}`,
-                   (pr.checks === "pending" || pr.checks === "red") && `checks ${pr.checks}`, ...reviewing].filter(Boolean);
-    const line = document.createElement("div");
-    line.className = "ipr";
-    link(line, `PR #${pr.number}`, ghUrl("issue", pr.number));
-    text(line.appendChild(document.createElement("span")), state.length ? ` · ${state.join(" · ")}` : " · awaiting review");
-    card.append(line);
   }
   const verbs = document.createElement("div");
   verbs.className = "rverbs";
@@ -812,10 +810,10 @@ function renderBoard(s) {
   // its new place, then animate from the old place to none).
   const before = new Map([...issues.querySelectorAll(".icard")].map((c) => [c.dataset.issue, c.getBoundingClientRect()]));
   issues.replaceChildren();
-  for (const [name, statuses] of LANES) {
+  for (const [name] of LANES) {
     const lane = document.createElement("div");
     lane.className = "lane";
-    const items = (s.issues || []).filter((i) => statuses.includes(i.status));
+    const items = (s.issues || []).filter((i) => laneOf(i) === name);
     lane.append(text(document.createElement("h3"), `${name} · ${items.length}`));
     const flow = document.createElement("div");
     flow.className = "flowline";
@@ -832,7 +830,7 @@ function renderBoard(s) {
     const dx = old.left - now.left, dy = old.top - now.top;
     if (dx || dy) card.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }], { duration: 800, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" });
   }
-  prevLane = new Map((s.issues || []).map((i) => [i.number, (LANES.find(([, statuses]) => statuses.includes(i.status)) || [""])[0]]));
+  prevLane = new Map((s.issues || []).map((i) => [i.number, laneOf(i)]));
   const pulls = el("pulls");
   pulls.replaceChildren();
   for (const p of s.pulls || []) {

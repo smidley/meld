@@ -151,6 +151,11 @@ def _dispatch(board: Board, cfg: Config, actor: Actor, issue: Issue, models: Mod
         retry_at = _plus_seconds(run.ended_at, CAPACITY_RETRY_SECONDS)
         if board.now < retry_at:
             return f"the model was at capacity at {run.ended_at}; dispatch the same tags again from {retry_at}"
+    if run is not None and run.kind == "build" and run.outcome in ("failed", "blocked") and run.attempt >= cfg.budget_attempts_per_issue:
+        # Plan 55: the maze run ran seven builds on one issue, the last three at max effort on the largest model. After the
+        # cap a person decides what changes; a retry is not the orchestrator's to spend.
+        return (f"{run.attempt} builds have run on #{issue.number} (budget.attempts_per_issue is {cfg.budget_attempts_per_issue}); "
+                f"a person decides what changes: post NEEDS-HUMAN #{issue.number} and wait")
     if run is not None and run.kind == "build" and run.outcome == "failed" and run.model == issue.model and run.effort == issue.effort:
         # The rubric (section 9) says a retry after a failure raises effort a level or moves up a tier; the first live run's
         # PMs re-dispatched at the unchanged tag before the orchestrator had re-tagged (handoff residual 5). A request-changes

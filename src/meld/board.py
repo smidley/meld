@@ -314,6 +314,7 @@ class RunRecord:
     proc_start: str = ""        # `ps -o lstart=` for `pid` at launch, so a reused pid is not mistaken for the run (spec 22)
     outcome: str | None = None  # how collect ended a build: done, no_change, failed, blocked, superseded, capacity (rules._dispatch reads it)
     ended_at: str = ""          # when collect ended it (plan 50: a capacity stop is retried only after CAPACITY_RETRY_SECONDS)
+    attempt: int = 1            # which build this is on the issue for this group (plan 55: budget.attempts_per_issue caps it)
 
     @property
     def finished(self) -> bool:

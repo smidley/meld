@@ -221,7 +221,7 @@ KNOWN: dict[str, tuple[str, ...]] = {
     "runners": ("restart_hours", "roster_refresh_minutes", "silence_grace_minutes", "summary_cadence_minutes",
                 "limit_retry_minutes"),
     "timeouts": ("S", "M", "L"),
-    "budget": ("small", "medium", "large", "wallclock_hours"),
+    "budget": ("small", "medium", "large", "wallclock_hours", "attempts_per_issue"),
     "notify": ("slack_dm_webhook_env", "repeat_after_minutes"),
     "worker": ("log_tail_lines", "max_turns"),
     "lease": ("grace_minutes",),
@@ -386,7 +386,8 @@ def dumps(cfg: Config) -> str:
                                 ("limit_retry_minutes", cfg.runners_limit_retry_minutes)]),
         ["[timeouts]"] + _lines([(size, cfg.timeouts[size]) for size in ("S", "M", "L")]),
         ["[budget]"] + _lines([("small", cfg.budget["small"]), ("medium", cfg.budget["medium"]),
-                               ("large", cfg.budget["large"]), ("wallclock_hours", cfg.budget_wallclock_hours)]),
+                               ("large", cfg.budget["large"]), ("wallclock_hours", cfg.budget_wallclock_hours),
+                               ("attempts_per_issue", cfg.budget_attempts_per_issue)]),
         ["[notify]"] + _lines([("slack_dm_webhook_env", cfg.notify_webhook_env),
                                ("repeat_after_minutes", cfg.notify_repeat_after_minutes)]),
         ["[worker]"] + _lines([("log_tail_lines", cfg.worker_log_tail_lines), ("max_turns", cfg.worker_max_turns)]),
@@ -419,6 +420,7 @@ class Config:
     timeouts: dict[str, str]
     budget: dict[str, int]
     budget_wallclock_hours: int
+    budget_attempts_per_issue: int   # builds one group may run on one issue before a person decides (plan 55)
     notify_webhook_env: str | None
     notify_repeat_after_minutes: int
     # Since plan 8a this bounds rendered EVENTS in the failure comment `collect` posts (`dispatch.render_tail`)
@@ -571,6 +573,7 @@ class Config:
                 "large": _at_least(budget.get("large", 20), 0, "budget.large", "runs"),
             },
             budget_wallclock_hours=_at_least(budget.get("wallclock_hours", 72), 0, "budget.wallclock_hours", "hours"),
+            budget_attempts_per_issue=_at_least(budget.get("attempts_per_issue", 3), 1, "budget.attempts_per_issue", "builds"),
             notify_webhook_env=notify.get("slack_dm_webhook_env"),
             # Honest but a runaway -- the rule's second clause above, and its marginal case. A repeat
             # window of 0 makes every pass due again, so `notifier` re-posts the same nudge through

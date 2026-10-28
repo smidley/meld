@@ -490,10 +490,13 @@ def _dispatch_build(ctx, board: Board, actor: Actor, number: int, adapter: Adapt
     deadline = when + timedelta(seconds=timeout)
     pid, log_path = _launch(ctx, group, adp, worktree=wt, brief=brief, model=issue.model or "", effort=issue.effort or "",
                             timeout=timeout, kind="build", number=number, when=when, env=env, identity=git_identity(ctx, group))
+    previous = board.run_for(group.name, number)
+    # Plan 55: the attempt count carries over from the last build record on this issue; a capacity stop was a pause, not an attempt.
+    attempt = 1 if previous is None or previous.kind != "build" else (previous.attempt if previous.outcome == "capacity" else previous.attempt + 1)
     record = RunRecord(group=group.name, issue=number, kind="build", pr=None, pid=pid, started_at=_iso(when), worktree=str(wt),
                        log_path=str(log_path), model=issue.model or "", effort=issue.effort or "",
                        tier=ctx.models.tier_of(group.cli, issue.model or "") or "medium", milestone=board.milestone, alive=True,
-                       collected=False, deadline=_iso(deadline), branch=branch, worker=worker.name, proc_start=proc_start_of(pid))
+                       collected=False, deadline=_iso(deadline), branch=branch, worker=worker.name, proc_start=proc_start_of(pid), attempt=attempt)
     ctx.store.write_run(record)
     until = _iso(deadline + timedelta(minutes=ctx.cfg.lease_grace_minutes))
     lease = ctx.gh.create_comment(board.coordination_issue, compose(Header(Party("pm", group.name), "LEASE", f"#{number}", None),

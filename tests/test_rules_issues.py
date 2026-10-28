@@ -373,3 +373,16 @@ def test_dispatch_after_a_capacity_stop_waits_a_minute_then_allows_the_same_tags
     assert rule(early, CLAUDE_PM, Verb.DISPATCH, same) == "the model was at capacity at 2026-09-03T12:00:00Z; dispatch the same tags again from 2026-09-03T12:01:00Z"
     later = mk_board(CFG2, issues=[same], runs=runs, now="2026-09-03T12:01:00Z")
     assert rule(later, CLAUDE_PM, Verb.DISPATCH, same) is None and CAPACITY_RETRY_SECONDS == 60
+
+
+def test_dispatch_stops_at_the_attempt_budget_and_a_capacity_stop_does_not_count():
+    """Plan 55: the maze run ran seven builds on one issue, the last three at max effort on the largest model."""
+    from dataclasses import replace
+    issue = mk_issue(12, status="in_progress", claimed_by="claude", model="claude-sonnet-5", effort="high")
+    third = replace(mk_run("claude", 12, alive=False, collected=True, outcome="failed", model="claude-sonnet-5", effort="medium"), attempt=3)
+    board = mk_board(CFG2, issues=[issue], runs={"claude": {12: third}, "codex": {}})
+    assert rule(board, CLAUDE_PM, Verb.DISPATCH, issue) == ("3 builds have run on #12 (budget.attempts_per_issue is 3); a person decides what changes: "
+                                                           "post NEEDS-HUMAN #12 and wait")
+    second = replace(third, attempt=2)
+    assert rule(mk_board(CFG2, issues=[issue], runs={"claude": {12: second}, "codex": {}}), CLAUDE_PM, Verb.DISPATCH, issue) is None   # re-tagged: effort high vs medium
+    assert CFG2.budget_attempts_per_issue == 3

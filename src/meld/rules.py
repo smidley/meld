@@ -658,9 +658,23 @@ def plan_rule(board: Board, cfg: Config, actor: Actor, action: str, ref: str) ->
     return f"{action} is not a plan action"
 
 
-def remember_rule(board: Board, cfg: Config, actor: Actor, ref: str) -> str | None:
+def recorded_lesson(board: Board, ref: str) -> PullRequest | None:
+    """The memory PR that recorded (or is recording) a lesson from `ref`: open or merged, newest first."""
+    prs = [p for p in board.pulls.values() if p.memory is not None and p.memory[:2] == ("lesson", ref) and (p.state == "open" or p.merged)]
+    return max(prs, key=lambda p: p.number) if prs else None
+
+
+def remember_rule(board: Board, cfg: Config, actor: Actor, ref: str, supersedes: str | None = None) -> str | None:
     if actor.party.kind not in ("group", "pm"):
         return "only an orchestrator or PM may record a lesson"
+    # One lesson per ref (plan 44): a later `remember` on the same ref must supersede the entry it improves on, so
+    # lessons.md carries one current entry per item instead of five takes on it, each a PR, a review and a merge (the
+    # scratch product's claude PM recorded five lessons from #4 in a day).
+    earlier = recorded_lesson(board, ref)
+    if earlier is not None and not supersedes:
+        state = "an open" if earlier.state == "open" else "a merged"
+        return (f"{ref} already has a lesson ({state} memory PR #{earlier.number}); fold what is new into it with "
+                f"--supersedes '<that entry's heading>' (meld recall finds it) instead of a second entry")
     n = int(ref[1:]) if ref.startswith("#") and ref[1:].isdigit() else None
     issue = board.issues.get(n) if n is not None else None
     pr = board.pulls.get(n) if n is not None else None

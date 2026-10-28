@@ -211,7 +211,7 @@ def remember(ctx, ref: str, text: str, *, now: datetime | None = None, supersede
     n = int(ref[1:]) if ref.startswith("#") and ref[1:].isdigit() else None
     issue = board.issues.get(n) if n is not None else None
     pr = board.pulls.get(n) if n is not None else None
-    rule = remember_rule(board, ctx.cfg, actor, ref)
+    rule = remember_rule(board, ctx.cfg, actor, ref, supersedes)
     if rule:
         refuse(ctx, board, Refusal(Verb.REMEMBER, ref, rule))
     group = ctx.cfg.groups[actor.group]  # type: ignore[index]

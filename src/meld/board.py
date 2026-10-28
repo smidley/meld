@@ -459,6 +459,22 @@ class Board:
                    and c.header.verb in ("PROVIDED", "RESOLVED") and c.header.ref == f"#{issue}"]
         return max(answers, key=lambda c: c.id) if answers else None
 
+    def open_ask(self, ref: str | None) -> ParsedComment | None:
+        """The newest `NEEDS-HUMAN` on `ref` that no listed human has answered since (`PROVIDED`/`RESOLVED` on the same
+        ref, newer by id), else None. `9` and `#9` are the same ref. Plan 41: the scratch product's three parties posted
+        nine asks on one PR while the first still stood, each one a new card for the person."""
+        if not ref:
+            return None
+        canon = f"#{ref}" if ref.isdigit() else ref
+        same = lambda c: (f"#{c.header.ref}" if (c.header.ref or "").isdigit() else c.header.ref) == canon
+        asks = [c for c in self.comments if c.ok and c.header is not None and c.header.verb == "NEEDS-HUMAN" and same(c)]
+        if not asks:
+            return None
+        newest = max(asks, key=lambda c: c.id)
+        answered = any(c.ok and c.header is not None and c.header.party.kind == "human" and c.header.verb in ("PROVIDED", "RESOLVED")
+                       and same(c) and c.id > newest.id for c in self.comments)
+        return None if answered else newest
+
     def needs_human_answered(self, issue: int) -> bool:
         """A listed human answered after the newest `NEEDS-HUMAN #issue` -- the condition that unlocks a needs-human or
         held issue (spec 8, 14). An ask must exist: a `meld:needs-human` label with nothing behind it never

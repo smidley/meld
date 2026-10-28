@@ -78,11 +78,16 @@ def plan_issues(ctx, ref: str, *, dry_run: bool = False) -> dict:
     _, board = build_status(ctx)
     actor = ctx.actor()
     rule = plan_rule(board, ctx.cfg, actor, "issues", ref)
-    if rule:
-        refuse(ctx, board, Refusal(Verb.PLAN, ref, rule))
     agreement = agreement_for(board.comments, ref, ctx.cfg)
     items, errors = parse_plan_items(agreement.text or "")
     existing = {m.group(1) for i in board.issues.values() for m in [MARKER_RE.search(i.body or "")] if m}
+    if rule and rule.endswith("its issues can no longer be created") and items and all(item.id in existing for item in items):
+        # Plan 54: the orchestrator read a planning board, the person approved the plan before its call landed, and the call
+        # would create nothing: the rule guards new issues after approval, and there are none. A refusal here is a
+        # PROTOCOL-VIOLATION for a benign race (the rehearsal hit it one run in three).
+        return {"plan": ref, "created": [], "skipped": [item.id for item in items], "errors": errors, "would_create": [], "dry_run": dry_run, "already": True}
+    if rule:
+        refuse(ctx, board, Refusal(Verb.PLAN, ref, rule))
     created: list[int] = []
     would_create: list[str] = []
     skipped: list[str] = []

@@ -916,7 +916,12 @@ function renderDecisions(list) {
   const asks = el("asks");
   asks.replaceChildren();
   root.classList.toggle("hidden", !(list && list.length));
-  if (!asksById.has(selectedAsk)) selectedAsk = list && list.length ? list[list.length - 1].id : null;
+  // The oldest open question is selected by default (plan 54): it has waited longest, and the newest is still in view.
+  if (!asksById.has(selectedAsk)) {
+    const oldest = (list || []).reduce((a, d) => (a == null || (d.age_minutes || 0) > (a.age_minutes || 0) ? d : a), null);
+    selectedAsk = oldest ? oldest.id : null;
+  }
+  text(el("asks-count"), list && list.length ? `${list.length} open` : "");
   for (const d of list || []) {
     const li = el("ask").content.firstElementChild.cloneNode(true);
     li.dataset.ask = d.id;
@@ -930,20 +935,6 @@ function renderDecisions(list) {
     }
     text(li.querySelector(".atitle"), d.title);
     text(li.querySelector(".atext"), d.summary);
-    const quick = li.querySelector(".aquick");
-    for (const c of d.choices.filter((c) => !c.needs_text)) {
-      // a reply that is one word: a button in the bubble, sent at once
-      const b = text(document.createElement("button"), c.label);
-      b.type = "button";
-      b.addEventListener("click", async (e) => {
-        e.stopPropagation();
-        b.disabled = true;
-        const result = await postAction({ party: "human", ...c.body });
-        showReplyOutcome(result, c.label);
-        if (result.ok) pollState(); else b.disabled = false;
-      });
-      quick.append(b);
-    }
     li.addEventListener("click", () => { selectedAsk = d.id; renderReplyBox(); });
     if (d.comment_id) li.title = "click to reply to this one; the link opens the comment on GitHub";
     asks.append(li);
@@ -951,25 +942,38 @@ function renderDecisions(list) {
   renderReplyBox();
 }
 
+// What the reply form's buttons say (plan 54): a one-word ruling is a whole sentence, a typed reply is sent with "Send".
+const REPLY_WORDS = { Uphold: "Uphold the challenge", Dismiss: "Dismiss the challenge", Resolved: "Send", "Give a directive": "Send" };
 function renderReplyBox() {
+  // The form is always visible while a question is open; its buttons change with the selection: "Approve the plan" alone
+  // for a plan, "Send" for a typed reply, the two rulings for a challenge. A choice that needs no text is sent at once.
   const d = asksById.get(selectedAsk);
   const form = el("reply");
   for (const li of el("asks").querySelectorAll(".ask")) li.classList.toggle("selected", li.dataset.ask === selectedAsk);
-  const typed = d && (d.reply || d.choices.some((c) => c.needs_text));
-  form.classList.toggle("hidden", !typed);
-  if (!typed) return;
+  form.classList.toggle("hidden", !d);
+  if (!d) return;
+  const typed = Boolean(d.reply || d.choices.some((c) => c.needs_text));
   const others = asksById.size > 1 ? ` (${asksById.size} open; click another question to reply to it)` : "";
   text(el("reply-to"), `Replying to ${d.from || "the agents"}${d.ref ? ` about ${d.ref}` : ""}${others}`);
+  el("reply-text").classList.toggle("hidden", !typed);
   el("reply-text").placeholder = d.hint || "your reply";
   const send = el("reply-send");
   send.replaceChildren();
-  const ways = d.reply ? [{ label: "Send", body: d.reply }] : d.choices.filter((c) => c.needs_text).map((c) => ({ label: `Send as ${c.label.toLowerCase()}`, body: c.body }));
+  const ways = [...(d.reply ? [{ label: "Send", body: d.reply, typed: true }] : []),
+                ...d.choices.map((c) => ({ label: c.needs_text ? (REPLY_WORDS[c.label] || `Send as ${c.label.toLowerCase()}`) : c.label, body: c.body, typed: c.needs_text }))];
   for (const w of ways) {
     const b = text(document.createElement("button"), w.label);
     b.type = "button";
-    b.addEventListener("click", () => sendReply(w));
+    b.addEventListener("click", () => (w.typed ? sendReply(w) : sendChoice(w, b)));
     send.append(b);
   }
+}
+
+async function sendChoice(way, button) {
+  button.disabled = true;
+  const result = await postAction({ party: "human", ...way.body });
+  showReplyOutcome(result, way.label);
+  if (result.ok) pollState(); else button.disabled = false;
 }
 
 async function sendReply(way) {

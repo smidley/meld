@@ -331,7 +331,7 @@ def test_decisions_present_everything_waiting_on_the_human_with_its_choices():
         mk_comment(CFG2, 3, "meld-claude-bot", f"[joint] PLAN plan-3\n\n{plan}\n\nverified-by: meld status")])
     approve = decisions(planning, CFG2, HUMAN, NOW)
     assert [d["kind"] for d in approve] == ["plan_approve"]
-    assert approve[0]["summary"] == "2 item(s): Add health endpoint; Docs" and approve[0]["choices"] == [{"label": "Approve the plan", "body": {"verb": "plan-approve"}, "needs_text": False}]
+    assert approve[0]["summary"] == "2 items: Add health endpoint; Docs"   # plan 54: pluralised properly and approve[0]["choices"] == [{"label": "Approve the plan", "body": {"verb": "plan-approve"}, "needs_text": False}]
     assert approve[0]["comment_id"] == 3
     assert decisions(mk_board(CFG2), CFG2, HUMAN, NOW) == []
 

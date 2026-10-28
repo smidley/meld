@@ -104,7 +104,7 @@ def decisions(board: Board, cfg: Config, actor: Actor, now: datetime) -> list[di
         out.append({"id": f"plan:{plan_ref}", "kind": "plan_approve", "ref": plan_ref, "age_minutes": None, "comment_id": agreement.joint_comment_id,
                     "from": f"{agreement.proposer} (for both groups)" if agreement.proposer else "the groups", "reply": None,
                     "title": f"The plan for milestone {board.milestone} is ready for your approval",
-                    "summary": f"{len(items)} item(s): " + "; ".join(i.title for i in items) if items else "the agreed plan",
+                    "summary": f"{_n(len(items), 'item')}: " + "; ".join(i.title for i in items) if items else "the agreed plan",
                     "choices": [{"label": "Approve the plan", "body": {"verb": "plan-approve"}, "needs_text": False}]})
     box = inbox(board, cfg, now)
     for item in box["needs_human"]:

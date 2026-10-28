@@ -22,6 +22,11 @@ from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
 API = "https://api.github.com"
+
+
+def api_base() -> str:
+    """Where the App calls go: GitHub, or the rehearsal's stand-in when `MELD_REHEARSAL_GITHUB` names it (plan 48)."""
+    return os.environ.get("MELD_REHEARSAL_GITHUB") or API
 JWT_LIFETIME_SECONDS = 540      # GitHub caps App JWTs at 10 minutes; 9 leaves room for clock skew on top of iat-60
 REFRESH_MARGIN_SECONDS = 300
 _ISO = "%Y-%m-%dT%H:%M:%SZ"
@@ -110,7 +115,7 @@ def mint_installation_token(app_id: int, installation_id: int, pem: str, *, now:
     those repositories, which is both least privilege and the only way the response's own `repositories` list is
     evidence of coverage: an unscoped mint may answer with no list at all."""
     jwt = jwt_for_app(app_id, pem, now=now, sign=sign)
-    url = f"{API}/app/installations/{installation_id}/access_tokens"
+    url = f"{api_base()}/app/installations/{installation_id}/access_tokens"
     headers = _bearer(jwt)
     body: bytes | None = None
     if repositories:
@@ -134,7 +139,7 @@ def app_slug(app_id: int, pem: str, *, now: int | None = None, get: Callable[[st
              sign: Callable[[bytes, str], bytes] | None = None) -> str:
     """The App's slug (its bot login is `<slug>[bot]`), from GET /app authenticated as the App."""
     jwt = jwt_for_app(app_id, pem, now=now, sign=sign)
-    status, data = (get or (lambda u, h: _http("GET", u, h, None)))(f"{API}/app", _bearer(jwt))
+    status, data = (get or (lambda u, h: _http("GET", u, h, None)))(f"{api_base()}/app", _bearer(jwt))
     if status != 200 or not isinstance(data, dict) or not data.get("slug"):
         raise AppAuthError(f"GET /app failed with HTTP {status}: {data.get('message', '') if isinstance(data, dict) else ''}")
     return str(data["slug"])

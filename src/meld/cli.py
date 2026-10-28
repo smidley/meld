@@ -557,6 +557,21 @@ START_OF = proc_start_of
 SLEEP = time.sleep
 
 
+def setup_viewer(cwd: Path) -> tuple[Viewer, "SetupSession"]:
+    """The viewer in setup mode over a wizard session for `cwd`, with every seam the real `meld start` wires: the
+    person's gh account, the real detached launcher and doctor, the product's own home once the repository is named.
+    The rehearsal builds its wizard through this too, so a change here is what it tests (plan 48)."""
+    from meld.firstrun import SetupSession
+    home = meld_home(os.environ)   # before a repository exists: the viewer's token lives here; the product's own home follows the repo
+    session = SetupSession(target_dir=cwd, home=home, registry=ModelRegistry.load(), gh_factory=_human_gh,
+                           adapter_for=ADAPTER_FOR, launcher=lambda g: detach_supervisor(cwd / ".meld.toml", g, session.home, cwd),
+                           doctor=lambda g: group_doctor(cwd / ".meld.toml", session.home)(g),
+                           home_for=lambda repo: meld_home(os.environ, repo))
+    viewer = Viewer(None, token=stable_token(home), port=0, config_path=None, setup=session,
+                    load_ctx=lambda p: load_context(p, run=RUN, adapter_for=ADAPTER_FOR))
+    return viewer, session
+
+
 def _human_gh(repo: str) -> GitHub:
     """The wizard's and the board's GitHub client as the person: the `gh` account that owns `repo` when it is logged in,
     else `gh`'s active account (plan 45). A token `gh` cannot give leaves the client on `gh`'s own default."""
@@ -776,15 +791,7 @@ def start(ctx: click.Context, port: int | None, open_browser: bool | None) -> No
     if path is not None:
         ctx.invoke(watch, port=port, open_browser=open_browser)
         return
-    from meld.firstrun import SetupSession
-    home = meld_home(os.environ)   # before a repository exists: the viewer's token lives here; the product's own home follows the repo
-    cwd = Path.cwd()
-    session = SetupSession(target_dir=cwd, home=home, registry=ModelRegistry.load(), gh_factory=_human_gh,
-                           adapter_for=ADAPTER_FOR, launcher=lambda g: detach_supervisor(cwd / ".meld.toml", g, session.home, cwd),
-                           doctor=lambda g: group_doctor(cwd / ".meld.toml", session.home)(g),
-                           home_for=lambda repo: meld_home(os.environ, repo))
-    viewer = Viewer(None, token=stable_token(home), port=0, config_path=None, setup=session,
-                    load_ctx=lambda p: load_context(p, run=RUN, adapter_for=ADAPTER_FOR))
+    viewer, session = setup_viewer(Path.cwd())
     wanted = port if port is not None else 8765
     try:
         httpd = SERVE(viewer, port=wanted)

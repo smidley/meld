@@ -557,6 +557,13 @@ START_OF = proc_start_of
 SLEEP = time.sleep
 
 
+def _human_gh(repo: str) -> GitHub:
+    """The wizard's and the board's GitHub client as the person: the `gh` account that owns `repo` when it is logged in,
+    else `gh`'s active account (plan 45). A token `gh` cannot give leaves the client on `gh`'s own default."""
+    from meld.firstrun import gh_token_for
+    return GitHub(repo, token=gh_token_for(repo.partition("/")[0], RUN) or None, run=RUN)
+
+
 def group_doctor(config_path: Path, home: Path):
     """The wizard's and the board's doctor: one group's checks from a fresh read of the file, as dicts (plan 36)."""
     from dataclasses import asdict
@@ -772,7 +779,7 @@ def start(ctx: click.Context, port: int | None, open_browser: bool | None) -> No
     from meld.firstrun import SetupSession
     home = meld_home(os.environ)   # before a repository exists: the viewer's token lives here; the product's own home follows the repo
     cwd = Path.cwd()
-    session = SetupSession(target_dir=cwd, home=home, registry=ModelRegistry.load(), gh_factory=lambda repo: GitHub(repo, token=None, run=RUN),
+    session = SetupSession(target_dir=cwd, home=home, registry=ModelRegistry.load(), gh_factory=_human_gh,
                            adapter_for=ADAPTER_FOR, launcher=lambda g: detach_supervisor(cwd / ".meld.toml", g, session.home, cwd),
                            doctor=lambda g: group_doctor(cwd / ".meld.toml", session.home)(g),
                            home_for=lambda repo: meld_home(os.environ, repo))
@@ -822,7 +829,7 @@ def watch(ctx: click.Context, port: int | None, open_browser: bool | None) -> No
     # The board carries a setup session too, so a group that still lacks its GitHub identity can get it with the same two
     # clicks the wizard offers (/setup/app/<group>/...), after the wizard is gone.
     from meld.firstrun import SetupSession
-    session = SetupSession(target_dir=config_path.parent, home=c.store.home, registry=c.models, gh_factory=lambda repo: GitHub(repo, token=None, run=RUN),
+    session = SetupSession(target_dir=config_path.parent, home=c.store.home, registry=c.models, gh_factory=_human_gh,
                            adapter_for=ADAPTER_FOR, launcher=lambda g: detach_supervisor(config_path, g, c.store.home, config_path.parent),
                            created={"repo": c.cfg.repo_name, "groups": list(c.cfg.groups)}, doctor=group_doctor(config_path, c.store.home))
     viewer = Viewer(c, token=stable_token(c.store.home), port=0, config_path=config_path, setup=session)

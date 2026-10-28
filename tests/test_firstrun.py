@@ -318,3 +318,30 @@ def test_two_concurrent_starts_launch_a_group_once(tmp_path):
         th.join()
     assert launched == ["codex"] and s.started["codex"]["pid"] == 5
     assert s.facts()["apps"]["codex"]["url"] == "https://github.com/apps/meld-codex"
+
+
+def test_the_wizard_uses_the_gh_account_that_owns_the_repository(tmp_path):
+    """Plan 45: the owner ran the wizard as their work account and named a repository under their personal one; the wizard
+    read GitHub as the work account, took the personal owner for an organisation, and GitHub said 404. `gh_token_for`
+    asks `gh` for the owner's own account first, and the create step says what would work when neither account owns it."""
+    from meld.firstrun import gh_token_for
+
+    def gh(argv, **kw):
+        if argv == ["gh", "auth", "token", "--user", "smidley"]:
+            return SimpleNamespace(returncode=0, stdout="tok-smidley\n", stderr="")
+        if argv == ["gh", "auth", "token", "--user", "nobody"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="no such account")
+        if argv == ["gh", "auth", "token"]:
+            return SimpleNamespace(returncode=0, stdout="tok-active\n", stderr="")
+        raise AssertionError(argv)
+
+    assert gh_token_for("smidley", gh) == "tok-smidley" and gh_token_for("nobody", gh) == "tok-active" and gh_token_for(None, gh) == "tok-active"
+    assert gh_token_for("smidley", lambda *a, **k: (_ for _ in ()).throw(OSError("no gh"))) == ""
+    # neither account owns the repository: the org create answers 404 and the error names the login and the two ways out
+    fake = CreatingFake()
+    fake.route("GET", "user", {"login": "tiltScott"})
+    fake.route("POST", "orgs/smidley/repos", {"message": "Not Found"}, status=404)
+    s = session(tmp_path, fake, run=GitRun(remote=""))
+    with pytest.raises(SetupError, match="GitHub reads you as tiltScott, and smidley is neither you nor an organisation") as e:
+        s.ensure_repository("smidley/widgets")
+    assert "tiltScott/widgets" in str(e.value) and "gh auth login" in str(e.value)

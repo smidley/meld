@@ -46,6 +46,20 @@ def repo_from_remote(target_dir: Path, run=subprocess.run) -> str | None:
     return f"{m.group(1)}/{m.group(2)}" if m else None
 
 
+def gh_token_for(owner: str | None, run=subprocess.run) -> str:
+    """The token of the `gh` account named `owner` when that account is logged in, else `gh`'s active account's; "" when
+    `gh` has none. So a person logged in as two accounts gets the one that owns the repository they named (plan 45): the
+    wizard ran as the work account, took the personal owner for an organisation, and GitHub said 404."""
+    for argv in ([["gh", "auth", "token", "--user", owner]] if owner else []) + [["gh", "auth", "token"]]:
+        try:
+            proc = run(argv, capture_output=True, text=True, timeout=20)
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        if proc.returncode == 0 and (proc.stdout or "").strip():
+            return proc.stdout.strip()
+    return ""
+
+
 @dataclass
 class SetupSession:
     target_dir: Path
@@ -157,16 +171,26 @@ class SetupSession:
         owner, _, name = repo.partition("/")
         login = gh.viewer_login()
         body = {"name": name, "private": True, "auto_init": False, "description": "coordinated by meld"}
-        made = gh.post("user/repos", body) if owner.lower() == login.lower() else gh.post(f"orgs/{owner}/repos", body)
+        if owner.lower() == login.lower():
+            made = gh.post("user/repos", body)
+        else:
+            try:
+                made = gh.post(f"orgs/{owner}/repos", body)
+            except GitHubError as e:
+                if e.status != 404:
+                    raise
+                # GitHub answers 404 both for an organisation this login cannot create in and for an owner that is a
+                # person: the owner's name told us nothing, so say what would work (plan 45: the owner ran the wizard as
+                # one gh account and named a repository under another).
+                raise SetupError(f"cannot create {repo}: GitHub reads you as {login}, and {owner} is neither you nor an organisation "
+                                 f"you may create repositories in. Name the repository {login}/{name}, or if {owner} is another of "
+                                 f"your accounts, `gh auth login` as {owner} so the wizard can use it") from e
         return {"created": True, "empty": True, "private": True, "default_branch": str((made or {}).get("default_branch") or "main")}
 
-    def _gh_token(self) -> str:
-        """The token `gh` is logged in with -- the same login the wizard reads GitHub as -- for the one push the wizard makes."""
-        try:
-            proc = self.run(["gh", "auth", "token"], capture_output=True, text=True, timeout=20)
-        except (OSError, subprocess.SubprocessError):
-            return ""
-        return (proc.stdout or "").strip() if proc.returncode == 0 else ""
+    def _gh_token(self, owner: str | None = None) -> str:
+        """The token the wizard reads and pushes GitHub with: the `gh` account named like the repository's owner when one
+        is logged in, else `gh`'s active account (plan 45)."""
+        return gh_token_for(owner, self.run) if owner else gh_token_for(None, self.run)
 
     def ensure_pushed(self, repo: str, default_branch: str) -> dict:
         """This folder on that repository's default branch: `git init` when it is not a repository, an initial commit when
@@ -193,12 +217,13 @@ class SetupSession:
         elif (current.stdout or "").strip() != https:
             self._git("remote", "set-url", "origin", https)
             out["remote_rewritten"] = True
-        out.update(self._push(default_branch))
+        out.update(self._push(default_branch, repo.partition("/")[0]))
         return out
 
-    def _push(self, default_branch: str) -> dict:
-        """HEAD to origin's default branch over HTTPS, with the token `gh` is logged in with through the inline helper."""
-        token = self._gh_token()
+    def _push(self, default_branch: str, owner: str | None = None) -> dict:
+        """HEAD to origin's default branch over HTTPS, with the owner's `gh` account's token (else the active account's)
+        through the inline helper."""
+        token = self._gh_token(owner)
         creds = ["-c", "credential.helper=", "-c", f"credential.helper={_CREDENTIAL_HELPER}"] if token else []
         env = {**os.environ, "MELD_PUSH_TOKEN": token} if token else None
         pushed = self.run(["git", "-C", str(self.target_dir), *creds, "push", "-q", "--set-upstream", "origin", f"HEAD:refs/heads/{default_branch}"],
@@ -214,7 +239,8 @@ class SetupSession:
         this folder is a board only this machine can see. Nothing to commit (a second run) is not an error."""
         self._git("add", "--", *files)
         committed = self._git("commit", "-q", "-m", "meld: set up the board").returncode == 0
-        out = {"committed": committed, **self._push(default_branch)}
+        owner = (self.created or {}).get("repo", "").partition("/")[0] or None
+        out = {"committed": committed, **self._push(default_branch, owner)}
         return out
 
     def create(self, *, repo: str, goal: str, milestone_title: str, groups: list[str], allow_public: bool = False, context: str = "") -> dict:

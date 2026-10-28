@@ -402,3 +402,23 @@ def test_a_second_needs_human_on_a_ref_with_an_open_ask_is_refused_until_a_human
     (tmp_path / "c").mkdir()
     fake3, human = make(tmp_path / "c", group=None, comments=BASE_COMMENTS + [ask])
     assert post(human, "NEEDS-HUMAN", ref="#9", text="re-gating")["header"] == "[human] NEEDS-HUMAN #9"
+
+
+def test_a_group_withdraws_its_own_open_ask_with_resolved_and_nothing_else(tmp_path):
+    """Plan 52: the asking group's `RESOLVED` closes its ask; another group's, a person's ask, or no ask is refused."""
+    ask = {"id": 120, "user": {"login": "meld-codex-bot"}, "created_at": "2026-09-03T09:10:00Z", "body": "[codex:pm] NEEDS-HUMAN #9\n\nrestore the service"}
+    fake, ctx = make(tmp_path, group="codex", comments=BASE_COMMENTS + [ask])
+    assert post(ctx, "RESOLVED", ref="#9", text="the service is back; nothing needed")["header"] == "[codex] RESOLVED #9"
+    (tmp_path / "b").mkdir()
+    _, claude = make(tmp_path / "b", group="claude", comments=BASE_COMMENTS + [ask])
+    with pytest.raises(Refused, match=r"is \[codex:pm\]'s; only that group may withdraw it"):
+        post(claude, "RESOLVED", ref="#9", text="I fixed it")
+    (tmp_path / "c").mkdir()
+    _, nothing = make(tmp_path / "c", group="codex", comments=BASE_COMMENTS)
+    with pytest.raises(Refused, match="has no open NEEDS-HUMAN to withdraw"):
+        post(nothing, "RESOLVED", ref="#9", text="?")
+    hold = {"id": 121, "user": {"login": "empowerScott"}, "created_at": "2026-09-03T09:20:00Z", "body": "[human] NEEDS-HUMAN #9\n\nheld: delete"}
+    (tmp_path / "d").mkdir()
+    _, held = make(tmp_path / "d", group="codex", comments=BASE_COMMENTS + [ask, hold])
+    with pytest.raises(Refused, match="is a person's own; only a person clears it"):
+        post(held, "RESOLVED", ref="#9", text="?")

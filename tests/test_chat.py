@@ -423,3 +423,15 @@ def test_a_journey_says_the_model_was_at_capacity_and_the_build_is_retried():
               "pulls": [], "runs": [{"group": "codex", "issue": 3, "kind": "build", "pr": None, "state": "collected", "outcome": "capacity", "worker": "frontend", "started_at": "2026-10-28T17:35:00Z"}]}
     j = journey(status["issues"][0], status, datetime(2026, 10, 28, 17, 40, tzinfo=timezone.utc))
     assert j["now"] == "codex's model was at capacity; the build is retried after a short pause"
+
+
+def test_an_ask_withdrawn_by_its_own_group_leaves_the_inbox(tmp_path):
+    """Plan 52."""
+    from meld.chat import inbox
+    from tests.factories import mk_board, mk_comment, mk_issue
+    ask = mk_comment(CFG2, 1, "meld-codex-bot", "[codex:pm] NEEDS-HUMAN #14\n\nrestore the service")
+    free = mk_comment(CFG2, 2, "meld-codex-bot", "[codex:pm] NEEDS-HUMAN service-1\n\nthe browser is down")
+    board = mk_board(CFG2, issues=[mk_issue(14, status="needs_human")], comments=[ask, free])
+    assert [i["ref"] for i in inbox(board, CFG2, NOW)["needs_human"]] == ["#14", "service-1"]
+    gone = [mk_comment(CFG2, 3, "meld-codex-bot", "[codex] RESOLVED #14\n\nback"), mk_comment(CFG2, 4, "meld-codex-bot", "[codex] RESOLVED service-1\n\nback")]
+    assert inbox(mk_board(CFG2, issues=[mk_issue(14, status="needs_human")], comments=[ask, free, *gone]), CFG2, NOW)["needs_human"] == []

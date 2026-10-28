@@ -1128,6 +1128,7 @@ def test_the_page_is_laid_out_as_header_decisions_conversation_work_and_a_tab_dr
     assert "#live { grid-template-columns: minmax(0, 1fr); }" in css.split("@media (max-width: 980px) {")[1].split("@media")[0]
     # plan 57: the milestone bar and the budget bars are rows, so no browser can lay them over each other
     assert "flex-direction: column" in css.split("#bars {")[1].split("}")[0] and "white-space: normal" in css.split("#progress-text {")[1].split("}")[0]
+    assert "flex: 0 0 auto" in css.split("#budget-bars .bar {")[1].split("}")[0]   # the bars never shrink onto each other (seen in the owner's browser)
     assert 'STEP_SHORT[step.name] || step.name' in js   # plan 54: short chip labels (claim, build, PR, review, merge, audit, close), the full name on hover
     # what appears or goes does so smoothly: sections carry .appears, the drawer slides, the dialog and <details> transition
     assert "allow-discrete" in css and "@starting-style" in css and "transition: height var(--d-sheet) var(--ease)" in css.split("#drawer {")[1].split("}")[0]   # plan 54: the drawer slides on the motion tokens

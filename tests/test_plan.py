@@ -194,3 +194,25 @@ def test_plan_ack_is_idempotent_when_already_acked(tmp_path):
     assert out == {"acked": "plan-add-1", "ready": [33]}
     assert not any(c.method == "POST" and c.endpoint == R + "issues/10/comments" for c in fake.calls)
     assert any(c.method == "POST" and c.endpoint == R + "issues/33/labels" for c in fake.calls)   # still readied
+
+
+def test_a_plan_item_can_wait_for_others_and_the_issue_body_carries_it(tmp_path):
+    """Plan 56: `after:` on an item is the plan's order, enforced; the maze run wrote "#2, then #3, then #4" in prose and
+    #4 was dispatched while #3's pull request was in review."""
+    text = ("- id: engine | title: Engine | worker: backend | model: claude-sonnet-5 | effort: low | size: S\n"
+            "- id: site | title: Site | worker: frontend | model: claude-sonnet-5 | effort: medium | size: M | after: engine\n"
+            "  - renders\n"
+            "- id: tests | title: Tests | worker: qa | model: claude-sonnet-5 | effort: low | size: S | after: engine, site\n")
+    items, errors = parse_plan_items(text)
+    assert errors == [] and [i.after for i in items] == [(), ("engine",), ("engine", "site")] and items[1].criteria == ("renders",)
+    fake, ctx, repo, origin = make_product(tmp_path, role="orchestrator")
+    planning_board(fake)
+    thread = [{"id": 301, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T09:00:00Z", "body": "[claude] PROPOSE plan-3\n\n" + text},
+              {"id": 302, "user": {"login": "meld-codex-bot"}, "created_at": "2026-09-03T09:01:00Z", "body": "[codex] AGREE plan-3\n\nagreed"},
+              {"id": 303, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T09:02:00Z", "body": "[joint] PLAN plan-3\n\n" + text + "\nverified-by: x"}]
+    fake.route("GET", R + "issues/10/comments", fixture("comments_10.json") + thread)
+    fake.route("POST", R + "issues", {"number": 31, "html_url": "u31"})
+    fake.route("PATCH", R + "milestones/3", {"number": 3})
+    plan_issues(ctx, "plan-3")
+    bodies = [c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues"]
+    assert "plan-after:" not in bodies[0] and "plan-after: engine\n" in bodies[1] and "plan-after: engine, site\n" in bodies[2]

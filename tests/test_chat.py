@@ -565,3 +565,11 @@ def test_agent_rows_say_what_each_group_is_doing_in_plain_words():
     reviewing = _executing()
     reviewing["runs"] = [{"group": "codex", "kind": "review", "issue": 20, "pr": 20, "state": "running"}, {"group": "codex", "kind": "audit", "issue": 21, "state": "running"}]
     assert {r["group"]: r["doing"] for r in agent_rows(reviewing, _procs(**ALIVE), limits, NOW)} == {"claude": "", "codex": "reviewing PR #20, checking PR #21 after merge"}
+
+
+def test_a_journey_says_what_an_issue_waits_for():
+    """Plan 56."""
+    from datetime import datetime, timezone
+    from meld.chat import journey
+    status = {"quorum": 1, "issues": [{"number": 4, "title": "Tests", "status": "ready", "claimed_by": None, "worker": "qa", "challenged": False, "waits_for": [3]}], "pulls": [], "runs": []}
+    assert journey(status["issues"][0], status, datetime(2026, 10, 28, 20, 0, tzinfo=timezone.utc))["now"] == "waits for #3 to close first"

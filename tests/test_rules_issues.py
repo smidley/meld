@@ -386,3 +386,19 @@ def test_dispatch_stops_at_the_attempt_budget_and_a_capacity_stop_does_not_count
     second = replace(third, attempt=2)
     assert rule(mk_board(CFG2, issues=[issue], runs={"claude": {12: second}, "codex": {}}), CLAUDE_PM, Verb.DISPATCH, issue) is None   # re-tagged: effort high vs medium
     assert CFG2.budget_attempts_per_issue == 3
+
+
+def test_an_issue_waits_for_the_items_its_plan_put_before_it():
+    """Plan 56: claim and dispatch are refused while an `after` item is open; the status says what it waits for."""
+    from meld.status import render_status
+    engine = mk_issue(31, status="in_review", claimed_by="codex", body="plan-item: engine\nplan-ref: plan-3\n")
+    site = mk_issue(32, status="ready", body="plan-item: site\nplan-ref: plan-3\nplan-after: engine\n")
+    board = mk_board(CFG2, issues=[engine, site])
+    assert board.waits_for(site) == [31] and board.waits_for(engine) == []
+    assert rule(board, CLAUDE_PM, Verb.CLAIM, site) == "waits for #31 to close first (the plan's `after`)"
+    claimed = mk_issue(32, status="in_progress", claimed_by="claude", body=site.body)
+    assert rule(mk_board(CFG2, issues=[engine, claimed]), CLAUDE_PM, Verb.DISPATCH, claimed) == "waits for #31 to close first (the plan's `after`)"
+    done = mk_issue(31, status="in_review", claimed_by="codex", state="closed", body=engine.body)
+    assert rule(mk_board(CFG2, issues=[done, site]), CLAUDE_PM, Verb.CLAIM, site) is None
+    status = render_status(board, CFG2, CLAUDE_PM, REG)
+    assert next(i for i in status["issues"] if i["number"] == 32)["waits_for"] == [31]

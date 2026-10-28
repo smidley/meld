@@ -13,7 +13,9 @@ from meld.rules import Refusal, Verb, plan_rule
 from meld.status import build_status
 
 ITEM_RE = re.compile(r"^\s*-\s*id:\s*(?P<id>[a-z0-9][a-z0-9-]*)\s*\|\s*title:\s*(?P<title>[^|]+?)\s*\|\s*worker:\s*(?P<worker>\S+)\s*\|"
-                     r"\s*model:\s*(?P<model>\S+)\s*\|\s*effort:\s*(?P<effort>\S+)\s*\|\s*size:\s*(?P<size>[A-Z]+)\s*$")
+                     r"\s*model:\s*(?P<model>\S+)\s*\|\s*effort:\s*(?P<effort>\S+)\s*\|\s*size:\s*(?P<size>[A-Z]+)"
+                     r"(?:\s*\|\s*after:\s*(?P<after>[a-z0-9][a-z0-9, -]*?))?\s*$")   # plan 56: `after: id, id` orders the items
+AFTER_RE = re.compile(r"^plan-after: (.+)$", re.MULTILINE)
 CRITERION_RE = re.compile(r"^\s{2,}-\s+(?P<text>.*\S)\s*$")
 MARKER_RE = re.compile(r"^plan-item: (\S+)$", re.MULTILINE)
 
@@ -27,6 +29,7 @@ class PlanItem:
     effort: str
     size: str
     criteria: tuple[str, ...]
+    after: tuple[str, ...] = ()   # plan-item ids this one waits for (plan 56): not claimable or dispatchable until they close
 
 
 def parse_plan_items(text: str) -> tuple[list[PlanItem], list[str]]:
@@ -49,6 +52,7 @@ def parse_plan_items(text: str) -> tuple[list[PlanItem], list[str]]:
                 errors.append(f"item {m.group('id')}: size {m.group('size')!r} is not one of {', '.join(SIZES)}: {line.strip()}")
                 continue
             current = {k: m.group(k).strip() for k in ("id", "title", "worker", "model", "effort", "size")}
+            current["after"] = tuple(a.strip() for a in (m.group("after") or "").split(",") if a.strip())
             continue
         c = CRITERION_RE.match(line)
         if c and current is not None:
@@ -96,7 +100,8 @@ def plan_issues(ctx, ref: str, *, dry_run: bool = False) -> dict:
             skipped.append(item.id)
             continue
         would_create.append(item.id)
-        body = f"plan-item: {item.id}\nplan-ref: {ref}\n\n## Acceptance criteria\n" + "\n".join(f"- {c}" for c in item.criteria)
+        body = (f"plan-item: {item.id}\nplan-ref: {ref}\n" + (f"plan-after: {', '.join(item.after)}\n" if item.after else "")
+                + "\n## Acceptance criteria\n" + "\n".join(f"- {c}" for c in item.criteria))
         labels = [PLANNED, f"worker:{item.worker}", f"model:{item.model}", f"effort:{item.effort}", f"size:{item.size}"]
         if not dry_run:
             created.append(int(ctx.gh.create_issue(item.title, body, labels, board.milestone)["number"]))

@@ -11,6 +11,7 @@
 1. **Work above the conversation, full width.** Four lanes across the page instead of four in half of it; the conversation takes the rest of the height below. *Not taken:* lanes as horizontal rows (the left-to-right flow animation is what says where work goes).
 2. **The journey's step names are visible.** Seven labelled bars per card (`pull request` shortened to `PR` on the chip, the full name in the tooltip); the "now" line is in the foreground colour. The strip had hidden its labels with `font-size: 0`.
 3. **Narrow screens get two lanes per row.**
+4. **What appears or goes does so smoothly** (the owner: "for sections that can expand or collapse, we need to make that smoother; the UI should be easy for a human to monitor"). Sections toggled with `.hidden` carry `.appears` and fade and slide in and out (`display` transitions discretely at the end of the fade, `@starting-style` for the way in); the drawer slides by height; the task dialog and its backdrop fade; the configuration `<details>` opens by height (`interpolate-size: allow-keywords`). `prefers-reduced-motion` turns all of it off.
 
 ## Tasks
 

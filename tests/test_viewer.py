@@ -1118,6 +1118,9 @@ def test_the_page_is_laid_out_as_header_decisions_conversation_work_and_a_tab_dr
     assert "#issues.kanban" in css and "#drawer.closed" in css and "system-ui" in css
     assert "flex-direction: column" in css.split("#live {")[1].split("}")[0] and ".icard .jstep::before" in css and "font-size: 0" not in css.split(".icard .jstep {")[1].split("}")[0]
     assert 'step.name === "pull request" ? "PR" : step.name' in js
+    # what appears or goes does so smoothly: sections carry .appears, the drawer slides, the dialog and <details> transition
+    assert "allow-discrete" in css and "@starting-style" in css and "transition: height 0.3s ease" in css.split("#drawer {")[1].split("}")[0]
+    assert html.count('class="hidden appears"') >= 2 and 'class="card appears"' in html and '"icard appears"' in js
 
 
 def test_the_page_is_guided_in_plain_words_and_follows_the_conversation(tmp_path):

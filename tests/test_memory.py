@@ -474,3 +474,29 @@ def test_decide_reposts_a_missing_review_request_instead_of_refusing(tmp_path):
     with_thread(fake, DECISION_THREAD + [{"id": 999, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-05T12:00:00Z", "body": posts[0]}])
     with pytest.raises(Refused, match="already recorded"):
         decide(ctx, "dec-1")
+
+
+def test_a_second_lesson_on_the_same_ref_must_supersede_the_first(tmp_path):
+    """Plan 44: one lesson per ref. A later `remember` on a ref that already has a lesson (an open or merged memory PR)
+    is refused unless it supersedes the entry it improves on; a different ref is untouched."""
+    from tests.productfixtures import fixture
+    fake, ctx, repo, origin = make_product(tmp_path, role="orchestrator")
+    digest = "0" * 64
+    earlier = {"number": 40, "title": "Lesson from #13", "state": "closed", "merged_at": "2026-09-03T10:00:00Z", "merge_commit_sha": "m040",
+               "user": {"login": "meld-claude-bot"}, "head": {"ref": "meld/memory-lesson-13-20260903T090000Z", "sha": "l013"}, "labels": [],
+               "body": f"Records a lesson from #13.\n\nmeld-memory: lesson #13 {digest}\nverified-by: #13 resolved"}
+    fake.route("GET", R + "pulls", fixture("pulls.json") + [earlier])
+    for what in ("reviews", "commits", "files"):
+        fake.route("GET", R + f"pulls/40/{what}", [])
+    fake.route("GET", R + "commits/l013/check-runs", {"total_count": 0, "check_runs": []})
+    fake.route("GET", R + "commits/l013/status", {"state": "success", "statuses": []})
+    fake.route("POST", R + "pulls", {"number": 41, "html_url": "https://github.com/acme/widgets/pull/41"})
+    with pytest.raises(Refused, match=r"#13 already has a lesson \(a merged memory PR #40\); fold what is new into it with --supersedes"):
+        remember(ctx, "#13", "a second take on the same thing", now=NOW)
+    assert not [c for c in fake.calls if c.method == "POST" and c.endpoint == R + "pulls"]
+    out = remember(ctx, "#13", "the consolidated lesson", now=NOW, supersedes="2026-09-03 — #13 (claude)")
+    assert out["pr"] == 41 and out["supersedes"] == "2026-09-03 — #13 (claude)"
+    earlier["state"], earlier["merged_at"] = "open", None                      # an open one counts the same way
+    fake.route("GET", R + "pulls", fixture("pulls.json") + [earlier])
+    with pytest.raises(Refused, match="an open memory PR #40"):
+        remember(ctx, "#13", "a third take", now=NOW)

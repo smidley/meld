@@ -317,11 +317,24 @@ def merge_conflicts(base_branch: str, files: Sequence[str]) -> str:
             f"Keep both what landed on `{base_branch}` and this branch's intent; commit the merge, then do the task and re-run the verification.\n")
 
 
+def person_answered(ask: str, answer: str, who: str) -> str:
+    """The `## The person answered` section of a retry's build brief (plan 53): the last ask this issue raised and what the
+    person (or the group that asked, withdrawing it) said. Without it the retry after a blocked worker read nothing of the
+    answer and asked the same thing again."""
+    return (f"\n## The person answered\n\nThe previous worker on this issue stopped and asked:\n\n{_indent(ask)}\n\n{who} answered:\n\n"
+            f"{_indent(answer)}\n\nAct on the answer. Do not ask the same thing again; if the answer leaves the task impossible, finish with "
+            "`failed` and say why.\n")
+
+
+def _indent(text: str) -> str:
+    return "\n".join(f"> {ln}" for ln in (text or "").strip().splitlines()) or "> (no text)"
+
+
 def render_brief(*, role: WorkerType, kind: str, group: str, model: str, effort: str, issue: Issue | None, pr: PullRequest | None,
                  plan_text: str, repo_root: Path, worktree: Path, base_branch: str, concern: str | None = None,
                  skills: Sequence[WorkerType] = (), recall: Sequence[str] = (), project_skills_dir: str | None = None,
                  scope: Sequence[str] = (), may_delete: Sequence[str] = (), authorized: Sequence[str] = (),
-                 conflicts: Sequence[str] = ()) -> str:
+                 conflicts: Sequence[str] = (), answer: tuple[str, str, str] | None = None, sandbox: str = "") -> str:
     if issue is not None:
         title = f"# Meld brief: {role.name} for #{issue.number}"
         task = f"## Your task\n\n**#{issue.number}: {issue.title}**\n\n{issue.body.strip() or '(no description)'}\n"
@@ -330,6 +343,8 @@ def render_brief(*, role: WorkerType, kind: str, group: str, model: str, effort:
             task += review_feedback(pr)
         if conflicts:
             task += merge_conflicts(base_branch, conflicts)
+        if answer:
+            task += person_answered(*answer)
         excerpt = plan_excerpt(plan_text, issue.number)
         hints = file_hints(issue.body)
     else:
@@ -351,6 +366,8 @@ def render_brief(*, role: WorkerType, kind: str, group: str, model: str, effort:
         role_text = (lines[1] if len(lines) > 1 else "").lstrip("\n")
     parts = [title, "", f"You are the **{role.name}** worker of group **{group}**, running as `{model}` at effort: {effort}.", "",
              "## Who you are", "", role_text, "", task]
+    if sandbox:
+        parts += ["## Where you run", "", sandbox, ""]
     if concern:
         parts += ["## Your primary concern", "",
                   f"Other groups review this PR too; yours is **{concern}**. Report anything else you notice, but spend your effort there first.", ""]

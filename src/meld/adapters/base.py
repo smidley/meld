@@ -56,6 +56,8 @@ class Adapter(Protocol):
     def login_argv(self) -> list[str]: ...         # the command that reports whether the CLI itself is logged in; [] when it has none
 
     def login_status(self, stdout: str, stderr: str, returncode: int) -> tuple[bool | None, str]: ...
+
+    def worker_notes(self) -> str: ...            # what a worker of this CLI must know about where it runs (its sandbox); "" when nothing
     # (True, detail) logged in, (False, detail) logged out, (None, detail) an answer the adapter cannot read -- the words
     # are the oracle, never the exit code alone, so `meld doctor` can report NOT MEASURED rather than guess
 

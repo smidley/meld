@@ -114,6 +114,15 @@ class CodexAdapter:
     def version_argv(self) -> list[str]:
         return [self.binary, "--version"]
 
+    def worker_notes(self) -> str:
+        # Plan 53: the first real run's codex worker blocked twice asking a person to run browser checks its sandbox
+        # (workspace-write under macOS seatbelt) cannot: Chromium dies at MachPortRendezvous, WebKit exits 134.
+        return ("This worker runs in Codex's `workspace-write` sandbox: it cannot launch a browser or any GUI process (on macOS the "
+                "launch is denied before a page opens), and trying wastes the run. Verify what you can without one (unit and DOM "
+                "tests, static checks, byte budgets) and finish with outcome `done`, listing every browser-only check as unverified "
+                "in `summary`. Do not report `blocked` for a browser: the reviewing group's worker runs without this sandbox and "
+                "does the browser checks on your pull request.")
+
     def help_argv(self) -> list[str]:
         return [self.binary, "exec", "--help"]
 

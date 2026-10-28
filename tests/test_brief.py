@@ -416,3 +416,23 @@ def test_build_brief_names_the_files_to_resolve_when_the_branch_conflicts(tmp_pa
     assert "## Merge conflicts" not in render_brief(role=role, kind="build", group="claude", model="m", effort="high", issue=issue, pr=None,
                                                     plan_text="", repo_root=tmp_path, worktree=tmp_path, base_branch="main")
     assert merge_conflicts("main", ["x"]).startswith("\n## Merge conflicts to resolve first")
+
+
+def test_a_retry_brief_carries_the_persons_answer_and_the_sandbox_note(tmp_path: Path):
+    """Plan 53: the first real run's codex worker blocked twice asking a person to run browser checks its sandbox cannot, and
+    the retry read nothing of the person's answer. The brief now carries the last ask and the answer, and what the CLI's
+    worker must know about where it runs."""
+    from meld.brief import person_answered
+    from tests.factories import mk_issue
+    issue = mk_issue(3, status="in_progress", claimed_by="codex")
+    role = next(w for w in builtin_workers() if w.name == "backend")
+    text = render_brief(role=role, kind="build", group="codex", model="m", effort="high", issue=issue, pr=None, plan_text="", repo_root=tmp_path,
+                        worktree=tmp_path, base_branch="main", answer=("Run the browser checks in a browser-capable environment.", "Your sandbox cannot; finish done and leave them to the reviewer.", "The person"),
+                        sandbox="This worker runs in a sandbox that cannot launch a browser.")
+    assert "## The person answered" in text and "> Run the browser checks" in text and "The person answered:" in text and "> Your sandbox cannot" in text
+    assert "Do not ask the same thing again" in text and "## Where you run" in text and "cannot launch a browser" in text
+    assert text.index("## Your task") < text.index("## The person answered") and text.index("## Where you run") < text.index("## Product standards")
+    plain = render_brief(role=role, kind="build", group="codex", model="m", effort="high", issue=issue, pr=None, plan_text="", repo_root=tmp_path,
+                         worktree=tmp_path, base_branch="main")
+    assert "## The person answered" not in plain and "## Where you run" not in plain
+    assert person_answered("a", "b", "codex (withdrawing the ask)").count("> ") == 2

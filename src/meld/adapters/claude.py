@@ -92,6 +92,9 @@ class ClaudeAdapter:
     def version_argv(self) -> list[str]:
         return [self.binary, "--version"]
 
+    def worker_notes(self) -> str:
+        return ""   # bypassPermissions, no sandbox: a browser, a simulator, anything the user could run
+
     def help_argv(self) -> list[str]:
         return [self.binary, "--help"]
 

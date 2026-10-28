@@ -409,6 +409,27 @@ def dispatch(ctx, number: int, *, kind: str = "build", worker: str | None = None
     return _dispatch_pr(ctx, board, actor, number, kind, adapter, when, env, worker)
 
 
+def person_answer(board: Board, number: int) -> tuple[str, str, str] | None:
+    """(ask, answer, who) when the newest `NEEDS-HUMAN #number` has been answered -- by a listed human's PROVIDED/RESOLVED or
+    by the asking group's own RESOLVED (plan 52) -- so the retry's brief carries what was said (plan 53); None otherwise."""
+    asks = [c for c in board.comments if c.ok and c.header is not None and c.header.verb == "NEEDS-HUMAN" and c.header.ref == f"#{number}"]
+    if not asks:
+        return None
+    ask = max(asks, key=lambda c: c.id)
+    answers = [c for c in board.comments if board.answers(c, ask)]
+    if not answers:
+        return None
+    reply = max(answers, key=lambda c: c.id)
+    who = "The person" if reply.header.party.kind == "human" else f"{reply.header.party.label.strip('[]')} (withdrawing the ask)"
+    return ask.text or "", reply.text or "", who
+
+
+def worker_notes(adapter) -> str:
+    """What this CLI's worker must know about where it runs; an adapter without the hook (a test fake) has nothing to say."""
+    notes = getattr(adapter, "worker_notes", None)
+    return str(notes()) if callable(notes) else ""
+
+
 def _recall_for_brief(ctx, text: str) -> tuple[list[str], str | None]:
     """recall_snippets at origin/<default>, refreshing that ref first: the checkout reaching this call cannot be
     trusted to have it current on its own -- a reused build worktree skips create_worktree's fetch entirely (the
@@ -460,7 +481,7 @@ def _dispatch_build(ctx, board: Board, actor: Actor, number: int, adapter: Adapt
     conflicts = conflicts_with(wt, f"origin/{ctx.cfg.default_branch}") if mode != "fresh" else []
     brief = render_brief(role=worker, kind="build", group=group.name, model=issue.model or "", effort=issue.effort or "", issue=issue,
                          pr=open_pr if open_pr is not None and open_pr.state == "open" else None, plan_text=board.plan_text, repo_root=ctx.repo_root, worktree=wt, base_branch=ctx.cfg.default_branch,
-                         conflicts=conflicts,
+                         conflicts=conflicts, answer=person_answer(board, number), sandbox=worker_notes(adp),
                          skills=select_skills(f"{issue.title}\n{issue.body}",
                                               [w for w in ctx.roster_entries() if w.source in ("skill", "product-skill")], pinned=issue.skills),
                          recall=recall_hits, project_skills_dir=adp.project_skills_dir(),

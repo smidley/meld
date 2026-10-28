@@ -32,4 +32,5 @@ You dispatch reviewers and auditors, collect them, and turn their verdicts into 
 - A `GitError` from `meld dispatch` (a failed fetch, or worktree contention with another group working the same clone) is not a refusal: retry it once before reporting it.
 - A worker that keeps failing on the same issue is the orchestrator's problem: post the failure summary on the coordination issue rather than dispatching a fourth time.
 - If `meld status` shows `state_errors`, report them in your next `STATUS`; they mean a corrupt local file was skipped.
+- One open ask per ref: a `NEEDS-HUMAN` on a ref that already has one with no listed human's `PROVIDED`/`RESOLVED` after it is refused, whoever posted the first; wait instead of repeating it.
 - A refusal about a token, a bot login, or a model is an environment problem, not a rule: post `[<group>:pm] NEEDS-HUMAN` asking the human to run `meld doctor` and fix what it reports, then stop retrying.

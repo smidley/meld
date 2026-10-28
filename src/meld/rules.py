@@ -673,6 +673,20 @@ def remember_rule(board: Board, cfg: Config, actor: Actor, ref: str) -> str | No
     return None
 
 
+def ask_rule(board: Board, actor: Actor, ref: str | None) -> str | None:
+    """Why `actor` may not post `NEEDS-HUMAN` on `ref` now, or None. One open ask per ref: while the newest ask on it has
+    no listed human's answer, a group's or PM's repeat is refused -- the person already has the card, and a second one
+    from another party says the same thing in other words (plan 41). A human's own is never refused: that is how a
+    person re-gates an issue they answered."""
+    if actor.is_human:
+        return None
+    standing = board.open_ask(ref)
+    if standing is None:
+        return None
+    return (f"{standing.header.ref} already has an open NEEDS-HUMAN (comment {standing.id} by {standing.header.party.label}); "
+            f"wait for a listed human's PROVIDED or RESOLVED on it instead of asking again")
+
+
 def legal_agreement_verbs(board: Board, cfg: Config, actor: Actor, ref: str) -> list[str]:
     """The agreement-ref actions `actor` may take on `ref` right now, in the CLI's spelling."""
     out = []

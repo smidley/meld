@@ -381,3 +381,24 @@ def test_post_numbers_an_ask_or_a_directive_when_given_no_ref(tmp_path):
     assert post(human, "DIRECTIVE", text="tests first")["header"] == "[human] DIRECTIVE dir-4"
     assert post(human, "DIRECTIVE", ref="dir-9", text="explicit")["header"] == "[human] DIRECTIVE dir-9"
     assert post(human, "HALT", text="stop")["header"] == "[human] HALT"
+
+
+def test_a_second_needs_human_on_a_ref_with_an_open_ask_is_refused_until_a_human_answers(tmp_path):
+    """Plan 41: one open ask per ref. The scratch product's three parties posted nine NEEDS-HUMAN on one PR while the
+    first stood, each a new card for the person. A bare `9` and `#9` are the same ref; a human's own is never refused."""
+    ask = {"id": 120, "user": {"login": "meld-claude-bot"}, "created_at": "2026-09-03T09:10:00Z", "body": "[claude:pm] NEEDS-HUMAN #9\n\nPR #9 cannot merge."}
+    fake, ctx = make(tmp_path, group="codex", comments=BASE_COMMENTS + [ask])
+    with pytest.raises(Refused, match=r"#9 already has an open NEEDS-HUMAN \(comment 120 by \[claude:pm\]\); wait for a listed human"):
+        post(ctx, "NEEDS-HUMAN", ref="#9", text="PR #9 cannot merge either.")
+    with pytest.raises(Refused, match="#9 already has an open NEEDS-HUMAN"):
+        post(ctx, "NEEDS-HUMAN", ref="9", text="same thing, bare ref")
+    assert [h for h in posted_headers(fake) if h.startswith("[codex] NEEDS-HUMAN")] == []          # the refusal posted a violation, never the ask
+    out = post(ctx, "NEEDS-HUMAN", ref="#12", text="a different ref is a different ask")
+    assert out["header"] == "[codex] NEEDS-HUMAN #12"
+    answered = {"id": 121, "user": {"login": "empowerScott"}, "created_at": "2026-09-03T09:20:00Z", "body": "[human] RESOLVED #9\n\nmerged by hand"}
+    (tmp_path / "b").mkdir()
+    fake2, ctx2 = make(tmp_path / "b", group="codex", comments=BASE_COMMENTS + [ask, answered])
+    assert post(ctx2, "NEEDS-HUMAN", ref="#9", text="it broke again")["header"] == "[codex] NEEDS-HUMAN #9"
+    (tmp_path / "c").mkdir()
+    fake3, human = make(tmp_path / "c", group=None, comments=BASE_COMMENTS + [ask])
+    assert post(human, "NEEDS-HUMAN", ref="#9", text="re-gating")["header"] == "[human] NEEDS-HUMAN #9"

@@ -9,7 +9,7 @@ from meld.actions import refuse
 from meld.board import Board
 from meld.config import Party
 from meld.grammar import AGREEMENT_VERBS, Agreement, Header, agreement_for, allowed_verbs, compose, validate
-from meld.rules import Refusal, Verb
+from meld.rules import Refusal, Verb, ask_rule
 from meld.status import build_status
 
 
@@ -116,6 +116,10 @@ def post(ctx, verb: str, ref: str | None = None, qualifier: str | None = None, t
             _refuse(ctx, board, verb, ref, f"{ref} already has a proposal; post AMEND (or AGREE/DISSENT) instead")
         if verb == "AMEND" and not agreement.can_amend(ctx.cfg):
             _refuse(ctx, board, verb, ref, f"amend cap ({ctx.cfg.amend_cap}) reached for {ref}; post AGREE or DISSENT")
+    if verb == "NEEDS-HUMAN":
+        rule = ask_rule(board, actor, ref)
+        if rule:
+            _refuse(ctx, board, verb, ref, rule)
     header = Header(party, verb, ref, qualifier)
     errors = validate(header, body_text)
     if errors:

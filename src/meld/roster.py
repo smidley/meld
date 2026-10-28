@@ -16,6 +16,22 @@ class WorkerType:
     text: str = ""
 
 
+BRIEF_CHARS = 120
+
+
+def brief(description: str) -> str:
+    """A worker's or skill's description as one line a role can read fifty of (plan 55): its first sentence, at most
+    BRIEF_CHARS. The maze run's role prompt carried 24k characters of skill descriptions, re-read on every launch, and
+    the ROSTER posts on the thread were 28k characters each."""
+    text = " ".join((description or "").split())
+    for stop in (". ", "! ", "? "):
+        i = text.find(stop)
+        if 0 < i < BRIEF_CHARS:
+            text = text[:i + 1]
+            break
+    return text if len(text) <= BRIEF_CHARS else text[:BRIEF_CHARS - 1].rstrip() + "…"
+
+
 def parse_worker_file(path: Path, source: str) -> WorkerType:
     text = path.read_text()
     lines = text.splitlines()

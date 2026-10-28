@@ -88,3 +88,17 @@ def test_a_limit_relaunch_is_a_reason_and_both_roles_announce_it():
         # role is told the verb is not its to post, because `posting.FRAMEWORK_ONLY_VERBS` refuses it
         assert "`limit`" in text and "RESUMED" in text and "LIMITED" in text, name
         assert "`meld post LIMITED` is refused" in text, name
+
+
+def test_the_role_prompt_lists_each_roster_entry_on_one_line(tmp_path: Path):
+    """Plan 55."""
+    from meld.config import load_config
+    from meld.prompts import role_prompt
+    from meld.roster import WorkerType
+    from tests.conftest import PROJECT_TOML
+    (tmp_path / ".meld.toml").write_text(PROJECT_TOML)
+    cfg = load_config(tmp_path / ".meld.toml")
+    entries = [WorkerType(name="airunway", description="Set up AI Runway on AKS from bare cluster to running model. " + "Covers everything. " * 40, source="skill", path=None)]
+    text = role_prompt("orchestrator", cfg, cfg.groups["claude"], tmp_path, roster_entries=entries)
+    line = next(l for l in text.splitlines() if l.startswith("- `airunway`"))
+    assert line == "- `airunway` (skill): Set up AI Runway on AKS from bare cluster to running model." and "Covers everything" not in text

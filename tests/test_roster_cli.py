@@ -66,3 +66,18 @@ def test_roster_command_catches_unknown_adapter(tmp_path: Path, monkeypatch):
     result = CliRunner().invoke(cli.main, ["--config", str(tmp_path / ".meld.toml"), "--compact", "roster"], env=env_for(tmp_path))
     assert result.exit_code == 1
     assert "unknown adapter" in result.output
+
+
+def test_roster_command_is_brief_unless_asked_for_the_full_descriptions(tmp_path: Path, monkeypatch):
+    """Plan 55: the ROSTER post is `meld roster`'s output, so that output is one line per entry by default."""
+    from meld.roster import WorkerType
+    (tmp_path / ".meld.toml").write_text(PROJECT_TOML)
+    fake = FakeGh()
+    load_board1_routes(fake)
+    monkeypatch.setattr(cli, "RUN", fake)
+    wordy = WorkerType(name="wordy", description="First sentence here. " + "Then a great deal more. " * 20, source="skill", path=None)
+    monkeypatch.setattr(cli, "ADAPTER_FOR", lambda cli_name: FakeAdapter(skills=[wordy]))
+    brief = json.loads(CliRunner().invoke(cli.main, ["--config", str(tmp_path / ".meld.toml"), "--compact", "roster"], env=env_for(tmp_path)).output)
+    assert next(d for d in brief if d["name"] == "wordy")["description"] == "First sentence here."
+    full = json.loads(CliRunner().invoke(cli.main, ["--config", str(tmp_path / ".meld.toml"), "--compact", "roster", "--full"], env=env_for(tmp_path)).output)
+    assert next(d for d in full if d["name"] == "wordy")["description"].startswith("First sentence here. Then a great deal more.")

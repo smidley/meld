@@ -33,7 +33,14 @@
     <span id="phase" class="badge"></span>
     <span id="halted" class="badge bad hidden appears">HALTED</span>
   </div>
-  <p id="headline"></p>
+  <div id="strip" class="quiet">
+    <div class="srow">
+      <p id="headline">Connecting to meld…</p>
+      <button type="button" id="strip-action" class="hidden"></button>
+      <span id="updated" class="dim"></span>
+    </div>
+    <p id="strip-detail" class="dim"></p>
+  </div>
   <div id="bars">
     <div class="bar"><span class="blabel">milestone</span><div class="track"><div id="progress-fill" class="fill"></div></div><span id="progress-text" class="dim"></span></div>
     <div id="budget-bars"></div>

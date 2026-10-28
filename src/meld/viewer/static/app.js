@@ -1480,10 +1480,9 @@ function renderState(state) {
   const disk = state.disk.free_mb == null ? "disk: unreadable" : `disk: ${state.disk.free_mb} MB free`;
   text(el("disk"), disk).classList.toggle("bad", state.disk.free_mb != null && state.disk.free_mb < state.disk.warn_free_mb);
   text(el("logs"), `logs: ${state.logs.total_mb} MB`).classList.toggle("bad", state.logs.total_mb > state.logs.warn_total_mb);
-  text(el("stamp"), `as of ${clock12(Date.parse(state.generated_at || ""), { seconds: true })}`);
   text(el("error"), "");
 
-  text(el("headline"), state.headline || "");
+  renderStrip(state);
   groupOrder = Object.keys(state.supervisors || {});
   lastThread = state.thread || [];
   lastGenerated = state.generated_at || "";
@@ -1631,10 +1630,57 @@ function renderStreams(list) {
   scrollColumns();
 }
 
+// The strip (plan 54): the server's one-line state of the run (chat.status_strip), rendered as the page's first line in
+// one of four colours, with the one obvious act as a button and a second clause under it. `state.headline` is the
+// sentence `meld chat` prints from the same board; it is not rendered twice, only kept on hover for parity.
+const STRIP_LEVELS = ["ok", "attention", "bad", "quiet"];
+const ACTION_WORDS = { "plan-approve": "Approve the plan", RESUME: "Resume" };
+function setStrip(level, line, detail, action) {
+  const strip = el("strip");
+  strip.classList.remove(...STRIP_LEVELS);
+  strip.classList.add(STRIP_LEVELS.includes(level) ? level : "quiet");
+  text(el("headline"), line);
+  text(el("strip-detail"), detail);
+  const b = el("strip-action");
+  b.classList.toggle("hidden", !action);
+  b.onclick = null;
+  if (!action) return;
+  text(b, ACTION_WORDS[action.action || action.verb] || action.action || action.verb);
+  b.disabled = false;
+  b.onclick = async () => {
+    b.disabled = true;
+    const result = await postAction({ party: "human", ...action });
+    if (result.ok) pollState(); else { b.disabled = false; setStrip("bad", result.message, "", action); }
+  };
+}
+function renderStrip(state) {
+  const strip = state.strip || { level: "quiet", text: state.headline || "", detail: "", action: null };
+  const last = state.last_post_at ? `last post ${clock12(Date.parse(state.last_post_at))}` : "";
+  setStrip(strip.level, strip.text, [strip.detail, last].filter(Boolean).join(" · "), strip.action);
+  el("headline").title = state.headline || "";
+}
+// "updated N s ago" counts from the last successful poll, in the strip and in the footer; a failed poll turns the strip
+// red with the error and leaves the last board on the page.
+let lastPollAt = 0;
+function tickUpdated() {
+  if (!lastPollAt) return;
+  const s = Math.round((Date.now() - lastPollAt) / 1000);
+  const ago = s < 90 ? `${s} s ago` : `${Math.round(s / 60)} min ago`;
+  for (const id of ["updated", "stamp"]) text(el(id), `updated ${ago}`);
+}
+setInterval(tickUpdated, 1000);
+
 let statePending = null;
 async function pollState() {
   if (statePending) clearTimeout(statePending);
-  try { renderState(await getJSON("/api/state")); } catch (e) { text(el("error"), e.message); }
+  try {
+    renderState(await getJSON("/api/state"));
+    lastPollAt = Date.now();
+    tickUpdated();
+  } catch (e) {
+    text(el("error"), "connection lost, retrying");
+    setStrip("bad", `Cannot reach meld: ${e.message}`, lastPollAt ? "The board below is from the last successful update." : "", null);
+  }
   statePending = setTimeout(pollState, STATE_EVERY_MS);
 }
 

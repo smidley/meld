@@ -73,7 +73,21 @@ a:hover { text-decoration-color: currentColor; }
 #milestone { color: var(--fg-2); }
 #phase { text-transform: capitalize; color: var(--fg-2); border-color: var(--line-strong); font-weight: 500; }
 #halted { color: var(--attn-ink); background: var(--bad); border-color: var(--bad); font-weight: 600; }
-#headline { margin: var(--s1) 0 var(--s3); font: var(--t-head); letter-spacing: -0.005em; max-width: 90ch; text-wrap: balance; }
+/* the strip (plan 54): one sentence in one colour, a dot for the level, the one obvious act as a button, "updated N s ago" at the right */
+#strip { --strip: var(--unknown); margin: var(--s1) 0 var(--s3); }
+#strip.ok { --strip: var(--ok); }
+#strip.attention { --strip: var(--attn); }
+#strip.bad { --strip: var(--bad); }
+#strip .srow { display: flex; gap: var(--s2) var(--s3); align-items: baseline; flex-wrap: wrap; }
+#headline { margin: 0; font: var(--t-head); letter-spacing: -0.005em; max-width: 90ch; text-wrap: balance; flex: 1 1 40ch; min-width: 0; }
+#headline::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--strip); margin-right: var(--s2); vertical-align: 1px; }
+#strip.quiet #headline { color: var(--fg-2); }
+#strip.bad #headline { color: var(--bad); }
+#strip #strip-action { background: var(--attn); color: var(--attn-ink); font-weight: 600; }
+#strip #strip-action:hover { background: color-mix(in srgb, var(--attn) 88%, white); color: var(--attn-ink); }
+#updated { margin-left: auto; font: var(--t-meta); color: var(--fg-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
+#strip-detail { margin: 2px 0 0 18px; font: var(--t-meta); color: var(--fg-2); }
+#strip-detail:empty { display: none; }
 /* the setup wizard (plan 32): shown instead of the board until the repository is set up */
 body.setup > :not(#wizard) { display: none; }
 #wizard { max-width: 46rem; margin: 24px auto; padding: 0 16px; }
@@ -323,7 +337,7 @@ li.synthesized .text { color: var(--fg-3); font-style: italic; }
 
 /* ---- one button system and one input system, for every control on the page; the primary action is filled amber ---- */
 button.verb, .ask .aquick button, #reply-send button, #bar button, #setup button.start, #wizard button, #config-save,
-.gcard .ghead button, .gadd button, #task-tree button {
+.gcard .ghead button, .gadd button, #task-tree button, #strip-action {
   font: var(--t-body); font-size: 13px; line-height: 1.2; color: var(--fg); background: var(--bg-3); border: 1px solid transparent; border-radius: var(--r-ctl);
   padding: 4px 11px; cursor: pointer; transition: background var(--d-micro) var(--ease), color var(--d-micro) var(--ease), border-color var(--d-micro) var(--ease); }
 button.verb, #task-tree button { font-size: 12px; padding: 2px 8px; }

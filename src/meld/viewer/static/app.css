@@ -235,6 +235,7 @@ body.setup > :not(#wizard) { display: none; }
 
 /* ---- the work: four lanes, an issue a card; the card is the raised object and its group's colour is set as --group ---- */
 #issues.kanban { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s5); padding: var(--s1) var(--s4) var(--s4); }
+#issues .empty { grid-column: 1 / -1; font: var(--t-body); color: var(--fg-3); padding: var(--s1) 0 var(--s2); }
 .lane h3 { margin: 0 0 var(--s1); font: var(--t-meta); font-weight: 600; color: var(--fg-3); text-transform: uppercase; letter-spacing: 0.08em; font-variant-numeric: tabular-nums; }
 /* the direction of work: a dashed line under each lane heading that drifts right, and quickens after a card arrives */
 .flowline { height: 2px; margin: 0 0 var(--s3); opacity: 0.35; background: repeating-linear-gradient(90deg, var(--line-strong) 0 4px, transparent 4px 10px); animation: flow 2.4s linear infinite; }

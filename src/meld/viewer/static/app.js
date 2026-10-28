@@ -834,7 +834,7 @@ function openTask(number) {
 function renderBoard(s) {
   // Rebuilding every row on every poll swallowed a click that landed mid-rebuild and dropped focus from a control;
   // most polls change nothing, so a board identical to the one already drawn is left alone.
-  const key = JSON.stringify([s.issues, s.pulls, s.coordination && s.coordination.agreements, s.runs, lastJourneys]);
+  const key = JSON.stringify([s.phase, s.issues, s.pulls, s.coordination && s.coordination.agreements, s.runs, lastJourneys]);
   if (key === lastBoard) return;
   lastBoard = key;
   liveRuns = (s.runs || []).filter((r) => r.state === "running");
@@ -847,7 +847,9 @@ function renderBoard(s) {
   // its new place, then animate from the old place to none).
   const before = new Map([...issues.querySelectorAll(".icard")].map((c) => [c.dataset.issue, c.getBoundingClientRect()]));
   issues.replaceChildren();
-  for (const [name] of LANES) {
+  // Planning has no issues yet: one line says so in place of four empty lanes (plan 54).
+  if (!(s.issues || []).length) issues.append(cell("empty", s.phase === "planning" ? "No issues yet; the groups are agreeing a plan" : "No issues in this milestone yet"));
+  for (const [name] of (s.issues || []).length ? LANES : []) {
     const lane = document.createElement("div");
     lane.className = "lane";
     const items = (s.issues || []).filter((i) => laneOf(i) === name);

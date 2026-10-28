@@ -1137,7 +1137,7 @@ def test_the_page_is_guided_in_plain_words_and_follows_the_conversation(tmp_path
         assert marker in js, marker
     assert "innerHTML" not in js
     css = get(v, "/static/app.css").body.decode()
-    for marker in (".icard.working", ".icard.moved", "#turns li.fresh", "@keyframes pulse", "#supervisors .agent.busy"):
+    for marker in (".icard.working", ".icard.moved", "#turns li.fresh", "@keyframes pulse", "#map .node.live"):   # plan 54: the supervisor chips are gone; the map's group node carries liveness
         assert marker in css, marker
     state = body(get(v, "/api/state"))
     assert all("worker" in r for r in state["status"]["runs"])
@@ -1198,7 +1198,7 @@ def test_the_page_draws_its_overview_as_inline_svg(tmp_path):
     assert "innerHTML" not in js and "http://www.w3.org/2000/svg" in js
     state = body(get(v, "/api/state"))
     assert set(state["processes"]) == set(state["supervisors"]) and all("roles" in v for v in state["processes"].values())
-    assert all("launch_no" in r for p in state["processes"].values() for r in p["roles"].values()) and "launch ${info.launch_no}" in js
+    assert all("launch_no" in r for p in state["processes"].values() for r in p["roles"].values()) and "restarted ${n} time" in js   # plan 54: plain words on the role chip
 
 
 def test_the_work_lanes_show_the_flow(tmp_path):

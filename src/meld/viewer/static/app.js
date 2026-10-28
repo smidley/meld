@@ -331,6 +331,7 @@ let lastPulls = [];
 let lastStatus = null;
 let lastThread = [];
 let lastGenerated = "";
+let lastState = null;
 
 function clock12(ms, { seconds = false } = {}) {
   // A time of day the way a person says it, in the browser's own zone: "9:05 pm", or "9:05:12 pm" on a transcript line.
@@ -422,8 +423,9 @@ function runFraction(r) {
   if (!(start < end) || !now) return 0;
   return (now - start) / (end - start);
 }
-function drawNode(parent, x, y, w, h, color, title, sub, { live = false, onclick = null, ring = null, tag = null } = {}) {
+function drawNode(parent, x, y, w, h, color, title, sub, { live = false, onclick = null, ring = null, tag = null, tip = null } = {}) {
   const g = svgEl("g", {}, parent);
+  if (tip) svgEl("title", {}, g).textContent = tip;
   const rect = svgEl("rect", { class: "node" + (live ? " live" : "") + (onclick ? " clickable" : ""), x, y, width: w, height: h, rx: 6,
                                ...(color ? { stroke: color, "stroke-width": live ? 2.5 : 1.5 } : {}) }, g);
   if (color) svgEl("rect", { x: x + 1, y: y + 1, width: 5, height: h - 2, rx: 3, fill: color }, g);
@@ -441,42 +443,63 @@ function drawNode(parent, x, y, w, h, color, title, sub, { live = false, onclick
   return { x, y, w, h };
 }
 
+const ROLE_WORDS = { orchestrator: "orchestrator", pm: "PM" };
+function roleWords(info, freeze) {
+  // A role's state in the words of the review's table (plan 54): running, stopped, out of quota until 5:09 pm, restarted
+  // 38 times. `freeze` is limits.frozen[group][role], the provider's reset time where it gave one.
+  if (freeze && !freeze.expired) return `out of quota until ${clock12(Date.parse(freeze.until || ""))}`;
+  const state = info.state === "alive" ? "running" : info.state === "dead" ? "stopped" : "not started";
+  const n = (info.launch_no || 1) - 1;
+  return state + (n > 0 ? ` · restarted ${n} time${n === 1 ? "" : "s"}` : "");
+}
+
 function drawMap(state) {
-  // The agents and what each is on: a row per group -- the group, its two roles with their liveness, then one node per
-  // running worker with its issue or PR -- wired left to right. The map is the page's picture of who does what.
+  // The agents and what each is on: a row per group -- the group with its one-line state (chat.agent_rows), its two
+  // roles in plain words, then one node per running worker with its issue or PR -- wired left to right; under the group,
+  // what it is doing and what it has spent. The map is the page's picture of who does what.
   const svg = el("map");
   svg.replaceChildren();
   const s = state.status || {};
-  const groups = Object.keys(state.supervisors || {});
+  const rows = state.agents || [];
+  const byGroup = new Map(rows.map((r) => [r.group, r]));
+  const groups = rows.length ? rows.map((r) => r.group) : Object.keys(state.processes || {});
   const running = (s.runs || []).filter((r) => r.state === "running");
-  const rowH = 68, left = 16, groupW = 136, roleW = 184, workW = 200, gap = 26, gapW = 40;
-  const rows = Math.max(1, groups.length);
+  const frozen = (state.limits || {}).frozen || {};
+  const spendLine = (g) => {
+    const a = byGroup.get(g) || {};
+    return [a.doing, a.cost_usd != null ? `$${a.cost_usd.toFixed(2)}` : "no dollar figure from this CLI", a.runs].filter(Boolean).join(" · ");
+  };
+  const chars = Math.max(12, ...groups.flatMap((g) => [((byGroup.get(g) || {}).summary || "").length, spendLine(g).length]));
+  const rowH = 86, left = 16, groupW = Math.min(360, Math.round(chars * 6.4) + 24), roleW = 236, workW = 200, gap = 26, gapW = 40;
+  const nrows = Math.max(1, groups.length);
   const widest = Math.max(1, ...groups.map((g) => running.filter((r) => r.group === g).length));
   const width = left + groupW + gap + roleW + gapW + widest * (workW + 10) + 8;
-  svg.setAttribute("viewBox", `0 0 ${Math.max(width, 640)} ${rows * rowH + 4}`);
+  svg.setAttribute("viewBox", `0 0 ${Math.max(width, 640)} ${nrows * rowH + 4}`);
   svg.setAttribute("width", Math.max(width, 640));   // drawn at its own size, never scaled up to the page width
-  svg.setAttribute("height", rows * rowH + 4);
+  svg.setAttribute("height", nrows * rowH + 4);
   groups.forEach((g, i) => {
     const y = i * rowH + 4, color = colorFor("group", g);
-    const sup = (state.supervisors || {})[g] || {};
-    const WORDS = { alive: "running", dead: "stopped", unknown: "not started" };
-    const node = drawNode(svg, left, y, groupW, 52, color, g, WORDS[sup.state] || sup.state || "", { live: sup.state === "alive" });
+    const a = byGroup.get(g) || {};
+    const live = a.state === "running" || a.state === "partly";
+    const node = drawNode(svg, left, y, groupW, 52, color, g, a.summary || "", { live, tip: a.summary ? `${g}: ${a.summary}` : g });
+    const spend = svgText(svg, left + 12, y + 52 + 15, clip(spendLine(g), Math.floor((groupW - 24) / 6.4)), "sub");
+    if (a.tokens) svgEl("title", {}, spend).textContent = `${fmtTokens(a.tokens.in)} in / ${fmtTokens(a.tokens.out)} out` + (a.tokens.cached ? ` (${fmtTokens(a.tokens.cached)} cached)` : "");
     const roles = ((state.processes || {})[g] || {}).roles || {};
     const rx = left + groupW + gap;
     let ri = 0;
     for (const [role, info] of Object.entries(roles)) {
       const ry = y + ri * 32;
       const liveRole = info.state === "alive";
-      const launches = (info.launch_no > 1 ? ` · launch ${info.launch_no}` : "") + (info.reason === "capacity" ? " · after capacity" : "");
-      const r = drawNode(svg, rx, ry, roleW, 28, liveRole ? color : null, `${role} · ${info.frozen ? "frozen" : (info.state === "alive" ? "awake" : info.state)}${launches}`, null, { live: liveRole });
+      const label = `${ROLE_WORDS[role] || role} · ${roleWords(info, (frozen[g] || {})[role])}`;
+      const r = drawNode(svg, rx, ry, roleW, 28, liveRole ? color : null, label, null, { live: liveRole, tip: label + (info.reason ? ` (last launch: ${info.reason})` : "") });
       drawEdge(svg, node.x + node.w, node.y + node.h / 2, r.x, r.y + r.h / 2, { flowing: liveRole, color });
       ri++;
     }
     const wx = rx + roleW + gapW;
     running.filter((r) => r.group === g).forEach((r, k) => {
-      const what = r.kind === "build" ? `building #${r.issue}` : `${r.kind === "audit" ? "auditing" : "reviewing"} PR #${r.issue}`;
+      const what = r.kind === "build" ? `building #${r.issue}` : `${r.kind === "audit" ? "checking after merge" : "reviewing"} PR #${r.issue}`;
       const w = drawNode(svg, wx + k * (workW + 10), y + 14, workW, 36, color, what, `${r.worker || r.kind} · ${r.model || ""}`, { live: true,
-                         ring: runFraction(r), tag: "dispatched", onclick: r.kind === "build" ? () => openTask(r.issue) : () => showTranscript(r) });
+                         ring: runFraction(r), tag: "building", onclick: r.kind === "build" ? () => openTask(r.issue) : () => showTranscript(r) });
       drawEdge(svg, rx + roleW, y + 32 + 14, w.x, w.y + w.h / 2, { flowing: true, color });
     });
   });
@@ -529,11 +552,26 @@ function renderLimits(state) {
   }
 }
 
+async function startGroup(g, button) {
+  // The same two clicks the wizard offers, served by this page: no command, no token to paste. Once installed, the
+  // group is checked and started by itself.
+  button.disabled = true;
+  text(button, `checking ${g} …`);
+  try {
+    const out = await postJSON("/api/setup", { step: "start", group: g });
+    const r = (out.started || {})[g] || {};
+    text(button, r.error ? `not started: ${r.error}` : `started (pid ${r.pid})`);
+    return !r.error;
+  } catch (e) { text(button, e.message); button.disabled = false; return false; }
+}
+
 function renderSetup(state) {
   // A configured group that is not running, and what this machine says it still needs: the owner added two groups
-  // through the form and saw nothing, because a saved group starts nothing by itself.
+  // through the form and saw nothing, because a saved group starts nothing by itself. Collapsed to one line (plan 54):
+  // "4 groups are not running" with one Start all, the per-group rows behind a disclosure.
   const list = el("setup");
   list.replaceChildren();
+  const startable = [];
   if (state.config_error) {
     const li = text(document.createElement("li"), `the configuration file does not load, so the page keeps the last good one: ${state.config_error}`);
     li.className = "bad";
@@ -554,20 +592,27 @@ function renderSetup(state) {
       b.className = "start";
       text(b, `check and start ${g}`);
       b.title = "runs meld doctor for this group, then its supervisor; nothing to type";
-      b.addEventListener("click", async () => {
-        b.disabled = true;
-        text(b, `checking ${g} …`);
-        try {
-          const out = await postJSON("/api/setup", { step: "start", group: g });
-          const r = (out.started || {})[g] || {};
-          text(b, r.error ? `not started: ${r.error}` : `started (pid ${r.pid})`);
-          if (!r.error) setTimeout(pollState, 3000);
-        } catch (e) { text(b, e.message); b.disabled = false; }
-      });
+      b.addEventListener("click", async () => { if (await startGroup(g, b)) setTimeout(pollState, 3000); });
       li.append(b);
+      startable.push([g, b]);
     }
     list.append(li);
   }
+  const n = Object.values(state.setup || {}).filter((s) => !s.running).length;
+  el("setup-wrap").classList.toggle("hidden", !list.children.length);
+  text(el("setup-count"), n ? `${n} group${n === 1 ? "" : "s"} ${n === 1 ? "is" : "are"} not running` : "the configuration file does not load");
+  const all = el("start-all");
+  all.classList.toggle("hidden", startable.length < 2);
+  all.disabled = false;
+  text(all, "Start all");
+  all.onclick = async (e) => {
+    e.preventDefault();   // a button inside <summary> would also toggle the disclosure
+    all.disabled = true;
+    let started = 0;
+    for (const [g, b] of startable) if (await startGroup(g, b)) started++;   // one at a time: each start runs meld doctor
+    text(all, `started ${started} of ${startable.length}`);
+    setTimeout(pollState, 3000);
+  };
 }
 
 function drawBars(state) {
@@ -1466,6 +1511,7 @@ async function saveConfig() {
 }
 
 function renderState(state) {
+  lastState = state;
   const s = state.status;
   lastStatus = s;   // first: every reference drawn below links through ghUrl, which reads the repository from it
   el("repo").replaceChildren();
@@ -1496,35 +1542,9 @@ function renderState(state) {
   drawMap(state);
   renderLimits(state);
   renderSetup(state);
-  drawTimeline(state);
+  if (!el("activity").classList.contains("hidden")) drawTimeline(state);
   renderDecisions(state.decisions);
   renderThread(state.thread);
-  // The agents, one chip per group in its colour: its supervisor in plain words (the reason on hover), and any frozen role.
-  const WORDS = { alive: "running", dead: "stopped", unknown: "not running here" };
-  const sup = el("supervisors");
-  sup.replaceChildren();
-  for (const [group, live] of Object.entries(state.supervisors)) {
-    const span = document.createElement("span");
-    span.className = "agent";
-    span.title = live.reason;
-    const dot = cell("dot", "●");
-    dot.style.color = colorFor("group", group);
-    span.append(dot, text(document.createElement("span"), group), badge(document.createElement("span"), live.state, WORDS[live.state] || live.state));
-    // what the group is doing right now, from its running worker runs
-    const busy = (s.runs || []).filter((r) => r.group === group && r.state === "running");
-    if (busy.length) {
-      span.classList.add("busy");
-      span.append(cell("doing", busy.map((r) => r.kind === "build" ? `building #${r.issue}` : `${r.kind === "audit" ? "auditing" : "reviewing"} PR #${r.pr}`).join(", ")));
-    }
-    for (const [role, freeze] of Object.entries(state.frozen[group] || {})) {
-      if (freeze) {
-        const f = badge(document.createElement("span"), "frozen", `${role} frozen`);
-        f.title = freeze.resets_at ? `resets ${freeze.resets_at}` : `since ${freeze.at}, re-probing`;
-        span.append(" ", f);
-      }
-    }
-    sup.append(span);
-  }
   // The needs-human items are decision cards now (plan 18); this row carries only the state errors below.
   const nh = el("needs-human");
   nh.replaceChildren();
@@ -1718,6 +1738,7 @@ function openTab(name) {
   el("drawer").classList.toggle("closed", !name);
   if (name === "config") el("config").open = true;
   if (name === "streams") scrollColumns();
+  if (name === "activity" && lastState) drawTimeline(lastState);   // drawn at the pane's width, which it had none of while hidden
 }
 for (const b of document.querySelectorAll("#tabs .tab")) {
   b.addEventListener("click", () => openTab(b.classList.contains("active") ? null : b.dataset.tab));

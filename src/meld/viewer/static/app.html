@@ -46,10 +46,6 @@
     <div id="budget-bars"></div>
   </div>
   <ul id="limits" class="appears"></ul>
-  <svg id="map" role="img" aria-label="the agents and what each is working on"></svg>
-  <svg id="timeline" role="img" aria-label="the coordination thread over time, one dot per post"></svg>
-  <ul id="setup" class="appears"></ul>
-  <div id="supervisors" class="row hidden appears"></div>
   <div id="needs-human" class="row appears"></div>
 </header>
 <section id="decisions" class="hidden appears">
@@ -61,6 +57,15 @@
     <div id="reply-send"></div>
     <div id="reply-outcome" class="dim"></div>
   </form>
+</section>
+<section id="agents" class="band">
+  <h2><span class="who">Agents</span> <span class="hint">each group, its two roles and its running workers</span></h2>
+  <svg id="map" role="img" aria-label="the agents and what each is working on"></svg>
+  <details id="setup-wrap" class="hidden appears">
+    <summary><span id="setup-count"></span> <button type="button" id="start-all" class="start hidden" title="runs meld doctor for each group in turn, then its supervisor">Start all</button></summary>
+    <ul id="setup" class="appears"></ul>
+  </details>
+  <div id="supervisors" class="row hidden appears"></div>
 </section>
 <template id="ask">
   <li class="ask appears">
@@ -97,6 +102,7 @@
   <button type="button" class="tab" data-tab="streams">Transcripts</button>
   <button type="button" class="tab" data-tab="pulls-panel">Pull requests</button>
   <button type="button" class="tab" data-tab="agreements-panel">Agreements</button>
+  <button type="button" class="tab" data-tab="activity">Activity</button>
   <button type="button" class="tab" data-tab="act">Act as the human</button>
   <button type="button" class="tab" data-tab="config">Configuration</button>
   <span id="machine" class="row dim">
@@ -113,6 +119,7 @@
 <section id="drawer" class="closed">
   <div id="streams" class="tabpane hidden"></div>
   <div id="pulls-panel" class="tabpane hidden"><div class="panel"><h2>Pull requests <span class="hint">hover a row for why a verb is missing</span></h2><div id="pulls"></div></div></div>
+  <div id="activity" class="tabpane hidden"><div class="panel"><h2>Activity <span class="hint">one dot per post, a lane per voice, the last ninety minutes</span></h2><svg id="timeline" role="img" aria-label="the coordination thread over time, one dot per post"></svg></div></div>
   <div id="agreements-panel" class="tabpane hidden"><div class="panel"><h2>Agreements <span class="hint">what the groups proposed and settled</span></h2><div id="agreements"></div></div></div>
   <div id="act" class="tabpane hidden">
     <form id="bar" autocomplete="off">

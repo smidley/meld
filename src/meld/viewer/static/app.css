@@ -119,8 +119,12 @@ body.setup > :not(#wizard) { display: none; }
 #limits li .lgroup { font-weight: 600; }
 #limits li.frozen { color: var(--attn); cursor: help; }
 
-/* ---- the agents map: the group node is the heavy object, roles are light chips, edges are hairlines without arrowheads ---- */
-#map { display: block; margin: var(--s3) auto 0; max-width: 100%; height: auto; }
+/* ---- the agents band (plan 54): below the questions, a sheet like the work's, holding the map and the setup line ---- */
+.band { margin: var(--s3) var(--gutter) 0; background: var(--bg-1); border-radius: var(--r-card); }
+.band h2 { margin: 0; padding: var(--s3) var(--s4) var(--s2); font: var(--t-section); display: flex; gap: var(--s2); align-items: baseline; flex-wrap: wrap; }
+.band h2 .who { color: var(--fg); }
+/* the map: the group node is the heavy object, roles are light chips, edges are hairlines without arrowheads */
+#map { display: block; margin: 0 auto; max-width: 100%; height: auto; }
 #map text { font: var(--t-meta); font-weight: 500; fill: var(--fg); }
 #map .sub { fill: var(--fg-3); font-weight: 400; }
 #map .node { fill: var(--bg-2); stroke: var(--line); stroke-width: 1; }
@@ -136,7 +140,8 @@ body.setup > :not(#wizard) { display: none; }
 #map .ring, #task-graph .ring { fill: none; stroke-width: 2.5; stroke-linecap: round; transition: stroke-dashoffset var(--d-fill) var(--ease); }
 @keyframes ring { 0%, 100% { stroke-opacity: 1; } 50% { stroke-opacity: 0.45; } }
 
-/* ---- the timeline: a lane per voice, a dot per post ---- */
+/* ---- the timeline (the drawer's Activity tab): a lane per voice, a dot per post ---- */
+#activity { overflow: auto; padding: var(--s3) var(--gutter); }
 #timeline { display: block; margin: var(--s3) 0 0; max-width: 100%; height: auto; }
 #timeline text { font: var(--t-meta); fill: var(--fg-2); }
 #timeline .sub { fill: var(--fg-2); }
@@ -148,8 +153,14 @@ body.setup > :not(#wizard) { display: none; }
 #timeline .dot.attention { stroke: var(--attn); stroke-width: 6; stroke-opacity: 0.3; paint-order: stroke; }
 #timeline .dot:hover { stroke: var(--fg); stroke-width: 2; stroke-opacity: 1; }
 
-/* ---- setup notices and supervisor chips ---- */
-#setup { margin: var(--s3) 0 0; padding: 0; list-style: none; display: grid; gap: var(--s1); font: var(--t-meta); color: var(--fg-2); }
+/* ---- setup notices: one line ("4 groups are not running", Start all) that opens to the per-group rows ---- */
+#setup-wrap { margin: 0; padding: var(--s2) var(--s4) var(--s3); font: var(--t-meta); color: var(--fg-2); }
+#setup-wrap > summary { display: flex; gap: var(--s3); align-items: center; cursor: pointer; list-style: none; }
+#setup-wrap > summary::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--attn); flex: 0 0 auto; }
+#setup-wrap > summary::after { content: "details"; color: var(--fg-3); }
+#setup-wrap[open] > summary::after { content: "hide details"; }
+#setup-wrap button.start { margin-left: var(--s2); }
+#setup { margin: var(--s2) 0 0 14px; padding: 0; list-style: none; display: grid; gap: var(--s1); font: var(--t-meta); color: var(--fg-2); }
 #setup:empty { display: none; }
 #setup li { display: flex; gap: var(--s2); align-items: center; padding: var(--s1) 0; }
 #setup li::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--attn); flex: 0 0 auto; }
@@ -157,11 +168,6 @@ body.setup > :not(#wizard) { display: none; }
 #setup li.bad::before { background: var(--bad); }
 #setup code { font: var(--t-mono); background: var(--bg-3); padding: 0 5px; border-radius: 3px; }
 #setup button.start { margin-left: auto; }
-#supervisors { gap: var(--s2) var(--s3); margin: var(--s3) 0 0; }
-#supervisors .agent { display: inline-flex; gap: var(--s2); align-items: baseline; background: var(--bg-2); border: 0; border-radius: var(--r-pill); padding: 3px 12px 3px 10px; font-size: 13px; }
-#supervisors .agent .dot { font-size: 10px; line-height: 1; }
-#supervisors .agent .doing { color: var(--fg-3); font: var(--t-meta); }
-#supervisors .agent.busy .dot { animation: blink 2.4s ease-in-out infinite; }
 @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 
 /* ---- decisions: the one place amber is spent, first because it is the one place a person has to act ---- */
@@ -336,12 +342,12 @@ li.synthesized .text { color: var(--fg-3); font-style: italic; }
 .rverbs .dim { padding: 0 4px; }
 
 /* ---- one button system and one input system, for every control on the page; the primary action is filled amber ---- */
-button.verb, .ask .aquick button, #reply-send button, #bar button, #setup button.start, #wizard button, #config-save,
+button.verb, .ask .aquick button, #reply-send button, #bar button, #setup button.start, #start-all, #wizard button, #config-save,
 .gcard .ghead button, .gadd button, #task-tree button, #strip-action {
   font: var(--t-body); font-size: 13px; line-height: 1.2; color: var(--fg); background: var(--bg-3); border: 1px solid transparent; border-radius: var(--r-ctl);
   padding: 4px 11px; cursor: pointer; transition: background var(--d-micro) var(--ease), color var(--d-micro) var(--ease), border-color var(--d-micro) var(--ease); }
 button.verb, #task-tree button { font-size: 12px; padding: 2px 8px; }
-button.verb:hover, .ask .aquick button:hover, #reply-send button:hover, #bar button:hover, #setup button.start:hover, #wizard button:hover, #config-save:hover,
+button.verb:hover, .ask .aquick button:hover, #reply-send button:hover, #bar button:hover, #setup button.start:hover, #start-all:hover, #wizard button:hover, #config-save:hover,
 .gcard .ghead button:hover, .gadd button:hover, #task-tree button:hover { background: color-mix(in srgb, var(--bg-3) 70%, var(--fg-3)); color: var(--fg); border-color: transparent; }
 #bar #run, #wizard #wz-create { background: var(--attn); color: var(--attn-ink); font-weight: 600; }
 #bar #run:hover, #wizard #wz-create:hover { background: color-mix(in srgb, var(--attn) 88%, white); color: var(--attn-ink); }
@@ -415,6 +421,6 @@ details[open]::details-content { height: auto; }
   #machine { flex: 1 1 100%; margin-left: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .flowline, .icard.working, .icard.moved, #timeline .dot, #map .edge, #task-graph .edge, #map .live, #task-graph .live, #supervisors .agent.busy .dot, .icard .jstep.now::before { animation: none; }
+  .flowline, .icard.working, .icard.moved, #timeline .dot, #map .edge, #task-graph .edge, #map .live, #task-graph .live, .icard .jstep.now::before { animation: none; }
   .appears, #drawer, #task, #task::backdrop, details::details-content, .icard, .ask, #tabs .tab { transition: none; }
 }

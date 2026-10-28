@@ -573,3 +573,34 @@ def test_a_journey_says_what_an_issue_waits_for():
     from meld.chat import journey
     status = {"quorum": 1, "issues": [{"number": 4, "title": "Tests", "status": "ready", "claimed_by": None, "worker": "qa", "challenged": False, "waits_for": [3]}], "pulls": [], "runs": []}
     assert journey(status["issues"][0], status, datetime(2026, 10, 28, 20, 0, tzinfo=timezone.utc))["now"] == "waits for #3 to close first"
+
+
+def test_activity_words_say_what_a_process_is_doing(tmp_path):
+    """Plan 58: the owner watched a quiet page and asked whether it was stuck; each live role and worker now says what it
+    is doing from its newest transcript event, and the strip counts a process writing as life."""
+    from meld.chat import activity, activity_words, status_strip
+    from meld.transcript import Event
+    from tests.fakeadapter import FakeAdapter
+    ev = lambda kind, text="", tool=None: Event(seq=0, at=NOW.strftime("%Y-%m-%dT%H:%M:%SZ"), kind=kind, text=text, tool=tool)
+    assert activity_words(None) == "" and activity_words(ev("thinking")) == "thinking" and activity_words(ev("message", "hi")) == "wrote a message"
+    assert activity_words(ev("tool_call", "meld wait --filter run --timeout 300", "command")) == "waiting for the board to change"
+    assert activity_words(ev("tool_call", "meld status", "Bash")) == "checking the board"
+    assert activity_words(ev("tool_call", "meld tag 4 --effort high", "command")) == "running meld tag"
+    assert activity_words(ev("tool_call", "src/app.js", "Read")) == "reading files" and activity_words(ev("tool_call", "sed -n 1,20p x", "command")) == "reading files"
+    assert activity_words(ev("tool_call", "/w/src/app.js", "Edit")) == "editing app.js" and activity_words(ev("tool_call", "apply_patch <<EOF", "command")) == "editing files"
+    assert activity_words(ev("tool_call", "git push origin x", "command")) == "running git push" and activity_words(ev("tool_call", "uv run pytest -q", "command")) == "running tests"
+    assert activity_words(ev("tool_call", "https://x", "WebFetch")) == "using WebFetch" and activity_words(ev("tool_call", "ls -la", "command")) == "reading files"
+    log = tmp_path / "pm.log"
+    log.write_text("hello\n")
+    streams = [{"group": "codex", "kind": "role", "role": "pm", "issue": None, "log_path": str(log), "liveness": {"state": "alive"}},
+               {"group": "codex", "kind": "build", "role": None, "issue": 3, "log_path": str(log), "liveness": {"state": "alive"}},
+               {"group": "claude", "kind": "role", "role": "pm", "issue": None, "log_path": str(log), "liveness": {"state": "dead"}},
+               {"group": "codex", "kind": "review", "role": None, "issue": 12, "log_path": str(tmp_path / "gone.log"), "liveness": {"state": "alive"}}]
+    act = activity(streams, {"codex": FakeAdapter(), "claude": FakeAdapter()}, NOW)
+    assert set(act) == {"codex/pm", "codex/build/3"}
+    assert act["codex/pm"]["who"] == "codex PM" and act["codex/pm"]["now"] == "wrote a message" and act["codex/pm"]["at"].endswith("Z")
+    assert act["codex/build/3"]["who"] == "codex's build worker on #3"
+    limits = {"frozen": {}, "usage": {}}
+    silent = status_strip(_executing(), [], _procs(claude=None, codex=None), limits, NOW, last_post_at="2026-09-03T11:35:00Z")
+    alive = status_strip(_executing(), [], _procs(claude=None, codex=None), limits, NOW, last_post_at="2026-09-03T11:35:00Z", activity_at="2026-09-03T11:59:00Z")
+    assert silent["text"].startswith("Nothing has happened for 25 min") and not alive["text"].startswith("Nothing has happened")

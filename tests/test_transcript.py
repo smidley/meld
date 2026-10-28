@@ -348,3 +348,15 @@ def test_usage_limit_is_a_kind_and_renders_as_limit():
     assert "usage_limit" in KINDS
     assert render_line(mk("usage_limit", text="You've hit your spend limit.")) == \
         "02:11:19  limit    You've hit your spend limit."
+
+
+def test_last_event_reads_only_the_tail_and_drops_the_partial_first_line(tmp_path):
+    """Plan 58: the page asks every live log what its process did last, so the read is bounded to the tail."""
+    from meld.transcript import last_event
+    from tests.fakeadapter import FakeAdapter
+    log = tmp_path / "pm.log"
+    log.write_text("".join(f"line {i} " + "x" * 90 + "\n" for i in range(5)))
+    e = last_event(log, FakeAdapter(), "2026-09-03T12:00:00Z", max_bytes=150)
+    assert e is not None and e.kind == "message" and e.text.startswith("line 4 ")
+    assert last_event(tmp_path / "missing.log", FakeAdapter(), "2026-09-03T12:00:00Z") is None
+    assert last_event(log, FakeAdapter(), "2026-09-03T12:00:00Z", kinds=("tool_call",)) is None

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import datetime, timezone, tzinfo
 from typing import Callable, Iterable
@@ -341,7 +342,8 @@ def _doing(group: str, status: dict) -> str:
 
 
 def status_strip(status: dict, decisions: list[dict], processes: dict, limits: dict, now: datetime, *,
-                 last_post_at: str | None = None, silence_grace_minutes: int = 15, tz: tzinfo = timezone.utc) -> dict:
+                 last_post_at: str | None = None, silence_grace_minutes: int = 15, tz: tzinfo = timezone.utc,
+                 activity_at: str | None = None) -> dict:
     """The one-line state of the run for the top of the page (plan 54): `level` is one of ok (green), attention
     (amber), bad (red) or quiet (grey); `text` is the sentence; `action` is the `/api/action` body for the one obvious
     act (approve the plan, resume after a halt) or None; `detail` is a second clause: what the state itself has to
@@ -384,7 +386,7 @@ def status_strip(status: dict, decisions: list[dict], processes: dict, limits: d
                        f"{_n(len(running), 'worker')} still running.", None, ""))
     last_post = last_post_at or ""
     last_run = max((r.get("started_at") or "" for r in status.get("runs", [])), default="")
-    quiet_since = _minutes(max(last_post, last_run) or None, now)
+    quiet_since = _minutes(max(last_post, last_run, activity_at or "") or None, now)   # plan 58: a process writing is life
     done = bool(issues) and all(i["status"] == "closed" for i in issues)
     if quiet_since is not None and quiet_since > silence_grace_minutes and not done:
         states.append(("attention", f"Nothing has happened for {quiet_since} min — last post {_clock(last_post, tz) or 'never'}.", None, ""))
@@ -436,6 +438,54 @@ def agent_rows(status: dict, processes: dict, limits: dict, now: datetime, *, tz
                     "restarts": restarts, "cost_usd": cost,
                     "tokens": {"in": int(u.get("input_tokens") or 0), "out": int(u.get("output_tokens") or 0), "cached": int(u.get("cached_tokens") or 0)},
                     "runs": runs})
+    return out
+
+
+def activity_words(event) -> str:
+    """What a process is doing, from its newest transcript event, in a few plain words (plan 58): the owner watched a
+    quiet page and asked whether it was stuck while every role was waiting on the board or reading."""
+    if event is None:
+        return ""
+    k, t, tool = event.kind, (event.text or "").strip(), event.tool or ""
+    if k != "tool_call":
+        return {"message": "wrote a message", "thinking": "thinking", "tool_result": "reading a result", "run_started": "starting"}.get(k, "")
+    words = t.split()
+    if t.startswith("meld wait"):
+        return "waiting for the board to change"
+    if t.startswith("meld status"):
+        return "checking the board"
+    if words and words[0] == "meld":
+        return "running meld " + (words[1] if len(words) > 1 else "")
+    if tool in ("Read", "Glob", "Grep", "LS") or (words and words[0] in ("cat", "sed", "rg", "grep", "ls", "find", "head", "tail")):
+        return "reading files"
+    if tool in ("Edit", "Write", "MultiEdit", "NotebookEdit") or "apply_patch" in t:
+        return "editing " + (t.rsplit("/", 1)[-1] if tool in ("Edit", "Write") and t else "files")
+    if words and words[0] == "git":
+        return "running git " + (words[1] if len(words) > 1 else "")
+    if any(w in t for w in ("pytest", "npm test", "playwright", "uv run")):
+        return "running tests"
+    if tool and tool != "command":
+        return f"using {tool}"
+    return "running " + (words[0] if words else "a command")
+
+
+def activity(streams: list[dict], adapters: dict, now: datetime) -> dict[str, dict]:
+    """What each live process is doing and when it last wrote anything (plan 58), keyed `group/role` for a role and
+    `group/kind/issue` for a worker: `who` in words, `now` from the transcript's newest event, `at` the log's mtime."""
+    from meld.transcript import last_event
+    out: dict[str, dict] = {}
+    for s in streams:
+        if (s.get("liveness") or {}).get("state") != "alive" or s["group"] not in adapters:
+            continue
+        try:
+            at = datetime.fromtimestamp(os.path.getmtime(s["log_path"]), timezone.utc)
+        except OSError:
+            continue
+        role = s.get("role")
+        key = f"{s['group']}/{role}" if role else f"{s['group']}/{s['kind']}/{s['issue']}"
+        who = f"{s['group']} {ROLE_WORDS.get(role, role)}" if role else f"{s['group']}'s {s['kind']} worker on {'#' if s['kind'] == 'build' else 'PR #'}{s['issue']}"
+        out[key] = {"who": who, "now": activity_words(last_event(s["log_path"], adapters[s["group"]], now.strftime("%Y-%m-%dT%H:%M:%SZ"))),
+                    "at": at.strftime("%Y-%m-%dT%H:%M:%SZ")}
     return out
 
 

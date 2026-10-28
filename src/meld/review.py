@@ -426,5 +426,32 @@ def merge(ctx, number: int) -> dict:
     # The sha guard makes GitHub refuse (409) if the head moved since this board; the PR body (already
     # closer-neutralised by collect, except the framework's own `Closes #N` line) becomes the squash message, so a
     # worker's commit messages never reach the default branch (spec 21 item 5).
-    resp = ctx.gh.merge_pull(number, pr.head_sha, pr.title, message=pr.body)
+    try:
+        resp = ctx.gh.merge_pull(number, pr.head_sha, pr.title, message=pr.body)
+    except GitHubError as e:
+        if e.status != 405 or ctx.gh.get_pull(number, fresh=True).get("mergeable_state") != "dirty":
+            raise
+        return _conflicted(ctx, board, pr)
     return {"merged": number, "sha": resp.get("sha"), "issue": pr.issue_number, "approvals": sorted(approving_parties(ctx.cfg, pr))}
+
+
+def _conflicted(ctx, board, pr) -> dict:
+    """GitHub refused the merge because the branch conflicts with the default branch (405, `mergeable_state` dirty).
+    Plan 40: that is a request for changes nobody posted, handled like CI red (spec 17) -- the linked issue goes back to
+    in-progress with a comment naming the PR, and the next build's brief names the files to resolve. The scratch
+    product's PMs instead retried the 405 for hours and posted NEEDS-HUMAN nine times. A memory PR has no issue and
+    no worker to resolve it: it is closed, and the lesson or decision is re-proposed from the current default branch."""
+    out: dict = {"merged": False, "conflict": pr.number, "issue": pr.issue_number, "head": pr.head_sha}
+    if pr.memory or pr.issue_number is None:
+        ctx.gh.create_comment(pr.number, f"Meld: PR #{pr.number} conflicts with `{ctx.cfg.default_branch}` and cannot merge; closed. "
+                                         "Propose the same memory again (`meld remember` / `meld decide`) and it is rewritten from the current default branch.")
+        ctx.gh.close_pull(pr.number)
+        return {**out, "closed": True, "next": "propose the memory again; it is rewritten from the current default branch"}
+    issue = board.issues.get(pr.issue_number)
+    if issue is not None and issue.status != "in_progress":   # a second PM reaching the same 405 does not comment twice
+        ctx.gh.create_comment(pr.issue_number, f"Meld: PR #{pr.number} (head `{pr.head_sha[:7]}`) has merge conflicts with "
+                                               f"`{ctx.cfg.default_branch}`; treated as request-changes. The next build run on this issue "
+                                               f"merges `origin/{ctx.cfg.default_branch}` and resolves them; the PR moves back to review when it pushes.")
+        _swap_labels(ctx, pr.issue_number, IN_PROGRESS, (IN_REVIEW,))
+    return {**out, "next": f"dispatch #{pr.issue_number}: the build merges the default branch and resolves the conflicts"}
+

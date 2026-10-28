@@ -308,16 +308,28 @@ def review_feedback(pr: PullRequest) -> str:
     return "\n".join(out)
 
 
+def merge_conflicts(base_branch: str, files: Sequence[str]) -> str:
+    """The `## Merge conflicts to resolve first` section of a retry's build brief (plan 40): the branch no longer merges
+    cleanly into the default branch, and a worker cannot see that on GitHub, so the brief names the files."""
+    listed = "\n".join(f"- `{f}`" for f in files)
+    return (f"\n## Merge conflicts to resolve first\n\nThis branch no longer merges cleanly into `{base_branch}`. Before anything else, "
+            f"run `git merge origin/{base_branch}` on this branch and resolve the conflicts in:\n\n{listed}\n\n"
+            f"Keep both what landed on `{base_branch}` and this branch's intent; commit the merge, then do the task and re-run the verification.\n")
+
+
 def render_brief(*, role: WorkerType, kind: str, group: str, model: str, effort: str, issue: Issue | None, pr: PullRequest | None,
                  plan_text: str, repo_root: Path, worktree: Path, base_branch: str, concern: str | None = None,
                  skills: Sequence[WorkerType] = (), recall: Sequence[str] = (), project_skills_dir: str | None = None,
-                 scope: Sequence[str] = (), may_delete: Sequence[str] = (), authorized: Sequence[str] = ()) -> str:
+                 scope: Sequence[str] = (), may_delete: Sequence[str] = (), authorized: Sequence[str] = (),
+                 conflicts: Sequence[str] = ()) -> str:
     if issue is not None:
         title = f"# Meld brief: {role.name} for #{issue.number}"
         task = f"## Your task\n\n**#{issue.number}: {issue.title}**\n\n{issue.body.strip() or '(no description)'}\n"
         task += f"\nYou are on branch `{branch_name(issue.number, issue.title)}`, created from `{base_branch}`.\n"
         if pr is not None:
             task += review_feedback(pr)
+        if conflicts:
+            task += merge_conflicts(base_branch, conflicts)
         excerpt = plan_excerpt(plan_text, issue.number)
         hints = file_hints(issue.body)
     else:

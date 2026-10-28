@@ -55,12 +55,15 @@ def worktree_exists(repo_root: Path, path: Path, run: RunFn = subprocess.run) ->
     return any(line.startswith("worktree ") and Path(line[len("worktree "):]).resolve() == target for line in listing.splitlines())
 
 
-def create_worktree(repo_root: Path, path: Path, branch: str, base: str, run: RunFn = subprocess.run, token: str | None = None) -> str:
-    """Create `path` on `branch`: reuse the remote branch when it exists (a retry), else branch from origin/<base>."""
+def create_worktree(repo_root: Path, path: Path, branch: str, base: str, run: RunFn = subprocess.run, token: str | None = None,
+                    fresh: bool = False) -> str:
+    """Create `path` on `branch`: reuse the remote branch when it exists (a retry), else branch from origin/<base>.
+    `fresh` ignores the remote branch and starts from origin/<base> regardless -- a build after that branch's PR was
+    squash-merged (plan 40): continuing the old commits made the next PR conflict with the squash of themselves."""
     git([*_auth(token)[0], "fetch", "--quiet", "origin"], repo_root, run, env=_auth(token)[1])
     git(["worktree", "prune"], repo_root, run)  # a registration whose directory is gone would otherwise refuse the add
     path.parent.mkdir(parents=True, exist_ok=True)
-    if remote_branch_exists(repo_root, branch, run, token=token):
+    if not fresh and remote_branch_exists(repo_root, branch, run, token=token):
         git(["worktree", "add", "--track", "-B", branch, str(path), f"origin/{branch}"], repo_root, run)
         return "existing"
     git(["worktree", "add", "-B", branch, str(path), f"origin/{base}"], repo_root, run)
@@ -109,6 +112,18 @@ def is_ancestor(path: Path, ancestor: str, descendant: str = "HEAD", run: RunFn 
     except GitError:
         return False
     return True
+
+
+def conflicts_with(path: Path, ref: str, run: RunFn = subprocess.run) -> list[str]:
+    """Files that would conflict if `ref` were merged into HEAD, from a local `git merge-tree` -- no GitHub call, no
+    change to the checkout. Empty when the merge is clean or `ref` is unknown here (then there is nothing to say)."""
+    proc = run(["git", "merge-tree", "--write-tree", "--name-only", "HEAD", ref], cwd=str(path), capture_output=True, text=True)
+    if proc.returncode != 1:   # 0: clean; anything else: no such ref, not a repo -- nothing to report
+        return []
+    # The output is the tree id, one conflicted path per line, a blank line, then git's own messages ("Auto-merging x",
+    # "CONFLICT (content): ..."): the paths are what lies between the first line and the blank one.
+    names = (proc.stdout or "").split("\n\n", 1)[0].splitlines()[1:]
+    return sorted({ln.strip() for ln in names if ln.strip()})
 
 
 def fast_forward_to_remote(repo_root: Path, path: Path, branch: str, run: RunFn = subprocess.run, token: str | None = None) -> str:

@@ -81,3 +81,30 @@ def test_cli_merge(tmp_path, monkeypatch):
     result = CliRunner().invoke(cli.main, ["--config", str(repo / ".meld.toml"), "--compact", "merge", "20"], env=env_for(tmp_path))
     assert result.exit_code == 0, result.output
     assert '"merged": 20' in result.output
+
+
+def test_a_merge_refused_for_conflicts_sends_the_issue_back_to_build(tmp_path):
+    """Plan 40: GitHub's 405 on a dirty branch is a request for changes nobody posted -- handled like CI red: a comment on
+    the issue, in-review -> in-progress, and `merge` reports what to do next instead of raising. The scratch product's
+    PMs retried the 405 for hours and posted NEEDS-HUMAN nine times."""
+    fake, ctx, repo, origin = make_product(tmp_path)
+    fake.route("PUT", R + "pulls/20/merge", {"message": "Pull Request is not mergeable"}, status=405)
+    fake.route("GET", R + "pulls/20", {"number": 20, "mergeable": False, "mergeable_state": "dirty"})
+    fake.route("POST", R + "issues/13/labels", [])
+    fake.route("DELETE", R + "issues/13/labels/meld%3Ain-review", [])
+    out = merge(ctx, 20)
+    assert out["merged"] is False and out["conflict"] == 20 and out["issue"] == 13 and out["head"] == "abc123" and "dispatch #13" in out["next"]
+    (comment,) = [c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/13/comments"]
+    assert comment.startswith("Meld: PR #20 (head `abc123`) has merge conflicts with `main`") and "next build run" in comment
+    assert [c.body for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues/13/labels"] == [{"labels": ["meld:in-progress"]}]
+    assert [c.endpoint for c in fake.calls if c.method == "DELETE"] == [R + "issues/13/labels/meld%3Ain-review"]
+
+
+def test_a_405_that_is_not_a_conflict_still_raises(tmp_path):
+    from meld.github import GitHubError
+    fake, ctx, repo, origin = make_product(tmp_path)
+    fake.route("PUT", R + "pulls/20/merge", {"message": "Base branch was modified"}, status=405)
+    fake.route("GET", R + "pulls/20", {"number": 20, "mergeable": True, "mergeable_state": "clean"})
+    with pytest.raises(GitHubError, match="405"):
+        merge(ctx, 20)
+    assert not [c for c in fake.calls if c.method in ("POST", "DELETE", "PATCH")]

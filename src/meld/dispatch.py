@@ -24,6 +24,7 @@ from meld.gitops import (
     checkout_pr_head,
     checkout_sha,
     commits_ahead,
+    conflicts_with,
     create_worktree,
     delete_local_branch,
     detach_head,
@@ -442,7 +443,18 @@ def _dispatch_build(ctx, board: Board, actor: Actor, number: int, adapter: Adapt
         refuse(ctx, board, Refusal(Verb.DISPATCH, f"#{number}", f"worker type '{issue.worker}' is not in {group.name}'s roster"))
     branch = branch_name(number, issue.title)
     wt = _worktree(ctx, group, f"{number}-{slugify(issue.title)}")
-    mode = "reused" if worktree_exists(ctx.repo_root, wt) else create_worktree(ctx.repo_root, wt, branch, ctx.cfg.default_branch, token=ctx.gh.token)
+    # Plan 40: once a PR from this branch has merged, its commits are on the default branch as one squash commit, and a
+    # build that continued the old branch opened a PR that conflicted with the squash of itself (scratch product PR #9).
+    # So the branch starts over from origin/<default>; collect's force-with-lease push rewrites the merged remote branch.
+    landed = any(p.merged and p.head_ref == branch for p in board.pulls.values())
+    if landed and worktree_exists(ctx.repo_root, wt):
+        remove_worktree(ctx.repo_root, wt)
+        delete_local_branch(ctx.repo_root, branch)
+    if landed:
+        mode = "fresh"
+        create_worktree(ctx.repo_root, wt, branch, ctx.cfg.default_branch, token=ctx.gh.token, fresh=True)
+    else:
+        mode = "reused" if worktree_exists(ctx.repo_root, wt) else create_worktree(ctx.repo_root, wt, branch, ctx.cfg.default_branch, token=ctx.gh.token)
     # A reused worktree never fetched, so a person's push to the PR branch (or a reviewer's push-fix) was built over and
     # the retry's own push then refused. Fast-forward to origin/<branch> when strictly behind; local work is never dropped.
     refresh = fast_forward_to_remote(ctx.repo_root, wt, branch, token=ctx.gh.token) if mode == "reused" else None
@@ -450,8 +462,12 @@ def _dispatch_build(ctx, board: Board, actor: Actor, number: int, adapter: Adapt
     skills_result = materialise_skills(wt, adp, [w for w in ctx.roster_entries() if w.source == "product-skill"])
     recall_hits, recall_note = _recall_for_brief(ctx, f"{issue.title}\n{issue.body}")
     open_pr = board.pr_for_issue(number)
+    # _recall_for_brief just refreshed origin/<default>; a retry whose branch no longer merges cleanly is told which files
+    # to resolve, because a worker holds no credentials and cannot read the PR's conflict from GitHub (plan 40).
+    conflicts = conflicts_with(wt, f"origin/{ctx.cfg.default_branch}") if mode != "fresh" else []
     brief = render_brief(role=worker, kind="build", group=group.name, model=issue.model or "", effort=issue.effort or "", issue=issue,
                          pr=open_pr if open_pr is not None and open_pr.state == "open" else None, plan_text=board.plan_text, repo_root=ctx.repo_root, worktree=wt, base_branch=ctx.cfg.default_branch,
+                         conflicts=conflicts,
                          skills=select_skills(f"{issue.title}\n{issue.body}",
                                               [w for w in ctx.roster_entries() if w.source in ("skill", "product-skill")], pinned=issue.skills),
                          recall=recall_hits, project_skills_dir=adp.project_skills_dir(),
@@ -472,7 +488,7 @@ def _dispatch_build(ctx, board: Board, actor: Actor, number: int, adapter: Adapt
     ctx.gh.create_comment(number, f"Meld: `{group.name}` dispatched a `{worker.name}` worker on `{issue.model}` at effort {issue.effort} "
                                   f"(size {issue.size}, {mode} worktree). Branch `{branch}`, deadline {_iso(deadline)}, lease until {until}.")
     result = {"dispatched": number, "kind": "build", "pid": pid, "worktree": str(wt), "branch": branch, "deadline": _iso(deadline),
-              "lease_until": until, "worktree_mode": mode, "skills_materialised": skills_result}
+              "lease_until": until, "worktree_mode": mode, "skills_materialised": skills_result, "conflicts": conflicts}
     if recall_note:
         result["recall_note"] = recall_note
     if refresh:
@@ -711,7 +727,10 @@ def _collect_build(ctx, board: Board, group: GroupConfig, rec: RunRecord, issue,
     # first live run's collect failed on it twice until a PM force-pushed by hand. The PR's branch is rewritten only
     # when the new head really sits on the current default branch, and only while origin/<branch> is still where this
     # worktree last saw it (--force-with-lease), so a reviewer's push-fix nobody here has fetched is refused, not lost.
-    rebased = (existing is not None and existing.state == "open"
+    # A branch restarted from the default branch after its PR merged (plan 40) is rewritten on the same terms: origin has
+    # the branch, the new head is not on it, and the new head sits on the current default branch.
+    remote_known = is_ancestor(wt, f"origin/{rec.branch}", f"origin/{rec.branch}")   # a ref is its own ancestor exactly when it exists
+    rebased = (((existing is not None and existing.state == "open") or remote_known)
                and not is_ancestor(wt, f"origin/{rec.branch}") and is_ancestor(wt, f"origin/{ctx.cfg.default_branch}"))
     push_branch(wt, rec.branch, ctx.gh.token, force_with_lease=rebased)
     # Worker text enters the PR body: strip its power to close arbitrary issues (only our Closes line may).

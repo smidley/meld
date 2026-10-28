@@ -196,7 +196,8 @@ def test_the_wizard_the_supervisors_the_roles_and_the_workers_run_a_milestone_en
     assert not any(e["event"] == "labeled" and e["label"]["name"] == "meld:blocked" for e in work[0]["events"]), work[0]["events"]
     assert sum(1 for n in notes if n.startswith("Meld: `claude` dispatched") or n.startswith("Meld: `codex` dispatched")) == 2, notes
     # Nothing a stand-in did was refused, and nothing needed a person
-    assert not [h for h in headers if "PROTOCOL-VIOLATION" in h], headers
+    violations = [c["body"] for c in sorted(fake.comments.values(), key=lambda c: c["id"]) if c["issue"] == 1 and "PROTOCOL-VIOLATION" in c["body"].splitlines()[0]]
+    assert not violations, violations
     assert not [h for h in headers if "NEEDS-HUMAN" in h], headers
     assert sum(1 for h in headers if h == "[claude] CONFIG") == 1 and sum(1 for h in headers if h == "[codex] CONFIG") == 1, headers
     assert any(h.startswith("[joint] PLAN plan-1") for h in headers) and any(h.startswith("[claude:pm] REVIEW-REQUEST") or h.startswith("[codex:pm] REVIEW-REQUEST") for h in headers)

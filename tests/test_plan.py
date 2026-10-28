@@ -78,6 +78,18 @@ def test_plan_issues_refuses_a_base_plan_once_already_approved(tmp_path):
     fake.route("GET", R + "issues/10/comments", fixture("comments_10.json") + PLAN_THREAD)
     with pytest.raises(Refused, match="already approved"):
         plan_issues(ctx, "plan-3")
+    # Plan 54: once every item already exists, the same call after approval is a no-op, not a violation -- the orchestrator
+    # read a planning board and the person approved before its call landed (the rehearsal hit this one run in three)
+    issues = fixture("issues.json") + [
+        {"number": 31, "title": "Login form", "body": "plan-item: login-form\nplan-ref: plan-3\n", "state": "open", "labels": [{"name": "meld:ready"}], "milestone": {"number": 3}},
+        {"number": 32, "title": "Add health endpoint", "body": "plan-item: health\nplan-ref: plan-3\n", "state": "open", "labels": [{"name": "meld:ready"}], "milestone": {"number": 3}}]
+    fake.route("GET", R + "issues", issues)
+    for n in (31, 32):
+        fake.route("GET", R + f"issues/{n}/events", [])
+    before = len(fake.calls)
+    out = plan_issues(ctx, "plan-3")
+    assert out["already"] is True and out["created"] == [] and out["skipped"] == ["login-form", "health"]
+    assert not [c for c in fake.calls[before:] if c.method == "POST"]   # no PROTOCOL-VIOLATION, nothing created
 
 
 def test_plan_issues_dry_run_reports_without_creating(tmp_path):

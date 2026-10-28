@@ -33,20 +33,23 @@
     <span id="phase" class="badge"></span>
     <span id="halted" class="badge bad hidden appears">HALTED</span>
   </div>
-  <p id="headline"></p>
+  <div id="strip" class="quiet">
+    <div class="srow">
+      <p id="headline">Connecting to meld…</p>
+      <button type="button" id="strip-action" class="hidden"></button>
+      <span id="updated" class="dim"></span>
+    </div>
+    <p id="strip-detail" class="dim"></p>
+  </div>
   <div id="bars">
     <div class="bar"><span class="blabel">milestone</span><div class="track"><div id="progress-fill" class="fill"></div></div><span id="progress-text" class="dim"></span></div>
     <div id="budget-bars"></div>
   </div>
   <ul id="limits" class="appears"></ul>
-  <svg id="map" role="img" aria-label="the agents and what each is working on"></svg>
-  <svg id="timeline" role="img" aria-label="the coordination thread over time, one dot per post"></svg>
-  <ul id="setup" class="appears"></ul>
-  <div id="supervisors" class="row hidden appears"></div>
   <div id="needs-human" class="row appears"></div>
 </header>
 <section id="decisions" class="hidden appears">
-  <h2><span class="who">Questions for you</span> <span class="hint">the agents ask here; your reply goes on the thread for them to read</span></h2>
+  <h2><span class="who">Questions for you</span> <span id="asks-count" class="dim"></span> <span class="hint">your reply goes on the thread</span></h2>
   <ol id="asks"></ol>
   <form id="reply">
     <div id="reply-to" class="dim"></div>
@@ -54,6 +57,15 @@
     <div id="reply-send"></div>
     <div id="reply-outcome" class="dim"></div>
   </form>
+</section>
+<section id="agents" class="band">
+  <h2><span class="who">Agents</span> <span class="hint">each group, its two roles and its running workers</span></h2>
+  <svg id="map" role="img" aria-label="the agents and what each is working on"></svg>
+  <details id="setup-wrap" class="hidden appears">
+    <summary><span id="setup-count"></span> <button type="button" id="start-all" class="start hidden" title="runs meld doctor for each group in turn, then its supervisor">Start all</button></summary>
+    <ul id="setup" class="appears"></ul>
+  </details>
+  <div id="supervisors" class="row hidden appears"></div>
 </section>
 <template id="ask">
   <li class="ask appears">
@@ -70,7 +82,7 @@
 </dialog>
 <main id="live">
   <section id="work" class="column">
-    <h2><span class="who">Work</span> <span class="hint">every issue of the milestone, left to right from to-do to done; each card shows how far along its issue is; a button fills the action bar, nothing runs until Run</span></h2>
+    <h2><span class="who">Work</span> <span class="hint">to-do to done; a verb fills the bar, nothing runs until Run</span></h2>
     <div id="issues" class="kanban"></div>
   </section>
   <section id="conversation" class="column" data-filter="quiet">
@@ -86,26 +98,30 @@
     <ol id="turns" class="events"></ol>
   </section>
 </main>
+<div id="dock">
 <nav id="tabs">
   <button type="button" class="tab" data-tab="streams">Transcripts</button>
   <button type="button" class="tab" data-tab="pulls-panel">Pull requests</button>
   <button type="button" class="tab" data-tab="agreements-panel">Agreements</button>
-  <button type="button" class="tab" data-tab="act">Act as the human</button>
-  <button type="button" class="tab" data-tab="config">Configuration</button>
+  <button type="button" class="tab" data-tab="activity">Activity</button>
+  <button type="button" class="tab" data-tab="act">Act</button>
+  <button type="button" class="tab" data-tab="config">Settings</button>
+  <button type="button" id="drawer-close" class="hidden" title="close (Escape)">×</button>
   <span id="machine" class="row dim">
-    <span id="budget"></span>
-    <span id="disk"></span>
-    <span id="logs"></span>
+    <span id="disk" class="bad"></span>
+    <span id="logs" class="bad"></span>
     <span id="feed" class="badge unknown">feed connecting</span>
-    <label id="detail" title="The transcripts show what each agent said by default; tick to see every tool call and result too."><input type="checkbox" id="show-tools"> show tool calls</label>
-    <label id="finished" title="Transcripts of processes that have ended are hidden by default, so what is running is in front; tick to see them too."><input type="checkbox" id="show-finished"> show finished</label>
     <span id="stamp" class="dim"></span>
     <span id="error" class="bad"></span>
   </span>
 </nav>
 <section id="drawer" class="closed">
-  <div id="streams" class="tabpane hidden"></div>
+  <div id="streams" class="tabpane hidden"><div id="streams-tools">
+    <label id="detail" title="The transcripts show what each agent said by default; tick to see every tool call and result too."><input type="checkbox" id="show-tools"> show tool calls</label>
+    <label id="finished" title="Transcripts of processes that have ended are hidden by default, so what is running is in front; tick to see them too."><input type="checkbox" id="show-finished"> show finished</label>
+  </div></div>
   <div id="pulls-panel" class="tabpane hidden"><div class="panel"><h2>Pull requests <span class="hint">hover a row for why a verb is missing</span></h2><div id="pulls"></div></div></div>
+  <div id="activity" class="tabpane hidden"><div class="panel"><h2>Activity <span class="hint">one dot per post, a lane per voice, the last ninety minutes</span></h2><svg id="timeline" role="img" aria-label="the coordination thread over time, one dot per post"></svg></div></div>
   <div id="agreements-panel" class="tabpane hidden"><div class="panel"><h2>Agreements <span class="hint">what the groups proposed and settled</span></h2><div id="agreements"></div></div></div>
   <div id="act" class="tabpane hidden">
     <form id="bar" autocomplete="off">
@@ -134,6 +150,7 @@
     </div>
   </details>
 </section>
+</div>
 <template id="row">
   <div class="brow">
     <span class="rid"></span>

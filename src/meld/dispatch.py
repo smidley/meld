@@ -33,6 +33,7 @@ from meld.gitops import (
     head_sha,
     noreply_email,
     fast_forward_to_remote,
+    git_config_env,
     fetch_origin,
     is_ancestor,
     push_branch,
@@ -228,15 +229,7 @@ def worker_env(base: Mapping[str, str], *, identity: tuple[str, str], gh_config_
     env.update({"GIT_AUTHOR_NAME": name, "GIT_AUTHOR_EMAIL": email, "GIT_COMMITTER_NAME": name, "GIT_COMMITTER_EMAIL": email,
                 "GH_CONFIG_DIR": str(gh_config_dir), "GIT_CONFIG_GLOBAL": str(git_config_global), "GIT_CONFIG_NOSYSTEM": "1",
                 "GIT_TERMINAL_PROMPT": "0"})
-    try:
-        n = int(env.get("GIT_CONFIG_COUNT", "0"))
-    except ValueError:
-        n = 0
-    for key, value in _WORKER_GIT_CONFIG:
-        env[f"GIT_CONFIG_KEY_{n}"], env[f"GIT_CONFIG_VALUE_{n}"] = key, value
-        n += 1
-    env["GIT_CONFIG_COUNT"] = str(n)
-    return env
+    return git_config_env(env, _WORKER_GIT_CONFIG)
 
 
 def _worker_scratch(ctx, group: GroupConfig, number: int) -> tuple[Path, Path]:

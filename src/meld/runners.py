@@ -13,6 +13,7 @@ from pathlib import Path
 from meld.adapters import Adapter, LaunchSpec
 from meld.assemble import BoardError, find_active_milestone
 from meld.atomic import write_atomic
+from meld.gitops import ROLE_CREDENTIAL_HELPER, git_config_env
 from meld.config import GroupConfig, Party, extra_env
 from meld.dispatch import DispatchError
 from meld.github import GitHubError
@@ -62,8 +63,11 @@ class RoleProcess:
 def role_env(ctx, group: GroupConfig, role: str, *, base_env: dict | None = None) -> dict[str, str]:
     env = dict(os.environ if base_env is None else base_env)
     env.update(extra_env(group))   # the group's own variables (a model endpoint, say) under its identity, never over it
-    env.update({"MELD_GROUP": group.name, "MELD_ROLE": role, "MELD_HOME": str(ctx.store.home)})
-    return env
+    env.update({"MELD_GROUP": group.name, "MELD_ROLE": role, "MELD_HOME": str(ctx.store.home), "GIT_TERMINAL_PROMPT": "0"})
+    # The role's own git in the clone authenticates as the group (plan 43): the machine's helpers are cleared and one
+    # that asks `meld token` takes their place, so a `git fetch` the orchestrator runs to read the current code works
+    # on a private repository (the scratch product's roles got "repository not found" from every git call they made).
+    return git_config_env(env, (("credential.helper", ""), ("credential.helper", ROLE_CREDENTIAL_HELPER)))
 
 
 def launch_role(ctx, group: GroupConfig, adapter: Adapter, role: str, *, base_env: dict | None = None, clock=time.monotonic,

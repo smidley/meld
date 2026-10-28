@@ -621,6 +621,18 @@ def stop(ctx: click.Context, group: str, grace: float) -> None:
 
 @main.command()
 @click.pass_context
+def token(ctx: click.Context) -> None:
+    """Print the calling group's current GitHub credential, bare, for the role's own git credential helper (plan 43):
+    an App group's installation token is re-minted when it is about to expire, a PAT group's is its token. Only a
+    role may ask; a worker is refused like every other verb and a human has no group token to print."""
+    c = _load(ctx)
+    if not c.party.group:
+        raise click.ClickException("only a group's orchestrator or PM has a token to print")
+    click.echo(_guard(lambda: c.gh.token) or "", nl=False)
+
+
+@main.command()
+@click.pass_context
 def ps(ctx: click.Context) -> None:
     """Each group's supervisor and roles as the local records describe them -- alive, dead or unknown, with the reason --
     and each role's freeze. Reads $MELD_HOME only; nothing is asked of GitHub."""

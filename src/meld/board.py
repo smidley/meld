@@ -506,6 +506,13 @@ class Board:
         newest = max(asks, key=lambda c: c.id)
         return None if any(self.answers(c, newest) for c in self.comments) else newest
 
+    def answered_since(self, issue: int, at: str | None) -> bool:
+        """A listed human posted `PROVIDED`/`RESOLVED #issue` after instant `at` (plan 60): the person's decision after a build
+        that the attempt budget stopped. The maze's #4 hit the cap on three builds that all ran before its dependency merged,
+        and nothing let a person clear it."""
+        answer = self.human_answer(issue)
+        return answer is not None and (not at or answer.created_at > at)
+
     def needs_human_answered(self, issue: int) -> bool:
         """A listed human answered after the newest `NEEDS-HUMAN #issue` -- the condition that unlocks a needs-human or
         held issue (spec 8, 14). An ask must exist: a `meld:needs-human` label with nothing behind it never

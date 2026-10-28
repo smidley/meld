@@ -492,7 +492,9 @@ def _dispatch_build(ctx, board: Board, actor: Actor, number: int, adapter: Adapt
                             timeout=timeout, kind="build", number=number, when=when, env=env, identity=git_identity(ctx, group))
     previous = board.run_for(group.name, number)
     # Plan 55: the attempt count carries over from the last build record on this issue; a capacity stop was a pause, not an attempt.
-    attempt = 1 if previous is None or previous.kind != "build" else (previous.attempt if previous.outcome == "capacity" else previous.attempt + 1)
+    # Plan 60: a person's answer on the issue after the last build starts the count again.
+    attempt = (1 if previous is None or previous.kind != "build" or board.answered_since(number, previous.ended_at or previous.started_at)
+               else (previous.attempt if previous.outcome == "capacity" else previous.attempt + 1))
     record = RunRecord(group=group.name, issue=number, kind="build", pr=None, pid=pid, started_at=_iso(when), worktree=str(wt),
                        log_path=str(log_path), model=issue.model or "", effort=issue.effort or "",
                        tier=ctx.models.tier_of(group.cli, issue.model or "") or "medium", milestone=board.milestone, alive=True,

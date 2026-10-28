@@ -904,3 +904,12 @@ def test_a_build_record_counts_its_attempt_and_the_store_keeps_it_and_the_cooldo
     third = dispatch(ctx, 11, adapter=FakeAdapter(script=DONE_SCRIPT), now=NOW)
     wait_for_exit(third["pid"])
     assert json.loads(rec_path.read_text())["attempt"] == 2
+    # plan 60: a person's answer on the issue after that build starts the count again
+    data = json.loads(rec_path.read_text())
+    data.update({"collected": True, "outcome": "blocked", "ended_at": "2026-09-03T10:30:00Z"})
+    rec_path.write_text(json.dumps(data))
+    fake.route("GET", R + "issues/10/comments", fixture("comments_10.json") + [
+        {"id": 9001, "user": {"login": "empowerScott"}, "created_at": "2026-09-03T10:40:00Z", "body": "[human] RESOLVED #11\n\ntry again"}])
+    fourth = dispatch(ctx, 11, adapter=FakeAdapter(script=DONE_SCRIPT), now=NOW)
+    wait_for_exit(fourth["pid"])
+    assert json.loads(rec_path.read_text())["attempt"] == 1

@@ -49,7 +49,7 @@ from meld.roster import WorkerType, roster
 from meld.rules import Actor, Refusal, Verb, issue_refusal, pr_refusal, reap_rule, review_concern
 from meld.state import pid_alive, proc_start_of
 from meld.status import build_status
-from meld.transcript import Tail, render, sweep_logs
+from meld.transcript import Tail, capacity_text, render, sweep_logs
 
 WORKER_PROMPT = ("Read .meld-brief.md in the current directory and carry it out exactly. "
                  "When you finish, write .meld-result.json as the brief instructs, then stop.")
@@ -698,12 +698,22 @@ def _collect_build(ctx, board: Board, group: GroupConfig, rec: RunRecord, issue,
         commits = commits_ahead(wt, f"origin/{ctx.cfg.default_branch}")
         if not commits:
             reason = "worker reported done but made no commits"
+    if reason is not None and result is None and not rec.timed_out:
+        busy = capacity_text(Path(rec.log_path), ctx.adapter(), _iso(when))
+        if busy:
+            # Plan 50: the model was at capacity (the first real run's codex worker on #3 died of "Selected model is at
+            # capacity"). Not the worker's failure: the issue stays in progress, nothing counts against the rubric, and
+            # `dispatch` is legal again after CAPACITY_RETRY_SECONDS with the same tags.
+            ctx.gh.create_comment(number, f"Meld: `{group.name}` worker on #{number} stopped because the model was at capacity: {busy}. "
+                                          f"Not a failure; the issue stays in progress and the next build retries the same tags after a short pause.")
+            ctx.store.write_run(replace(rec, collected=True, outcome="capacity", ended_at=_iso(when)))
+            return {"collected": number, "outcome": "capacity", "reason": busy}
     if reason is not None:
         _swap_labels(ctx, number, BLOCKED, (IN_PROGRESS,))
         summary = f"\n\nWorker summary: {result.summary}" if result else ""
         ctx.gh.create_comment(number, f"Meld: `{group.name}` worker did not complete #{number}: {reason}.{summary}\n\n"
                                       f"Last {ctx.cfg.worker_log_tail_lines} log events:\n\n{fenced(tail)}")
-        ctx.store.write_run(replace(rec, collected=True, outcome="failed"))
+        ctx.store.write_run(replace(rec, collected=True, outcome="failed", ended_at=_iso(when)))
         return {"collected": number, "outcome": "failed", "reason": reason}
     assert result is not None
     existing = board.pr_for_issue(number)

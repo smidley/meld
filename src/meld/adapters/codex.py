@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from meld.adapters.base import LaunchSpec, is_limit, limit_event, open_log, parse_doc, popen_detached, raw_event, scan_skills
+from meld.adapters.base import LaunchSpec, capacity_event, is_capacity, is_limit, limit_event, open_log, parse_doc, popen_detached, raw_event, scan_skills
 from meld.roster import WorkerType
 from meld.transcript import Event, cap
 
@@ -153,7 +153,11 @@ class CodexAdapter:
             message = str(error.get("message", "turn failed"))
             if is_limit(message):
                 return limit_event(now, message)
+            if is_capacity(message):
+                return capacity_event(now, message)   # "Selected model is at capacity": a pause and the same call again (plan 50)
             return [Event(seq=0, at=now, kind="cli_error", ok=False, text=cap(message))]
+        if kind == "error" and is_capacity(doc.get("message")):
+            return capacity_event(now, str(doc.get("message")))
         if kind in ("item.started", "item.completed", "item.updated"):
             item = doc.get("item") if isinstance(doc.get("item"), dict) else {}
             return _item(kind, item, now, stripped)

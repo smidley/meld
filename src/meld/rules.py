@@ -118,6 +118,18 @@ def _claim(board: Board, cfg: Config, actor: Actor, issue: Issue, models: ModelR
     return None
 
 
+CAPACITY_RETRY_SECONDS = 60
+
+
+def _plus_seconds(iso: str, seconds: int) -> str:
+    from datetime import datetime, timedelta, timezone
+    try:
+        then = datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return iso
+    return (then + timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _dispatch(board: Board, cfg: Config, actor: Actor, issue: Issue, models: ModelRegistry) -> str | None:
     if board.halted:
         return "HALT is in effect"
@@ -134,6 +146,11 @@ def _dispatch(board: Board, cfg: Config, actor: Actor, issue: Issue, models: Mod
     run = board.run_for(group.name, issue.number)
     if run is not None and (run.alive or not run.collected):
         return "a worker run already exists for this issue (running or uncollected)"
+    if run is not None and run.kind == "build" and run.outcome == "capacity" and run.ended_at and board.now:
+        # Plan 50: the model was at capacity; the same build is retried after a short pause, never re-tagged for it.
+        retry_at = _plus_seconds(run.ended_at, CAPACITY_RETRY_SECONDS)
+        if board.now < retry_at:
+            return f"the model was at capacity at {run.ended_at}; dispatch the same tags again from {retry_at}"
     if run is not None and run.kind == "build" and run.outcome == "failed" and run.model == issue.model and run.effort == issue.effort:
         # The rubric (section 9) says a retry after a failure raises effort a level or moves up a tier; the first live run's
         # PMs re-dispatched at the unchanged tag before the orchestrator had re-tagged (handoff residual 5). A request-changes

@@ -312,7 +312,8 @@ class RunRecord:
     head_sha: str = ""
     worker: str = ""            # the worker type the run was dispatched with (reviewer, security, auditor, ...)
     proc_start: str = ""        # `ps -o lstart=` for `pid` at launch, so a reused pid is not mistaken for the run (spec 22)
-    outcome: str | None = None  # how collect ended a build: done, no_change, failed, blocked, superseded (rules._dispatch reads it)
+    outcome: str | None = None  # how collect ended a build: done, no_change, failed, blocked, superseded, capacity (rules._dispatch reads it)
+    ended_at: str = ""          # when collect ended it (plan 50: a capacity stop is retried only after CAPACITY_RETRY_SECONDS)
 
     @property
     def finished(self) -> bool:

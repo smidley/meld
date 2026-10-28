@@ -216,3 +216,12 @@ def test_cli_config_merges_under_the_frameworks_own_settings(tmp_path: Path):
     argv = ClaudeAdapter().argv(s)
     settings = _json.loads(argv[argv.index("--settings") + 1])
     assert settings["model"] == "qwen3-coder" and settings["disableAllHooks"] is True and settings["env"]["GH_TOKEN"] == ""
+
+
+def test_parse_events_turns_an_overloaded_result_into_a_capacity_event():
+    """Plan 50: Anthropic's 529 overloaded_error is the model being busy, not the account out of quota."""
+    import json
+    line = json.dumps({"type": "result", "subtype": "error_during_execution", "is_error": True, "num_turns": 3,
+                       "result": 'API Error: 529 {"type":"overloaded_error","message":"Overloaded"}'})
+    (event,) = ClaudeAdapter().parse_events(line, NOW)
+    assert (event.kind, event.ok) == ("capacity", False) and "529" in event.text

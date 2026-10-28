@@ -9,7 +9,7 @@ from meld.config import Config, GroupConfig
 from meld.roster import WorkerType, roster
 
 ROLES = ("orchestrator", "pm")
-LAUNCH_REASONS = ("start", "exit", "crash", "recycle", "limit")
+LAUNCH_REASONS = ("start", "exit", "crash", "recycle", "limit", "capacity")
 _REASON_TEXT = {
     "start": "the supervisor has just started; this is the first session of this role",
     "exit": "the previous session of this role finished its turn and exited normally; this is routine",
@@ -17,6 +17,8 @@ _REASON_TEXT = {
     "recycle": "the previous session was recycled on the restart schedule (runners.restart_hours)",
     "limit": "the previous session ended because this account's quota ran out; the supervisor froze the "
              "role and is relaunching now that the window has passed",
+    "capacity": "the previous session ended because the model was at capacity (busy, not out of quota); the supervisor "
+                "paused a minute and is relaunching; nothing of yours failed",
 }
 COMMANDS = ("meld status", "meld wait --filter <kinds> [--timeout S]", "meld post VERB [REF] -m TEXT [--joint]", "meld claim N",
             "meld release N", "meld dispatch N [--kind review|audit] [--worker security]", "meld tick", "meld collect N",

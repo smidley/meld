@@ -427,3 +427,21 @@ def test_a_failed_collect_stamps_the_record_and_a_same_tag_retry_is_refused(tmp_
     assert rec["outcome"] == "failed" and rec["collected"] is True
     with pytest.raises(Refused, match="retry at the unchanged tag"):
         dispatch(ctx, 11, adapter=FakeAdapter(script=DONE_SCRIPT), now=NOW)
+
+
+def test_collect_treats_a_worker_that_died_of_model_capacity_as_a_pause_not_a_failure(tmp_path):
+    """Plan 50: the first real run's codex worker on #3 died of "Selected model is at capacity"; collect called it failed, the
+    rubric then demanded a re-tag, and the retry's real failure left the issue blocked. Now the issue stays in progress,
+    the run's outcome is `capacity`, and the comment says the build is retried."""
+    fake, ctx, repo, origin = make_product(tmp_path)
+    claim_issue_11(fake)
+    routes_for_labels(fake, 11)
+    out = dispatch(ctx, 11, adapter=FakeAdapter(script="print('Selected model is at capacity. Please try a different model.'); raise SystemExit(1)"), now=NOW)
+    wait_for_exit(out["pid"])
+    result = collect(ctx, 11, now=NOW)
+    assert result["outcome"] == "capacity" and "at capacity" in result["reason"]
+    assert ("POST", "", {"labels": ["meld:blocked"]}) not in label_calls(fake, 11)                 # still in progress
+    comment = issue_posts(fake, 11)[-1]
+    assert comment.startswith("Meld: `claude` worker on #11 stopped because the model was at capacity") and "Not a failure" in comment
+    rec = json.loads((tmp_path / "home" / "runs" / "claude" / "11.json").read_text())
+    assert rec["outcome"] == "capacity" and rec["ended_at"] == "2026-09-03T12:00:00Z"

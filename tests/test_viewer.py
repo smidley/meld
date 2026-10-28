@@ -1103,18 +1103,24 @@ def test_the_page_shows_narration_by_default_and_a_card_jumps_to_its_turn(tmp_pa
 
 
 def test_the_page_is_laid_out_as_header_decisions_conversation_work_and_a_tab_drawer(tmp_path):
-    """Plan 21: the page reads top to bottom as what is happening, what needs you, what the agents say beside the work
-    as lanes, and a tab row whose drawer holds the transcripts, pull requests, agreements, the bar and configuration."""
+    """Plan 21: the page reads top to bottom as what is happening, what needs you, the work as lanes and what the agents
+    say, and a tab row whose drawer holds the transcripts, pull requests, agreements, the bar and configuration. Plan 49
+    put the lanes above the conversation at full width, with the journey's step names visible on every card."""
     v, ctx, _ = viewer_for(tmp_path)
     html = get(v, "/").body.decode()
     for marker in ('id="headline"', 'id="supervisors"', 'id="decisions"', 'id="conversation"', 'id="work"', 'class="kanban"',
                    'id="tabs"', 'id="drawer"', 'data-tab="streams"', 'data-tab="act"', 'data-tab="config"', 'id="bar"', 'id="config"'):
         assert marker in html, marker
-    assert html.index('id="headline"') < html.index('id="decisions"') < html.index('id="conversation"') < html.index('id="work"') < html.index('id="tabs"')
+    assert html.index('id="headline"') < html.index('id="decisions"') < html.index('id="work"') < html.index('id="conversation"') < html.index('id="tabs"')
     js = get(v, "/static/app.js").body.decode()
     assert "LANES" in js and "issueCard" in js and "openTab" in js and 'openTab("act")' in js and "innerHTML" not in js
     css = get(v, "/static/app.css").body.decode()
     assert "#issues.kanban" in css and "#drawer.closed" in css and "system-ui" in css
+    assert "flex-direction: column" in css.split("#live {")[1].split("}")[0] and ".icard .jstep::before" in css and "font-size: 0" not in css.split(".icard .jstep {")[1].split("}")[0]
+    assert 'step.name === "pull request" ? "PR" : step.name' in js
+    # what appears or goes does so smoothly: sections carry .appears, the drawer slides, the dialog and <details> transition
+    assert "allow-discrete" in css and "@starting-style" in css and "transition: height 0.3s ease" in css.split("#drawer {")[1].split("}")[0]
+    assert html.count('class="hidden appears"') >= 2 and 'class="card appears"' in html and '"icard appears"' in js
 
 
 def test_the_page_is_guided_in_plain_words_and_follows_the_conversation(tmp_path):

@@ -41,8 +41,7 @@ def inbox(board: Board, cfg: Config, now: datetime) -> dict:
         if i.status != "needs_human":
             continue
         asks = [c for c in comments if c.header.verb == "NEEDS-HUMAN" and c.header.ref == f"#{i.number}"]
-        last_id = asks[-1].id if asks else 0
-        if asks and _later_human(comments, last_id, ("PROVIDED", "RESOLVED"), f"#{i.number}"):
+        if asks and any(board.answers(c, asks[-1]) for c in comments):   # answered by a person, or withdrawn by the group that asked (plan 52)
             continue
         needs_human.append({"issue": i.number, "ref": f"#{i.number}", "title": i.title, "age_minutes": _age_minutes(i.updated_at, now),
                             "ask": asks[-1].text if asks else "", "comment_id": asks[-1].id if asks else None})
@@ -55,7 +54,8 @@ def inbox(board: Board, cfg: Config, now: datetime) -> dict:
             continue
         raw = c.header.ref
         ref = f"#{raw}" if raw and raw.isdigit() else raw
-        if ref in covered or any(h.id > c.id and h.header.party.kind == "human" and h.header.verb != "ASK" and (ref is None or h.header.ref in (ref, raw)) for h in comments):
+        if ref in covered or any(h.id > c.id and h.header.party.kind == "human" and h.header.verb != "ASK" and (ref is None or h.header.ref in (ref, raw)) for h in comments) \
+                or any(board.answers(h, c) for h in comments):
             continue
         covered.add(ref)
         needs_human.append({"issue": None, "ref": ref, "party": c.header.party.label.strip("[]"), "title": (c.text.strip().splitlines() or [""])[0][:120],

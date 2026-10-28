@@ -460,6 +460,21 @@ class Board:
                    and c.header.verb in ("PROVIDED", "RESOLVED") and c.header.ref == f"#{issue}"]
         return max(answers, key=lambda c: c.id) if answers else None
 
+    @staticmethod
+    def answers(c: ParsedComment, ask: ParsedComment) -> bool:
+        """Does comment `c` close `ask`? A listed human's `PROVIDED`/`RESOLVED` on the same ref after it; or, when a bot posted
+        the ask, that bot's own group's `RESOLVED` after it (plan 52: an ask the agents answered among themselves no longer
+        waits on a person; a person's own `NEEDS-HUMAN` is cleared only by a person). Same ref, `9` and `#9` alike."""
+        if not (c.ok and c.header is not None and ask.header is not None and c.id > ask.id and c.header.verb in ("PROVIDED", "RESOLVED")):
+            return False
+        canon = lambda r: f"#{r}" if (r or "").isdigit() else r   # noqa: E731
+        if canon(c.header.ref) != canon(ask.header.ref):
+            return False
+        if c.header.party.kind == "human":
+            return True
+        return (c.header.verb == "RESOLVED" and ask.header.party.kind != "human" and c.header.party.group is not None
+                and c.header.party.group == ask.header.party.group)
+
     def open_ask(self, ref: str | None) -> ParsedComment | None:
         """The newest `NEEDS-HUMAN` on `ref` that no listed human has answered since (`PROVIDED`/`RESOLVED` on the same
         ref, newer by id), else None. `9` and `#9` are the same ref. Plan 41: the scratch product's three parties posted
@@ -472,9 +487,7 @@ class Board:
         if not asks:
             return None
         newest = max(asks, key=lambda c: c.id)
-        answered = any(c.ok and c.header is not None and c.header.party.kind == "human" and c.header.verb in ("PROVIDED", "RESOLVED")
-                       and same(c) and c.id > newest.id for c in self.comments)
-        return None if answered else newest
+        return None if any(self.answers(c, newest) for c in self.comments) else newest
 
     def needs_human_answered(self, issue: int) -> bool:
         """A listed human answered after the newest `NEEDS-HUMAN #issue` -- the condition that unlocks a needs-human or
@@ -483,11 +496,17 @@ class Board:
         ever received a human `PROVIDED`/`RESOLVED`, a hold added later (a hand-set label, or one whose ask failed to
         post) read as already authorized -- `dispatch` was legal and the next `tick` swapped the label straight back.
         A PM's, an orchestrator's, or a human's own `NEEDS-HUMAN #issue` is what stamps a hold."""
-        answer = self.human_answer(issue)
-        if answer is None:
+        asks = [c for c in self.comments if c.ok and c.header is not None and c.header.verb == "NEEDS-HUMAN" and c.header.ref == f"#{issue}"]
+        if not asks:
             return False
-        asks = [c.id for c in self.comments if c.ok and c.header is not None and c.header.verb == "NEEDS-HUMAN" and c.header.ref == f"#{issue}"]
-        return bool(asks) and answer.id > max(asks)
+        # A person's own hold is cleared only by a person, whatever a bot asked or withdrew since (plan 52).
+        human_asks = [c for c in asks if c.header.party.kind == "human"]
+        if human_asks:
+            answer = self.human_answer(issue)
+            if answer is None or answer.id < max(c.id for c in human_asks):
+                return False
+        newest = max(asks, key=lambda c: c.id)
+        return any(self.answers(c, newest) for c in self.comments)
 
     def run_for(self, group: str, issue: int) -> RunRecord | None:
         return self.runs.get(group, {}).get(issue)

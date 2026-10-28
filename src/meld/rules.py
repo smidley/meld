@@ -745,6 +745,23 @@ def agreement_post_verbs(board: Board, cfg: Config, actor: Actor, ref: str) -> l
     return out
 
 
+def withdraw_rule(board: Board, actor: Actor, ref: str | None) -> str | None:
+    """Why a group may not post `RESOLVED` on `ref`, or None: a group's `RESOLVED` withdraws its own open `NEEDS-HUMAN`
+    (plan 52: the agents answered it among themselves, so it no longer waits on a person), and nothing else. A person's
+    own ask, another group's ask, or a ref with no open ask is refused."""
+    if actor.is_human:
+        return None
+    standing = board.open_ask(ref)
+    if standing is None:
+        return f"{ref or 'this'} has no open NEEDS-HUMAN to withdraw"
+    if standing.header.party.kind == "human":
+        return f"the open NEEDS-HUMAN on {standing.header.ref} is a person's own; only a person clears it"
+    if standing.header.party.group != actor.group:
+        return (f"the open NEEDS-HUMAN on {standing.header.ref} is {standing.header.party.label}'s; only that group may withdraw it "
+                f"(tell them, or wait for a person)")
+    return None
+
+
 def legal_agreement_verbs(board: Board, cfg: Config, actor: Actor, ref: str) -> list[str]:
     """The agreement-ref actions `actor` may take on `ref` right now, in the CLI's spelling: the post verbs of the round
     first, then the actions that close it."""

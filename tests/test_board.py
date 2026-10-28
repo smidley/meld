@@ -337,3 +337,23 @@ def test_an_unterminated_fence_is_inert_so_declarations_never_vanish():
     rewritten = replace_section(body, "Scope", ["src/meld/new.py"])
     assert rewritten.count("## Scope") == 1 and body_section(rewritten, "Scope") == ("src/meld/new.py",)
     assert fenced_lines(["```", "## Scope", "```", "x"]) == frozenset({0, 1, 2}) and fenced_lines(["```", "## Scope"]) == frozenset()
+
+
+def test_the_group_that_asked_may_withdraw_its_own_ask_but_a_persons_hold_stays(tmp_path):
+    """Plan 52: the maze run's codex PM asked the owner to restore a browser service, codex's own orchestrator restored it two
+    minutes later, and the ask still waited on the owner. The asking group's `RESOLVED` after its ask closes it; another
+    group's does not, and a person's own `NEEDS-HUMAN` is cleared only by a person."""
+    from tests.factories import mk_board, mk_comment, mk_issue
+    issue = mk_issue(3, status="needs_human", claimed_by="codex")
+    ask = mk_comment(60, "meld-codex-bot", "[codex:pm] NEEDS-HUMAN #3\n\nrestore the browser service", "2026-10-28T18:35:00Z")
+    withdrawn = mk_comment(61, "meld-codex-bot", "[codex] RESOLVED #3\n\nthe service is back at 127.0.0.1:9222", "2026-10-28T18:37:00Z")
+    other = mk_comment(62, "meld-claude-bot", "[claude] RESOLVED #3\n\nlooks fine from here", "2026-10-28T18:38:00Z")
+    assert mk_board(issues={3: issue}, comments=[ask]).needs_human_answered(3) is False and mk_board(issues={3: issue}, comments=[ask]).open_ask("#3").id == 60
+    assert mk_board(issues={3: issue}, comments=[ask, withdrawn]).needs_human_answered(3) is True and mk_board(issues={3: issue}, comments=[ask, withdrawn]).open_ask("3") is None
+    assert mk_board(issues={3: issue}, comments=[ask, other]).needs_human_answered(3) is False                 # not the asking group
+    hold = mk_comment(63, "empowerScott", "[human] NEEDS-HUMAN #3\n\nheld: delete", "2026-10-28T18:40:00Z")
+    again = mk_comment(64, "meld-codex-bot", "[codex:pm] NEEDS-HUMAN #3\n\nand now a credential", "2026-10-28T18:41:00Z")
+    gone = mk_comment(65, "meld-codex-bot", "[codex] RESOLVED #3\n\nnever mind the credential", "2026-10-28T18:42:00Z")
+    assert mk_board(issues={3: issue}, comments=[ask, withdrawn, hold, again, gone]).needs_human_answered(3) is False   # the person's hold stands
+    cleared = mk_comment(66, "empowerScott", "[human] RESOLVED #3\n\ngo ahead", "2026-10-28T18:43:00Z")
+    assert mk_board(issues={3: issue}, comments=[ask, withdrawn, hold, again, gone, cleared]).needs_human_answered(3) is True

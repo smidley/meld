@@ -146,14 +146,15 @@
       <p id="explain" class="hint"></p>
     </form>
   </div>
-  <details id="config" class="tabpane hidden">
-    <summary>Configuration</summary>
+  <div id="config" class="tabpane hidden">
+    <nav id="config-nav" aria-label="settings sections"></nav>
     <div id="config-fields"></div>
-    <div class="row">
+    <div id="config-foot">
       <button id="config-save" type="button">Save</button>
+      <span id="config-changes" class="dim"></span>
       <span id="config-result" class="dim"></span>
     </div>
-  </details>
+  </div>
 </section>
 </div>
 <template id="row">

@@ -1236,6 +1236,12 @@ def test_the_form_adds_a_group_for_another_ai(tmp_path):
         assert marker in js, marker
     css = get(v, "/static/app.css").body.decode()
     assert ".gcard" in css and ".gadd" in css and ".gcard.fresh" in css
+    # plan 59: the settings are sections -- a list on the left, one section at a time on the right -- each row carrying its key
+    # in the file; the foot counts the edits waiting for Save
+    html = get(v, "/").body.decode()
+    assert 'id="config-nav"' in html and 'id="config-changes"' in html and 'id="config-foot"' in html and "<details id=\"config\"" not in html
+    assert "function cfgSection(" in js and "function updateChanges(" in js and "function keyOf(" in js and 'loadConfig()' in js.split("function openTab(")[1].split("}")[0]
+    assert "#config-nav button.active" in css and ".cfg label .key" in css and ".cfg label.dirty > span" in css
     # the template the page builds, applied server-side: a gemini group with the catalogue's large model saves
     candidate = out["config"]
     for g in candidate["groups"].values():     # the fixture's own groups name a model the catalogue never had ("gpt-x")

@@ -1174,6 +1174,7 @@ function mapField(into, path, value, label, hint) {
   labelEl.className = "map";
   const span = text(document.createElement("span"), label);
   span.title = `${path} — ${hint}`;
+  span.append(keyOf(path));
   const input = document.createElement("textarea");
   input.rows = Math.max(2, Object.keys(value || {}).length + 1);
   input.placeholder = hint;
@@ -1211,6 +1212,7 @@ function field(into, path, value, { readonly = false, choices = null, label = pa
   const labelEl = document.createElement("label");
   const span = text(document.createElement("span"), label);
   span.title = path;
+  span.append(keyOf(path));   // plan 59: the key in the file, under the words
   labelEl.append(span);
   let input;
   if (choices) {
@@ -1297,20 +1299,80 @@ const GROUP_WORDS = { cli: "CLI (which AI)", bot: "GitHub login it posts as", to
                       concurrency: "builds at once", review_concurrency: "reviews or audits at once", git_name: "git author name", git_email: "git author email" };
 const newGroups = new Set();   // groups added on this page and not yet saved: their identity is still editable
 
-function sectionHead(into, heading, why, raw) {
+function keyOf(path) {
+  const k = text(document.createElement("small"), path.replace(/^groups\.[^.]+\./, ""));
+  k.className = "key";
+  return k;
+}
+
+// plan 59: the settings as sections -- one list on the left, one section shown at a time on the right -- instead of
+// sixty fields in three columns. The section stays chosen across re-renders and saves.
+let configSection = null;
+function cfgSection(into, id, heading, why, raw, color) {
+  const sec = document.createElement("section");
+  sec.className = "cfg";
+  sec.dataset.section = id;
   const h = text(document.createElement("h3"), heading);
   h.title = raw;
-  into.append(h);
+  if (color) h.style.color = color;
+  sec.append(h);
   if (why) {
     const p = text(document.createElement("p"), why);
-    p.className = "explain dim";
-    into.append(p);
+    p.className = "explain";
+    sec.append(p);
   }
+  into.append(sec);
+  const b = document.createElement("button");
+  b.type = "button";
+  b.dataset.section = id;
+  b.append(text(document.createElement("span"), heading), text(document.createElement("span"), ""));
+  b.lastChild.className = "n";
+  if (color) b.firstChild.style.color = color;
+  b.addEventListener("click", () => activateSection(id));
+  el("config-nav").append(b);
+  return sec;
 }
+function navHead(words) {
+  const h = text(document.createElement("div"), words);
+  h.className = "navhead";
+  el("config-nav").append(h);
+}
+function activateSection(id) {
+  const ids = [...document.querySelectorAll("#config-fields .cfg")].map((s) => s.dataset.section);
+  configSection = ids.includes(id) ? id : ids[0] || null;
+  for (const s of document.querySelectorAll("#config-fields .cfg")) s.classList.toggle("active", s.dataset.section === configSection);
+  for (const b of document.querySelectorAll("#config-nav button")) b.classList.toggle("active", b.dataset.section === configSection);
+}
+function controlValue(c) { return c.type === "checkbox" ? String(c.checked) : c.value; }
+function markOriginals() {
+  for (const c of document.querySelectorAll("#config-fields input, #config-fields select, #config-fields textarea")) c.dataset.original = controlValue(c);
+  updateChanges();
+}
+function updateChanges() {
+  // Each edited row is marked, each section's list entry counts its edits, and the foot says how many wait for Save.
+  const per = new Map();
+  let total = 0;
+  for (const c of document.querySelectorAll("#config-fields input, #config-fields select, #config-fields textarea")) {
+    if (!("original" in c.dataset)) continue;
+    const dirty = controlValue(c) !== c.dataset.original;
+    c.closest("label")?.classList.toggle("dirty", dirty);
+    if (dirty) {
+      total++;
+      const id = c.closest(".cfg")?.dataset.section;
+      per.set(id, (per.get(id) || 0) + 1);
+    }
+  }
+  for (const b of document.querySelectorAll("#config-nav button")) text(b.querySelector(".n"), per.has(b.dataset.section) ? String(per.get(b.dataset.section)) : "");
+  text(el("config-changes"), total ? `${total} change${total === 1 ? "" : "s"} to save` : "no changes");
+}
+el("config-fields").addEventListener("input", updateChanges);
+el("config-fields").addEventListener("change", updateChanges);
 
 function renderConfig() {
   const into = el("config-fields");
   into.replaceChildren();
+  el("config-nav").replaceChildren();
+  navHead("Meld");
   const cfg = configState.config;
   const order = [...Object.keys(WORDS).filter((t) => t in cfg), ...Object.keys(cfg).filter((t) => t !== "groups" && !(t in WORDS))];
   for (const table of order) {
@@ -1321,19 +1383,22 @@ function renderConfig() {
     const entries = Object.entries(values).filter(([, value]) => !isTable(value));
     if (!entries.length) continue;
     const [heading, why, labels] = WORDS[table] || [`[${table}]`, "", {}];
-    sectionHead(into, heading, why, `[${table}]`);
+    const sec = cfgSection(into, table, heading, why, `[${table}]`);
     for (const [key, value] of entries) {
-      field(into, `${table}.${key}`, value, { readonly: READONLY_TABLES.includes(table), label: labels[key] || key });
+      field(sec, `${table}.${key}`, value, { readonly: READONLY_TABLES.includes(table), label: labels[key] || key });
     }
   }
-  sectionHead(into, "The AIs", "each group is one AI: a CLI on this machine, posting to GitHub as its own login. Add one for another AI once its CLI is "
-                               + "installed and logged in; remove one to stop configuring it. A running group keeps its old settings until it restarts.", "[groups]");
+  navHead("The AIs");
   for (const [name, group] of Object.entries(cfg.groups || {})) renderGroup(into, name, group);
-  addGroupRow(into);
+  addGroupRow(cfgSection(into, "add", "Add an AI", "each group is one AI: a CLI on this machine, posting to GitHub as its own login. Add one for another AI once its CLI is "
+                               + "installed and logged in; remove one to stop configuring it. A running group keeps its old settings until it restarts.", "[groups]"));
+  markOriginals();
+  activateSection(configSection);
 }
 
 function renderGroup(into, name, group) {
   const fresh = newGroups.has(name);
+  into = cfgSection(into, `group:${name}`, name, "", `[groups.${name}]`, colorFor("group", name));
   const card = document.createElement("div");
   card.className = "gcard" + (fresh ? " fresh" : "");
   card.dataset.group = name;
@@ -1808,7 +1873,7 @@ function openTab(name) {
   for (const pane of el("drawer").querySelectorAll(".tabpane")) pane.classList.toggle("hidden", pane.id !== name);
   el("drawer").classList.toggle("closed", !name);
   el("drawer-close").classList.toggle("hidden", !name);
-  if (name === "config") el("config").open = true;
+  if (name === "config" && !configState) loadConfig();
   if (name === "streams") scrollColumns();
 }
 for (const b of document.querySelectorAll("#tabs .tab")) {
@@ -1849,7 +1914,6 @@ document.addEventListener("click", (e) => {
   el("ref").value = b.dataset.ref || "";
   el(FIELDS[b.dataset.action]?.includes("text") ? "text" : "run").focus();
 });
-el("config").addEventListener("toggle", () => { if (el("config").open && !configState) loadConfig(); });
 el("config-save").addEventListener("click", saveConfig);
 
 // ---- setup mode (plan 32): until this repository is set up, the page is a wizard, not a board ----

@@ -393,31 +393,41 @@ button:disabled { opacity: 0.45; cursor: default; }
    and without this the result line pushes the bar wide instead of eliding. */
 #result { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* ---- configuration (the drawer's last tab) ---- */
-#config { padding: 8px var(--gutter); overflow-y: auto; }
-#config > summary { cursor: pointer; padding: 2px 0; }
-#config-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(24rem, 1fr)); gap: 4px 14px;
-  max-height: 34vh; overflow-y: auto; padding: 4px 0; }
-#config-fields h3 { grid-column: 1 / -1; margin: 10px 0 0; font-size: 13px; color: var(--accent); }
-#config-fields .explain { grid-column: 1 / -1; margin: 0 0 4px; font: var(--t-meta); }
-/* one card per AI group; a new one is outlined until saved, a removed one is struck through until Save drops it */
-.gcard { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fill, minmax(24rem, 1fr)); gap: 4px 14px;
-         border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; margin: 4px 0; }
-.gcard.fresh { border-color: var(--accent); }
+/* ---- configuration (the drawer's last tab; plan 59): a section list on the left, one section at a time on the right,
+   each setting a row with its words, its key in the file and its control; a sticky foot with Save and the change count ---- */
+#config { display: grid; grid-template-columns: 13rem minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; height: 100%; padding: 0; overflow: hidden; }
+#config-nav { grid-row: 1 / -1; display: flex; flex-direction: column; gap: 2px; padding: var(--s3) var(--s2); border-right: 1px solid var(--line); overflow-y: auto; }
+#config-nav .navhead { font: var(--t-meta); color: var(--fg-3); padding: var(--s3) var(--s3) var(--s1); text-transform: uppercase; letter-spacing: 0.04em; }
+#config-nav .navhead:first-child { padding-top: 0; }
+#config-nav button { display: flex; gap: var(--s2); align-items: baseline; text-align: left; font: var(--t-body); font-size: 13px; color: var(--fg-2); background: transparent; border: 0; border-radius: var(--r-ctl); padding: var(--s1) var(--s3); cursor: pointer; }
+#config-nav button:hover { color: var(--fg); background: var(--bg-2); }
+#config-nav button.active { color: var(--fg); background: var(--bg-3); }
+#config-nav button .n { margin-left: auto; font: var(--t-meta); color: var(--attn); }
+#config-fields { overflow-y: auto; padding: var(--s3) var(--s5) var(--s5); }
+.cfg { display: none; max-width: 64rem; }
+.cfg.active { display: block; }
+.cfg h3 { margin: 0; font: var(--t-title); color: var(--fg); }
+.cfg .explain { margin: var(--s1) 0 var(--s3); font: var(--t-body); color: var(--fg-2); max-width: 64ch; }
+.cfg label { display: grid; grid-template-columns: minmax(12rem, 1fr) minmax(12rem, 2fr); gap: var(--s2) var(--s4); align-items: center; padding: var(--s2) 0; border-top: 1px solid var(--line); }
+.cfg label > span { display: flex; flex-direction: column; gap: 2px; min-width: 0; line-height: 1.25; }
+.cfg label .key { font: var(--t-mono); font-size: 11px; color: var(--fg-3); }
+.cfg label.dirty > span { color: var(--attn); }
+.cfg input[type="text"], .cfg input[type="number"], .cfg select { width: 100%; max-width: 22rem; justify-self: start; min-width: 0; }
+.cfg input[type="checkbox"] { justify-self: start; }
+.cfg label.map { align-items: start; }
+.cfg textarea { width: 100%; resize: vertical; }
+#config-fields label.unknown > span { color: var(--bad); }
+/* one section per AI group; a new one is marked until saved, a removed one is struck through until Save drops it */
+.gcard { display: block; border: 0; padding: 0; margin: 0; }
+.gcard.fresh { border-left: 3px solid var(--accent); padding-left: var(--s3); }
 .gcard.removed { opacity: 0.45; text-decoration: line-through; }
-.gcard .ghead { grid-column: 1 / -1; display: flex; gap: 8px; align-items: baseline; }
+.gcard .ghead { display: flex; gap: var(--s2); align-items: baseline; padding: 0 0 var(--s2); }
 .gcard .ghead span:not(.strong) { color: var(--fg-3); font: var(--t-meta); }
 .gcard .ghead button { margin-left: auto; }
+.gadd { display: flex; gap: var(--s2); align-items: center; flex-wrap: wrap; margin: var(--s2) 0; }
 .gadd button { margin-left: 0; }
-.gadd { grid-column: 1 / -1; display: flex; gap: 8px; align-items: center; margin: 4px 0; }
-#config-fields label { display: grid; grid-template-columns: minmax(9rem, 1.5fr) minmax(7rem, 1fr); gap: 6px; align-items: center; }
-/* Same treatment as #result/.rid/.rwhat: an unclipped grid item takes its content's own width, so a long
-   path (groups.claude.orchestrator.model) spilled into the input beside it instead of eliding. The full path
-   stays on hover (field()'s own title=). */
-#config-fields label > span { min-width: 0; white-space: normal; line-height: 1.2; }
-#config-fields input, #config-fields select { min-width: 0; }
-#config-fields label.map { grid-column: 1 / -1; grid-template-columns: minmax(9rem, 0.6fr) minmax(7rem, 2.4fr); align-items: start; }
-#config-fields textarea { resize: vertical; }
+#config-foot { grid-column: 2; display: flex; gap: var(--s3); align-items: center; padding: var(--s2) var(--s5); border-top: 1px solid var(--line); background: var(--bg-1); }
+#config-foot #config-result { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* A field GET named as a key the schema does not define: it blocks every save until it is removed from the
    file by hand, so it is marked here rather than sitting among the settings looking editable. */
 #config-fields label.unknown > span { color: var(--bad); }

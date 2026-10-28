@@ -60,6 +60,10 @@
   <ul id="task-tree" class="hidden"></ul>
 </dialog>
 <main id="live">
+  <section id="work" class="column">
+    <h2><span class="who">Work</span> <span class="hint">every issue of the milestone, left to right from to-do to done; each card shows how far along its issue is; a button fills the action bar, nothing runs until Run</span></h2>
+    <div id="issues" class="kanban"></div>
+  </section>
   <section id="conversation" class="column" data-filter="quiet">
     <h2><span class="who">Conversation</span> <span class="hint">what the agents are saying to each other</span>
       <button type="button" id="newest" class="hidden" title="You scrolled up; press to follow the newest turn again.">↓ newest</button>
@@ -71,10 +75,6 @@
         <option value="people">decisions and your messages</option>
       </select></h2>
     <ol id="turns" class="events"></ol>
-  </section>
-  <section id="work" class="column">
-    <h2><span class="who">Work</span> <span class="hint">every issue of the milestone, from to-do to done; a button fills the action bar, nothing runs until Run</span></h2>
-    <div id="issues" class="kanban"></div>
   </section>
 </main>
 <nav id="tabs">

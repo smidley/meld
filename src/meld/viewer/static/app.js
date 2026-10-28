@@ -284,7 +284,7 @@ function issueCard(i, lane) {
       const seg = document.createElement("span");
       seg.className = `jstep ${step.state}`;
       seg.title = `${step.name}${step.detail ? `: ${step.detail}` : ""}`;
-      text(seg, step.name);
+      text(seg, step.name === "pull request" ? "PR" : step.name);   // the label is visible now (plan 49); the long one is the tooltip
       strip.append(seg);
     }
     card.append(strip);

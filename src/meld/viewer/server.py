@@ -278,6 +278,11 @@ class Viewer:
         if self.setup is None:
             return _json(200, {"mode": "board"})
         if req.method == "GET":
+            # The App-install callbacks start each group as it is installed, so by the time the page polls after the
+            # last install every group may already be running with nobody having pressed "Start the AIs" -- the one
+            # path that used to adopt the board. The page then reloaded forever (plan 45, the first real run).
+            if self.ctx is None and self._all_started():
+                self._adopt_context()
             return _json(200, {"mode": "board" if self.ctx is not None else "setup", **self.setup.facts()})
         try:
             body = json.loads(req.body or b"")
@@ -309,6 +314,11 @@ class Viewer:
             return _json(400, {"error": str(e)})
         status, html = flow.handle("/" + page if page else "/", {k: v[0] for k, v in req.query.items() if v})
         return Response(status, html.encode(), "text/html; charset=utf-8")
+
+    def _all_started(self) -> bool:
+        """Every group the wizard configured has a supervisor started without error."""
+        groups = (self.setup.created or {}).get("groups") or [] if self.setup is not None else []
+        return bool(groups) and all(g in self.setup.started and not self.setup.started[g].get("error") for g in groups)
 
     def _adopt_context(self) -> bool:
         """Once the file is written and the groups are started, become the board: load a context and serve as always."""

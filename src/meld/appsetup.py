@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import urlencode
 
-from meld.appauth import API, AppAuthError, _bearer, _http, jwt_for_app
+from meld.appauth import AppAuthError, _bearer, _http, api_base, jwt_for_app
 from meld.atomic import write_atomic
 from meld.config import Config, ConfigError, dumps
 
@@ -37,7 +37,7 @@ def manifest(name: str, repo: str, redirect_url: str, setup_url: str) -> dict:
 def convert_manifest(code: str, post: Callable[[str, dict[str, str], bytes | None], tuple[int, dict]] | None = None) -> dict:
     """The one-time code GitHub redirects back with becomes the App: id, slug, pem (and secrets this never stores)."""
     headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "meld"}
-    status, data = (post or (lambda u, h, b: _http("POST", u, h, b)))(f"{API}/app-manifests/{code}/conversions", headers, None)
+    status, data = (post or (lambda u, h, b: _http("POST", u, h, b)))(f"{api_base()}/app-manifests/{code}/conversions", headers, None)
     if status != 201 or not isinstance(data, dict) or not data.get("id") or not data.get("pem") or not data.get("slug"):
         raise AppAuthError(f"manifest conversion failed with HTTP {status}: {data.get('message', '') if isinstance(data, dict) else ''}")
     return {"id": int(data["id"]), "slug": str(data["slug"]), "pem": str(data["pem"]), "html_url": str(data.get("html_url", ""))}
@@ -45,7 +45,7 @@ def convert_manifest(code: str, post: Callable[[str, dict[str, str], bytes | Non
 
 def list_installations(app_id: int, pem: str, get=None, sign=None, now: int | None = None) -> list[dict]:
     jwt = jwt_for_app(app_id, pem, now=now, sign=sign)
-    status, data = (get or (lambda u, h: _http("GET", u, h, None)))(f"{API}/app/installations", _bearer(jwt))
+    status, data = (get or (lambda u, h: _http("GET", u, h, None)))(f"{api_base()}/app/installations", _bearer(jwt))
     if status != 200 or not isinstance(data, list):
         raise AppAuthError(f"GET /app/installations failed with HTTP {status}")
     return [d for d in data if isinstance(d, dict)]

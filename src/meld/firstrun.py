@@ -58,6 +58,7 @@ class SetupSession:
     doctor: Callable[[str], list[dict]] | None = None    # group -> that group's doctor checks, as dicts; None skips the check
     base_url: str = ""                                  # the viewer's origin, for the App redirects
     token: str = ""                                     # the viewer's token, carried through those redirects
+    home_for: Callable[[str], Path] | None = None      # repo -> that product's own state directory (plan 42); None keeps `home`
     created: dict | None = None
     flows: dict[str, AppSetup] = field(default_factory=dict)
     started: dict[str, dict] = field(default_factory=dict)
@@ -226,6 +227,8 @@ class SetupSession:
         for g in groups:
             if not GROUP_NAME_RE.match(g) or g in RESERVED_PARTY_NAMES:
                 raise SetupError(f"{g!r} cannot name a group")
+        if self.home_for is not None:
+            self.home = self.home_for(repo)   # keys, logs and runs for this product go under its own home from here on
         repository = self.ensure_repository(repo)
         if repository["created"] or repository.get("empty"):
             repository["push"] = self.ensure_pushed(repo, repository["default_branch"])

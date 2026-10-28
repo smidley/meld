@@ -240,3 +240,17 @@ def test_bare_meld_is_start_which_is_watch_here_and_the_wizard_elsewhere(tmp_pat
     assert v.ctx is None and v.setup is not None and v.setup.target_dir == empty and seen2["port"] == 8765
     assert v.setup.base_url == "http://127.0.0.1:4321" and v.setup.token == v.token
     assert result.output.strip() == f"http://127.0.0.1:4321/?t={v.token}" and opened2 == [result.output.strip()]
+
+
+def test_the_state_directory_follows_the_product_when_meld_home_is_unset(tmp_path, monkeypatch):
+    """Plan 42: `meld tail` names the home it looked in, so it shows `~/.meld/products/<owner>/<name>` for the configured
+    repository, and the explicit MELD_HOME when set."""
+    config = tmp_path / ".meld.toml"
+    config.write_text(PROJECT_TOML)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("MELD_HOME", raising=False)
+    result = CliRunner().invoke(main, ["--config", str(config), "tail", "--no-follow", "--run", "5"])
+    assert result.exit_code != 0 and str(tmp_path / ".meld" / "products" / "acme" / "widgets" / "runs") in result.output
+    monkeypatch.setenv("MELD_HOME", str(tmp_path / "elsewhere"))
+    result = CliRunner().invoke(main, ["--config", str(config), "tail", "--no-follow", "--run", "5"])
+    assert str(tmp_path / "elsewhere" / "runs") in result.output

@@ -113,6 +113,10 @@ body.setup > :not(#wizard) { display: none; }
 #budget-bars { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s4); }
 .bar { display: flex; align-items: center; gap: var(--s2); white-space: nowrap; }
 .bar .blabel { color: var(--fg-3); min-width: 7ch; }
+/* a budget bar never shrinks: WebKit shrinks a nested nowrap flex row below its content and the bars land on each other;
+   a bar that does not fit the line wraps to the next one instead */
+#budget-bars .bar { flex: 0 0 auto; }
+#bars > .bar { max-width: 100%; }
 .bar .track { flex: 0 0 8rem; height: 6px; background: var(--bg-3); border: 0; border-radius: 3px; overflow: hidden; }
 .bar .fill { height: 100%; width: 0; background: var(--ok); transition: width var(--d-fill) var(--ease); }
 .bar .fill.warn { background: var(--attn); }

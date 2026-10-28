@@ -46,6 +46,29 @@ def test_role_env_carries_identity_and_tokens(tmp_path):
     _, ctx, env = make(tmp_path)
     e = role_env(ctx, ctx.cfg.groups["claude"], "pm", base_env=env)
     assert e["MELD_GROUP"] == "claude" and e["MELD_ROLE"] == "pm" and e["MELD_TOKEN_CLAUDE"] == "tok-c" and e["MELD_HOME"] == str(tmp_path / "home")
+    # plan 43: the role's own git authenticates as the group through a helper that asks `meld token`, after the machine's helpers are cleared
+    pairs = [(e[f"GIT_CONFIG_KEY_{i}"], e[f"GIT_CONFIG_VALUE_{i}"]) for i in range(int(e["GIT_CONFIG_COUNT"]))]
+    assert pairs == [("credential.helper", ""), ("credential.helper", '!f() { echo username=x-access-token; echo "password=$(meld token)"; }; f')]
+    assert e["GIT_TERMINAL_PROMPT"] == "0"
+    e2 = role_env(ctx, ctx.cfg.groups["claude"], "pm", base_env={**env, "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "x.y", "GIT_CONFIG_VALUE_0": "z"})
+    assert e2["GIT_CONFIG_COUNT"] == "3" and e2["GIT_CONFIG_KEY_0"] == "x.y" and e2["GIT_CONFIG_KEY_2"] == "credential.helper"
+
+
+def test_cli_token_prints_the_groups_credential_bare_and_only_for_a_role(tmp_path, monkeypatch):
+    """Plan 43: `meld token` is what the role's git credential helper runs; the output is the token and nothing else."""
+    from tests.conftest import PROJECT_TOML, env_for, load_board1_routes
+    from tests.fakegh import FakeGh
+    (tmp_path / ".meld.toml").write_text(PROJECT_TOML)
+    fake = FakeGh()
+    load_board1_routes(fake)
+    fake.route("GET", "user", {"login": "empowerScott"})
+    monkeypatch.setattr(cli, "RUN", fake)
+    out = CliRunner().invoke(cli.main, ["--config", str(tmp_path / ".meld.toml"), "token"], env=env_for(tmp_path, role="orchestrator"))
+    assert out.exit_code == 0 and out.output == "tok-c"
+    out = CliRunner().invoke(cli.main, ["--config", str(tmp_path / ".meld.toml"), "token"], env=env_for(tmp_path, group=None))
+    assert out.exit_code != 0 and "only a group" in out.output
+    out = CliRunner().invoke(cli.main, ["--config", str(tmp_path / ".meld.toml"), "token"], env={**env_for(tmp_path), "MELD_WORKER": "1"})
+    assert out.exit_code != 0 and "tok-c" not in out.output
 
 
 def test_launch_role_builds_the_spec(tmp_path):

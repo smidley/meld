@@ -10,6 +10,25 @@ from typing import Callable
 RunFn = Callable[..., subprocess.CompletedProcess]
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _CREDENTIAL_HELPER = '!f() { echo username=x-access-token; echo "password=$MELD_PUSH_TOKEN"; }; f'
+# A role's own git (plan 43): the helper asks `meld token` for the group's current credential each time, so an App
+# group's hourly installation token is never stale in a session that lives for hours, and nothing is in the
+# environment to read. Workers never see this: their environment clears every helper (dispatch._WORKER_GIT_CONFIG)
+# and `meld token` refuses them like every other verb.
+ROLE_CREDENTIAL_HELPER = '!f() { echo username=x-access-token; echo "password=$(meld token)"; }; f'
+
+
+def git_config_env(env: dict[str, str], pairs) -> dict[str, str]:
+    """Append `pairs` to the GIT_CONFIG_KEY_n/VALUE_n list in `env` (git reads them as config after every file),
+    continuing any count the parent already set."""
+    try:
+        n = int(env.get("GIT_CONFIG_COUNT", "0"))
+    except ValueError:
+        n = 0
+    for key, value in pairs:
+        env[f"GIT_CONFIG_KEY_{n}"], env[f"GIT_CONFIG_VALUE_{n}"] = key, value
+        n += 1
+    env["GIT_CONFIG_COUNT"] = str(n)
+    return env
 
 
 class GitError(RuntimeError):

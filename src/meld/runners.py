@@ -20,7 +20,7 @@ from meld.github import GitHubError
 from meld.grammar import Header, compose
 from meld.prompts import ROLES, role_prompt
 from meld.state import liveness, pid_alive, proc_start_of
-from meld.transcript import Tail
+from meld.transcript import Tail, capacity_text
 
 ROLE_MAX_TURNS = 10000
 _MAX_BACKOFF = 300.0
@@ -32,6 +32,7 @@ _MAX_BACKOFF = 300.0
 # codex PM finished honest 50-second turns (`meld wait` returning early on board activity) and, told
 # "crash" each time, posted RESUMED on every relaunch.
 CLEAN_EXIT_SECONDS = 60.0
+CAPACITY_PAUSE_SECONDS = 60.0   # plan 50: a role whose model was at capacity is relaunched after this, not on the crash backoff
 # How long a freeze is ever believed, whatever instant the CLI's own prose named. A limit message is prose, and
 # one stray timestamp in it ("...you have reached your usage limit for GitHub API requests; the milestone closes
 # 2026-12-01T00:00:00Z") would otherwise freeze a role until December: the freeze is persisted, survives every
@@ -158,7 +159,8 @@ def processes(cfg, home: Path, *, alive: Callable[[int], bool] = pid_alive, star
         for r in ROLES:
             rec = read_record(role_run_path(home, g, r))
             roles[r] = {**liveness(rec, alive=alive, start_of=start_of), "frozen": read_record(freeze_path(home, g, r)),
-                        "launch_no": (rec or {}).get("launch_no")}   # how many times this role has been launched: 649 was invisible
+                        "launch_no": (rec or {}).get("launch_no"),   # how many times this role has been launched: 649 was invisible
+                        "reason": (rec or {}).get("reason")}         # why this launch happened (start, exit, crash, recycle, limit, capacity)
         out[g] = {"supervisor": liveness(read_record(supervisor_path(home, g)), alive=alive, start_of=start_of), "roles": roles}
     return out
 
@@ -463,7 +465,13 @@ def run_group(ctx, *, adapter: Adapter | None = None, once: bool = False, cycles
                 _freeze(ctx, group, role, resets_at=limited or None, now=now, text=limit_text(rp.log_path, adp, now))
                 return                           # do not relaunch; the next cycle re-checks the freeze
             lived = clock() - rp.started
-            if code == 0 and lived >= CLEAN_EXIT_SECONDS:
+            busy = capacity_text(rp.log_path, adp, now)
+            if busy:
+                # Plan 50: the model was at capacity (Codex: "Selected model is at capacity. Please try a different model.").
+                # Not a crash and not a limit: the same role comes back after a fixed pause, its restart count untouched.
+                restarts, reason = rp.restarts, "capacity"
+                _pause(CAPACITY_PAUSE_SECONDS)
+            elif code == 0 and lived >= CLEAN_EXIT_SECONDS:
                 restarts, reason = 0, "exit"
                 # Plan 39: a role is relaunched no sooner than one wait timeout after it was launched. A session that
                 # ends its turn early (a 45-second wait, or "nothing to do") would otherwise cost a full prompt every

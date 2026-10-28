@@ -118,6 +118,18 @@ def _claim(board: Board, cfg: Config, actor: Actor, issue: Issue, models: ModelR
     return None
 
 
+CAPACITY_RETRY_SECONDS = 60
+
+
+def _plus_seconds(iso: str, seconds: int) -> str:
+    from datetime import datetime, timedelta, timezone
+    try:
+        then = datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return iso
+    return (then + timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _dispatch(board: Board, cfg: Config, actor: Actor, issue: Issue, models: ModelRegistry) -> str | None:
     if board.halted:
         return "HALT is in effect"
@@ -134,6 +146,11 @@ def _dispatch(board: Board, cfg: Config, actor: Actor, issue: Issue, models: Mod
     run = board.run_for(group.name, issue.number)
     if run is not None and (run.alive or not run.collected):
         return "a worker run already exists for this issue (running or uncollected)"
+    if run is not None and run.kind == "build" and run.outcome == "capacity" and run.ended_at and board.now:
+        # Plan 50: the model was at capacity; the same build is retried after a short pause, never re-tagged for it.
+        retry_at = _plus_seconds(run.ended_at, CAPACITY_RETRY_SECONDS)
+        if board.now < retry_at:
+            return f"the model was at capacity at {run.ended_at}; dispatch the same tags again from {retry_at}"
     if run is not None and run.kind == "build" and run.outcome == "failed" and run.model == issue.model and run.effort == issue.effort:
         # The rubric (section 9) says a retry after a failure raises effort a level or moves up a tier; the first live run's
         # PMs re-dispatched at the unchanged tag before the orchestrator had re-tagged (handoff residual 5). A request-changes
@@ -701,9 +718,37 @@ def ask_rule(board: Board, actor: Actor, ref: str | None) -> str | None:
             f"wait for a listed human's PROVIDED or RESOLVED on it instead of asking again")
 
 
-def legal_agreement_verbs(board: Board, cfg: Config, actor: Actor, ref: str) -> list[str]:
-    """The agreement-ref actions `actor` may take on `ref` right now, in the CLI's spelling."""
+def agreement_post_verbs(board: Board, cfg: Config, actor: Actor, ref: str) -> list[str]:
+    """The `meld post` verbs `actor` may use on agreement ref `ref` now, lowercase: propose while there is no text, amend
+    under the cap, agree and dissent on text the actor has not agreed to, and `joint` for the proposer once the round
+    has agreed and no verified [joint] closes it. The same conditions `posting.post` enforces, so `legal` and the
+    refusal agree. Plan 47: `legal` listed only decide/plan actions, and the first real run's codex orchestrator read
+    the empty list as "I may not answer this amendment" and asked the owner why."""
+    from meld.grammar import AGREEMENT_VERBS, agreement_for, allowed_verbs
+    if actor.party.kind not in ("group", "pm"):
+        return []
+    allowed = allowed_verbs(actor.party)
+    agreement = agreement_for(board.comments, ref, cfg)
+    if agreement.joint_posted:
+        return []
     out = []
+    if "PROPOSE" in allowed and "PROPOSE" in AGREEMENT_VERBS and agreement.text is None:
+        out.append("propose")
+    if agreement.text is not None:
+        if "AMEND" in allowed and agreement.can_amend(cfg):
+            out.append("amend")
+        if actor.group not in agreement.agreed:
+            out.extend(v.lower() for v in ("AGREE", "DISSENT") if v in allowed)
+    if (actor.party.kind == "group" and agreement.proposer == actor.group and agreement.status in ("agreed", "majority")
+            and not agreement.joint_verified):
+        out.append("joint")
+    return out
+
+
+def legal_agreement_verbs(board: Board, cfg: Config, actor: Actor, ref: str) -> list[str]:
+    """The agreement-ref actions `actor` may take on `ref` right now, in the CLI's spelling: the post verbs of the round
+    first, then the actions that close it."""
+    out = agreement_post_verbs(board, cfg, actor, ref)
     if decide_rule(board, cfg, actor, ref) is None:
         out.append("decide")
     if plan_rule(board, cfg, actor, "issues", ref) is None:

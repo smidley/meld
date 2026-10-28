@@ -4,7 +4,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass, field
 
-from meld.adapters.base import LaunchSpec, is_limit, limit_event, open_log, popen_detached
+from meld.adapters.base import LaunchSpec, capacity_event, is_capacity, is_limit, limit_event, open_log, popen_detached
 from meld.roster import WorkerType
 from meld.transcript import Event, cap
 
@@ -60,6 +60,8 @@ class FakeAdapter:
             return []
         if is_limit(line):
             return limit_event(now, line)
+        if is_capacity(line):
+            return capacity_event(now, line)
         return [Event(seq=0, at=now, kind="message", text=cap(line))]
 
 

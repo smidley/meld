@@ -413,3 +413,13 @@ def test_a_journey_says_where_an_issue_is_and_what_comes_next():
     assert journey(status["issues"][0], waiting, now)["now"] == "PR #55 waits for a review (0 of 2 approvals)"
     approved = {**waiting, "pulls": [{**status["pulls"][0], "approvals": ["codex", "claude"]}, status["pulls"][1]]}
     assert journey(status["issues"][0], approved, now)["now"] == "PR #55 is approved and ready to merge"
+
+
+def test_a_journey_says_the_model_was_at_capacity_and_the_build_is_retried():
+    """Plan 50."""
+    from datetime import datetime, timezone
+    from meld.chat import journey
+    status = {"quorum": 1, "issues": [{"number": 3, "title": "Site", "status": "in_progress", "claimed_by": "codex", "worker": "frontend", "challenged": False}],
+              "pulls": [], "runs": [{"group": "codex", "issue": 3, "kind": "build", "pr": None, "state": "collected", "outcome": "capacity", "worker": "frontend", "started_at": "2026-10-28T17:35:00Z"}]}
+    j = journey(status["issues"][0], status, datetime(2026, 10, 28, 17, 40, tzinfo=timezone.utc))
+    assert j["now"] == "codex's model was at capacity; the build is retried after a short pause"

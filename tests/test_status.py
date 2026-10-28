@@ -385,3 +385,25 @@ def test_status_carries_the_goal_so_no_role_has_to_go_looking_for_it():
     out = render_status(board, CFG2, CLAUDE_PM, REG, datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc))
     assert out["goal"] == {"title": "Coordination: M1", "body": "## Goal\n\nA greet tool.\n\n## Context\n\nRead docs/ first."}
     assert render_status(mk_board(CFG2), CFG2, CLAUDE_PM, REG, datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc))["goal"] == {"title": "", "body": ""}
+
+
+def test_status_agreements_list_the_post_verbs_of_the_round(board1_gh, tmp_path):
+    """Plan 47: `legal` on an agreement ref names what the actor may post now, not only decide/plan actions. The first
+    real run's codex orchestrator read an empty list on an amended plan as "I may not answer" and asked the owner why."""
+    from meld.status import render_status
+    from meld.rules import Actor
+    from meld.config import Party
+    from tests.factories import CFG2, REG, mk_board, mk_comment
+    codex, claude = Actor(Party("group", "codex"), "meld-codex-bot"), Actor(Party("group", "claude"), "meld-claude-bot")
+    pm = Actor(Party("pm", "codex"), "meld-codex-bot")
+    def legal(actor, comments, ref="plan-1"):
+        return render_status(mk_board(comments=comments), CFG2, actor, REG)["coordination"]["agreements"][ref]["legal"]
+    proposed = [mk_comment(101, "meld-codex-bot", "[codex] PROPOSE plan-1\n\nsplit", "2026-09-03T10:00:00Z")]
+    assert legal(claude, proposed) == ["amend", "agree", "dissent"] and legal(codex, proposed) == ["amend"]   # the proposer has agreed already
+    assert legal(pm, proposed) == []                                                                            # a PM posts no agreement verb
+    amended = proposed + [mk_comment(102, "meld-claude-bot", "[claude] AMEND plan-1\n\nsplit, in order", "2026-09-03T10:01:00Z")]
+    assert legal(codex, amended) == ["amend", "agree", "dissent"] and legal(claude, amended) == ["amend"]       # the amender is now the proposer
+    agreed = amended + [mk_comment(103, "meld-codex-bot", "[codex] AGREE plan-1\n\nyes", "2026-09-03T10:02:00Z")]
+    assert legal(claude, agreed) == ["amend", "joint"] and legal(codex, agreed) == ["amend"]                   # the proposer may post the [joint]
+    closed = agreed + [mk_comment(104, "meld-claude-bot", "[joint] PLAN plan-1\n\nsplit, in order\n\nverified-by: agreed", "2026-09-03T10:03:00Z")]
+    assert "agree" not in legal(codex, closed) and "joint" not in legal(claude, closed)                         # a closed round takes no more posts

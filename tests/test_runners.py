@@ -934,3 +934,27 @@ def test_a_re_probe_that_hits_the_limit_again_backs_off_up_to_a_day(tmp_path):
     assert next_retry_minutes(home, "claude", "pm", "2026-10-27T12:30:00Z", 30) == MAX_RETRY_MINUTES      # capped at a day
     write_record(last_limit_path(home, "claude", "pm"), {"at": "2026-10-20T00:00:00Z", "retry_minutes": 240, "until": "2026-10-20T04:00:00Z"})
     assert next_retry_minutes(home, "claude", "pm", "2026-10-26T23:40:00Z", 30) == 30                    # a freeze long past: start over
+
+
+def test_run_group_relaunches_a_role_whose_model_was_at_capacity_after_a_fixed_pause(tmp_path):
+    """Plan 50: a session that died of "Selected model is at capacity" is relaunched after CAPACITY_PAUSE_SECONDS with the
+    reason `capacity`, its restart count untouched: not a crash (no doubling backoff), not a limit (no freeze)."""
+    from meld.runners import CAPACITY_PAUSE_SECONDS, processes
+    _, ctx, env = make(tmp_path)
+    adapter = FakeAdapter(script="print('Selected model is at capacity. Please try a different model.'); raise SystemExit(1)")
+    clock = Clock()
+    slept: list[float] = []
+
+    def sleep(s):
+        slept.append(s)
+        clock.sleep(s)
+        time.sleep(0.05)
+
+    out = run_group(ctx, adapter=adapter, cycles=3, interval=0.01, sleep=sleep, clock=clock, base_env=env)
+    assert out["roles"]["orchestrator"]["launches"] >= 2 and out["roles"]["orchestrator"]["restarts"] == 0 and out["roles"]["orchestrator"]["last_exit"] == 1
+    assert CAPACITY_PAUSE_SECONDS in slept and 5.0 not in slept
+    relaunch = next(s for s in adapter.launches if "Launch number: 2" in s.prompt)
+    assert "- Reason: `capacity` (" in relaunch.prompt and "busy, not out of quota" in relaunch.prompt
+    rec = read_record(role_run_path(tmp_path / "home", "claude", "orchestrator"))
+    assert rec["reason"] == "capacity"
+    assert processes(ctx.cfg, tmp_path / "home", alive=lambda pid: False, start_of=lambda pid: "")["claude"]["roles"]["orchestrator"]["reason"] == "capacity"

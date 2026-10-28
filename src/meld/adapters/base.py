@@ -186,6 +186,24 @@ def reset_at(text: str, now: str) -> str | None:
     return None
 
 
+# The model is busy, not the account out of quota: Codex's "Selected model is at capacity. Please try a different model.",
+# Anthropic's 529 overloaded_error. Transient; the right answer is a pause and the same call again (plan 50), never a
+# failed attempt that spends a retry under the rubric or a freeze that waits for a reset nobody named.
+_CAPACITY_RE = re.compile(r"\bat capacity\b|\boverloaded(?:_error)?\b|\bcapacity (?:exceeded|reached)\b|\bmodel is (?:currently )?(?:busy|unavailable)\b"
+                          r"|\b529\b", re.IGNORECASE)
+
+
+def is_capacity(text: object) -> bool:
+    """Does this text say the model is at capacity (busy), as opposed to the subscription's quota being gone?"""
+    s = text if isinstance(text, str) else ("" if text is None else str(text))
+    return bool(s) and bool(_CAPACITY_RE.search(s))
+
+
+def capacity_event(now: str, text: str) -> list[Event]:
+    """The event a supervisor and `collect` treat as "try again in a minute": not a crash, not a failure, not a limit."""
+    return [Event(seq=0, at=now, kind="capacity", ok=False, text=cap(text))]
+
+
 def limit_event(now: str, text: str) -> list[Event]:
     """The one event a supervisor acts on. `ok` is False: a quota that ran out is not a success."""
     when = reset_at(text, now)

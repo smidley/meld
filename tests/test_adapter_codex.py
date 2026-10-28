@@ -178,3 +178,12 @@ def test_cli_config_becomes_c_overrides_in_key_order(tmp_path: Path):
     pairs = [argv[i + 1] for i, a in enumerate(argv) if a == "-c"]
     assert pairs == ['model_reasoning_effort="high"', "disable_response_storage=true", 'model_provider="ollama"',
                      'model_providers.ollama.base_url="http://server:11434/v1"', "retries=2", "sandbox_workspace_write.network_access=true"]
+
+
+def test_parse_events_turns_a_model_at_capacity_into_a_capacity_event_not_a_cli_error():
+    """Plan 50: "Selected model is at capacity. Please try a different model." killed the first real run's worker on #3 and
+    meld counted it as a failed attempt. It is transient: its own event kind, which the supervisor and collect retry."""
+    for line in ('{"type": "turn.failed", "error": {"message": "Selected model is at capacity. Please try a different model."}}',
+                 '{"type": "error", "message": "Selected model is at capacity. Please try a different model."}'):
+        (event,) = CodexAdapter().parse_events(line, NOW)
+        assert (event.kind, event.ok) == ("capacity", False) and "at capacity" in event.text

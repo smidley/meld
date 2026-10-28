@@ -16,7 +16,7 @@ from typing import Callable, Iterable
 #: Every kind an adapter may produce. `raw` is the escape hatch for a line no adapter recognized;
 #: `log_truncated` is written by `Tail` itself, never by an adapter.
 KINDS = ("run_started", "message", "thinking", "tool_call", "tool_result",
-         "usage", "run_finished", "usage_limit", "log_truncated", "cli_error", "raw")
+         "usage", "run_finished", "usage_limit", "log_truncated", "cli_error", "capacity", "raw")
 
 #: Per-event character cap, applied at parse time. About memory, not about reading.
 TEXT_CAP = 2000
@@ -33,7 +33,7 @@ _TRUNCATED = " …(truncated)"
 _LABELS = {
     "run_started": "started", "message": "message", "thinking": "think",
     "tool_call": "tool", "tool_result": "result", "usage": "usage",
-    "run_finished": "done", "usage_limit": "limit", "log_truncated": "trimmed", "cli_error": "error", "raw": "raw",
+    "run_finished": "done", "usage_limit": "limit", "log_truncated": "trimmed", "cli_error": "error", "capacity": "busy", "raw": "raw",
 }
 _LABEL_WIDTH = max(len(v) for v in _LABELS.values()) + 1
 
@@ -85,6 +85,23 @@ def render_line(e: Event, width: int = 100) -> str:
 def render(events: Iterable[Event], width: int = 100) -> str:
     """Every event as one line, in `seq` order."""
     return "\n".join(render_line(e, width) for e in sorted(events, key=lambda e: e.seq))
+
+
+def last_text_of_kind(log_path, adapter, now: str, kind: str) -> str:
+    """The text of the newest event of `kind` in a transcript, or "" (read then flush, as render_tail does: a process
+    killed mid-write leaves its last line unterminated, and that is the line most likely to carry the answer)."""
+    reader = Tail(log_path)
+    events = reader.read(adapter.parse_events, now) + reader.flush(adapter.parse_events, now)
+    for event in reversed(events):
+        if event.kind == kind:
+            return event.text
+    return ""
+
+
+def capacity_text(log_path, adapter, now: str) -> str:
+    """What the CLI said when the model was at capacity -- the last `capacity` event's text -- or "" when the transcript
+    shows none (plan 50). A session that died of it is relaunched after a fixed pause, never treated as a crash or a failure."""
+    return last_text_of_kind(log_path, adapter, now, "capacity")
 
 
 class Tail:

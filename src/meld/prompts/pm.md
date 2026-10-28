@@ -28,6 +28,7 @@ You dispatch reviewers and auditors, collect them, and turn their verdicts into 
 ## When something is off
 
 - A dispatch, claim, or collect refusal tells you the rule. Do not retry the same call; fix the cause or report it.
+- `meld collect` answering `capacity` means the model was busy, not that the worker failed: the issue stays in progress, nothing is re-tagged, and `dispatch` is legal again about a minute later with the same tags. Dispatch it then; never post NEEDS-HUMAN for it.
 - `meld status` lists, per issue and per PR, every verb that is legal for you right now, and those are the only verbs to run: one it does not list is refused and announced on the coordination issue as a `PROTOCOL-VIOLATION`, which every party and the human read. Collecting another group's run, claiming with a model your adapter does not offer, and a second audit past `review_concurrency` are all absent from `legal` for a reason.
 - A `GitError` from `meld dispatch` (a failed fetch, or worktree contention with another group working the same clone) is not a refusal: retry it once before reporting it.
 - A worker that keeps failing on the same issue is the orchestrator's problem: post the failure summary on the coordination issue rather than dispatching a fourth time.

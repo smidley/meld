@@ -233,6 +233,8 @@ def journey(issue: dict, status: dict, now: datetime) -> dict:
         now_text = "ready for a group to claim"
     elif st == "planned":
         now_text = "planned; waits for the plan's approval"
+    elif st == "in_progress" and not live_build and builds and builds[-1].get("outcome") == "capacity":
+        now_text = f"{builds[-1]['group']}'s model was at capacity; the build is retried after a short pause"
     elif st == "in_progress" and not live_build:
         now_text = f"claimed by {who}; no worker is on it yet" if who else "in progress"
     elif st == "closed":

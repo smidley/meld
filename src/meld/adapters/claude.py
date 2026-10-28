@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Mapping
 
-from meld.adapters.base import (SCRUBBED_EXACT, LaunchSpec, is_limit, limit_event, open_log, parse_doc,
+from meld.adapters.base import (SCRUBBED_EXACT, LaunchSpec, capacity_event, is_capacity, is_limit, limit_event, open_log, parse_doc,
                                 popen_detached, raw_event, scan_skills)
 from meld.roster import WorkerType
 from meld.transcript import Event, cap
@@ -151,6 +151,8 @@ class ClaudeAdapter:
                 said = str(doc.get("result", "")) + " " + str(doc.get("subtype", ""))
                 if is_limit(said):
                     return limit_event(now, str(doc.get("result", "")) or str(doc.get("subtype", "")))
+                if is_capacity(said):
+                    return capacity_event(now, str(doc.get("result", "")) or str(doc.get("subtype", "")))   # 529 overloaded (plan 50)
             return [Event(seq=0, at=now, kind="run_finished", ok=not doc.get("is_error", False),
                           text=cap(doc.get("result", doc.get("subtype", ""))),
                           meta={"subtype": str(doc.get("subtype", "")), "num_turns": doc.get("num_turns"),

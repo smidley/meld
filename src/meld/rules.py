@@ -157,9 +157,11 @@ def _dispatch(board: Board, cfg: Config, actor: Actor, issue: Issue, models: Mod
         retry_at = _plus_seconds(run.ended_at, CAPACITY_RETRY_SECONDS)
         if board.now < retry_at:
             return f"the model was at capacity at {run.ended_at}; dispatch the same tags again from {retry_at}"
-    if run is not None and run.kind == "build" and run.outcome in ("failed", "blocked") and run.attempt >= cfg.budget_attempts_per_issue:
+    if (run is not None and run.kind == "build" and run.outcome in ("failed", "blocked") and run.attempt >= cfg.budget_attempts_per_issue
+            and not board.answered_since(issue.number, run.ended_at or run.started_at)):
         # Plan 55: the maze run ran seven builds on one issue, the last three at max effort on the largest model. After the
-        # cap a person decides what changes; a retry is not the orchestrator's to spend.
+        # cap a person decides what changes; a retry is not the orchestrator's to spend. Plan 60: the person's RESOLVED or
+        # PROVIDED on the issue after that build is the decision, and the count starts again from it.
         return (f"{run.attempt} builds have run on #{issue.number} (budget.attempts_per_issue is {cfg.budget_attempts_per_issue}); "
                 f"a person decides what changes: post NEEDS-HUMAN #{issue.number} and wait")
     if run is not None and run.kind == "build" and run.outcome == "failed" and run.model == issue.model and run.effort == issue.effort:

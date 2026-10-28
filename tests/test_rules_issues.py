@@ -386,6 +386,14 @@ def test_dispatch_stops_at_the_attempt_budget_and_a_capacity_stop_does_not_count
     second = replace(third, attempt=2)
     assert rule(mk_board(CFG2, issues=[issue], runs={"claude": {12: second}, "codex": {}}), CLAUDE_PM, Verb.DISPATCH, issue) is None   # re-tagged: effort high vs medium
     assert CFG2.budget_attempts_per_issue == 3
+    # plan 60: a listed human's RESOLVED/PROVIDED on the issue after that build lifts the cap; one from before it does not
+    capped = replace(third, ended_at="2026-09-03T11:00:00Z")
+    before = mk_comment(49, "empowerScott", "[human] RESOLVED #12\n\nfrom before", "2026-09-03T10:30:00Z")
+    after = mk_comment(51, "empowerScott", "[human] RESOLVED #12\n\nthose builds ran before #3 merged; try again", "2026-09-03T11:05:00Z")
+    held = mk_board(CFG2, issues=[issue], runs={"claude": {12: capped}, "codex": {}}, comments=[before])
+    assert rule(held, CLAUDE_PM, Verb.DISPATCH, issue).startswith("3 builds have run on #12") and not held.answered_since(12, "2026-09-03T11:00:00Z")
+    lifted = mk_board(CFG2, issues=[issue], runs={"claude": {12: capped}, "codex": {}}, comments=[before, after])
+    assert rule(lifted, CLAUDE_PM, Verb.DISPATCH, issue) is None and lifted.answered_since(12, "2026-09-03T11:00:00Z")
 
 
 def test_an_issue_waits_for_the_items_its_plan_put_before_it():

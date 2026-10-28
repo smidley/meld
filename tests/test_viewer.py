@@ -1107,7 +1107,8 @@ def test_the_page_shows_narration_by_default_and_a_card_jumps_to_its_turn(tmp_pa
 def test_the_page_is_laid_out_as_header_decisions_conversation_work_and_a_tab_drawer(tmp_path):
     """Plan 21: the page reads top to bottom as what is happening, what needs you, the work as lanes and what the agents
     say, and a tab row whose drawer holds the transcripts, pull requests, agreements, the bar and configuration. Plan 49
-    put the lanes above the conversation at full width, with the journey's step names visible on every card."""
+    put the lanes above the conversation at full width, with the journey's step names visible on every card; plan 57 moved
+    the conversation beside the lanes as a sticky column with its own scroll."""
     v, ctx, _ = viewer_for(tmp_path)
     html = get(v, "/").body.decode()
     for marker in ('id="headline"', 'id="supervisors"', 'id="decisions"', 'id="conversation"', 'id="work"', 'class="kanban"',
@@ -1118,7 +1119,15 @@ def test_the_page_is_laid_out_as_header_decisions_conversation_work_and_a_tab_dr
     assert "LANES" in js and "issueCard" in js and "openTab" in js and 'openTab("act")' in js and "innerHTML" not in js
     css = get(v, "/static/app.css").body.decode()
     assert "#issues.kanban" in css and "#drawer.closed" in css and "system-ui" in css
-    assert "flex-direction: column" in css.split("#live {")[1].split("}")[0] and ".icard .jstep::before" in css and "font-size: 0" not in css.split(".icard .jstep {")[1].split("}")[0]
+    assert ".icard .jstep::before" in css and "font-size: 0" not in css.split(".icard .jstep {")[1].split("}")[0]
+    # plan 57: the conversation is a sticky column beside the work, scrolling on its own; the lanes drop to two when the work
+    # column is narrow (a container query after the four-lane rule, so it wins) and the pair stacks on a narrow viewport
+    assert "grid-template-columns: minmax(0, 1fr) clamp(" in css.split("#live {")[1].split("}")[0]
+    assert "position: sticky" in css.split("#conversation {")[1].split("}")[0] and "container-type: inline-size" in css.split("#work {")[1].split("}")[0]
+    assert css.index("#issues.kanban { display: grid; grid-template-columns: repeat(4") < css.index("@container (max-width: 820px) { #issues.kanban")
+    assert "#live { grid-template-columns: minmax(0, 1fr); }" in css.split("@media (max-width: 980px) {")[1].split("@media")[0]
+    # plan 57: the milestone bar and the budget bars are rows, so no browser can lay them over each other
+    assert "flex-direction: column" in css.split("#bars {")[1].split("}")[0] and "white-space: normal" in css.split("#progress-text {")[1].split("}")[0]
     assert 'STEP_SHORT[step.name] || step.name' in js   # plan 54: short chip labels (claim, build, PR, review, merge, audit, close), the full name on hover
     # what appears or goes does so smoothly: sections carry .appears, the drawer slides, the dialog and <details> transition
     assert "allow-discrete" in css and "@starting-style" in css and "transition: height var(--d-sheet) var(--ease)" in css.split("#drawer {")[1].split("}")[0]   # plan 54: the drawer slides on the motion tokens

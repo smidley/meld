@@ -56,6 +56,7 @@ def render_status(board: Board, cfg: Config, actor: Actor, models: ModelRegistry
     issues = [
         {"number": i.number, "title": i.title, "status": i.status, "claimed_by": i.claimed_by, "claimants": list(i.claimants),
          "worker": i.worker, "model": i.model, "effort": i.effort, "size": i.size, "challenged": board.is_challenged(f"#{i.number}"),
+         "waits_for": board.waits_for(i),
          **_verbs(issue_verb_rules(board, cfg, actor, i, models)), "lease": _lease_json(board, i)}
         for i in sorted(board.issues.values(), key=lambda i: i.number)
     ]

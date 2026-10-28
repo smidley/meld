@@ -229,6 +229,8 @@ def journey(issue: dict, status: dict, now: datetime) -> dict:
             now_text = f"PR #{pr['number']} waits for a review ({have} of {quorum} approvals)"
     elif pr and pr.get("merged") and not pr.get("audited_by"):
         now_text = "merged; an audit is owed before the milestone closes"
+    elif st in ("ready", "in_progress") and issue.get("waits_for") and not live_build:
+        now_text = "waits for " + ", ".join(f"#{n}" for n in issue["waits_for"]) + " to close first"
     elif st == "ready":
         now_text = "ready for a group to claim"
     elif st == "planned":

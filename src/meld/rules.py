@@ -96,6 +96,9 @@ def _claim(board: Board, cfg: Config, actor: Actor, issue: Issue, models: ModelR
     own = HUMAN_CLAIMANT if actor.is_human else actor.group
     if any(g != own for g in issue.claimants):
         return f"already claimed by {', '.join(issue.claimants)}"
+    waits = board.waits_for(issue)
+    if waits:
+        return f"waits for {', '.join(f'#{n}' for n in waits)} to close first (the plan's `after`)"
     if actor.is_human:
         return None
     group = cfg.groups[actor.group]  # type: ignore[index]
@@ -146,6 +149,9 @@ def _dispatch(board: Board, cfg: Config, actor: Actor, issue: Issue, models: Mod
     run = board.run_for(group.name, issue.number)
     if run is not None and (run.alive or not run.collected):
         return "a worker run already exists for this issue (running or uncollected)"
+    waits = board.waits_for(issue)
+    if waits:
+        return f"waits for {', '.join(f'#{n}' for n in waits)} to close first (the plan's `after`)"
     if run is not None and run.kind == "build" and run.outcome == "capacity" and run.ended_at and board.now:
         # Plan 50: the model was at capacity; the same build is retried after a short pause, never re-tagged for it.
         retry_at = _plus_seconds(run.ended_at, CAPACITY_RETRY_SECONDS)

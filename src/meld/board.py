@@ -433,6 +433,22 @@ class Board:
             candidates.sort(key=lambda p: (p.state != "open", holder is None or not same_login(p.author, holder), -p.number))
         return candidates[0] if candidates else None
 
+    def waits_for(self, issue: Issue) -> list[int]:
+        """The open issues this one must wait for (plan 56): the plan items its body names under `plan-after:`, resolved
+        to issue numbers through their `plan-item:` markers. An item not on the board yet is not waited for. The maze
+        run's plan said "#2, then #3, then #4" in prose and nothing enforced it: #4 was dispatched while #3's pull
+        request was in review, and its worker stopped to ask a person whether #3 had merged."""
+        m = re.search(r"^plan-after: (.+)$", issue.body or "", re.MULTILINE)
+        if not m:
+            return []
+        wanted = [a.strip() for a in m.group(1).split(",") if a.strip()]
+        by_item = {}
+        for other in self.issues.values():
+            mm = re.search(r"^plan-item: (\S+)$", other.body or "", re.MULTILINE)
+            if mm:
+                by_item[mm.group(1)] = other
+        return sorted(by_item[a].number for a in wanted if a in by_item and by_item[a].state != "closed")
+
     def _issue_for(self, pr: PullRequest) -> Issue | None:
         """The issue a PR closes, when it is on the board."""
         return self.issues.get(pr.issue_number) if pr.issue_number is not None else None

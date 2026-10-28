@@ -359,3 +359,17 @@ def test_dispatch_refuses_a_retry_at_the_unchanged_tag_after_a_failed_run():
     for outcome in ("blocked", "no_change", "done", "superseded", None):
         runs = {"claude": {12: mk_run("claude", 12, alive=False, collected=True, outcome=outcome)}, "codex": {}}
         assert rule(mk_board(CFG2, issues=[same], runs=runs), CLAUDE_PM, Verb.DISPATCH, same) is None, outcome
+
+
+def test_dispatch_after_a_capacity_stop_waits_a_minute_then_allows_the_same_tags():
+    """Plan 50: a build that ended because the model was at capacity is not a failed attempt: no re-tag, and `dispatch` is
+    legal again with the same tags once CAPACITY_RETRY_SECONDS have passed."""
+    from dataclasses import replace
+    from meld.rules import CAPACITY_RETRY_SECONDS
+    same = mk_issue(12, status="in_progress", claimed_by="claude", model="claude-sonnet-5", effort="medium")
+    run = replace(mk_run("claude", 12, alive=False, collected=True, outcome="capacity"), ended_at="2026-09-03T12:00:00Z")
+    runs = {"claude": {12: run}, "codex": {}}
+    early = mk_board(CFG2, issues=[same], runs=runs, now="2026-09-03T12:00:30Z")
+    assert rule(early, CLAUDE_PM, Verb.DISPATCH, same) == "the model was at capacity at 2026-09-03T12:00:00Z; dispatch the same tags again from 2026-09-03T12:01:00Z"
+    later = mk_board(CFG2, issues=[same], runs=runs, now="2026-09-03T12:01:00Z")
+    assert rule(later, CLAUDE_PM, Verb.DISPATCH, same) is None and CAPACITY_RETRY_SECONDS == 60

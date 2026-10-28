@@ -1067,14 +1067,15 @@ def test_state_carries_the_thread_and_the_page_has_a_conversation_panel(tmp_path
 
 
 def test_state_carries_the_decisions_and_the_page_renders_them_as_cards(tmp_path):
-    """Plan 18: everything waiting on the human is one card with its choices, through the page's one write path."""
+    """Plan 18: everything waiting on the human is one card with its choices, through the page's one write path. Plan 51:
+    the cards are bubbles in a conversation with one reply box; each carries who asks and what a typed reply posts."""
     v, ctx, _ = viewer_for(tmp_path)
     state = body(get(v, "/api/state"))
     assert isinstance(state["decisions"], list)
     for d in state["decisions"]:
-        assert {"id", "kind", "title", "summary", "choices"} <= set(d) and all({"label", "body", "needs_text"} <= set(c) for c in d["choices"])
+        assert {"id", "kind", "title", "summary", "choices", "from", "reply"} <= set(d) and all({"label", "body", "needs_text"} <= set(c) for c in d["choices"])
     html = get(v, "/").body.decode()
-    assert 'id="decisions"' in html and 'id="card"' in html
+    assert 'id="decisions"' in html and 'id="ask"' in html and 'id="reply-text"' in html and "Questions for you" in html and 'id="card"' not in html
     js = get(v, "/static/app.js").body.decode()
     assert "renderDecisions" in js and "postAction" in js and "state.decisions" in js and "innerHTML" not in js
 
@@ -1120,7 +1121,7 @@ def test_the_page_is_laid_out_as_header_decisions_conversation_work_and_a_tab_dr
     assert 'step.name === "pull request" ? "PR" : step.name' in js
     # what appears or goes does so smoothly: sections carry .appears, the drawer slides, the dialog and <details> transition
     assert "allow-discrete" in css and "@starting-style" in css and "transition: height 0.3s ease" in css.split("#drawer {")[1].split("}")[0]
-    assert html.count('class="hidden appears"') >= 2 and 'class="card appears"' in html and '"icard appears"' in js
+    assert html.count('class="hidden appears"') >= 2 and 'class="ask appears"' in html and '"icard appears"' in js
 
 
 def test_the_page_is_guided_in_plain_words_and_follows_the_conversation(tmp_path):

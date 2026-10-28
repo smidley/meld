@@ -905,56 +905,91 @@ function showTurn(id) {
 }
 
 let lastDecisions = "";
+let asksById = new Map();
+let selectedAsk = null;
 function renderDecisions(list) {
-  // Rebuilt only when the set changes, so a message being typed into a card survives the ten-second poll.
+  // The questions for the person as a conversation (plan 51): one bubble per open question, the newest selected, and one
+  // reply box under them whose send posts what that question's `reply` says (RESOLVED for an ask, a DIRECTIVE for a
+  // disagreement) or, for a ruling, the choice the person picks. Rebuilt only when the set changes, so a reply being
+  // typed survives the ten-second poll; the box itself lives outside the list and is never rebuilt.
   const key = JSON.stringify(list || []);
   if (key === lastDecisions) return;
   lastDecisions = key;
+  asksById = new Map((list || []).map((d) => [d.id, d]));
   const root = el("decisions");
-  root.replaceChildren();
+  const asks = el("asks");
+  asks.replaceChildren();
   root.classList.toggle("hidden", !(list && list.length));
+  if (!asksById.has(selectedAsk)) selectedAsk = list && list.length ? list[list.length - 1].id : null;
   for (const d of list || []) {
-    const card = el("card").content.firstElementChild.cloneNode(true);
-    const title = text(card.querySelector(".ctitle"), d.age_minutes != null ? `${d.title} (${d.age_minutes} min)` : d.title);
+    const li = el("ask").content.firstElementChild.cloneNode(true);
+    li.dataset.ask = d.id;
+    const party = text(li.querySelector(".aparty"), d.from || "an agent");
+    party.style.color = colorFor("group", String(d.from || "").split(":")[0]);
+    text(li.querySelector(".awhen"), d.age_minutes != null ? `${d.age_minutes} min ago` : "");
+    const where = li.querySelector(".awhere");
     if (d.comment_id) {
-      title.classList.add("link");
-      title.title = "show this in the conversation";
-      title.addEventListener("click", () => showTurn(d.comment_id));
-      const where = document.createElement("span");
-      where.className = "cwhere dim";
       link(where, "on GitHub ↗", ghUrl("comment", d.comment_id), "open this comment on GitHub");
-      title.after(where);
+      where.addEventListener("click", (e) => e.stopPropagation());
     }
-    text(card.querySelector(".csummary"), d.summary);
-    const choices = card.querySelector(".cchoices");
-    const outcome = card.querySelector(".coutcome");
-    let input = null;
-    if (d.choices.some((c) => c.needs_text)) {
-      input = document.createElement("input");
-      input.placeholder = (d.choices.find((c) => c.hint) || {}).hint || "your message";
-      input.title = input.placeholder;
-      choices.append(input);
-    }
-    for (const c of d.choices) {
+    text(li.querySelector(".atitle"), d.title);
+    text(li.querySelector(".atext"), d.summary);
+    const quick = li.querySelector(".aquick");
+    for (const c of d.choices.filter((c) => !c.needs_text)) {
+      // a reply that is one word: a button in the bubble, sent at once
       const b = text(document.createElement("button"), c.label);
       b.type = "button";
-      b.addEventListener("click", async () => {
-        const payload = { party: "human", ...c.body };
-        if (c.needs_text) {
-          const message = (input && input.value.trim()) || "";
-          if (!message) { text(outcome, `${c.label} needs a message`).className = "coutcome bad"; return; }
-          payload.text = message;
-        }
-        for (const other of choices.querySelectorAll("button")) other.disabled = true;
-        text(outcome, `${c.label} …`).className = "coutcome dim";
-        const result = await postAction(payload);
-        text(outcome, result.message).className = "coutcome " + (result.ok ? "ok" : "bad");
-        if (result.ok) pollState(); else for (const other of choices.querySelectorAll("button")) other.disabled = false;
+      b.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        b.disabled = true;
+        const result = await postAction({ party: "human", ...c.body });
+        showReplyOutcome(result, c.label);
+        if (result.ok) pollState(); else b.disabled = false;
       });
-      choices.append(b);
+      quick.append(b);
     }
-    root.append(card);
+    li.addEventListener("click", () => { selectedAsk = d.id; renderReplyBox(); });
+    if (d.comment_id) li.title = "click to reply to this one; the link opens the comment on GitHub";
+    asks.append(li);
   }
+  renderReplyBox();
+}
+
+function renderReplyBox() {
+  const d = asksById.get(selectedAsk);
+  const form = el("reply");
+  for (const li of el("asks").querySelectorAll(".ask")) li.classList.toggle("selected", li.dataset.ask === selectedAsk);
+  const typed = d && (d.reply || d.choices.some((c) => c.needs_text));
+  form.classList.toggle("hidden", !typed);
+  if (!typed) return;
+  const others = asksById.size > 1 ? ` (${asksById.size} open; click another question to reply to it)` : "";
+  text(el("reply-to"), `Replying to ${d.from || "the agents"}${d.ref ? ` about ${d.ref}` : ""}${others}`);
+  el("reply-text").placeholder = d.hint || "your reply";
+  const send = el("reply-send");
+  send.replaceChildren();
+  const ways = d.reply ? [{ label: "Send", body: d.reply }] : d.choices.filter((c) => c.needs_text).map((c) => ({ label: `Send as ${c.label.toLowerCase()}`, body: c.body }));
+  for (const w of ways) {
+    const b = text(document.createElement("button"), w.label);
+    b.type = "button";
+    b.addEventListener("click", () => sendReply(w));
+    send.append(b);
+  }
+}
+
+async function sendReply(way) {
+  const message = el("reply-text").value.trim();
+  if (!message) { showReplyOutcome({ ok: false, message: "type your reply first" }, way.label); return; }
+  for (const b of el("reply-send").querySelectorAll("button")) b.disabled = true;
+  showReplyOutcome({ ok: true, message: `${way.label} …` }, way.label, true);
+  const result = await postAction({ party: "human", ...way.body, text: message });
+  showReplyOutcome(result, way.label);
+  if (result.ok) { el("reply-text").value = ""; pollState(); }
+  else for (const b of el("reply-send").querySelectorAll("button")) b.disabled = false;
+}
+
+function showReplyOutcome(result, label, pending = false) {
+  const out = text(el("reply-outcome"), result.message || label);
+  out.className = pending ? "dim" : (result.ok ? "ok" : "bad");
 }
 
 async function runAction() {
@@ -1621,6 +1656,14 @@ el("turns").addEventListener("scroll", () => {
 el("newest").addEventListener("click", followNewest);
 el("streams").classList.add("narration", "live-only");
 el("task-close").addEventListener("click", () => el("task").close());
+el("reply").addEventListener("submit", (e) => e.preventDefault());
+el("reply-text").addEventListener("keydown", (e) => {
+  // Enter sends when there is exactly one way to send; Shift+Enter is a new line
+  if (e.key === "Enter" && !e.shiftKey) {
+    const buttons = el("reply-send").querySelectorAll("button");
+    if (buttons.length === 1) { e.preventDefault(); buttons[0].click(); }
+  }
+});
 el("show-finished").addEventListener("change", (e) => { el("streams").classList.toggle("live-only", !e.target.checked); scrollColumns(); });
 // The drawer: one tab open at a time, or none; the Configuration tab opens its <details>, whose toggle loads the form.
 function openTab(name) {

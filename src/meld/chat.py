@@ -92,7 +92,9 @@ def decisions(board: Board, cfg: Config, actor: Actor, now: datetime) -> list[di
     choice is the request body `/api/action` takes (its `verb` is the dispatch name; `action` the header verb),
     plus whether the person must type a message; the page renders the card and sends exactly that. Legality
     stays `rules.py`'s: a choice is offered only when its rule answers None, and a refusal still comes back
-    verbatim if the board moved meanwhile (spec 22)."""
+    verbatim if the board moved meanwhile (spec 22). Plan 51: the page shows these as a conversation, one bubble per
+    question with a reply box under them, so each carries `from` (who asks) and `reply` (what a typed reply posts, or
+    None when the answer is a button); `choices` are the quick replies and, when they take text, the ways to send it."""
     by_id = {c.id: c for c in board.comments}
     out: list[dict] = []
     plan_ref = f"plan-{board.milestone}"
@@ -100,47 +102,52 @@ def decisions(board: Board, cfg: Config, actor: Actor, now: datetime) -> list[di
         agreement = agreement_for(board.comments, plan_ref, cfg)
         items, _ = parse_plan_items(agreement.text or "")
         out.append({"id": f"plan:{plan_ref}", "kind": "plan_approve", "ref": plan_ref, "age_minutes": None, "comment_id": agreement.joint_comment_id,
+                    "from": f"{agreement.proposer} (for both groups)" if agreement.proposer else "the groups", "reply": None,
                     "title": f"The plan for milestone {board.milestone} is ready for your approval",
                     "summary": f"{len(items)} item(s): " + "; ".join(i.title for i in items) if items else "the agreed plan",
                     "choices": [{"label": "Approve the plan", "body": {"verb": "plan-approve"}, "needs_text": False}]})
     box = inbox(board, cfg, now)
     for item in box["needs_human"]:
         ref = item["ref"]
+        asker = by_id.get(item["comment_id"]) if item.get("comment_id") else None
         out.append({"id": f"needs-human:{ref}", "kind": "needs_human", "ref": ref, "age_minutes": item["age_minutes"], "comment_id": item["comment_id"],
+                    "from": (item.get("party") or (asker.header.party.label if asker and asker.header else "an agent")).strip("[]"),
                     "title": (f"Issue {ref} needs you: {item['title']}" if item["issue"] is not None
                               else f"{item['party']} needs you{f' about {ref}' if ref else ''}: {item['title']}"),
-                    "summary": (_lines(item["ask"]) or "(no ask was posted; see the issue)")
-                               + "\n\nWhat to do: if it asks for a credential, put it where it says, press Provided and say where (never the value). "
-                                 "If it reports something Meld got wrong or a stuck state, fix that (or ask Claude Code to), press Resolved and say what changed. "
-                                 "Either posts your reply on the thread for the agents to read.",
-                    "choices": [{"label": "Provided", "body": {"verb": "post", "action": "PROVIDED", "ref": ref}, "needs_text": True,
-                                 "hint": "one line for the agents: where you put it, or what changed"},
-                                {"label": "Resolved", "body": {"verb": "post", "action": "RESOLVED", "ref": ref}, "needs_text": True,
-                                 "hint": "one line for the agents: what changed"}]})
+                    "summary": _lines(item["ask"]) or "(no ask was posted; see the issue)",
+                    # One typed reply, posted as RESOLVED: it unlocks the issue the same way PROVIDED does and the agents read the
+                    # words. The two-button card ("Provided" or "Resolved"?) confused the owner (plan 51).
+                    "reply": {"verb": "post", "action": "RESOLVED", "ref": ref},
+                    "hint": "your answer for the agents: what you did or decided, where you put a credential (never the value)",
+                    "choices": []})
     for item in box["budget"]:
         ref = item["ref"]
         choice = ({"label": "Resolved", "body": {"verb": "post", "action": "RESOLVED", "ref": ref}, "needs_text": True} if ref
                   else {"label": "Give a directive", "body": {"verb": "post", "action": "DIRECTIVE", "ref": next_ref(board, "dir")}, "needs_text": True})
         out.append({"id": f"budget:{item['comment_id']}", "kind": "budget", "ref": ref, "age_minutes": item["age_minutes"], "comment_id": item["comment_id"],
-                    "title": f"{item['group']} hit its budget" + (f" ({ref})" if ref else ""), "summary": _lines(item["text"]),
-                    "choices": [{**choice, "hint": "raise the cap under Configuration first if the group should continue"}]})
+                    "from": f"{item['group']}:pm", "reply": choice["body"],
+                    "hint": "raise the cap under Configuration first if the group should continue, then say so here",
+                    "title": f"{item['group']} hit its budget" + (f" ({ref})" if ref else ""), "summary": _lines(item["text"]), "choices": []})
     for item in box["disagree"]:
         ref, cmt = item["ref"], by_id.get(item["comment_id"])
         out.append({"id": f"disagree:{ref}", "kind": "disagree", "ref": ref, "age_minutes": _age_minutes(cmt.created_at, now) if cmt else None, "comment_id": item["comment_id"],
+                    "from": cmt.header.party.label.strip("[]") if cmt and cmt.header else "the groups",
                     "title": f"The groups disagree on {ref} ({item['verb']})", "summary": _lines(cmt.text if cmt else "", 6),
-                    "choices": [{"label": "Approve as proposed", "body": {"verb": "post", "action": "APPROVE", "ref": ref}, "needs_text": False},
-                                {"label": "Give a directive", "body": {"verb": "post", "action": "DIRECTIVE", "ref": next_ref(board, "dir")}, "needs_text": True},
-                                {"label": "Amend", "body": {"verb": "post", "action": "AMEND", "ref": ref}, "needs_text": True}]})
+                    "reply": {"verb": "post", "action": "DIRECTIVE", "ref": next_ref(board, "dir")},
+                    "hint": "your directive settles it; or press Approve as proposed",
+                    "choices": [{"label": "Approve as proposed", "body": {"verb": "post", "action": "APPROVE", "ref": ref}, "needs_text": False}]})
     for item in box["plan_add"]:
         ref, cmt = item["ref"], by_id.get(item["comment_id"])
         choices = [{"label": "Acknowledge", "body": {"verb": "plan-ack", "ref": ref}, "needs_text": False}] if plan_rule(board, cfg, actor, "ack", ref) is None else []
         out.append({"id": f"plan-add:{ref}", "kind": "plan_add", "ref": ref, "age_minutes": _age_minutes(cmt.created_at, now) if cmt else None, "comment_id": item["comment_id"],
+                    "from": cmt.header.party.label.strip("[]") if cmt and cmt.header else "the groups", "reply": None,
                     "title": f"Plan addition {ref} awaits your acknowledgement", "summary": _lines(cmt.text if cmt else "", 6), "choices": choices})
     for ref, ch in sorted(board.challenges.items()):
         if challenge_rule(board, cfg, actor, "uphold", ref) is not None:
             continue
         cmt = by_id.get(ch.comment_id)
         out.append({"id": f"challenge:{ref}", "kind": "challenge", "ref": ref, "age_minutes": _age_minutes(cmt.created_at, now) if cmt else None, "comment_id": ch.comment_id,
+                    "from": ch.challenger, "reply": None, "hint": "your ruling, then send it as upheld or dismissed",
                     "title": f"Challenge on {ref} by {ch.challenger}: your call", "summary": _lines(cmt.text if cmt else ""),
                     "choices": [{"label": "Uphold", "body": {"verb": "challenge", "action": "uphold", "ref": ref}, "needs_text": True},
                                 {"label": "Dismiss", "body": {"verb": "challenge", "action": "dismiss", "ref": ref}, "needs_text": True}]})

@@ -45,14 +45,23 @@
   <div id="supervisors" class="row hidden appears"></div>
   <div id="needs-human" class="row appears"></div>
 </header>
-<section id="decisions" class="hidden appears"></section>
-<template id="card">
-  <div class="card appears">
-    <div class="ctitle strong"></div>
-    <div class="csummary dim"></div>
-    <div class="cchoices"></div>
-    <div class="coutcome dim"></div>
-  </div>
+<section id="decisions" class="hidden appears">
+  <h2><span class="who">Questions for you</span> <span class="hint">the agents ask here; your reply goes on the thread for them to read</span></h2>
+  <ol id="asks"></ol>
+  <form id="reply">
+    <div id="reply-to" class="dim"></div>
+    <textarea id="reply-text" rows="2" placeholder="your reply"></textarea>
+    <div id="reply-send"></div>
+    <div id="reply-outcome" class="dim"></div>
+  </form>
+</section>
+<template id="ask">
+  <li class="ask appears">
+    <div class="afrom"><span class="aparty"></span> <span class="awhen dim"></span> <span class="awhere dim"></span></div>
+    <div class="atitle strong"></div>
+    <div class="atext"></div>
+    <div class="aquick"></div>
+  </li>
 </template>
 <dialog id="task">
   <div class="row"><span id="task-title" class="strong"></span><button type="button" id="task-close" title="Close">×</button></div>

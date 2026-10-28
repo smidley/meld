@@ -343,7 +343,7 @@ def app_cfg():
 
 
 def app_http(*, slug="meld-claude", perms=None, repos=("acme/widgets",), token_status=201, token_body=None):
-    perms = perms if perms is not None else {"contents": "write", "issues": "write", "pull_requests": "write", "statuses": "write", "checks": "write"}
+    perms = perms if perms is not None else {"contents": "write", "issues": "write", "pull_requests": "write", "statuses": "write", "checks": "write", "workflows": "write"}
     calls = []
 
     def get(url, headers):
@@ -402,6 +402,16 @@ def test_doctor_warns_when_the_app_has_no_checks_permission(tmp_path, keypair_pe
     checks = by_name(run_app(tmp_path, by_token, keypair_pem, get=get, post=post))
     inst = checks["app-installation:claude"]
     assert inst.ok is None and "check_run_error" in inst.detail and "Checks" in inst.fix
+
+
+def test_doctor_warns_when_the_app_has_no_workflows_permission(tmp_path, keypair_pem):
+    """The maze run's #4: the worker edited .github/workflows/tests.yml and GitHub refused the push because the App had no
+    Workflows permission, so collect failed twice and the PM asked a person. A warning that names the fix."""
+    by_token = fakes()
+    get, post, _ = app_http(perms={"contents": "write", "issues": "write", "pull_requests": "write", "statuses": "write", "checks": "write"})
+    checks = by_name(run_app(tmp_path, by_token, keypair_pem, get=get, post=post))
+    inst = checks["app-installation:claude"]
+    assert inst.ok is None and ".github/workflows/*" in inst.detail and "Workflows: read & write" in inst.fix and "Checks" not in inst.fix
 
 
 def test_doctor_warns_when_the_mint_returns_no_repository_list(tmp_path, keypair_pem):

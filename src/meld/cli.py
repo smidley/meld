@@ -547,7 +547,7 @@ def run(ctx: click.Context, group: str, once: bool, detach: bool) -> None:
     if detach:
         if once:
             raise click.ClickException("--detach and --once are exclusive: --once is a foreground diagnostic")
-        home = meld_home(os.environ)
+        home = c.store.home
         state = liveness(read_record(supervisor_path(home, group)), alive=ALIVE, start_of=START_OF)
         if state["state"] == "alive":
             raise click.ClickException(f"a supervisor for {group} is already running ({state['reason']}); `meld stop {group}` first")
@@ -579,7 +579,7 @@ def detach_supervisor(config_path: Path | None, group: str, home: Path, cwd: Pat
     log = home / "logs" / group / "supervisor.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     with open(log, "ab") as handle:
-        proc = subprocess.Popen(detach_argv(config_path, group), cwd=str(cwd), env=dict(os.environ),
+        proc = subprocess.Popen(detach_argv(config_path, group), cwd=str(cwd), env={**os.environ, "MELD_HOME": str(home)},
                                 stdin=subprocess.DEVNULL, stdout=handle, stderr=handle, start_new_session=True)
     return {"group": group, "pid": proc.pid, "log": str(log), "detached": True}
 
@@ -599,7 +599,7 @@ def stop(ctx: click.Context, group: str, grace: float) -> None:
     cfg = _guard(lambda: load_config(ctx.obj["config_path"] or find_config(Path.cwd())))
     if group not in cfg.groups:
         raise click.ClickException(f"unknown group {group!r}; configured: {', '.join(cfg.groups)}")
-    state = liveness(read_record(supervisor_path(meld_home(os.environ), group)), alive=ALIVE, start_of=START_OF)
+    state = liveness(read_record(supervisor_path(meld_home(os.environ, cfg.repo_name), group)), alive=ALIVE, start_of=START_OF)
     if state["state"] != "alive":
         emit({"group": group, "stopped": False, "state": state["state"], "reason": state["reason"]}, ctx.obj["pretty"])
         return
@@ -625,7 +625,7 @@ def ps(ctx: click.Context) -> None:
     """Each group's supervisor and roles as the local records describe them -- alive, dead or unknown, with the reason --
     and each role's freeze. Reads $MELD_HOME only; nothing is asked of GitHub."""
     cfg = _guard(lambda: load_config(ctx.obj["config_path"] or find_config(Path.cwd())))
-    emit(processes(cfg, meld_home(os.environ), alive=ALIVE, start_of=START_OF), ctx.obj["pretty"])
+    emit(processes(cfg, meld_home(os.environ, cfg.repo_name), alive=ALIVE, start_of=START_OF), ctx.obj["pretty"])
 
 
 @main.command()
@@ -671,10 +671,10 @@ def doctor(ctx: click.Context, probe_status: bool, do_sweep: bool, dry_run: bool
             states = {n: ("merged" if p.merged else p.state) for n, p in board.pulls.items()}
         except (BoardError, GitHubError, ConfigError, AppAuthError):
             states = None
-        emit(sweep(meld_home(os.environ), cfg, repo_root=path.parent, pull_states=states, older_than_days=older_than_days, apply=not dry_run), ctx.obj["pretty"])
+        emit(sweep(meld_home(os.environ, cfg.repo_name), cfg, repo_root=path.parent, pull_states=states, older_than_days=older_than_days, apply=not dry_run), ctx.obj["pretty"])
         return
     checks = _guard(lambda: run_checks(cfg, path.parent, env=os.environ, gh_factory=lambda token: GitHub(cfg.repo_name, token=token, run=RUN),
-                                       registry=ModelRegistry.load(), adapter_for=ADAPTER_FOR, home=meld_home(os.environ), probe_status=probe_status))
+                                       registry=ModelRegistry.load(), adapter_for=ADAPTER_FOR, home=meld_home(os.environ, cfg.repo_name), probe_status=probe_status))
     result = summary(checks)
     emit(result, ctx.obj["pretty"])
     if not result["ok"]:
@@ -700,7 +700,7 @@ def tail(ctx: click.Context, target: str | None, issue: int | None, follow: bool
     _guard(lambda: refuse_worker(os.environ))
     config_path = ctx.obj["config_path"] or _guard(lambda: find_config(Path.cwd()))
     cfg = _guard(lambda: load_config(config_path))
-    home = meld_home(os.environ)
+    home = meld_home(os.environ, cfg.repo_name)
 
     if issue is not None:
         record = None
@@ -758,11 +758,12 @@ def start(ctx: click.Context, port: int | None, open_browser: bool | None) -> No
         ctx.invoke(watch, port=port, open_browser=open_browser)
         return
     from meld.firstrun import SetupSession
-    home = meld_home(os.environ)
+    home = meld_home(os.environ)   # before a repository exists: the viewer's token lives here; the product's own home follows the repo
     cwd = Path.cwd()
     session = SetupSession(target_dir=cwd, home=home, registry=ModelRegistry.load(), gh_factory=lambda repo: GitHub(repo, token=None, run=RUN),
-                           adapter_for=ADAPTER_FOR, launcher=lambda g: detach_supervisor(cwd / ".meld.toml", g, home, cwd),
-                           doctor=group_doctor(cwd / ".meld.toml", home))
+                           adapter_for=ADAPTER_FOR, launcher=lambda g: detach_supervisor(cwd / ".meld.toml", g, session.home, cwd),
+                           doctor=lambda g: group_doctor(cwd / ".meld.toml", session.home)(g),
+                           home_for=lambda repo: meld_home(os.environ, repo))
     viewer = Viewer(None, token=stable_token(home), port=0, config_path=None, setup=session,
                     load_ctx=lambda p: load_context(p, run=RUN, adapter_for=ADAPTER_FOR))
     wanted = port if port is not None else 8765

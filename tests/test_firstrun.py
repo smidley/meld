@@ -221,8 +221,10 @@ def test_create_makes_the_repository_first_and_reports_it(tmp_path):
         fake.route(method, endpoint, body, status=status)
     run = GitRun(remote="")
     s = session(tmp_path, fake, run=run)
+    s.home_for = lambda repo: tmp_path / "homes" / repo          # plan 42: the product's own state directory follows the repository
     out = s.create(repo="acme/widgets", goal="Ship it", milestone_title="M1", groups=["claude"])
     assert out["repository"]["created"] is True and out["repository"]["push"]["pushed"] is True and out["groups"] == ["claude"]
+    assert s.home == tmp_path / "homes" / "acme" / "widgets"
     assert [c.endpoint for c in fake.calls if c.method == "POST"][0] == "orgs/acme/repos"
     # the setup files are committed on the default branch and pushed, as the person, so the roles' clones can read them
     assert out["setup_commit"] == {"committed": True, "pushed": True}

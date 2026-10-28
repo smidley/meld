@@ -16,6 +16,15 @@ def test_meld_home_default_and_override(tmp_path):
     assert meld_home({"MELD_HOME": str(tmp_path)}) == tmp_path
 
 
+def test_meld_home_is_per_product_once_the_repository_is_known(tmp_path, monkeypatch):
+    """Plan 42: two products on one machine never share run records, supervisor pids or worktrees. An explicit MELD_HOME
+    still wins whatever the product (the scratch product ran beside the playground that way)."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert meld_home({}, "acme/widgets") == tmp_path / ".meld" / "products" / "acme" / "widgets"
+    assert meld_home({}, None) == tmp_path / ".meld" and meld_home({}, "widgets") == tmp_path / ".meld"   # no owner: not a repo name yet
+    assert meld_home({"MELD_HOME": str(tmp_path / "x")}, "acme/widgets") == tmp_path / "x"
+
+
 def test_write_and_load_runs_with_alive_probe(tmp_path):
     store = StateStore(tmp_path, "claude")
     rec = mk_run("claude", 12)

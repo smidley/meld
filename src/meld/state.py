@@ -13,8 +13,16 @@ from meld.atomic import write_atomic
 from meld.board import Board, RunRecord
 
 
-def meld_home(env: Mapping[str, str]) -> Path:
-    return Path(env.get("MELD_HOME", "~/.meld")).expanduser()
+def meld_home(env: Mapping[str, str], repo: str | None = None) -> Path:
+    """Where this product's local state lives. `MELD_HOME` set: that directory, whatever the product (how the scratch
+    product ran beside the playground). Otherwise `~/.meld/products/<owner>/<name>` once the repository is known, so two
+    products on one machine never share run records, supervisor pids or worktrees (plan 42; before it a second product
+    silently shared `~/.meld` with the first), and `~/.meld` itself only before there is a repository (the wizard's token)."""
+    explicit = env.get("MELD_HOME")
+    if explicit:
+        return Path(explicit).expanduser()
+    base = Path("~/.meld").expanduser()
+    return base / "products" / repo if repo and "/" in repo else base
 
 
 def pid_alive(pid: int) -> bool:

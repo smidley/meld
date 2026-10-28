@@ -488,12 +488,35 @@ function roleWords(info, freeze) {
   return state + (n > 0 ? ` · restarted ${n} time${n === 1 ? "" : "s"}` : "");
 }
 
+// plan 58: ages count up on the page between polls, so a live process never reads as a frozen label
+function ago(iso) {
+  const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
+  return s < 5 ? "just now" : s < 90 ? `${s} s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : `${(s / 3600).toFixed(1)} h ago`;
+}
+const ticking = [];   // {node, at, before, after}: text nodes whose age is rewritten every second
+function tickAges() { for (const t of ticking) t.node.textContent = t.before + ago(t.at) + t.after; }
+let pulse = null;
+function tickPulse() { text(el("pulse"), pulse ? `${pulse.who} is ${pulse.now || "running"}, ${ago(pulse.at)}` : ""); }
+
+// plan 58: the conversation is hidden by default and shown on request; a turn asked for (a dot, a card) shows it.
+function showConversation(shown) {
+  el("live").classList.toggle("no-convo", !shown);
+  text(el("convo-toggle"), shown ? "Hide conversation" : "Show conversation");
+  try { localStorage.setItem("meld.conversation", shown ? "shown" : "hidden"); } catch (e) { /* private window */ }
+  if (shown) followNewest();
+}
+el("convo-toggle").addEventListener("click", () => showConversation(el("live").classList.contains("no-convo")));
+el("convo-hide").addEventListener("click", () => showConversation(false));
+try { if (localStorage.getItem("meld.conversation") === "shown") showConversation(true); } catch (e) { /* private window */ }
+
 function drawMap(state) {
   // The agents and what each is on: a row per group -- the group with its one-line state (chat.agent_rows), its two
   // roles in plain words, then one node per running worker with its issue or PR -- wired left to right; under the group,
   // what it is doing and what it has spent. The map is the page's picture of who does what.
   const svg = el("map");
   svg.replaceChildren();
+  ticking.length = 0;
+  const act = state.activity || {};
   const s = state.status || {};
   const rows = state.agents || [];
   const byGroup = new Map(rows.map((r) => [r.group, r]));
@@ -505,7 +528,7 @@ function drawMap(state) {
     return [a.doing, a.cost_usd != null ? `$${a.cost_usd.toFixed(2)}` : "no dollar figure from this CLI", a.runs].filter(Boolean).join(" · ");
   };
   const chars = Math.max(12, ...groups.flatMap((g) => [((byGroup.get(g) || {}).summary || "").length, spendLine(g).length]));
-  const rowH = 86, left = 16, groupW = Math.min(360, Math.round(chars * 6.4) + 24), roleW = 236, workW = 200, gap = 26, gapW = 40;
+  const rowH = 96, left = 16, groupW = Math.min(360, Math.round(chars * 6.4) + 24), roleW = 260, workW = 220, gap = 26, gapW = 40;
   const nrows = Math.max(1, groups.length);
   const widest = Math.max(1, ...groups.map((g) => running.filter((r) => r.group === g).length));
   const width = left + groupW + gap + roleW + gapW + widest * (workW + 10) + 8;
@@ -523,21 +546,28 @@ function drawMap(state) {
     const rx = left + groupW + gap;
     let ri = 0;
     for (const [role, info] of Object.entries(roles)) {
-      const ry = y + ri * 32;
+      const ry = y + ri * 44;
       const liveRole = info.state === "alive";
-      const label = `${ROLE_WORDS[role] || role} · ${roleWords(info, (frozen[g] || {})[role])}`;
-      const r = drawNode(svg, rx, ry, roleW, 28, liveRole ? color : null, label, null, { live: liveRole, tip: label + (info.reason ? ` (last launch: ${info.reason})` : "") });
+      const a = act[`${g}/${role}`];
+      const words = roleWords(info, (frozen[g] || {})[role]);
+      // plan 58: a live role says what it is doing (its newest transcript event) and when it last wrote; restarts go to the second line
+      const label = `${ROLE_WORDS[role] || role} · ${a && a.now ? a.now : words}`;
+      const r = drawNode(svg, rx, ry, roleW, 40, liveRole ? color : null, label, a ? " " : null, { live: liveRole, tip: `${ROLE_WORDS[role] || role} · ${words}` + (info.reason ? ` (last launch: ${info.reason})` : "") });
+      if (a) ticking.push({ node: svg.lastChild.querySelector(".sub"), at: a.at, before: "last wrote ", after: /restarted/.test(words) ? " · " + words.replace(/^.*· /, "") : "" });
       drawEdge(svg, node.x + node.w, node.y + node.h / 2, r.x, r.y + r.h / 2, { flowing: liveRole, color });
       ri++;
     }
     const wx = rx + roleW + gapW;
     running.filter((r) => r.group === g).forEach((r, k) => {
       const what = r.kind === "build" ? `building #${r.issue}` : `${r.kind === "audit" ? "checking after merge" : "reviewing"} PR #${r.issue}`;
-      const w = drawNode(svg, wx + k * (workW + 10), y + 14, workW, 36, color, what, `${r.worker || r.kind} · ${r.model || ""}`, { live: true,
-                         ring: runFraction(r), tag: "building", onclick: r.kind === "build" ? () => openTask(r.issue) : () => showTranscript(r) });
-      drawEdge(svg, rx + roleW, y + 32 + 14, w.x, w.y + w.h / 2, { flowing: true, color });
+      const a = act[`${g}/${r.kind}/${r.issue}`];
+      const w = drawNode(svg, wx + k * (workW + 10), y + 20, workW, 40, color, what, a ? " " : `${r.worker || r.kind} · ${r.model || ""}`, { live: true,
+                         ring: runFraction(r), tag: "building", tip: `${what} · ${r.worker || r.kind} · ${r.model || ""}`, onclick: r.kind === "build" ? () => openTask(r.issue) : () => showTranscript(r) });
+      if (a) ticking.push({ node: svg.lastChild.querySelector(".sub"), at: a.at, before: `${clip(a.now || "running", 16)} · `, after: "" });
+      drawEdge(svg, rx + roleW, y + 44 + 20, w.x, w.y + w.h / 2, { flowing: true, color });
     });
   });
+  tickAges();
 }
 
 function fmtTokens(n) {
@@ -974,6 +1004,7 @@ function showTurn(id) {
   // A card's title jumps to the thread turn it came from; a turn the filter hides is shown by widening the filter.
   const li = document.getElementById(`turn-${id}`);
   if (!li) return;
+  showConversation(true);
   if (li.offsetParent === null) {
     el("convo-filter").value = "all";
     el("conversation").dataset.filter = "all";
@@ -1575,7 +1606,7 @@ function renderState(state) {
   drawMap(state);
   renderLimits(state);
   renderSetup(state);
-  if (!el("activity").classList.contains("hidden")) drawTimeline(state);
+  drawTimeline(state);
   renderDecisions(state.decisions);
   renderThread(state.thread);
   // The needs-human items are decision cards now (plan 18); this row carries only the state errors below.
@@ -1717,6 +1748,8 @@ function renderStrip(state) {
   const strip = state.strip || { level: "quiet", text: state.headline || "", detail: "", action: null };
   const last = state.last_post_at ? `last post ${clock12(Date.parse(state.last_post_at))}` : "";
   setStrip(strip.level, strip.text, [strip.detail, last].filter(Boolean).join(" · "), strip.action);
+  pulse = state.pulse || null;
+  tickPulse();
   el("headline").title = state.headline || "";
 }
 // "updated N s ago" counts from the last successful poll, in the strip and in the footer; a failed poll turns the strip
@@ -1727,6 +1760,8 @@ function tickUpdated() {
   const s = Math.round((Date.now() - lastPollAt) / 1000);
   const ago = s < 90 ? `${s} s ago` : `${Math.round(s / 60)} min ago`;
   for (const id of ["updated", "stamp"]) text(el(id), `updated ${ago}`);
+  tickAges();
+  tickPulse();
 }
 setInterval(tickUpdated, 1000);
 
@@ -1775,7 +1810,6 @@ function openTab(name) {
   el("drawer-close").classList.toggle("hidden", !name);
   if (name === "config") el("config").open = true;
   if (name === "streams") scrollColumns();
-  if (name === "activity" && lastState) drawTimeline(lastState);   // drawn at the pane's width, which it had none of while hidden
 }
 for (const b of document.querySelectorAll("#tabs .tab")) {
   b.addEventListener("click", () => openTab(b.classList.contains("active") ? null : b.dataset.tab));

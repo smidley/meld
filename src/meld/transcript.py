@@ -115,6 +115,27 @@ def session_id_of(log_path, adapter, now: str) -> str | None:
     return str(meta.get("thread_id") or meta.get("session_id") or "") or None
 
 
+def last_event(log_path, adapter, now: str, *, kinds: tuple[str, ...] = ("run_started", "message", "thinking", "tool_call", "tool_result"),
+               max_bytes: int = 65536) -> Event | None:
+    """The newest event of one of `kinds` in the last `max_bytes` of a transcript (plan 58): what the process did last.
+    Reads the tail only, dropping the partial first line, so a poll over every live log stays cheap."""
+    try:
+        size = os.path.getsize(log_path)
+        with open(log_path, "rb") as f:
+            if size > max_bytes:
+                f.seek(size - max_bytes)
+                f.readline()
+            data = f.read()
+    except OSError:
+        return None
+    newest = None
+    for raw in data.decode("utf-8", "replace").splitlines():
+        for e in adapter.parse_events(raw, now):
+            if e.kind in kinds:
+                newest = e
+    return newest
+
+
 def capacity_text(log_path, adapter, now: str) -> str:
     """What the CLI said when the model was at capacity -- the last `capacity` event's text -- or "" when the transcript
     shows none (plan 50). A session that died of it is relaunched after a fixed pause, never treated as a crash or a failure."""

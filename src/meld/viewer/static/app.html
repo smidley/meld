@@ -40,6 +40,7 @@
       <span id="updated" class="dim"></span>
     </div>
     <p id="strip-detail" class="dim"></p>
+    <p id="pulse" class="dim"></p>
   </div>
   <div id="bars">
     <div class="bar"><span class="blabel">milestone</span><div class="track"><div id="progress-fill" class="fill"></div></div><span id="progress-text" class="dim"></span></div>
@@ -67,6 +68,10 @@
   </details>
   <div id="supervisors" class="row hidden appears"></div>
 </section>
+<section id="activity-band" class="band">
+  <h2><span class="who">Activity</span> <span class="hint">one dot per post, a lane per voice, the last ninety minutes; a dot opens its turn</span></h2>
+  <svg id="timeline" role="img" aria-label="the coordination thread over time, one dot per post"></svg>
+</section>
 <template id="ask">
   <li class="ask appears">
     <div class="afrom"><span class="aparty"></span> <span class="awhen dim"></span> <span class="awhere dim"></span></div>
@@ -80,13 +85,15 @@
   <svg id="task-graph" role="img" aria-label="everything that touched this issue"></svg>
   <ul id="task-tree" class="hidden"></ul>
 </dialog>
-<main id="live">
+<main id="live" class="no-convo">
   <section id="work" class="column">
-    <h2><span class="who">Work</span> <span class="hint">to-do to done; a verb fills the bar, nothing runs until Run</span></h2>
+    <h2><span class="who">Work</span> <span class="hint">to-do to done; a verb fills the bar, nothing runs until Run</span>
+      <button type="button" id="convo-toggle" title="The agents' conversation, as a column beside the work.">Show conversation</button></h2>
     <div id="issues" class="kanban"></div>
   </section>
   <section id="conversation" class="column" data-filter="quiet">
     <h2><span class="who">Conversation</span> <span class="hint">what the agents are saying to each other</span>
+      <button type="button" id="convo-hide" title="Hide the conversation; the work takes the width.">Hide</button>
       <button type="button" id="newest" class="hidden" title="You scrolled up; press to follow the newest turn again.">↓ newest</button>
       <label class="hint" for="convo-filter">show</label>
       <select id="convo-filter" aria-label="conversation filter"
@@ -103,7 +110,6 @@
   <button type="button" class="tab" data-tab="streams">Transcripts</button>
   <button type="button" class="tab" data-tab="pulls-panel">Pull requests</button>
   <button type="button" class="tab" data-tab="agreements-panel">Agreements</button>
-  <button type="button" class="tab" data-tab="activity">Activity</button>
   <button type="button" class="tab" data-tab="act">Act</button>
   <button type="button" class="tab" data-tab="config">Settings</button>
   <button type="button" id="drawer-close" class="hidden" title="close (Escape)">×</button>
@@ -121,7 +127,6 @@
     <label id="finished" title="Transcripts of processes that have ended are hidden by default, so what is running is in front; tick to see them too."><input type="checkbox" id="show-finished"> show finished</label>
   </div></div>
   <div id="pulls-panel" class="tabpane hidden"><div class="panel"><h2>Pull requests <span class="hint">hover a row for why a verb is missing</span></h2><div id="pulls"></div></div></div>
-  <div id="activity" class="tabpane hidden"><div class="panel"><h2>Activity <span class="hint">one dot per post, a lane per voice, the last ninety minutes</span></h2><svg id="timeline" role="img" aria-label="the coordination thread over time, one dot per post"></svg></div></div>
   <div id="agreements-panel" class="tabpane hidden"><div class="panel"><h2>Agreements <span class="hint">what the groups proposed and settled</span></h2><div id="agreements"></div></div></div>
   <div id="act" class="tabpane hidden">
     <form id="bar" autocomplete="off">

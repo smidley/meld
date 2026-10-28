@@ -39,7 +39,7 @@ from meld.prompts import ROLES
 from meld.results import ResultsError
 from meld.runners import freeze_path, read_record, supervisor_path, processes
 from meld.state import liveness, pid_alive, proc_start_of
-from meld.chat import agent_rows, decisions, headline, journeys, progress_line, status_strip, thread_entries
+from meld.chat import activity, agent_rows, decisions, headline, journeys, progress_line, status_strip, thread_entries
 from meld.limits import freeze_view, usage_totals
 from meld.status import build_status
 from meld.transcript import total_bytes
@@ -434,13 +434,24 @@ class Viewer:
         last_post_at = max((t["at"] for t in thread), default=None)
         grace = getattr(cfg, "runners_silence_grace_minutes", None) or getattr(cfg, "silence_grace_minutes", 15)
         tz = self.tz or datetime.now().astimezone().tzinfo or timezone.utc
+        # plan 58: what every live process is doing and when it last wrote, so a quiet page still reads as alive
+        adapters = {}
+        for g in cfg.groups.values():
+            try:
+                adapters[g.name] = self.ctx.adapter_for(g.cli)
+            except UnknownAdapter:
+                pass
+        act = activity(st.discover(cfg, home, alive=self.alive, start_of=self.start_of), adapters, now)
+        pulse = max(act.values(), key=lambda a: a["at"], default=None)
         return _json(200, {"status": status, "supervisors": supervisors, "frozen": frozen, "thread": thread,
                            "processes": procs,
                            "setup": self._setup(cfg, supervisors), "config_error": self._config_error,
                            "journeys": journeys(status, now), "progress": progress_line(status, now),
                            "limits": limits,
                            "decisions": pending, "headline": headline(status, pending),
-                           "strip": status_strip(status, pending, procs, limits, now, last_post_at=last_post_at, silence_grace_minutes=grace, tz=tz),
+                           "strip": status_strip(status, pending, procs, limits, now, last_post_at=last_post_at, silence_grace_minutes=grace, tz=tz,
+                                                 activity_at=pulse["at"] if pulse else None),
+                           "activity": act, "pulse": pulse,
                            "agents": agent_rows(status, procs, limits, now, tz=tz),
                            "last_post_at": last_post_at, "silence_grace_minutes": grace,
                            "disk": {"free_mb": free_mb, "warn_free_mb": cfg.logs_warn_free_mb},

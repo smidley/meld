@@ -1123,7 +1123,7 @@ def test_the_page_is_laid_out_as_header_decisions_conversation_work_and_a_tab_dr
     # plan 57: the conversation is a sticky column beside the work, scrolling on its own; the lanes drop to two when the work
     # column is narrow (a container query after the four-lane rule, so it wins) and the pair stacks on a narrow viewport
     assert "grid-template-columns: minmax(0, 1fr) clamp(" in css.split("#live {")[1].split("}")[0]
-    assert "position: sticky" in css.split("#conversation {")[1].split("}")[0] and "container-type: inline-size" in css.split("#work {")[1].split("}")[0]
+    assert "position: sticky" in css.split("\n#conversation {")[1].split("}")[0] and "container-type: inline-size" in css.split("#work {")[1].split("}")[0]
     assert css.index("#issues.kanban { display: grid; grid-template-columns: repeat(4") < css.index("@container (max-width: 820px) { #issues.kanban")
     assert "#live { grid-template-columns: minmax(0, 1fr); }" in css.split("@media (max-width: 980px) {")[1].split("@media")[0]
     # plan 57: the milestone bar and the budget bars are rows, so no browser can lay them over each other
@@ -1465,3 +1465,18 @@ def test_the_state_carries_the_status_strip_and_the_agent_rows(tmp_path):
     assert set(rows) == {"claude", "codex"} and set(rows["claude"]) == {"group", "state", "summary", "doing", "frozen_until", "restarts", "cost_usd", "tokens", "runs"}
     assert rows["claude"]["state"] == "frozen" and rows["claude"]["frozen_until"] == "3:09 pm"
     assert rows["codex"]["state"] == "running" and rows["codex"]["summary"] == "running · orchestrator ok · PM ok, restarted 38 times" and rows["codex"]["restarts"] == 38
+    # plan 58: what each live process is doing and when it last wrote, and the newest of them as the pulse
+    log = home / "logs" / "codex" / "pm-1.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("hello\n")
+    write_record(role_run_path(home, "codex", "pm"), {"pid": 4244, "started_at": NOW, "proc_start": "T0", "launch_no": 39, "reason": "crash", "log_path": str(log)})
+    v._state_cache = None
+    state = body(get(v, "/api/state"))
+    assert state["activity"]["codex/pm"]["who"] == "codex PM" and state["activity"]["codex/pm"]["now"] == "wrote a message"
+    assert state["pulse"] == state["activity"]["codex/pm"]
+    html, js, css = (get(v, p).body.decode() for p in ("/", "/static/app.js", "/static/app.css"))
+    assert 'id="pulse"' in html and "function ago(" in js and "tickAges()" in js and "#pulse:empty" in css
+    # plan 58: the activity dots are a band on the page, above the work, and the conversation is hidden until asked for
+    assert 'data-tab="activity"' not in html and html.index('id="activity-band"') < html.index('id="timeline"') < html.index('id="work"')
+    assert '<main id="live" class="no-convo">' in html and 'id="convo-toggle"' in html and "#live.no-convo #conversation { display: none; }" in css
+    assert "function showConversation(" in js and 'localStorage.getItem("meld.conversation")' in js

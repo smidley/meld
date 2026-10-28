@@ -88,6 +88,9 @@ a:hover { text-decoration-color: currentColor; }
 #updated { margin-left: auto; font: var(--t-meta); color: var(--fg-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
 #strip-detail { margin: 2px 0 0 18px; font: var(--t-meta); color: var(--fg-2); }
 #strip-detail:empty { display: none; }
+/* plan 58: the newest sign of life, its age counting up on the page */
+#pulse { margin: 2px 0 0 18px; font: var(--t-meta); color: var(--fg-3); }
+#pulse:empty { display: none; }
 /* the setup wizard (plan 32): shown instead of the board until the repository is set up */
 body.setup > :not(#wizard) { display: none; }
 #wizard { max-width: 46rem; margin: 24px auto; padding: 0 16px; }
@@ -143,8 +146,9 @@ body.setup > :not(#wizard) { display: none; }
 @keyframes ring { 0%, 100% { stroke-opacity: 1; } 50% { stroke-opacity: 0.45; } }
 
 /* ---- the timeline (the drawer's Activity tab): a lane per voice, a dot per post ---- */
-#activity { overflow: auto; padding: var(--s3) var(--gutter); }
-#timeline { display: block; margin: var(--s3) 0 0; max-width: 100%; height: auto; }
+/* plan 58: the activity dots are a band on the page again (the owner wanted them always in view), not a drawer tab */
+#activity-band { padding-bottom: var(--s2); }
+#timeline { display: block; margin: 0 var(--s4); max-width: calc(100% - 2 * var(--s4)); height: auto; }
 #timeline text { font: var(--t-meta); fill: var(--fg-2); }
 #timeline .sub { fill: var(--fg-2); }
 #timeline .tick { fill: var(--fg-3); font-size: 11px; }
@@ -202,6 +206,12 @@ body.setup > :not(#wizard) { display: none; }
 /* plan 57: the work lanes on the left, the conversation as a sticky column on the right that keeps its own scroll; the
    page scrolls the work. The lanes drop to two when the work column is narrow; a narrow viewport stacks the two again. */
 #live { display: grid; grid-template-columns: minmax(0, 1fr) clamp(22rem, 30vw, 34rem); gap: var(--s3); padding: var(--s3) var(--gutter); align-items: start; }
+/* plan 58: hidden by default; Show conversation in the work's heading brings it back, and the choice is remembered */
+#live.no-convo { grid-template-columns: minmax(0, 1fr); }
+#live.no-convo #conversation { display: none; }
+#convo-toggle, #convo-hide { font: var(--t-meta); color: var(--fg-2); background: var(--bg-3); border: 0; border-radius: var(--r-pill); padding: 2px 10px; cursor: pointer; margin-left: auto; }
+#convo-toggle:hover, #convo-hide:hover { color: var(--fg); }
+#conversation h2 #convo-hide { margin-left: 0; }
 .column { display: flex; flex-direction: column; background: var(--bg-1); border: 0; border-radius: var(--r-card); min-height: 0; }
 .column h2 { margin: 0; padding: var(--s3) var(--s4) var(--s2); font: var(--t-section); border-bottom: 0; display: flex; gap: var(--s2); align-items: baseline; flex-wrap: wrap; }
 .column h2 .who { color: var(--fg); }

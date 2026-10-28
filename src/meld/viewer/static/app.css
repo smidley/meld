@@ -104,7 +104,9 @@ body.setup > :not(#wizard) { display: none; }
 #wizard ol li.done { color: var(--ok); }
 #wizard ol li.bad { color: var(--bad); }
 #wizard ol code { font-family: var(--mono); background: var(--bg-2); padding: 0 4px; border-radius: 3px; }
-#bars { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s5); align-items: center; margin: 0; font: var(--t-meta); }
+/* plan 57: the milestone bar and the budget bars are rows, never one line, so nothing can overlap; the progress text wraps */
+#bars { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s1); margin: 0; font: var(--t-meta); }
+#progress-text { white-space: normal; min-width: 0; }
 #budget-bars { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s4); }
 .bar { display: flex; align-items: center; gap: var(--s2); white-space: nowrap; }
 .bar .blabel { color: var(--fg-3); min-width: 7ch; }
@@ -197,16 +199,17 @@ body.setup > :not(#wizard) { display: none; }
 #reply.hidden { display: none; }
 
 /* ---- the live pair ---- */
-/* plan 49: the work lanes take the full width above the conversation, which gets the rest of the height */
-#live { display: flex; flex-direction: column; gap: var(--s3); padding: var(--s3) var(--gutter); }
+/* plan 57: the work lanes on the left, the conversation as a sticky column on the right that keeps its own scroll; the
+   page scrolls the work. The lanes drop to two when the work column is narrow; a narrow viewport stacks the two again. */
+#live { display: grid; grid-template-columns: minmax(0, 1fr) clamp(22rem, 30vw, 34rem); gap: var(--s3); padding: var(--s3) var(--gutter); align-items: start; }
 .column { display: flex; flex-direction: column; background: var(--bg-1); border: 0; border-radius: var(--r-card); min-height: 0; }
 .column h2 { margin: 0; padding: var(--s3) var(--s4) var(--s2); font: var(--t-section); border-bottom: 0; display: flex; gap: var(--s2); align-items: baseline; flex-wrap: wrap; }
 .column h2 .who { color: var(--fg); }
 .column h2 .hint { flex: 1 1 24ch; min-width: 0; }
 .column.ended { opacity: 0.6; }
-#work { min-width: 0; }
-#conversation { min-width: 0; }
-#turns { max-height: 72vh; }   /* the one inner scroll left: the list follows its newest turn */
+#work { min-width: 0; container-type: inline-size; }
+#conversation { min-width: 0; position: sticky; top: var(--s3); height: calc(100vh - 40px - 2 * var(--s3)); }
+#turns { max-height: none; }   /* the one inner scroll left: the list follows its newest turn */
 #conversation h2 select { margin-left: auto; }
 #turns li { display: block; padding: var(--s3) var(--s4); border-bottom: 1px solid var(--line); transition: background var(--d-ui) var(--ease); }
 #turns li:last-child { border-bottom: 0; }
@@ -427,7 +430,14 @@ details[open]::details-content { height: auto; }
   .icard .journey { gap: 2px; }
   .icard .jstep { font-size: 10px; }
 }
-@media (max-width: 980px) { #issues.kanban { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s4); } }
+/* after the four-lane rule, so it wins: the lanes drop to two when the work column itself is narrow */
+@container (max-width: 820px) { #issues.kanban { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s4); } }
+@media (max-width: 980px) {
+  #issues.kanban { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s4); }
+  #live { grid-template-columns: minmax(0, 1fr); }
+  #conversation { position: static; height: auto; }
+  #turns { max-height: 72vh; }
+}
 @media (max-width: 900px) {
   :root { --gutter: 12px; }
   .column h2 .hint, #decisions h2 .hint { display: none; }

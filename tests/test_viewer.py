@@ -1419,6 +1419,9 @@ def test_the_viewer_in_setup_mode_serves_the_wizard_the_app_flow_and_then_become
         assert get(v, f"/setup/app/{g}/callback?state={flow.state}&code=c").status == 200
         assert get(v, f"/setup/app/{g}/installed?installation_id=99").status == 200
     assert body(get(v, "/api/setup"))["apps"]["codex"]["installed"] is True
+    # The install callbacks started both groups, so the next poll is already the board (plan 45: before this the page
+    # reloaded forever, because only the start button's own request adopted the board).
+    assert launched == ["claude", "codex"] and body(get(v, "/api/setup"))["mode"] == "board"
     # step 3: start, and the viewer becomes the board
     out = body(post("/api/setup", {"step": "start"}))
     assert launched == ["claude", "codex"] and out["board"] is True

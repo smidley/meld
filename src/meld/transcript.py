@@ -98,6 +98,23 @@ def last_text_of_kind(log_path, adapter, now: str, kind: str) -> str:
     return ""
 
 
+def last_meta_of_kind(log_path, adapter, now: str, kind: str) -> dict:
+    """The meta of the newest event of `kind` in a transcript, or {}."""
+    reader = Tail(log_path)
+    events = reader.read(adapter.parse_events, now) + reader.flush(adapter.parse_events, now)
+    for event in reversed(events):
+        if event.kind == kind:
+            return dict(event.meta or {})
+    return {}
+
+
+def session_id_of(log_path, adapter, now: str) -> str | None:
+    """The CLI's own id for the session a transcript records (Codex's `thread_id`, Claude Code's `session_id`), so a
+    role can be relaunched as that session continued (plan 55); None when the transcript names none."""
+    meta = last_meta_of_kind(log_path, adapter, now, "run_started")
+    return str(meta.get("thread_id") or meta.get("session_id") or "") or None
+
+
 def capacity_text(log_path, adapter, now: str) -> str:
     """What the CLI said when the model was at capacity -- the last `capacity` event's text -- or "" when the transcript
     shows none (plan 50). A session that died of it is relaunched after a fixed pause, never treated as a crash or a failure."""

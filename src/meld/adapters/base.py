@@ -32,6 +32,7 @@ class LaunchSpec:
     env: dict[str, str]
     max_turns: int
     cli_config: dict = field(default_factory=dict)   # the group's own settings for this CLI ([groups.<g>.cli_config])
+    resume: str | None = None                        # a previous session of this role to continue instead of starting afresh (plan 55)
 
 
 class Adapter(Protocol):
@@ -58,6 +59,8 @@ class Adapter(Protocol):
     def login_status(self, stdout: str, stderr: str, returncode: int) -> tuple[bool | None, str]: ...
 
     def worker_notes(self) -> str: ...            # what a worker of this CLI must know about where it runs (its sandbox); "" when nothing
+
+    def can_resume(self) -> bool: ...             # can `launch` continue a previous session named by LaunchSpec.resume (plan 55)
     # (True, detail) logged in, (False, detail) logged out, (None, detail) an answer the adapter cannot read -- the words
     # are the oracle, never the exit code alone, so `meld doctor` can report NOT MEASURED rather than guess
 

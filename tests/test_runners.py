@@ -958,3 +958,34 @@ def test_run_group_relaunches_a_role_whose_model_was_at_capacity_after_a_fixed_p
     rec = read_record(role_run_path(tmp_path / "home", "claude", "orchestrator"))
     assert rec["reason"] == "capacity"
     assert processes(ctx.cfg, tmp_path / "home", alive=lambda pid: False, start_of=lambda pid: "")["claude"]["roles"]["orchestrator"]["reason"] == "capacity"
+
+
+def test_run_group_relaunches_a_clean_exit_as_the_same_session_continued(tmp_path):
+    """Plan 55: the maze run's codex PM launched 48 times in three hours, each launch re-reading a ten-thousand-token prompt
+    and the thread (65M input tokens). After a clean exit a role that named its session is relaunched as that session
+    continued, with only the launch block as its prompt; a crash starts afresh; an adapter that cannot resume is untouched."""
+    from meld.runners import MAX_RESUMES, RESUMABLE_REASONS
+    _, ctx, env = make(tmp_path)
+    adapter = FakeAdapter(script="print('session: sess-42'); import sys; sys.exit(0)", resumable=True)
+    clock = Clock()
+
+    def sleep(s):
+        clock.t += 61.0   # every pause is a virtual minute, so each exit is a clean one
+        time.sleep(0.05)
+
+    out = run_group(ctx, adapter=adapter, cycles=3, interval=0.01, sleep=sleep, clock=clock, base_env=env)
+    assert out["roles"]["pm"]["launches"] >= 2
+    first, second = [s for s in adapter.launches if s.role == "pm"][:2]
+    assert first.resume is None and "## Your roster" in first.prompt
+    assert second.resume == "sess-42" and "## Your roster" not in second.prompt and "your own previous session, continued" in second.prompt
+    assert "- Reason: `exit` (" in second.prompt and len(second.prompt) < 600
+    rec = read_record(role_run_path(tmp_path / "home", "claude", "pm"))
+    assert rec["session"] == "sess-42"
+    # a crash starts afresh, and an adapter that cannot resume never gets a session to continue
+    crashing = FakeAdapter(script="print('session: sess-43'); import sys; sys.exit(1)", resumable=True)
+    run_group(ctx, adapter=crashing, cycles=3, interval=0.01, sleep=sleep, clock=clock, base_env=env)
+    assert all(s.resume is None for s in crashing.launches)
+    plain = FakeAdapter(script="print('session: sess-44'); import sys; sys.exit(0)")
+    run_group(ctx, adapter=plain, cycles=3, interval=0.01, sleep=sleep, clock=clock, base_env=env)
+    assert all(s.resume is None for s in plain.launches)
+    assert MAX_RESUMES == 24 and RESUMABLE_REASONS == ("exit", "capacity")

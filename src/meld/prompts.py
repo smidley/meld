@@ -46,6 +46,14 @@ def launch_block(launch_no: int, reason: str) -> list[str]:
             f"- Reason: `{reason}` ({_REASON_TEXT[reason]})"]
 
 
+def continue_prompt(launch_no: int, reason: str) -> str:
+    """What a resumed session is told (plan 55): the launch block and nothing else, since everything else is still in its
+    context. The role prompt costs ten thousand tokens a launch; this costs fifty."""
+    return "\n".join([*launch_block(launch_no, reason), "",
+                      "This is your own previous session, continued: your context, the board and your loop are as you left them. "
+                      "Run `meld status` and carry on; post `RESUMED` only when the reason above says so."])
+
+
 def role_prompt(role: str, cfg: Config, group: GroupConfig, repo_root: Path, *, roster_entries: list[WorkerType] | None = None,
                 launch_no: int = 1, reason: str = "start") -> str:
     if role not in ROLES:

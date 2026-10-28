@@ -225,3 +225,11 @@ def test_parse_events_turns_an_overloaded_result_into_a_capacity_event():
                        "result": 'API Error: 529 {"type":"overloaded_error","message":"Overloaded"}'})
     (event,) = ClaudeAdapter().parse_events(line, NOW)
     assert (event.kind, event.ok) == ("capacity", False) and "529" in event.text
+
+
+def test_a_resume_continues_the_roles_own_session(tmp_path: Path):
+    """Plan 55."""
+    from dataclasses import replace
+    argv = ClaudeAdapter().argv(replace(spec(tmp_path), resume="sess-1", prompt="carry on"))
+    assert argv[argv.index("--resume") + 1] == "sess-1" and argv[argv.index("-p") + 1] == "carry on" and ClaudeAdapter().can_resume() is True
+    assert "--resume" not in ClaudeAdapter().argv(spec(tmp_path))

@@ -171,6 +171,9 @@ class StateStore:
             timed_out=bool(data.get("timed_out", False)), head_sha=str(data.get("head_sha", "")),
             worker=str(data.get("worker", "")), proc_start=str(data.get("proc_start", "")),
             outcome=(str(data["outcome"]) if data.get("outcome") is not None else None),
+            # plan 50's cooldown instant and plan 55's attempt count: written by collect and dispatch, and until now
+            # dropped on every read, so the capacity cooldown never held and no count ever climbed past 1
+            ended_at=str(data.get("ended_at", "")), attempt=max(1, int(data.get("attempt", 1) or 1)),
         )
 
     def _note_error(self, note: str) -> None:

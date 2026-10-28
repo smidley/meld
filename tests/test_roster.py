@@ -97,3 +97,13 @@ def test_product_skills_skip_a_symlinked_skills_root(tmp_path):
     (real / ".meld" / "skills" / "real").mkdir(parents=True)
     (real / ".meld" / "skills" / "real" / "SKILL.md").write_text("---\nname: real\ndescription: An actual directory.\n---\n")
     assert [s.name for s in product_skills(real)] == ["real"]
+
+
+def test_brief_is_one_sentence_of_at_most_120_characters():
+    """Plan 55: the role prompt carried 24k characters of skill descriptions on every launch; one line each now."""
+    from meld.roster import BRIEF_CHARS, brief
+    assert brief("Launch copy and positioning.") == "Launch copy and positioning."
+    assert brief("Set up AI Runway on AKS from bare cluster to running model. Covers cluster verification, controller install and more.") == "Set up AI Runway on AKS from bare cluster to running model."
+    long = "word " * 60
+    assert len(brief(long)) == BRIEF_CHARS and brief(long).endswith("…")
+    assert brief("  spaced\n\nout   text  ") == "spaced out text" and brief("") == ""

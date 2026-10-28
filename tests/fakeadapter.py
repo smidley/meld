@@ -19,6 +19,7 @@ class FakeAdapter:
     name: str = "fake"
     launches: list[LaunchSpec] = field(default_factory=list)
     login: bool | None = True   # what the fake CLI answers `login_argv`: True/False, or None for an answer nobody can read
+    resumable: bool = False     # plan 55: whether `launch` may be asked to continue a session (LaunchSpec.resume)
 
     def launch(self, spec: LaunchSpec):
         self.launches.append(spec)
@@ -53,11 +54,17 @@ class FakeAdapter:
         word = stdout.strip()
         return {"True": True, "False": False}.get(word), {"True": "logged in", "False": "not logged in"}.get(word, "unrecognised answer")
 
+    def can_resume(self) -> bool:
+        return self.resumable
+
     def parse_events(self, line: str, now: str) -> list[Event]:
         """The fake CLI writes plain text, so every line is one message -- except a line saying the quota is gone,
-        which every real adapter turns into `usage_limit` and so must this one, or no test could drive a freeze."""
+        which every real adapter turns into `usage_limit` and so must this one, or no test could drive a freeze; and a
+        line `session: <id>` names the session the way a real CLI's first event does (plan 55)."""
         if not line.strip():
             return []
+        if line.startswith("session: "):
+            return [Event(seq=0, at=now, kind="run_started", text=cap(line), meta={"session_id": line[9:].strip()})]
         if is_limit(line):
             return limit_event(now, line)
         if is_capacity(line):

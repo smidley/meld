@@ -75,6 +75,20 @@ class CodexAdapter:
         self.home = home or Path.home()
 
     def argv(self, spec: LaunchSpec) -> list[str]:
+        if spec.resume:
+            # Plan 55: a role relaunched after a clean exit continues its own thread (`codex exec resume`): its context is
+            # cached and only the short continue prompt travels, instead of the whole role prompt and the thread again.
+            # `resume` takes no sandbox or directory flags; both come from the session being resumed.
+            return [
+                self.binary, "exec", "resume", spec.resume,
+                "-m", spec.model,
+                "-c", f'model_reasoning_effort="{spec.effort}"',
+                *override_args(spec.cli_config),
+                "--json",
+                "-o", str(spec.cwd / LAST_MESSAGE_FILE),
+                "--ignore-user-config",
+                spec.prompt,
+            ]
         return [
             self.binary, "exec",
             "-m", spec.model,
@@ -85,9 +99,13 @@ class CodexAdapter:
             "--json",
             "-o", str(spec.cwd / LAST_MESSAGE_FILE),
             "--ignore-user-config",
-            "--ephemeral",
+            # A role's session is kept on disk so it can be resumed (plan 55); a worker's is ephemeral as before.
+            *([] if spec.role in TRUSTED_ROLES else ["--ephemeral"]),
             spec.prompt,
         ]
+
+    def can_resume(self) -> bool:
+        return True
 
     def env_for(self, spec: LaunchSpec) -> dict[str, str]:
         return dict(spec.env)

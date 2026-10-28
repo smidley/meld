@@ -6,7 +6,7 @@ from pathlib import Path
 
 from meld.brief import product_standards, product_context
 from meld.config import Config, GroupConfig
-from meld.roster import WorkerType, roster
+from meld.roster import WorkerType, brief, roster
 
 ROLES = ("orchestrator", "pm")
 LAUNCH_REASONS = ("start", "exit", "crash", "recycle", "limit", "capacity")
@@ -46,6 +46,14 @@ def launch_block(launch_no: int, reason: str) -> list[str]:
             f"- Reason: `{reason}` ({_REASON_TEXT[reason]})"]
 
 
+def continue_prompt(launch_no: int, reason: str) -> str:
+    """What a resumed session is told (plan 55): the launch block and nothing else, since everything else is still in its
+    context. The role prompt costs ten thousand tokens a launch; this costs fifty."""
+    return "\n".join([*launch_block(launch_no, reason), "",
+                      "This is your own previous session, continued: your context, the board and your loop are as you left them. "
+                      "Run `meld status` and carry on; post `RESUMED` only when the reason above says so."])
+
+
 def role_prompt(role: str, cfg: Config, group: GroupConfig, repo_root: Path, *, roster_entries: list[WorkerType] | None = None,
                 launch_no: int = 1, reason: str = "start") -> str:
     if role not in ROLES:
@@ -69,7 +77,7 @@ def role_prompt(role: str, cfg: Config, group: GroupConfig, repo_root: Path, *, 
         "", "## Your roster", "",
     ]
     entries = roster_entries if roster_entries is not None else roster(repo_root)
-    lines += [f"- `{w.name}` ({w.source}): {w.description}" for w in entries]
+    lines += [f"- `{w.name}` ({w.source}): {brief(w.description)}" for w in entries]
     lines += ["", "## Commands available", ""] + [f"- `{c}`" for c in COMMANDS]
     lines += ["", *launch_block(launch_no, reason)]
     return "\n".join([_read("_preamble.md").strip(), "", _read(f"{role}.md").strip(), "", *lines, ""])

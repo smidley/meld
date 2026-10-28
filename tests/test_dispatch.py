@@ -872,3 +872,35 @@ def test_a_codex_worker_is_told_its_sandbox_cannot_launch_a_browser_and_a_claude
     from meld.dispatch import worker_notes
     assert "cannot launch a browser" in CodexAdapter().worker_notes() and "Do not report `blocked` for a browser" in CodexAdapter().worker_notes()
     assert ClaudeAdapter().worker_notes() == "" and worker_notes(FakeAdapter()) == "" and worker_notes(CodexAdapter()).startswith("This worker runs")
+
+
+def test_a_build_record_counts_its_attempt_and_the_store_keeps_it_and_the_cooldown_instant(tmp_path):
+    """Plan 55: the attempt count carries over from the previous build record on the issue (a capacity stop is a pause, not
+    an attempt), and the store reads `attempt` and plan 50's `ended_at` back, which it had been dropping."""
+    from dataclasses import replace
+    from meld.board import RunRecord
+    from meld.state import StateStore
+    from tests.factories import mk_run
+    store = StateStore(tmp_path / "home", "claude", "pm")
+    rec = replace(mk_run("claude", 7, alive=False, collected=True, outcome="capacity"), ended_at="2026-10-28T19:42:00Z", attempt=2)
+    store.write_run(rec)
+    back = store.load_runs(alive=lambda pid: False)["claude"][7]
+    assert back.ended_at == "2026-10-28T19:42:00Z" and back.attempt == 2
+    fake, ctx, repo, origin = make_product(tmp_path / "p")
+    claim_issue_11(fake)
+    first = dispatch(ctx, 11, adapter=FakeAdapter(script=DONE_SCRIPT), now=NOW)
+    wait_for_exit(first["pid"])
+    rec_path = tmp_path / "p" / "home" / "runs" / "claude" / "11.json"
+    data = json.loads(rec_path.read_text())
+    assert data["attempt"] == 1
+    data.update({"collected": True, "outcome": "blocked"})                     # a blocked build counts; the unchanged tag is allowed after it
+    rec_path.write_text(json.dumps(data))
+    second = dispatch(ctx, 11, adapter=FakeAdapter(script=DONE_SCRIPT), now=NOW)
+    wait_for_exit(second["pid"])
+    assert json.loads(rec_path.read_text())["attempt"] == 2
+    data = json.loads(rec_path.read_text())
+    data.update({"collected": True, "outcome": "capacity", "ended_at": "2026-09-03T11:00:00Z"})   # a pause an hour ago, not an attempt
+    rec_path.write_text(json.dumps(data))
+    third = dispatch(ctx, 11, adapter=FakeAdapter(script=DONE_SCRIPT), now=NOW)
+    wait_for_exit(third["pid"])
+    assert json.loads(rec_path.read_text())["attempt"] == 2

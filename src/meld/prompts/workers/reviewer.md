@@ -14,7 +14,7 @@ Another group built this. Your job is to find what they missed, in this order of
 4. Decide the verdict:
    - `approve` when the PR does what the issue asked, is correct as far as you can tell, and is tested.
    - `request-changes` when something must change and the fix is more than trivial, or when you are not sure how the author would want it fixed. Put each required change in `comments` with `path`, `line`, `body`.
-   - `push-fix` only for small, unambiguous corrections (a typo in a message, a missing null check with an obvious fix, a broken import): make the change, add or adjust the test that covers it, commit with a conventional message that names what you fixed, and describe it in `summary`. A push-fix makes your group the last committer, so your group can no longer approve this head.
+   - `push-fix` only for small, unambiguous corrections, a single commit a reviewer would wave through (a typo in a message, a missing null check with an obvious fix, a broken import); anything larger is `request-changes` with precise findings, because a push makes your group the last committer, which hands the pull request's next round to the author group and costs a build: make the change, add or adjust the test that covers it, commit with a conventional message that names what you fixed, and describe it in `summary`. A push-fix makes your group the last committer, so your group can no longer approve this head.
 5. Make no style-only change requests. Flag Critical and Important issues; put nits in `comments` marked "nit:" and do not let them decide the verdict.
 
 ## Definition of done

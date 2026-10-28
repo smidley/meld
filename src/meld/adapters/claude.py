@@ -52,6 +52,7 @@ class ClaudeAdapter:
     def argv(self, spec: LaunchSpec) -> list[str]:
         return [
             self.binary, "-p", spec.prompt,
+            *(["--resume", spec.resume] if spec.resume else []),   # plan 55: continue the role's own session
             "--model", spec.model,
             "--output-format", "stream-json",
             "--verbose",                       # claude -p refuses stream-json without it
@@ -94,6 +95,9 @@ class ClaudeAdapter:
 
     def worker_notes(self) -> str:
         return ""   # bypassPermissions, no sandbox: a browser, a simulator, anything the user could run
+
+    def can_resume(self) -> bool:
+        return True
 
     def help_argv(self) -> list[str]:
         return [self.binary, "--help"]

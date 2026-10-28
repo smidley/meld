@@ -35,6 +35,7 @@ from meld.plan import plan_ack as do_plan_ack, plan_approve as do_plan_approve, 
 from meld.posting import PostError, post as do_post
 from meld.results import ResultsError
 from meld.review import merge as do_merge, review as do_review
+from meld.roster import brief
 from meld.runners import processes, read_record, run_group, supervisor_path
 from meld.setup import SetupError, setup as do_setup
 from meld.state import CHANGE_KINDS, StateStore, liveness, meld_home, pid_alive, proc_start_of
@@ -399,11 +400,12 @@ def reopen(ctx: click.Context, number: int) -> None:
 
 
 @main.command()
+@click.option("--full", is_flag=True, help="Whole descriptions; the default is one line each, which is what a ROSTER post should carry.")
 @click.pass_context
-def roster(ctx: click.Context) -> None:
-    """List the worker types available to the calling party."""
+def roster(ctx: click.Context, full: bool) -> None:
+    """List the worker types available to the calling party, one line each."""
     c = _load(ctx)
-    emit([{"name": w.name, "description": w.description, "source": w.source} for w in _guard(c.roster_entries)], ctx.obj["pretty"])
+    emit([{"name": w.name, "description": w.description if full else brief(w.description), "source": w.source} for w in _guard(c.roster_entries)], ctx.obj["pretty"])
 
 
 @main.command()

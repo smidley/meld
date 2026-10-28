@@ -187,3 +187,16 @@ def test_parse_events_turns_a_model_at_capacity_into_a_capacity_event_not_a_cli_
                  '{"type": "error", "message": "Selected model is at capacity. Please try a different model."}'):
         (event,) = CodexAdapter().parse_events(line, NOW)
         assert (event.kind, event.ok) == ("capacity", False) and "at capacity" in event.text
+
+
+def test_a_role_launch_keeps_its_session_and_a_resume_continues_it(tmp_path: Path):
+    """Plan 55: a role's session is kept on disk (no --ephemeral) so the supervisor can relaunch it as `codex exec resume`,
+    with only the short continue prompt; a worker's stays ephemeral; `resume` takes no sandbox or directory flags."""
+    from dataclasses import replace
+    worker = spec(tmp_path)
+    role = replace(worker, role="pm")
+    assert "--ephemeral" in CodexAdapter().argv(worker) and "--ephemeral" not in CodexAdapter().argv(role)
+    argv = CodexAdapter().argv(replace(role, resume="0199a-thread", prompt="carry on"))
+    assert argv[:4] == ["codex", "exec", "resume", "0199a-thread"] and argv[-1] == "carry on"
+    assert "-s" not in argv and "-C" not in argv and "--json" in argv and "--ignore-user-config" in argv and argv[argv.index("-m") + 1] == "gpt-5.6-terra"
+    assert CodexAdapter().can_resume() is True

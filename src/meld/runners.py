@@ -18,9 +18,9 @@ from meld.config import GroupConfig, Party, extra_env
 from meld.dispatch import DispatchError
 from meld.github import GitHubError
 from meld.grammar import Header, compose
-from meld.prompts import ROLES, role_prompt
+from meld.prompts import ROLES, continue_prompt, role_prompt
 from meld.state import liveness, pid_alive, proc_start_of
-from meld.transcript import Tail, capacity_text
+from meld.transcript import Tail, capacity_text, session_id_of
 
 ROLE_MAX_TURNS = 10000
 _MAX_BACKOFF = 300.0
@@ -33,6 +33,8 @@ _MAX_BACKOFF = 300.0
 # "crash" each time, posted RESUMED on every relaunch.
 CLEAN_EXIT_SECONDS = 60.0
 CAPACITY_PAUSE_SECONDS = 60.0   # plan 50: a role whose model was at capacity is relaunched after this, not on the crash backoff
+MAX_RESUMES = 24                # plan 55: a session is continued this many launches in a row, then started afresh to bound its context
+RESUMABLE_REASONS = ("exit", "capacity")   # a crash or a recycle starts afresh: the context may be the problem
 # How long a freeze is ever believed, whatever instant the CLI's own prose named. A limit message is prose, and
 # one stray timestamp in it ("...you have reached your usage limit for GitHub API requests; the milestone closes
 # 2026-12-01T00:00:00Z") would otherwise freeze a role until December: the freeze is persisted, survives every
@@ -59,6 +61,7 @@ class RoleProcess:
     launches: int = 1
     last_exit: int | None = None
     reason: str = "start"
+    resumes: int = 0                 # how many launches in a row continued the same session (plan 55)
 
 
 def role_env(ctx, group: GroupConfig, role: str, *, base_env: dict | None = None) -> dict[str, str]:
@@ -72,9 +75,10 @@ def role_env(ctx, group: GroupConfig, role: str, *, base_env: dict | None = None
 
 
 def launch_role(ctx, group: GroupConfig, adapter: Adapter, role: str, *, base_env: dict | None = None, clock=time.monotonic,
-                launch_no: int = 1, reason: str = "start") -> RoleProcess:
+                launch_no: int = 1, reason: str = "start", resume: str | None = None) -> RoleProcess:
     """Start one role session. `launch_no` and `reason` (start, exit, crash, recycle) go into the prompt's
-    `## This launch` block so the role knows whether to announce itself."""
+    `## This launch` block so the role knows whether to announce itself. With `resume` (a session id the adapter can
+    continue, plan 55) the session is the previous one carried on and the prompt is only the launch block."""
     if role not in ROLES:
         raise ValueError(f"role must be one of {', '.join(ROLES)}")
     cfg_role = group.orchestrator if role == "orchestrator" else group.pm
@@ -84,11 +88,14 @@ def launch_role(ctx, group: GroupConfig, adapter: Adapter, role: str, *, base_en
         # Assembling the prompt is as much of the launch as spawning it, and reads as many files: the preamble,
         # the role prompt, the product's standards. A filesystem error in any of them is the same failure as a
         # log file that cannot be opened, so it is inside this `try` and becomes the same DispatchError.
-        ctx.refresh_roster()  # a skill installed or a product worker file added since the last launch belongs in this prompt
-        prompt = role_prompt(role, ctx.cfg, group, ctx.repo_root, roster_entries=ctx.roster_entries(), launch_no=launch_no, reason=reason)
+        if resume:
+            prompt = continue_prompt(launch_no, reason)
+        else:
+            ctx.refresh_roster()  # a skill installed or a product worker file added since the last launch belongs in this prompt
+            prompt = role_prompt(role, ctx.cfg, group, ctx.repo_root, roster_entries=ctx.roster_entries(), launch_no=launch_no, reason=reason)
         spec = LaunchSpec(role=role, model=cfg_role.model, effort=cfg_role.effort, cwd=ctx.repo_root, prompt=prompt,
                           log_path=log_path, timeout_seconds=ctx.cfg.restart_hours * 3600, env=role_env(ctx, group, role, base_env=base_env),
-                          max_turns=ROLE_MAX_TURNS, cli_config=dict(group.cli_config))
+                          max_turns=ROLE_MAX_TURNS, cli_config=dict(group.cli_config), resume=resume)
         proc = adapter.launch(spec)
     except OSError as e:
         raise DispatchError(f"cannot start {adapter.name}: {e}") from e
@@ -383,7 +390,7 @@ def run_group(ctx, *, adapter: Adapter | None = None, once: bool = False, cycles
         _pause(min(5.0 * (2 ** (errors[role] - 1)), _MAX_BACKOFF))
 
     def _try_launch(role: str, *, launch_no: int, reason: str, restarts: int = 0,
-                    last_exit: int | None = None) -> RoleProcess | None:
+                    last_exit: int | None = None, resume: str | None = None, resumes: int = 0) -> RoleProcess | None:
         """Launch a role, or record the failure, back off, and answer None.
 
         `once` is the exception, because it is a one-shot and not a supervisor: a relaunch is the very thing
@@ -391,7 +398,7 @@ def run_group(ctx, *, adapter: Adapter | None = None, once: bool = False, cycles
         """
         try:
             fresh = launch_role(ctx, group, adp, role, base_env=base_env, clock=clock,
-                                launch_no=launch_no, reason=reason)
+                                launch_no=launch_no, reason=reason, resume=resume)
         except DispatchError as e:
             if once:
                 raise
@@ -403,9 +410,19 @@ def run_group(ctx, *, adapter: Adapter | None = None, once: bool = False, cycles
         pending.pop(role, None)
         _note(role_run_path(ctx.store.home, group.name, role),
               {"pid": fresh.proc.pid, "started_at": wall(), "proc_start": start_of(fresh.proc.pid),
-               "log_path": str(fresh.log_path), "reason": reason, "launch_no": launch_no})
-        fresh.restarts, fresh.last_exit = restarts, last_exit
+               "log_path": str(fresh.log_path), "reason": reason, "launch_no": launch_no, "session": resume})
+        fresh.restarts, fresh.last_exit, fresh.resumes = restarts, last_exit, resumes
         return fresh
+
+    def _session_to_resume(rp: RoleProcess, reason: str, now: str) -> str | None:
+        """The session this role should carry on (plan 55): after a clean exit or a capacity stop, when the adapter can
+        resume, the transcript names a session, and the chain is under MAX_RESUMES. A crash or a recycle starts afresh."""
+        if reason not in RESUMABLE_REASONS or rp.resumes >= MAX_RESUMES:
+            return None
+        can = getattr(adp, "can_resume", None)
+        if not (callable(can) and can()):
+            return None
+        return session_id_of(rp.log_path, adp, now)
 
     def _report(role: str) -> dict:
         """What this role did, for the caller. A role can have no live process -- frozen since before this
@@ -483,8 +500,9 @@ def run_group(ctx, *, adapter: Adapter | None = None, once: bool = False, cycles
             else:
                 restarts, reason = rp.restarts + 1, ("exit" if code == 0 else "crash")
                 _pause(min(5.0 * (2 ** rp.restarts), _MAX_BACKOFF))
+            session = _session_to_resume(rp, reason, now)
             procs[role] = _try_launch(role, launch_no=rp.launches + 1, reason=reason,
-                                      restarts=restarts, last_exit=code)
+                                      restarts=restarts, last_exit=code, resume=session, resumes=rp.resumes + 1 if session else 0)
         elif clock() - rp.started >= ctx.cfg.restart_hours * 3600:
             _terminate(rp.proc, sleep=sleep)
             procs[role] = _try_launch(role, launch_no=rp.launches + 1, reason="recycle",

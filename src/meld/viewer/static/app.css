@@ -31,7 +31,6 @@ body > * { flex: 0 0 auto; }
 #headline { margin: 6px 0 4px; font-size: 16px; font-weight: 500; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
-.card .cwhere { font-size: 12.5px; margin-left: 8px; }
 /* the setup wizard (plan 32): shown instead of the board until the repository is set up */
 body.setup > :not(#wizard) { display: none; }
 #wizard { max-width: 46rem; margin: 24px auto; padding: 0 16px; }
@@ -107,17 +106,29 @@ body.setup > :not(#wizard) { display: none; }
 #supervisors .agent .dot { font-size: 11px; }
 
 /* ---- decisions: one card per thing waiting on the human, first because it is the one place a person has to act ---- */
-#decisions { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 14px 0; }
-.card { flex: 1 1 24rem; max-width: 40rem; background: var(--panel); border: 1px solid var(--warn); border-radius: 6px; padding: 8px 12px; }
-.card .ctitle { color: var(--warn); font-size: 15px; }
-.card .ctitle.link { cursor: pointer; text-decoration: underline dotted; }
-.card .csummary { white-space: pre-wrap; word-break: break-word; margin: 4px 0; max-height: 9rem; overflow-y: auto; }
-.card .cchoices { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 4px; }
-.card .cchoices input { flex: 1 1 12rem; font: inherit; color: var(--fg); background: #222735; border: 1px solid var(--line); border-radius: 3px; padding: 2px 6px; }
-.card .cchoices button { font: inherit; color: var(--fg); background: #222735; border: 1px solid var(--line); border-radius: 3px; padding: 3px 10px; cursor: pointer; }
-.card .cchoices button:hover { border-color: var(--accent); color: var(--accent); }
-.card .coutcome.ok { color: var(--ok); }
-.card .coutcome.bad { color: var(--bad); }
+/* questions for the person, as a conversation (plan 51): one bubble per open question, a reply box under them */
+#decisions { margin: 8px 14px 0; background: var(--panel); border: 1px solid var(--warn); border-radius: 6px; }
+#decisions h2 { margin: 0; padding: 8px 12px; font-size: 14px; border-bottom: 1px solid var(--line); color: var(--warn); }
+#asks { list-style: none; margin: 0; padding: 8px 12px 0; max-height: 40vh; overflow-y: auto; }
+.ask { margin: 0 0 8px; padding: 8px 12px; background: var(--panel2); border: 1px solid var(--line); border-left: 3px solid var(--warn); border-radius: 0 8px 8px 8px;
+       max-width: 60rem; cursor: pointer; }
+.ask.selected { border-color: var(--accent); border-left-color: var(--accent); }
+.ask .afrom { font-size: 12.5px; }
+.ask .aparty { font-weight: 600; border: 1px solid currentColor; border-radius: 10px; padding: 0 8px; }
+.ask .atitle { margin-top: 2px; }
+.ask .atext { white-space: pre-wrap; word-break: break-word; margin-top: 4px; max-height: 12rem; overflow-y: auto; }
+.ask .aquick { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.ask .aquick:empty { display: none; }
+.ask .aquick button, #reply-send button { font: inherit; color: var(--fg); background: #222735; border: 1px solid var(--line); border-radius: 14px; padding: 3px 12px; cursor: pointer; }
+.ask .aquick button:hover, #reply-send button:hover { border-color: var(--accent); color: var(--accent); }
+#reply { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; align-items: end; padding: 6px 12px 10px; border-top: 1px solid var(--line); }
+#reply-to { grid-column: 1 / -1; font-size: 12.5px; }
+#reply-text { font: inherit; color: var(--fg); background: #222735; border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; resize: vertical; min-height: 2.4em; }
+#reply-send { display: flex; gap: 6px; }
+#reply-outcome { grid-column: 1 / -1; font-size: 12.5px; min-height: 1.2em; }
+#reply-outcome.ok { color: var(--ok); }
+#reply-outcome.bad { color: var(--bad); }
+#reply.hidden { display: none; }
 
 /* ---- the live pair ---- */
 /* plan 49: the work lanes take the full width above the conversation, which gets the rest of the height */

@@ -312,10 +312,12 @@ def test_decisions_present_everything_waiting_on_the_human_with_its_choices():
     assert [d["kind"] for d in out] == ["needs_human", "budget", "disagree", "plan_add", "challenge"]
     nh = by_kind["needs_human"]
     assert nh["title"] == "Issue #14 needs you: Issue 14" and "Stripe sandbox key" in nh["summary"]
-    assert [(c["label"], c["body"], c["needs_text"]) for c in nh["choices"]] == [
-        ("Provided", {"verb": "post", "action": "PROVIDED", "ref": "#14"}, True), ("Resolved", {"verb": "post", "action": "RESOLVED", "ref": "#14"}, True)]
-    assert by_kind["budget"]["choices"][0]["body"] == {"verb": "post", "action": "DIRECTIVE", "ref": "dir-1"}   # an old BUDGET with no ref
-    assert [c["body"]["action"] for c in by_kind["disagree"]["choices"]] == ["APPROVE", "DIRECTIVE", "AMEND"] and "claude: A" in by_kind["disagree"]["summary"]
+    # plan 51: a question is a bubble from someone with one typed reply; buttons only where the answer is one word
+    assert nh["choices"] == [] and nh["reply"] == {"verb": "post", "action": "RESOLVED", "ref": "#14"} and nh["from"] == "codex" and "never the value" in nh["hint"]
+    assert "What to do" not in nh["summary"]
+    assert by_kind["budget"]["reply"] == {"verb": "post", "action": "DIRECTIVE", "ref": "dir-1"} and by_kind["budget"]["choices"] == []   # an old BUDGET with no ref
+    assert by_kind["disagree"]["reply"]["action"] == "DIRECTIVE" and [c["body"]["action"] for c in by_kind["disagree"]["choices"]] == ["APPROVE"] and "claude: A" in by_kind["disagree"]["summary"]
+    assert by_kind["plan_add"]["reply"] is None and by_kind["challenge"]["reply"] is None and by_kind["challenge"]["from"] == "codex"
     assert by_kind["plan_add"]["choices"] == [{"label": "Acknowledge", "body": {"verb": "plan-ack", "ref": "plan-add-1"}, "needs_text": False}]
     assert [c["body"] for c in by_kind["challenge"]["choices"]] == [{"verb": "challenge", "action": "uphold", "ref": "#13"}, {"verb": "challenge", "action": "dismiss", "ref": "#13"}]
     # plan 20: each card knows the comment it came from, so the page can jump to that turn
@@ -374,7 +376,7 @@ def test_a_needs_human_about_something_other_than_an_issue_still_waits_on_the_pe
     (card,) = decisions(board, CFG2, HUMAN, NOW)
     assert card["kind"] == "needs_human" and card["ref"] == "#40"
     assert card["title"] == "codex:pm needs you about #40: Meld audit state is inconsistent for PR #40."
-    assert card["choices"][1]["body"] == {"verb": "post", "action": "RESOLVED", "ref": "#40"}
+    assert card["reply"] == {"verb": "post", "action": "RESOLVED", "ref": "#40"} and card["from"] == "codex:pm"
     answered = mk_board(CFG2, issues=[mk_issue(14)], comments=[ask, mk_comment(CFG2, 2, "empowerScott", "[human] RESOLVED #40\n\nfixed in meld")])
     assert inbox(answered, CFG2, NOW)["needs_human"] == [] and decisions(answered, CFG2, HUMAN, NOW) == []
 

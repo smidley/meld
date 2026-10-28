@@ -258,7 +258,7 @@ body.setup > :not(#wizard) { display: none; }
 .icard .ititle:hover { color: var(--link); }
 /* the journey: seven labelled steps from claimed to closed; done filled, the one under way in the group's colour, the rest dim */
 .icard .journey { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 3px; margin-top: var(--s3); }
-.icard .jstep { font-size: 10.5px; line-height: 1.2; letter-spacing: 0.02em; color: var(--fg-3); text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.icard .jstep { font-size: 10.5px; line-height: 1.2; color: var(--fg-3); text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .icard .jstep::before { content: ""; display: block; height: 5px; border-radius: 2px; background: var(--bg-3); margin-bottom: var(--s1); transition: background var(--d-fill) var(--ease); }
 .icard .jstep.done { color: var(--fg-2); }
 .icard .jstep.done::before { background: var(--ok); }
@@ -420,7 +420,13 @@ details::details-content { height: 0; overflow: hidden; transition: height 0.3s 
 details[open]::details-content { height: auto; }
 
 /* ---- narrower windows and reduced motion ---- */
-@media (max-width: 1280px) { :root { --gutter: 16px; } #streams .column { flex-basis: 32rem; } }
+@media (max-width: 1280px) {
+  :root { --gutter: 16px; }
+  #streams .column { flex-basis: 32rem; }
+  .icard { padding: var(--s3); }   /* seven short step labels fit a 1280 four-lane board: measured, none clips */
+  .icard .journey { gap: 2px; }
+  .icard .jstep { font-size: 10px; }
+}
 @media (max-width: 980px) { #issues.kanban { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s4); } }
 @media (max-width: 900px) {
   :root { --gutter: 12px; }

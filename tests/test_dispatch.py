@@ -780,3 +780,71 @@ def test_a_groups_own_environment_and_cli_settings_reach_the_worker_but_never_it
     spec = adapter.launches[0]
     assert spec.env["ANTHROPIC_BASE_URL"] == "http://server:11434" and "GH_TOKEN" not in spec.env
     assert spec.env["GIT_AUTHOR_NAME"] == "meld-claude-bot" and spec.cli_config == {"model": "qwen3-coder"}
+
+
+def test_a_build_after_the_issues_pr_merged_starts_over_from_the_default_branch_and_rewrites_the_remote_branch(tmp_path):
+    """Plan 40: PR #7 on the scratch product squash-merged, an audit sent its issue back to build, and the retry continued
+    the old branch -- so PR #9 carried the pre-squash commits and conflicted with the squash of itself. A build on a
+    branch whose PR has merged now starts from origin/<default> (mode `fresh`), and collect's push rewrites origin's
+    stale branch with --force-with-lease instead of being refused as non-fast-forward."""
+    from meld.dispatch import collect
+    from tests.test_collect import routes_for_labels
+    fake, ctx, repo, origin = make_product(tmp_path)
+    claim_issue_11(fake)
+    routes_for_labels(fake, 11)
+    fake.route("POST", R + "pulls", {"number": 21, "html_url": "https://github.com/acme/widgets/pull/21"})
+    first = dispatch(ctx, 11, adapter=FakeAdapter(script=DONE_SCRIPT), now=NOW)
+    wait_for_exit(first["pid"])
+    assert collect(ctx, 11, now=NOW)["outcome"] == "done"          # pushes the branch and opens PR #21
+    branch = "meld/11-add-health-endpoint"
+    old_head = sh(["git", "rev-parse", branch], Path(first["worktree"]))
+    # PR #21 squash-merges onto main (origin's main moves; the branch keeps its own commit), then the issue is sent back to build
+    sh(["git", "fetch", "-q", "origin"], repo)
+    sh(["git", "checkout", "-q", "main"], repo)
+    sh(["git", "merge", "-q", "--squash", f"origin/{branch}"], repo)
+    sh(["git", "commit", "-q", "-m", "Add health endpoint (#21)"], repo)
+    sh(["git", "push", "-q", "origin", "main"], repo)
+    main_sha = sh(["git", "rev-parse", "HEAD"], repo)
+    merged = {"number": 21, "title": "Add health endpoint", "state": "closed", "merged_at": "2026-09-03T12:30:00Z", "merge_commit_sha": main_sha,
+              "user": {"login": "meld-claude-bot"}, "head": {"ref": branch, "sha": old_head}, "labels": [], "body": "Closes #11\n\nfirst attempt"}
+    fake.route("GET", R + "pulls", fixture("pulls.json") + [merged])
+    fake.route("GET", R + "pulls/21/reviews", [])
+    fake.route("GET", R + "pulls/21/commits", [{"sha": old_head, "author": {"login": "meld-claude-bot"}, "committer": {"login": "meld-claude-bot"}}])
+    fake.route("GET", R + "pulls/21/files", [{"filename": "health.py", "status": "added"}])
+    fake.route("GET", R + f"commits/{old_head}/check-runs", fixture("checkruns_abc123.json"))
+    fake.route("GET", R + f"commits/{old_head}/status", {"state": "success", "statuses": []})
+    fake.route("POST", R + "pulls", {"number": 22, "html_url": "https://github.com/acme/widgets/pull/22"})
+    second = dispatch(ctx, 11, adapter=FakeAdapter(script=DONE_SCRIPT.replace("health.py", "health2.py")), now=NOW)
+    assert second["worktree_mode"] == "fresh" and second.get("branch_refresh") is None and second["conflicts"] == []
+    wt = Path(second["worktree"])
+    assert sh(["git", "rev-parse", "HEAD~0"], wt) != old_head and sh(["git", "merge-base", "--is-ancestor", main_sha, "HEAD"], wt) == ""
+    assert "## Merge conflicts" not in (wt / BRIEF_FILE).read_text()
+    wait_for_exit(second["pid"])
+    out = collect(ctx, 11, now=NOW)
+    assert out["outcome"] == "done" and out["pr"] == 22
+    new_head = sh(["git", "rev-parse", "HEAD"], wt)
+    assert sh(["git", "rev-parse", branch], origin) == new_head != old_head        # origin's stale branch was rewritten
+    assert sh(["git", "merge-base", "--is-ancestor", main_sha, branch], origin) == ""
+
+
+def test_a_retry_whose_branch_conflicts_with_the_default_branch_is_told_which_files_to_resolve(tmp_path):
+    """Plan 40: a worker holds no credentials and cannot read a PR's conflict on GitHub, so the brief names the files."""
+    from meld.dispatch import collect
+    from tests.test_collect import routes_for_labels
+    fake, ctx, repo, origin = make_product(tmp_path)
+    claim_issue_11(fake)
+    routes_for_labels(fake, 11)
+    fake.route("POST", R + "pulls", {"number": 21, "html_url": "https://github.com/acme/widgets/pull/21"})
+    first = dispatch(ctx, 11, adapter=FakeAdapter(script=DONE_SCRIPT), now=NOW)
+    wait_for_exit(first["pid"])
+    assert collect(ctx, 11, now=NOW)["outcome"] == "done"
+    sh(["git", "checkout", "-q", "main"], repo)
+    (repo / "health.py").write_text("OK = False\n")                     # main gains a different health.py: the branch now conflicts
+    sh(["git", "add", "health.py"], repo)
+    sh(["git", "commit", "-q", "-m", "someone else's health"], repo)
+    sh(["git", "push", "-q", "origin", "main"], repo)
+    second = dispatch(ctx, 11, adapter=FakeAdapter(), now=NOW)
+    assert second["worktree_mode"] == "reused" and second["conflicts"] == ["health.py"]
+    text = (Path(second["worktree"]) / BRIEF_FILE).read_text()
+    assert "## Merge conflicts to resolve first" in text and "- `health.py`" in text and "git merge origin/main" in text
+    wait_for_exit(second["pid"])

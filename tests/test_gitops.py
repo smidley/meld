@@ -211,3 +211,28 @@ def test_a_fetch_authenticates_with_the_groups_token_like_a_push(tmp_path):
         pass
     argv, env = [(a, e) for a, e in calls if "fetch" in a][0]
     assert argv[:3] == ["git", "fetch", "--quiet"] and env is None
+
+
+def test_conflicts_with_names_the_files_a_merge_would_fight_over_and_fresh_ignores_the_remote_branch(tmp_path):
+    """Plan 40: `conflicts_with` is a local merge-tree probe (no checkout change, no GitHub); `create_worktree(fresh=True)`
+    starts from origin/<base> even though origin has the branch -- the build after that branch's PR squash-merged."""
+    from meld.gitops import conflicts_with
+    origin, repo = make_origin_and_clone(tmp_path)
+    branch = "meld/3-thing"
+    sh(["git", "checkout", "-q", "-b", branch], repo)
+    (repo / "README.md").write_text("# product\nbranch line\n")
+    sh(["git", "commit", "-q", "-am", "branch"], repo)
+    sh(["git", "push", "-q", "-u", "origin", branch], repo)
+    assert conflicts_with(repo, "origin/main") == []                       # main has not moved: clean
+    sh(["git", "checkout", "-q", "main"], repo)
+    (repo / "README.md").write_text("# product\nmain line\n")
+    sh(["git", "commit", "-q", "-am", "main"], repo)
+    sh(["git", "push", "-q", "origin", "main"], repo)
+    sh(["git", "checkout", "-q", branch], repo)
+    assert conflicts_with(repo, "origin/main") == ["README.md"]
+    assert conflicts_with(repo, "origin/no-such-branch") == []             # an unknown ref has nothing to say
+    assert sh(["git", "status", "--porcelain"], repo) == ""                 # the probe touched nothing
+    sh(["git", "checkout", "-q", "main"], repo)                            # release the branch name for the worktree
+    wt = tmp_path / "wt"
+    assert create_worktree(repo, wt, branch, "main", fresh=True) == "new"
+    assert head_sha(wt) == sh(["git", "rev-parse", "origin/main"], repo) and (wt / "README.md").read_text() == "# product\nmain line\n"

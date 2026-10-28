@@ -401,3 +401,18 @@ def test_product_context_reaches_the_brief_capped_and_the_role_prompt_whole(tmp_
     (tmp_path / CONTEXT_FILE).write_text("x" * (MAX_CONTEXT_CHARS + 500))
     capped = context_for_brief(tmp_path)
     assert len(capped) < MAX_CONTEXT_CHARS + 100 and capped.endswith("for the rest)") and CONTEXT_FILE in capped
+
+
+def test_build_brief_names_the_files_to_resolve_when_the_branch_conflicts(tmp_path: Path):
+    """Plan 40."""
+    from meld.brief import merge_conflicts
+    from tests.factories import mk_issue, mk_pr
+    issue = mk_issue(6, status="in_progress", claimed_by="claude")
+    role = next(w for w in builtin_workers() if w.name == "backend")
+    text = render_brief(role=role, kind="build", group="claude", model="m", effort="high", issue=issue, pr=mk_pr(11, 6), plan_text="",
+                        repo_root=tmp_path, worktree=tmp_path, base_branch="main", conflicts=["src/a.py", "tests/test_a.py"])
+    assert "## Merge conflicts to resolve first" in text and "- `src/a.py`" in text and "- `tests/test_a.py`" in text
+    assert "git merge origin/main" in text and text.index("## Review feedback") < text.index("## Merge conflicts")
+    assert "## Merge conflicts" not in render_brief(role=role, kind="build", group="claude", model="m", effort="high", issue=issue, pr=None,
+                                                    plan_text="", repo_root=tmp_path, worktree=tmp_path, base_branch="main")
+    assert merge_conflicts("main", ["x"]).startswith("\n## Merge conflicts to resolve first")

@@ -239,6 +239,9 @@ class GitHub:
     def update_pull(self, number: int, body: str) -> dict:
         return self.patch(self._r(f"pulls/{number}"), {"body": body})
 
+    def close_pull(self, number: int) -> dict:
+        return self.patch(self._r(f"pulls/{number}"), {"state": "closed"})
+
     def get_pull(self, number: int, fresh: bool = False) -> dict:
         return self.get(self._r(f"pulls/{number}"), use_cache=not fresh)
 

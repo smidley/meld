@@ -252,7 +252,7 @@ function issueCard(i, lane) {
   const checks = pr ? liveRuns.filter((r) => r.pr === pr.number && (r.kind === "review" || r.kind === "audit")) : [];
   const moved = prevLane.has(i.number) && prevLane.get(i.number) !== lane;
   if (moved) laneFlowUntil.set(lane, Date.now() + 60000);
-  card.className = "icard" + (i.status === "blocked" || i.status === "needs_human" || i.challenged ? " attention" : "")
+  card.className = "icard appears" + (i.status === "blocked" || i.status === "needs_human" || i.challenged ? " attention" : "")
                  + (runs.length || checks.length ? " working" : "") + (moved ? " moved" : "");
   const head = document.createElement("div");
   head.className = "ihead";
@@ -284,7 +284,7 @@ function issueCard(i, lane) {
       const seg = document.createElement("span");
       seg.className = `jstep ${step.state}`;
       seg.title = `${step.name}${step.detail ? `: ${step.detail}` : ""}`;
-      text(seg, step.name);
+      text(seg, step.name === "pull request" ? "PR" : step.name);   // the label is visible now (plan 49); the long one is the tooltip
       strip.append(seg);
     }
     card.append(strip);
@@ -1699,7 +1699,7 @@ function renderWizard(info) {
 }
 
 function showWizardSteps(info) {
-  el("wz-form").classList.add("hidden");
+  el("wz-form").classList.add("hidden");   // the steps list fades in over it (.appears)
   el("wz-steps").classList.remove("hidden");
   const created = info.created || {};
   const li1 = el("wz-step-created");

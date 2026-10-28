@@ -178,6 +178,22 @@ function followNewest() {
   following = true;
   el("newest").classList.add("hidden");
 }
+// The thread's header verbs in the owner's words (plan 54, the review's F13 table), translated at render time with the
+// raw verb on hover; a verb this map does not know is shown lower-cased. Parties likewise: [joint] is "both groups".
+const VERB_WORDS = { ACK: "acknowledged", "NEEDS-HUMAN": "needs you", DIRECTIVE: "instruction", "PROTOCOL-VIOLATION": "broke a rule",
+                     DRIFT: "drifted from the plan", CHALLENGE: "dispute", EVIDENCE: "evidence", RETRACT: "withdrew the dispute",
+                     UPHOLD: "agreed with the dispute", DISMISS: "rejected the dispute", RESOLVED: "resolved", PROVIDED: "provided",
+                     HALT: "pause", RESUME: "resume", ASK: "asked", ANSWER: "answered", STATUS: "status report", APPROVE: "approved",
+                     AMEND: "amended", REVERT: "asked for a revert", DISAGREE: "disagreed", BUDGET: "budget", LEASE: "holds",
+                     "PLAN-ADD": "added to the plan", "PLAN-APPROVE": "approved the plan", REVIEW: "reviewed", AUDIT: "checked after merge" };
+function partyWords(t) {
+  if (t.kind === "joint") return "both groups";
+  if (t.kind === "human") return "you";
+  const role = (t.party || "").replace(/^\[|\]$/g, "").split(":")[1];
+  return t.group ? `${t.group}${role ? " " + (ROLE_WORDS[role] || role) : ""}` : t.party;
+}
+const GROUP_WITHIN_MS = 5 * 60 * 1000;
+let lastHead = null;   // {party, at} of the newest turn, so consecutive posts by one party within five minutes share a head
 function renderThread(turns) {
   // Append what is new by comment id; never rebuild, so the list keeps its place. New turns slide in, and the list
   // scrolls to the newest one unless the reader has scrolled up to read, in which case "newest" brings them back.
@@ -190,24 +206,45 @@ function renderThread(turns) {
     const li = document.createElement("li");
     if (lastTurn > 0 && list.children.length) li.classList.add("fresh");
     // `housekeeping` and `agreement` are the server's classification (chat.thread_entries): the page keeps no verb lists.
-    li.className = [t.kind, t.housekeeping && "housekeeping", t.agreement && "agreement"].filter(Boolean).join(" ");
+    const at = Date.parse(t.at || "");
+    const grouped = lastHead && lastHead.party === t.party && at - lastHead.at < GROUP_WITHIN_MS && at >= lastHead.at;
+    li.className = [t.kind, t.housekeeping && "housekeeping", t.agreement && "agreement", grouped && "cont"].filter(Boolean).join(" ");
     li.title = `comment ${t.id}`;
     li.id = `turn-${t.id}`;
     const head = document.createElement("div");
     head.className = "head";
-    const party = cell("party", t.party);
-    party.style.color = colorFor(t.kind, t.group);
-    const verb = cell("verb", t.verb + " ");
+    if (!grouped) {
+      const party = cell("party", partyWords(t));
+      party.title = t.party;
+      party.style.color = colorFor(t.kind, t.group);
+      head.append(party);
+    }
+    const verb = cell("verb", (VERB_WORDS[t.verb] || t.verb.toLowerCase()) + " ");
+    verb.title = t.verb;
     if (t.ref) refLink(verb, t.ref);
     if (t.qualifier) text(verb.appendChild(document.createElement("span")), ` ${t.qualifier}`);
     const stamp = document.createElement("span");
     stamp.className = "dim";
-    link(stamp, clock12(Date.parse(t.at || "")), ghUrl("comment", t.id), "open this comment on GitHub");
-    head.append(party, verb, stamp);
-    li.append(head, cell("body", t.text));
+    link(stamp, clock12(at), ghUrl("comment", t.id), "open this comment on GitHub");
+    head.append(verb, stamp);
+    li.append(head, bodyOf(t.text));
     list.append(li);
+    lastHead = { party: t.party, at: Number.isNaN(at) ? 0 : at };
   }
   if (added && following) requestAnimationFrame(followNewest);
+}
+function bodyOf(raw) {
+  // The first three lines of a post, the rest behind "show all" (a <details>, no inner scrollbar); `verified-by:` lines
+  // are bookkeeping and dropped, as chat._lines does for the decisions.
+  const lines = String(raw || "").split("\n").filter((l) => l.trim() && !l.trim().toLowerCase().startsWith("verified-by:"));
+  const body = cell("body", lines.slice(0, 3).join("\n"));
+  if (lines.length <= 3) return body;
+  const more = document.createElement("details");
+  more.className = "more";
+  text(more.appendChild(document.createElement("summary")), `show all (${lines.length} lines)`);
+  text(more.appendChild(document.createElement("div")), lines.slice(3).join("\n"));
+  body.append(more);
+  return body;
 }
 
 // Every reference the page shows is a link to the thing itself on GitHub: the repository, the milestone, an issue or

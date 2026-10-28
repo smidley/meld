@@ -213,7 +213,14 @@ body.setup > :not(#wizard) { display: none; }
 #turns .party { font-weight: 600; font-size: 12px; border: 1px solid color-mix(in srgb, currentColor 45%, transparent); border-radius: var(--r-pill); padding: 0 8px; line-height: 18px; }
 #turns .verb { font-weight: 600; color: var(--fg-2); }
 #turns .head .dim { color: var(--fg-3); }
-#turns .body { margin: var(--s1) 0 0; white-space: pre-wrap; word-break: break-word; max-width: 78ch; color: var(--fg); max-height: 14rem; overflow-y: auto; }
+#turns .body { margin: var(--s1) 0 0; white-space: pre-wrap; word-break: break-word; max-width: 78ch; color: var(--fg); }
+#turns .body .more { margin-top: var(--s1); }
+#turns .body .more > summary { cursor: pointer; font: var(--t-meta); color: var(--fg-3); list-style: none; }
+#turns .body .more > summary::before { content: "▸ "; }
+#turns .body .more[open] > summary::before { content: "▾ "; }
+#turns .body .more > summary:hover { color: var(--fg); }
+#turns li.cont { padding-top: 0; border-top: 0; margin-top: calc(-1 * var(--s2)); }
+#turns li:has(+ li.cont) { border-bottom: 0; }
 #turns li.human .body { color: var(--fg); }
 #turns li.agreement { background: color-mix(in srgb, var(--joint) 6%, transparent); }
 #turns li.flash, .column.flash { background: var(--bg-3); }

@@ -45,12 +45,12 @@
   interpolate-size: allow-keywords;
 }
 * { box-sizing: border-box; }
-html, body { height: 100%; margin: 0; background: var(--bg-0); color: var(--fg); font: var(--t-body); }
+html, body { margin: 0; background: var(--bg-0); color: var(--fg); font: var(--t-body); }
 .num, time, .at, .blabel, #progress-text, #limits, #machine, .awhen, .jnow, .tick, #timeline text { font-variant-numeric: tabular-nums; font-feature-settings: var(--tnum); }
-/* Top to bottom: the header (what is happening), the decisions (what needs you), the live pair (the conversation and
-   the work), then a tab row whose drawer holds everything else. Only the live pair stretches. */
-body { display: flex; flex-direction: column; }
-body > * { flex: 0 0 auto; }
+/* Top to bottom: the header (what is happening), the questions (what needs you), the agents, the work and the
+   conversation; the page scrolls as a page (plan 54: nothing is squeezed to fit the viewport, so the lanes can never
+   collapse). A tab row is docked at the bottom, and its drawer opens as a sheet over the page. */
+body { padding-bottom: 40px; }
 .row { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline; margin: 2px 0; }
 .strong { font-weight: 600; }
 .dim { color: var(--fg-3); }
@@ -198,14 +198,15 @@ body.setup > :not(#wizard) { display: none; }
 
 /* ---- the live pair ---- */
 /* plan 49: the work lanes take the full width above the conversation, which gets the rest of the height */
-#live { display: flex; flex-direction: column; gap: var(--s3); padding: var(--s3) var(--gutter); flex: 1 1 auto; min-height: 0; }
+#live { display: flex; flex-direction: column; gap: var(--s3); padding: var(--s3) var(--gutter); }
 .column { display: flex; flex-direction: column; background: var(--bg-1); border: 0; border-radius: var(--r-card); min-height: 0; }
 .column h2 { margin: 0; padding: var(--s3) var(--s4) var(--s2); font: var(--t-section); border-bottom: 0; display: flex; gap: var(--s2); align-items: baseline; flex-wrap: wrap; }
 .column h2 .who { color: var(--fg); }
 .column h2 .hint { flex: 1 1 24ch; min-width: 0; }
 .column.ended { opacity: 0.6; }
-#work { flex: 0 1 auto; max-height: 58vh; min-width: 0; }
-#conversation { flex: 1 1 0; min-height: 14rem; min-width: 0; }
+#work { min-width: 0; }
+#conversation { min-width: 0; }
+#turns { max-height: 72vh; }   /* the one inner scroll left: the list follows its newest turn */
 #conversation h2 select { margin-left: auto; }
 #turns li { display: block; padding: var(--s3) var(--s4); border-bottom: 1px solid var(--line); transition: background var(--d-ui) var(--ease); }
 #turns li:last-child { border-bottom: 0; }
@@ -233,7 +234,7 @@ body.setup > :not(#wizard) { display: none; }
 #conversation[data-filter="people"] li:not(.agreement):not(.human):not(.joint) { display: none; }
 
 /* ---- the work: four lanes, an issue a card; the card is the raised object and its group's colour is set as --group ---- */
-#issues.kanban { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s5); padding: var(--s1) var(--s4) var(--s4); overflow-y: auto; flex: 1 1 auto; min-height: 0; }
+#issues.kanban { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s5); padding: var(--s1) var(--s4) var(--s4); }
 .lane h3 { margin: 0 0 var(--s1); font: var(--t-meta); font-weight: 600; color: var(--fg-3); text-transform: uppercase; letter-spacing: 0.08em; font-variant-numeric: tabular-nums; }
 /* the direction of work: a dashed line under each lane heading that drifts right, and quickens after a card arrives */
 .flowline { height: 2px; margin: 0 0 var(--s3); opacity: 0.35; background: repeating-linear-gradient(90deg, var(--line-strong) 0 4px, transparent 4px 10px); animation: flow 2.4s linear infinite; }
@@ -291,8 +292,12 @@ body.setup > :not(#wizard) { display: none; }
 #task-tree .meta { font: var(--t-meta); color: var(--fg-3); }
 #task-tree button { margin-left: 6px; }
 
-/* ---- the tab row and its drawer ---- */
+/* ---- the dock: the tab row at the bottom of the viewport, and the drawer as a bottom sheet rising from it ---- */
+#dock { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; display: flex; flex-direction: column; }
+#dock:has(#drawer:not(.closed)) { box-shadow: var(--shadow-2); }
 #tabs { display: flex; gap: 0; align-items: center; padding: 0 var(--gutter); background: var(--bg-1); border-top: 1px solid var(--line); flex-wrap: wrap; }
+#tabs #drawer-close { margin-left: var(--s2); font: inherit; font-size: 20px; line-height: 1; color: var(--fg-3); background: transparent; border: 0; cursor: pointer; padding: 0 var(--s2); }
+#tabs #drawer-close:hover { color: var(--fg); }
 #tabs .tab { font: var(--t-body); font-size: 13px; color: var(--fg-3); background: transparent; border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: var(--s2) var(--s3); cursor: pointer; transition: color var(--d-micro) var(--ease), border-color var(--d-micro) var(--ease); }
 #tabs .tab:hover { color: var(--fg); }
 #tabs .tab.active { color: var(--fg); background: transparent; border-bottom-color: var(--fg); }
@@ -305,7 +310,7 @@ body.setup > :not(#wizard) { display: none; }
 #error:empty { display: none; }
 /* Live transcripts first; a process that has ended is behind "show finished". */
 #streams.live-only .column.dead, #streams.live-only .column.ended { display: none; }
-#drawer { height: 46vh; min-height: 0; overflow: hidden; background: var(--bg-1); border-top: 1px solid var(--line); transition: height var(--d-sheet) var(--ease), border-top-color var(--d-sheet) var(--ease); }
+#drawer { height: 70vh; min-height: 0; overflow: hidden; background: var(--bg-1); border-top: 1px solid var(--line); transition: height var(--d-sheet) var(--ease), border-top-color var(--d-sheet) var(--ease); }
 #drawer.closed { height: 0; border-top-color: transparent; }
 .tabpane { height: 100%; min-height: 0; }
 #pulls-panel, #agreements-panel, #act { overflow-y: auto; padding: var(--s3) var(--gutter); }
@@ -313,7 +318,8 @@ body.setup > :not(#wizard) { display: none; }
 .panel h2 { margin: 0; padding: 0 0 var(--s2); font: var(--t-section); border-bottom: 1px solid var(--line); }
 
 /* ---- transcripts (the drawer's first tab): monospace, one column per process ---- */
-#streams { display: flex; gap: var(--s3); padding: var(--s3) var(--gutter); overflow-x: auto; }
+#streams { position: relative; display: flex; gap: var(--s3); padding: 40px var(--gutter) var(--s3); overflow-x: auto; }
+#streams-tools { position: absolute; top: var(--s2); right: var(--gutter); display: flex; gap: var(--s4); font: var(--t-meta); }
 #streams .column { flex: 0 0 36rem; max-width: 48rem; height: 100%; background: var(--bg-2); }
 #streams .column h2 { padding: var(--s2) var(--s3); border-bottom: 1px solid var(--line); }
 #streams .column h2 .why { font: var(--t-meta); }

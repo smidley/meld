@@ -98,26 +98,29 @@
     <ol id="turns" class="events"></ol>
   </section>
 </main>
+<div id="dock">
 <nav id="tabs">
   <button type="button" class="tab" data-tab="streams">Transcripts</button>
   <button type="button" class="tab" data-tab="pulls-panel">Pull requests</button>
   <button type="button" class="tab" data-tab="agreements-panel">Agreements</button>
   <button type="button" class="tab" data-tab="activity">Activity</button>
-  <button type="button" class="tab" data-tab="act">Act as the human</button>
-  <button type="button" class="tab" data-tab="config">Configuration</button>
+  <button type="button" class="tab" data-tab="act">Act</button>
+  <button type="button" class="tab" data-tab="config">Settings</button>
+  <button type="button" id="drawer-close" class="hidden" title="close (Escape)">×</button>
   <span id="machine" class="row dim">
     <span id="budget"></span>
-    <span id="disk"></span>
-    <span id="logs"></span>
+    <span id="disk" class="bad"></span>
+    <span id="logs" class="bad"></span>
     <span id="feed" class="badge unknown">feed connecting</span>
-    <label id="detail" title="The transcripts show what each agent said by default; tick to see every tool call and result too."><input type="checkbox" id="show-tools"> show tool calls</label>
-    <label id="finished" title="Transcripts of processes that have ended are hidden by default, so what is running is in front; tick to see them too."><input type="checkbox" id="show-finished"> show finished</label>
     <span id="stamp" class="dim"></span>
     <span id="error" class="bad"></span>
   </span>
 </nav>
 <section id="drawer" class="closed">
-  <div id="streams" class="tabpane hidden"></div>
+  <div id="streams" class="tabpane hidden"><div id="streams-tools">
+    <label id="detail" title="The transcripts show what each agent said by default; tick to see every tool call and result too."><input type="checkbox" id="show-tools"> show tool calls</label>
+    <label id="finished" title="Transcripts of processes that have ended are hidden by default, so what is running is in front; tick to see them too."><input type="checkbox" id="show-finished"> show finished</label>
+  </div></div>
   <div id="pulls-panel" class="tabpane hidden"><div class="panel"><h2>Pull requests <span class="hint">hover a row for why a verb is missing</span></h2><div id="pulls"></div></div></div>
   <div id="activity" class="tabpane hidden"><div class="panel"><h2>Activity <span class="hint">one dot per post, a lane per voice, the last ninety minutes</span></h2><svg id="timeline" role="img" aria-label="the coordination thread over time, one dot per post"></svg></div></div>
   <div id="agreements-panel" class="tabpane hidden"><div class="panel"><h2>Agreements <span class="hint">what the groups proposed and settled</span></h2><div id="agreements"></div></div></div>
@@ -148,6 +151,7 @@
     </div>
   </details>
 </section>
+</div>
 <template id="row">
   <div class="brow">
     <span class="rid"></span>

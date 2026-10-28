@@ -870,6 +870,7 @@ function renderBoard(s) {
   prevLane = new Map((s.issues || []).map((i) => [i.number, laneOf(i)]));
   const pulls = el("pulls");
   pulls.replaceChildren();
+  setTab("pulls-panel", "Pull requests", (s.pulls || []).filter((p) => p.state === "open" && !p.merged).length);
   for (const p of s.pulls || []) {
     // A failing or pending check is the usual reason a merge button is missing, so the row says so.
     const how = [p.merged ? "merged" : p.state, p.issue && `closes #${p.issue}`, !p.merged && (p.checks === "pending" || p.checks === "red") && `checks ${p.checks}`,
@@ -1686,6 +1687,8 @@ function renderStreams(list) {
     col.root.classList.toggle("dead", col.liveness.state === "dead");
     el("streams").append(col.root);
   }
+  const live = ordered.filter((c) => c.liveness.state === "alive").length;
+  setTab("streams", "Transcripts", live ? `${live} running` : 0);
   scrollColumns();
 }
 
@@ -1771,12 +1774,22 @@ function openTab(name) {
   for (const b of document.querySelectorAll("#tabs .tab")) b.classList.toggle("active", b.dataset.tab === name);
   for (const pane of el("drawer").querySelectorAll(".tabpane")) pane.classList.toggle("hidden", pane.id !== name);
   el("drawer").classList.toggle("closed", !name);
+  el("drawer-close").classList.toggle("hidden", !name);
   if (name === "config") el("config").open = true;
   if (name === "streams") scrollColumns();
   if (name === "activity" && lastState) drawTimeline(lastState);   // drawn at the pane's width, which it had none of while hidden
 }
 for (const b of document.querySelectorAll("#tabs .tab")) {
   b.addEventListener("click", () => openTab(b.classList.contains("active") ? null : b.dataset.tab));
+}
+el("drawer-close").addEventListener("click", () => openTab(null));
+document.addEventListener("keydown", (e) => {
+  // Escape closes the sheet; the task dialog closes itself on Escape first, and a form control keeps its own Escape.
+  if (e.key === "Escape" && !el("task").open && !el("drawer").classList.contains("closed")) openTab(null);
+});
+// A tab's label carries its count: "Transcripts · 3 running", "Pull requests · 1".
+function setTab(name, label, count) {
+  text(document.querySelector(`#tabs .tab[data-tab="${name}"]`), count ? `${label} · ${count}` : label);
 }
 el("show-tools").addEventListener("change", (e) => { el("streams").classList.toggle("narration", !e.target.checked); scrollColumns(); });
 for (const [key, intent] of Object.entries(INTENTS)) {

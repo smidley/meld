@@ -471,7 +471,8 @@ function drawMap(state) {
     for (const [role, info] of Object.entries(roles)) {
       const ry = y + ri * 27;
       const liveRole = info.state === "alive";
-      const r = drawNode(svg, rx, ry, roleW, 24, liveRole ? color : null, `${role} · ${info.frozen ? "frozen" : (info.state === "alive" ? "awake" : info.state)}`, null, { live: liveRole });
+      const launches = info.launch_no > 1 ? ` · launch ${info.launch_no}` : "";
+      const r = drawNode(svg, rx, ry, roleW, 24, liveRole ? color : null, `${role} · ${info.frozen ? "frozen" : (info.state === "alive" ? "awake" : info.state)}${launches}`, null, { live: liveRole });
       drawEdge(svg, node.x + node.w, node.y + node.h / 2, r.x, r.y + r.h / 2, { flowing: liveRole });
       ri++;
     }

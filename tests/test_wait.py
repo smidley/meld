@@ -170,3 +170,21 @@ def test_cli_wait_filter_validates_kinds(tmp_path, monkeypatch):
                             env=env_for(tmp_path))
     assert ok.exit_code == 0, ok.output
     assert json.loads(ok.output)["changes"] == ["initial snapshot"]
+
+
+def test_cli_wait_clamps_a_roles_short_timeout_but_not_a_humans(tmp_path, monkeypatch):
+    """Plan 39: a role's wait is its idle time; shorter than two minutes ends its session for nothing."""
+    (tmp_path / ".meld.toml").write_text(PROJECT_TOML)
+    fake = FakeGh()
+    fake.route("GET", "user", {"login": "empowerScott"})
+    monkeypatch.setattr(cli, "RUN", fake)
+    seen = []
+    monkeypatch.setattr(cli, "wait_for_change", lambda c, timeout, interval, kinds=None: seen.append(timeout) or {"changes": []})
+    out = CliRunner().invoke(cli.main, ["--config", str(tmp_path / ".meld.toml"), "--compact", "wait", "--timeout", "45"], env=env_for(tmp_path, role="orchestrator"))
+    assert out.exit_code == 0, out.output
+    data = json.loads(out.output)
+    assert seen[-1] == 120 and data["timeout_clamped"] is True and data["timeout"] == 120 and "at least 120s" in data["note"]
+    out = CliRunner().invoke(cli.main, ["--config", str(tmp_path / ".meld.toml"), "--compact", "wait", "--timeout", "0"], env=env_for(tmp_path, role="orchestrator"))
+    assert seen[-1] == 0 and "timeout_clamped" not in json.loads(out.output)                      # a one-shot read is left alone
+    out = CliRunner().invoke(cli.main, ["--config", str(tmp_path / ".meld.toml"), "--compact", "wait", "--timeout", "45"], env=env_for(tmp_path, group=None))
+    assert seen[-1] == 45 and "timeout_clamped" not in json.loads(out.output)                     # and so is a human

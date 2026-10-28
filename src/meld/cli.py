@@ -45,6 +45,7 @@ from meld.viewer.server import Viewer, new_token, serve, url, stable_token
 from meld.waiting import wait_for_change
 
 RUN = subprocess.run  # tests monkeypatch this with a FakeGh
+ROLE_WAIT_FLOOR_SECONDS = 120   # plan 39: the least a role may wait for the board before its session ends
 ADAPTER_FOR = get_adapter
 SLEEP = time.sleep  # tests monkeypatch this so the suite never actually sleeps
 SERVE = serve  # tests monkeypatch this so no test binds a port through the CLI
@@ -211,6 +212,11 @@ def wait(ctx: click.Context, timeout: float | None, interval: float | None, kind
         raise click.BadParameter("must be greater than 0", param_hint="--interval")
     if t < 0:
         raise click.BadParameter("must not be negative", param_hint="--timeout")
+    clamped = False
+    if c.party.group and 0 < t < min(ROLE_WAIT_FLOOR_SECONDS, c.cfg.wait_timeout_seconds):
+        # A role's wait is its idle time: shorter than this and its session ends, relaunches and re-reads its whole
+        # prompt for nothing (plan 39). Humans and a timeout of 0 (a one-shot read) are left alone.
+        t, clamped = float(min(ROLE_WAIT_FLOOR_SECONDS, c.cfg.wait_timeout_seconds)), True
     wanted: set[str] | None = None
     if kinds:
         wanted = {k.strip() for k in kinds.split(",") if k.strip()}
@@ -218,6 +224,8 @@ def wait(ctx: click.Context, timeout: float | None, interval: float | None, kind
         if unknown:
             raise click.BadParameter(f"unknown change kind(s): {', '.join(unknown)}", param_hint="--filter")
     data = _guard(lambda: wait_for_change(c, timeout=t, interval=i, kinds=wanted))
+    if clamped:
+        data = {**data, "timeout": t, "timeout_clamped": True, "note": f"a role's wait is at least {int(t)}s; a shorter one ends the session for nothing"}
     emit(data, ctx.obj["pretty"])
 
 

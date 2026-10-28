@@ -88,7 +88,10 @@ def test_run_group_restarts_exited_roles_with_backoff(tmp_path):
     assert "- Reason: `crash` (" in relaunch.prompt
 
 
-def test_run_group_relaunches_a_clean_exit_after_a_minute_at_once(tmp_path):
+def test_run_group_relaunches_a_clean_exit_no_sooner_than_one_wait_timeout_after_its_launch(tmp_path):
+    """Plan 39: a clean exit after real work is still the steady state (restarts stay 0, the reason is `exit`), but the
+    relaunch waits until polling.wait_timeout_seconds have passed since the launch: the scratch product's codex
+    orchestrator ended 45-second turns and launched 649 times overnight."""
     _, ctx, env = make(tmp_path)
     adapter = FakeAdapter(script="import sys; sys.exit(0)")
     clock = Clock()
@@ -102,7 +105,8 @@ def test_run_group_relaunches_a_clean_exit_after_a_minute_at_once(tmp_path):
     out = run_group(ctx, adapter=adapter, cycles=3, interval=0.01, sleep=sleep, clock=clock, base_env=env)
     for role in ("orchestrator", "pm"):
         assert out["roles"][role]["launches"] >= 2 and out["roles"][role]["restarts"] == 0 and out["roles"][role]["last_exit"] == 0
-    assert slept and all(s == 0.01 for s in slept)  # only the poll interval, never a backoff
+    floor = ctx.cfg.wait_timeout_seconds
+    assert any(0 < s < floor and s != 0.01 for s in slept) and all(s <= floor for s in slept)   # the remainder of the wait timeout, never a backoff
     first = next(s for s in adapter.launches if s.role == "pm")
     assert "- Launch number: 1 (the first launch under this supervisor)\n- Reason: `start` (" in first.prompt
     relaunch = next(s for s in adapter.launches if "Launch number: 2" in s.prompt)

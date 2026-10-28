@@ -305,9 +305,10 @@ body.setup > :not(#wizard) { display: none; }
 #machine #feed { font-size: 11px; padding-left: 14px; position: relative; border: 0; }
 #machine #feed::before { content: ""; position: absolute; left: 4px; top: 50%; width: 6px; height: 6px; margin-top: -3px; border-radius: 50%; background: currentColor; }
 #machine #feed.alive { color: var(--ok); }
+#machine #feed.reconnecting { color: var(--bad); }
+#machine > span:empty { display: none; }
 #machine #stamp { color: var(--fg-3); }
 #detail, #finished { color: var(--fg-3); cursor: pointer; display: inline-flex; gap: 5px; align-items: center; }
-#error:empty { display: none; }
 /* Live transcripts first; a process that has ended is behind "show finished". */
 #streams.live-only .column.dead, #streams.live-only .column.ended { display: none; }
 #drawer { height: 70vh; min-height: 0; overflow: hidden; background: var(--bg-1); border-top: 1px solid var(--line); transition: height var(--d-sheet) var(--ease), border-top-color var(--d-sheet) var(--ease); }

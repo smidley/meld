@@ -1556,16 +1556,11 @@ function renderState(state) {
   if (s.milestone) link(el("milestone"), `milestone ${s.milestone}`, ghUrl("milestone", s.milestone), "open the milestone on GitHub");
   badge(el("phase"), "", s.phase || "");
   el("halted").classList.toggle("hidden", !s.halted);
-  // `spent` is Board.spend: group -> tier -> count, so it takes two levels of entries. One level stringified
-  // the inner object and the header read "spent: claude [object Object]" on any run that had dispatched a
-  // worker. The cap (tier -> ceiling) goes beside it, because a count means nothing without the number it is of.
-  const spent = Object.entries(s.budget.spent || {})
-    .flatMap(([group, tiers]) => Object.entries(tiers || {}).map(([tier, n]) => `${group}/${tier} ${n}`)).join(", ");
-  const cap = Object.entries(s.budget.cap || {}).map(([tier, n]) => `${tier} ${n}`).join(", ");
-  text(el("budget"), [spent && `spent: ${spent}`, cap && `cap: ${cap}`].filter(Boolean).join(" · "));
-  const disk = state.disk.free_mb == null ? "disk: unreadable" : `disk: ${state.disk.free_mb} MB free`;
-  text(el("disk"), disk).classList.toggle("bad", state.disk.free_mb != null && state.disk.free_mb < state.disk.warn_free_mb);
-  text(el("logs"), `logs: ${state.logs.total_mb} MB`).classList.toggle("bad", state.logs.total_mb > state.logs.warn_total_mb);
+  // The footer carries only warnings (plan 54): disk and logs are said when they are wrong, never as readings; spend is
+  // in the header bars and under each group on the map.
+  const gb = (mb) => `${(mb / 1024).toFixed(1)} GB`;
+  text(el("disk"), state.disk.free_mb == null ? "disk unreadable" : state.disk.free_mb < state.disk.warn_free_mb ? `disk low: ${gb(state.disk.free_mb)} free` : "");
+  text(el("logs"), state.logs.total_mb > state.logs.warn_total_mb ? `logs ${gb(state.logs.total_mb)}` : "");
   text(el("error"), "");
 
   renderStrip(state);
@@ -1653,8 +1648,9 @@ function openFeed() {
     const col = columns.get(JSON.parse(e.data).stream);
     if (col) col.root.classList.add("ended");
   });
-  feed.onopen = () => badge(el("feed"), "alive", "feed live");
-  feed.onerror = () => badge(el("feed"), "reconnecting", "feed reconnecting");
+  // The feed badge is only interesting when the feed is not live: hidden while it is, red while it reconnects.
+  feed.onopen = () => badge(el("feed"), "alive", "feed live").classList.add("hidden");
+  feed.onerror = () => badge(el("feed"), "reconnecting", "feed reconnecting").classList.remove("hidden");
 }
 
 function renderStreams(list) {

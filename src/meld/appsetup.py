@@ -100,6 +100,13 @@ class AppSetup:
     def handle(self, path: str, query: dict[str, str]) -> tuple[int, str]:
         try:
             if path == "/":
+                if self.done:
+                    # Plan 46: the page's link stayed clickable after the install, and a second click created a second App
+                    # for the group; the board then read the running roles' comments as a stranger's.
+                    return 200, ("<!doctype html><meta charset=\"utf-8\"><title>meld create-app</title>"
+                                 f"<p><b>{html.escape(self.group)}</b>'s App <b>{html.escape(str((self.app or {}).get('slug', '')))}</b> is created and "
+                                 f"installed on {html.escape(self.repo)}; there is nothing more to do here. A second App would give the group a second "
+                                 "identity the board does not know. You can close this tab.</p>")
                 return 200, self.start_page()
             if path == "/callback":
                 return self._callback(query)

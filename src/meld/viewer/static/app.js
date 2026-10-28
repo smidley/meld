@@ -1717,7 +1717,7 @@ function showWizardSteps(info) {
   for (const g of groups) {
     const a = document.createElement("a");
     const state = apps[g] || {};
-    a.href = api(`/setup/app/${g}/`);
+    a.href = state.installed && state.url ? state.url : api(`/setup/app/${g}/`);   // an installed App's link shows the App, never creates another
     a.target = "_blank";
     a.rel = "noopener noreferrer";
     text(a, state.installed ? `${g} ✓ ${state.slug}[bot]` : state.created ? `${g}: created, now install it` : `create ${g}'s App`);

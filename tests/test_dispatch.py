@@ -848,3 +848,27 @@ def test_a_retry_whose_branch_conflicts_with_the_default_branch_is_told_which_fi
     text = (Path(second["worktree"]) / BRIEF_FILE).read_text()
     assert "## Merge conflicts to resolve first" in text and "- `health.py`" in text and "git merge origin/main" in text
     wait_for_exit(second["pid"])
+
+
+def test_person_answer_pairs_the_newest_ask_with_who_answered_it():
+    """Plan 53."""
+    from meld.dispatch import person_answer
+    from tests.factories import CFG2, mk_board, mk_comment, mk_issue
+    ask = mk_comment(CFG2, 1, "meld-codex-bot", "[codex:pm] NEEDS-HUMAN #3\n\nrun the browser checks")
+    board = mk_board(CFG2, issues=[mk_issue(3, status="in_progress", claimed_by="codex")], comments=[ask])
+    assert person_answer(board, 3) is None
+    human = mk_comment(CFG2, 2, "empowerScott", "[human] RESOLVED #3\n\nfinish done; the reviewer checks")
+    assert person_answer(mk_board(CFG2, issues=[mk_issue(3)], comments=[ask, human]), 3) == ("run the browser checks", "finish done; the reviewer checks", "The person")
+    withdrawn = mk_comment(CFG2, 3, "meld-codex-bot", "[codex] RESOLVED #3\n\nnever mind")
+    assert person_answer(mk_board(CFG2, issues=[mk_issue(3)], comments=[ask, withdrawn]), 3)[2] == "codex (withdrawing the ask)"
+    other = mk_comment(CFG2, 4, "meld-claude-bot", "[claude] RESOLVED #3\n\nnot mine to withdraw")
+    assert person_answer(mk_board(CFG2, issues=[mk_issue(3)], comments=[ask, other]), 3) is None
+
+
+def test_a_codex_worker_is_told_its_sandbox_cannot_launch_a_browser_and_a_claude_worker_is_not(tmp_path):
+    """Plan 53: the note reaches the brief through the adapter's `worker_notes`; a fake adapter without the hook adds nothing."""
+    from meld.adapters.claude import ClaudeAdapter
+    from meld.adapters.codex import CodexAdapter
+    from meld.dispatch import worker_notes
+    assert "cannot launch a browser" in CodexAdapter().worker_notes() and "Do not report `blocked` for a browser" in CodexAdapter().worker_notes()
+    assert ClaudeAdapter().worker_notes() == "" and worker_notes(FakeAdapter()) == "" and worker_notes(CodexAdapter()).startswith("This worker runs")

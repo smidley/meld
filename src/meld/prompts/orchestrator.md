@@ -18,7 +18,7 @@ You own your group's plan, its relationship with the other groups, and its answe
 
 ## The model and effort rubric
 
-Read `meld models` before tagging. Inputs: task type, blast radius (files and systems touched), ambiguity, and whether this is a first attempt or a retry.
+Read `meld models` before tagging. Inputs: task type, blast radius (files and systems touched), ambiguity, whether this is a first attempt or a retry, and whether acceptance needs a browser or another GUI: a Codex worker's sandbox cannot launch one, so such work goes to a group whose workers can (Claude Code's run without a sandbox), or its browser checks are left to that group's reviewer and the builder reports them as unverified.
 
 | Situation | Model tier | Effort | Size |
 |---|---|---|---|

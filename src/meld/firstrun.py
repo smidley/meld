@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -77,6 +78,7 @@ class SetupSession:
     flows: dict[str, AppSetup] = field(default_factory=dict)
     started: dict[str, dict] = field(default_factory=dict)
     error: str | None = None
+    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)   # one start at a time (plan 46)
 
     # ---- what this machine has ------------------------------------------------------------------------------
 
@@ -127,7 +129,9 @@ class SetupSession:
 
     @staticmethod
     def _app_state(flow: AppSetup) -> dict:
-        return {"created": flow.app is not None, "installed": flow.done, "slug": flow.app["slug"] if flow.app else None, "error": flow.error}
+        slug = flow.app["slug"] if flow.app else None
+        return {"created": flow.app is not None, "installed": flow.done, "slug": slug, "error": flow.error,
+                "url": f"https://github.com/apps/{slug}" if slug else None}   # where the page sends a click once the App exists
 
     # ---- the steps ------------------------------------------------------------------------------------------
 
@@ -320,6 +324,13 @@ class SetupSession:
         started; the launcher is what `meld run --detach` does."""
         if self.created is None:
             raise SetupError("create the repository setup first")
+        # Plan 46: the install redirect and the page's own start both reached here within two seconds on the first real
+        # run and launched two codex supervisors. One caller at a time; the second finds the group started and skips it.
+        with self.lock:
+            return self._start(groups)
+
+    def _start(self, groups: list[str] | None) -> dict:
+        assert self.created is not None
         for g in groups or self.created.get("groups", []):
             if g in self.started and not self.started[g].get("error"):
                 continue

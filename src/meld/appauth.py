@@ -155,13 +155,18 @@ def load_pem(env: Mapping[str, str], private_key_env: str | None, private_key_fi
 
 
 class TokenCache:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, app_id: int | None = None, installation_id: int | None = None):
         self.path = path
+        self.app_id, self.installation_id = app_id, installation_id   # the identity a cached token must have been minted for
 
     def load(self) -> InstallationToken | None:
         try:
             data = json.loads(self.path.read_text())
             if not isinstance(data, dict) or not isinstance(data.get("token"), str) or not isinstance(data.get("expires_at"), str):
+                return None
+            # Plan 46: a token minted for another App is not this group's. The first real run re-created a group's App,
+            # the file named the new one, and the roles kept posting under the old one from this cache for an hour.
+            if self.app_id is not None and (data.get("app_id"), data.get("installation_id")) != (self.app_id, self.installation_id):
                 return None
             permissions = data.get("permissions", {})
             if not isinstance(permissions, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in permissions.items()):
@@ -182,7 +187,8 @@ class TokenCache:
         tmp = Path(name)
         try:
             with os.fdopen(fd, "w") as f:
-                json.dump({"token": tok.token, "expires_at": tok.expires_at, "permissions": tok.permissions, "repositories": list(tok.repositories)}, f)
+                json.dump({"token": tok.token, "expires_at": tok.expires_at, "permissions": tok.permissions, "repositories": list(tok.repositories),
+                           "app_id": self.app_id, "installation_id": self.installation_id}, f)
             os.chmod(tmp, 0o600)
             os.replace(tmp, self.path)
         except BaseException:
@@ -199,7 +205,7 @@ class AppAuth:
     def __init__(self, app_id: int, installation_id: int, pem: str, cache_path: Path, *, now: Callable[[], int] | None = None,
                  post=None, sign=None, repositories: Sequence[str] | None = None):
         self.app_id, self.installation_id, self.pem = app_id, installation_id, pem
-        self.cache = TokenCache(cache_path)
+        self.cache = TokenCache(cache_path, app_id, installation_id)
         self._now = now or (lambda: int(time.time()))
         self._post, self._sign = post, sign
         self.repositories = tuple(repositories or ())

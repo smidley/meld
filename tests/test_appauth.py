@@ -235,3 +235,21 @@ def test_app_auth_reuses_a_fresh_token_and_remints_when_stale(keypair, tmp_path)
     late = AppAuth(1234, 55, pem, tmp_path / "app-token.json", now=lambda: NOW + 3600 - 200, post=post)
     assert late.token() == "ghs_2" and len(minted) == 2          # under 5 minutes left: re-minted
     assert late.token(force=True) == "ghs_3" and len(minted) == 3
+
+
+def test_a_cached_token_minted_for_another_app_is_not_reused(tmp_path, keypair):
+    """Plan 46: the first real run re-created a group's App; the file named the new one, and the roles kept posting under
+    the old one from the cache for an hour. The cache carries the App and installation it was minted for."""
+    pem, _ = keypair
+    minted = []
+    def post(url, headers, body):
+        minted.append(url)
+        return 201, {"token": f"ghs_{len(minted)}", "expires_at": datetime.fromtimestamp(NOW + 3600, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                     "permissions": {"contents": "write"}, "repositories": [{"full_name": "acme/widgets"}]}
+    first = AppAuth(1234, 55, pem, tmp_path / "app-token.json", now=lambda: NOW, post=post)
+    assert first.token() == "ghs_1" and json.loads((tmp_path / "app-token.json").read_text())["app_id"] == 1234
+    same = AppAuth(1234, 55, pem, tmp_path / "app-token.json", now=lambda: NOW, post=post)
+    assert same.token() == "ghs_1" and len(minted) == 1                                  # the same App reads the cache
+    other = AppAuth(1235, 56, pem, tmp_path / "app-token.json", now=lambda: NOW, post=post)
+    assert other.token() == "ghs_2" and len(minted) == 2                                 # another App mints its own
+    assert TokenCache(tmp_path / "app-token.json").load().token == "ghs_2"               # a reader with no expectation still reads it

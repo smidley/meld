@@ -120,3 +120,12 @@ def test_the_command_refuses_a_group_the_file_does_not_have_before_opening_anyth
     result = CliRunner().invoke(cli.main, ["--config", str(tmp_path / ".meld.toml"), "create-app", "nope"], env=env_for(tmp_path, group=None))
     assert result.exit_code != 0 and "no [groups.nope]" in result.output and "Add a group" in result.output and opened == []
     assert "two clicks" in CliRunner().invoke(cli.main, ["create-app", "--help"]).output
+
+
+def test_the_first_page_of_a_finished_flow_creates_nothing(tmp_path):
+    """Plan 46: a second visit to the App link after the install made a second App for the group."""
+    f = flow(tmp_path)
+    f.handle("/callback", {"state": f.state, "code": "abc"})
+    f.done = True
+    status, page = f.handle("/", {})
+    assert status == 200 and "is created and installed" in page and "meld-claude" in page and 'name="manifest"' not in page

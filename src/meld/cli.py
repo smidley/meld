@@ -547,11 +547,7 @@ def run(ctx: click.Context, group: str, once: bool, detach: bool) -> None:
     if detach:
         if once:
             raise click.ClickException("--detach and --once are exclusive: --once is a foreground diagnostic")
-        home = c.store.home
-        state = liveness(read_record(supervisor_path(home, group)), alive=ALIVE, start_of=START_OF)
-        if state["state"] == "alive":
-            raise click.ClickException(f"a supervisor for {group} is already running ({state['reason']}); `meld stop {group}` first")
-        emit(detach_supervisor(ctx.obj["config_path"], group, home, Path.cwd()), ctx.obj["pretty"])
+        emit(detach_supervisor(ctx.obj["config_path"], group, c.store.home, Path.cwd()), ctx.obj["pretty"])
         return
     emit(_guard(lambda: run_group(c, once=once, base_env=env)), ctx.obj["pretty"])
 
@@ -582,7 +578,11 @@ def group_doctor(config_path: Path, home: Path):
 
 def detach_supervisor(config_path: Path | None, group: str, home: Path, cwd: Path) -> dict:
     """What `meld run <group> --detach` does once the liveness check has passed: the supervisor in its own session with
-    its output on `$MELD_HOME/logs/<group>/supervisor.log`. Shared by `run` and the setup wizard's start step."""
+    its output on `$MELD_HOME/logs/<group>/supervisor.log`. Shared by `run` and the setup wizard's start step, so the
+    liveness check lives here (plan 46): a group whose supervisor is alive is never started again, whichever path asks."""
+    state = liveness(read_record(supervisor_path(home, group)), alive=ALIVE, start_of=START_OF)
+    if state["state"] == "alive":
+        raise click.ClickException(f"a supervisor for {group} is already running ({state['reason']}); `meld stop {group}` first")
     log = home / "logs" / group / "supervisor.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     with open(log, "ab") as handle:

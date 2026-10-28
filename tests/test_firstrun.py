@@ -115,7 +115,7 @@ def test_the_app_flow_per_group_carries_the_viewers_token_and_writes_the_group(t
     flow.convert = lambda code: {"id": 7, "slug": "meld-claude", "pem": PEM, "html_url": "u"}
     assert flow.handle("/callback", {"state": flow.state, "code": "c"})[0] == 200
     assert flow.handle("/installed", {"installation_id": "99"})[0] == 200 and flow.done
-    assert s.facts()["apps"] == {"claude": {"created": True, "installed": True, "slug": "meld-claude", "error": None}}
+    assert s.facts()["apps"] == {"claude": {"created": True, "installed": True, "slug": "meld-claude", "error": None, "url": "https://github.com/apps/meld-claude"}}
     assert stat.S_IMODE((tmp_path / "home" / "keys" / "claude.pem").stat().st_mode) == 0o600
 
 
@@ -291,6 +291,33 @@ def test_an_installed_app_checks_and_starts_its_group_by_itself_and_doctor_can_r
     blank = session(tmp_path / "nowhere", fake)
     blank.created = {"repo": "acme/widgets", "groups": ["claude"]}
     assert blank.start()["claude"]["error"] == "its GitHub App is not installed yet"
+
+
+def test_two_concurrent_starts_launch_a_group_once(tmp_path):
+    """Plan 46: the install redirect and the page's own start reached `start` within two seconds on the first real run and
+    launched two codex supervisors. One caller at a time; the second finds the group started."""
+    import threading
+    import time
+    fake = FakeGh()
+    routes_for_create(fake)
+    launched = []
+    def slow_launch(g):
+        time.sleep(0.2)
+        launched.append(g)
+        return {"group": g, "pid": 5, "detached": True}
+    s = session(tmp_path, fake, launcher=slow_launch)
+    s.create(repo="acme/widgets", goal="Ship it", milestone_title="M1", groups=["codex"])
+    flow = s.app_flow("codex")
+    flow.convert = lambda code: {"id": 8, "slug": "meld-codex", "pem": PEM, "html_url": "u"}
+    flow.handle("/callback", {"state": flow.state, "code": "c"})
+    flow.done = True                       # installed, without running the redirect's own start
+    threads = [threading.Thread(target=lambda: s.start(["codex"])) for _ in range(2)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    assert launched == ["codex"] and s.started["codex"]["pid"] == 5
+    assert s.facts()["apps"]["codex"]["url"] == "https://github.com/apps/meld-codex"
 
 
 def test_the_wizard_uses_the_gh_account_that_owns_the_repository(tmp_path):

@@ -2,6 +2,7 @@ import http.client
 import json
 import re
 import threading
+from datetime import timezone
 from types import SimpleNamespace
 
 import pytest
@@ -43,7 +44,7 @@ def viewer_for(tmp_path, *, group: str | None = None, role: str = "pm", **overri
                {"id": 555, "html_url": "https://github.com/acme/widgets/issues/10#issuecomment-555"})
     ctx = load_context(tmp_path / ".meld.toml", env=env_for(tmp_path, group=group, role=role), run=fake,
                        adapter_for=lambda name: FakeAdapter())
-    kw = dict(token=TOKEN, port=8765, config_path=tmp_path / ".meld.toml", now=lambda: NOW, clock=Clock(),
+    kw = dict(token=TOKEN, port=8765, config_path=tmp_path / ".meld.toml", now=lambda: NOW, clock=Clock(), tz=timezone.utc,
               sleep=lambda s: None, alive=lambda pid: True,
               start_of=lambda pid: "T0", disk_usage=lambda p: SimpleNamespace(total=0, used=0, free=3 * 1024 ** 3),
               check_every=1, max_polls=1)
@@ -1118,9 +1119,9 @@ def test_the_page_is_laid_out_as_header_decisions_conversation_work_and_a_tab_dr
     css = get(v, "/static/app.css").body.decode()
     assert "#issues.kanban" in css and "#drawer.closed" in css and "system-ui" in css
     assert "flex-direction: column" in css.split("#live {")[1].split("}")[0] and ".icard .jstep::before" in css and "font-size: 0" not in css.split(".icard .jstep {")[1].split("}")[0]
-    assert 'step.name === "pull request" ? "PR" : step.name' in js
+    assert 'STEP_SHORT[step.name] || step.name' in js   # plan 54: short chip labels (claim, build, PR, review, merge, audit, close), the full name on hover
     # what appears or goes does so smoothly: sections carry .appears, the drawer slides, the dialog and <details> transition
-    assert "allow-discrete" in css and "@starting-style" in css and "transition: height 0.3s ease" in css.split("#drawer {")[1].split("}")[0]
+    assert "allow-discrete" in css and "@starting-style" in css and "transition: height var(--d-sheet) var(--ease)" in css.split("#drawer {")[1].split("}")[0]   # plan 54: the drawer slides on the motion tokens
     assert html.count('class="hidden appears"') >= 2 and 'class="ask appears"' in html and '"icard appears"' in js
 
 
@@ -1136,7 +1137,7 @@ def test_the_page_is_guided_in_plain_words_and_follows_the_conversation(tmp_path
         assert marker in js, marker
     assert "innerHTML" not in js
     css = get(v, "/static/app.css").body.decode()
-    for marker in (".icard.working", ".icard.moved", "#turns li.fresh", "@keyframes pulse", "#supervisors .agent.busy"):
+    for marker in (".icard.working", ".icard.moved", "#turns li.fresh", "@keyframes pulse", "#map .node.live"):   # plan 54: the supervisor chips are gone; the map's group node carries liveness
         assert marker in css, marker
     state = body(get(v, "/api/state"))
     assert all("worker" in r for r in state["status"]["runs"])
@@ -1192,12 +1193,12 @@ def test_the_page_draws_its_overview_as_inline_svg(tmp_path):
         assert marker in html, marker
     js = get(v, "/static/app.js").body.decode()
     for marker in ("createElementNS", "drawMap", "drawBars", "drawTaskGraph", "state.processes", "drawEdge",
-                   "drawTimeline", "drawRing", "runFraction", "arrowFor", "showTurn(t.id)", "clock12", "flowing", "animationDelay"):
+                   "drawTimeline", "drawRing", "runFraction", "showTurn(t.id)", "clock12", "flowing", "animationDelay"):   # plan 54: edges carry no arrowhead, so no arrowFor
         assert marker in js, marker
     assert "innerHTML" not in js and "http://www.w3.org/2000/svg" in js
     state = body(get(v, "/api/state"))
     assert set(state["processes"]) == set(state["supervisors"]) and all("roles" in v for v in state["processes"].values())
-    assert all("launch_no" in r for p in state["processes"].values() for r in p["roles"].values()) and "launch ${info.launch_no}" in js
+    assert all("launch_no" in r for p in state["processes"].values() for r in p["roles"].values()) and "restarted ${n} time" in js   # plan 54: plain words on the role chip
 
 
 def test_the_work_lanes_show_the_flow(tmp_path):
@@ -1433,3 +1434,25 @@ def test_the_viewer_in_setup_mode_serves_the_wizard_the_app_flow_and_then_become
     out = body(post("/api/setup", {"step": "start"}))
     assert launched == ["claude", "codex"] and out["board"] is True
     assert body(get(v, "/api/setup"))["mode"] == "board" and get(v, "/api/state").status == 200
+
+
+def test_the_state_carries_the_status_strip_and_the_agent_rows(tmp_path):
+    """Plan 54: the one-line state of the run and one row per group, computed beside headline() so the page renders them."""
+    v, ctx, _ = viewer_for(tmp_path, usage_async=False)
+    home = ctx.store.home
+    write_record(supervisor_path(home, "codex"), {"pid": 4242, "started_at": NOW, "proc_start": "T0"})
+    write_record(role_run_path(home, "codex", "orchestrator"), {"pid": 4243, "started_at": NOW, "proc_start": "T0", "launch_no": 1, "reason": "start"})
+    write_record(role_run_path(home, "codex", "pm"), {"pid": 4244, "started_at": NOW, "proc_start": "T0", "launch_no": 39, "reason": "crash"})
+    write_record(freeze_path(home, "claude", "pm"), {"at": NOW, "posted": True, "resets_at": "2026-09-18T15:09:00Z"})
+    state = body(get(v, "/api/state"))
+    assert {"strip", "agents", "last_post_at", "silence_grace_minutes", "headline", "decisions", "limits", "processes"} <= set(state)
+    assert state["silence_grace_minutes"] == ctx.cfg.silence_grace_minutes
+    assert state["last_post_at"] == max(t["at"] for t in state["thread"])
+    strip = state["strip"]
+    assert set(strip) == {"level", "text", "action", "detail"} and strip["level"] == "attention"   # the recorded board has two open questions
+    assert strip["text"].startswith("2 questions need you — oldest ") and strip["action"] is None
+    assert strip["detail"] == "codex's PM has stopped (restarted 38 times). Open its transcript."
+    rows = {r["group"]: r for r in state["agents"]}
+    assert set(rows) == {"claude", "codex"} and set(rows["claude"]) == {"group", "state", "summary", "doing", "frozen_until", "restarts", "cost_usd", "tokens", "runs"}
+    assert rows["claude"]["state"] == "frozen" and rows["claude"]["frozen_until"] == "3:09 pm"
+    assert rows["codex"]["state"] == "running" and rows["codex"]["summary"] == "running · orchestrator ok · PM ok, restarted 38 times" and rows["codex"]["restarts"] == 38

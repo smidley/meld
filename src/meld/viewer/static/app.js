@@ -7,14 +7,17 @@ const KINDS = ["run_started", "message", "thinking", "tool_call", "tool_result",
 const BADGE_STATES = ["alive", "dead", "unknown", "frozen", "reconnecting"];
 const STATE_EVERY_MS = 10000;
 // One colour per party, so who is talking reads at a glance in the conversation and on the transcript columns:
-// groups in configuration order, the human green, the framework's [joint] voice lilac.
-const PALETTE = ["#58a6ff", "#f0883e", "#a371f7", "#39c5cf", "#e3b341"];
+// six fixed group colours by configuration order (plan 54: sky, tangerine, violet, teal, gold, rose, all readable on
+// the card surface), the human white ink, the framework's [joint] voice a lavender grey. A group the state does not
+// list falls back to a hash of its name, so it still keeps one colour across polls.
+const PALETTE = ["#6fb3f2", "#f0955a", "#b48cf5", "#45c7c2", "#e0bd56", "#ee82b0"];
 let groupOrder = [];
 function colorFor(kind, group) {
-  if (kind === "human") return "#3fb950";
-  if (kind === "joint") return "#d2a8ff";
+  if (kind === "human") return "#e6e9ef";
+  if (kind === "joint") return "#c6bfe6";
   const i = groupOrder.indexOf(group);
-  return PALETTE[(i < 0 ? 0 : i) % PALETTE.length];
+  const h = i < 0 ? [...String(group || "")].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 0) : i;
+  return PALETTE[h % PALETTE.length];
 }
 const STREAMS_EVERY_MS = 5000;
 const columns = new Map();   // stream id -> {root, list, live, why, listed, liveness}
@@ -175,6 +178,22 @@ function followNewest() {
   following = true;
   el("newest").classList.add("hidden");
 }
+// The thread's header verbs in the owner's words (plan 54, the review's F13 table), translated at render time with the
+// raw verb on hover; a verb this map does not know is shown lower-cased. Parties likewise: [joint] is "both groups".
+const VERB_WORDS = { ACK: "acknowledged", "NEEDS-HUMAN": "needs you", DIRECTIVE: "instruction", "PROTOCOL-VIOLATION": "broke a rule",
+                     DRIFT: "drifted from the plan", CHALLENGE: "dispute", EVIDENCE: "evidence", RETRACT: "withdrew the dispute",
+                     UPHOLD: "agreed with the dispute", DISMISS: "rejected the dispute", RESOLVED: "resolved", PROVIDED: "provided",
+                     HALT: "pause", RESUME: "resume", ASK: "asked", ANSWER: "answered", STATUS: "status report", APPROVE: "approved",
+                     AMEND: "amended", REVERT: "asked for a revert", DISAGREE: "disagreed", BUDGET: "budget", LEASE: "holds",
+                     "PLAN-ADD": "added to the plan", "PLAN-APPROVE": "approved the plan", REVIEW: "reviewed", AUDIT: "checked after merge" };
+function partyWords(t) {
+  if (t.kind === "joint") return "both groups";
+  if (t.kind === "human") return "you";
+  const role = (t.party || "").replace(/^\[|\]$/g, "").split(":")[1];
+  return t.group ? `${t.group}${role ? " " + (ROLE_WORDS[role] || role) : ""}` : t.party;
+}
+const GROUP_WITHIN_MS = 5 * 60 * 1000;
+let lastHead = null;   // {party, at} of the newest turn, so consecutive posts by one party within five minutes share a head
 function renderThread(turns) {
   // Append what is new by comment id; never rebuild, so the list keeps its place. New turns slide in, and the list
   // scrolls to the newest one unless the reader has scrolled up to read, in which case "newest" brings them back.
@@ -187,24 +206,45 @@ function renderThread(turns) {
     const li = document.createElement("li");
     if (lastTurn > 0 && list.children.length) li.classList.add("fresh");
     // `housekeeping` and `agreement` are the server's classification (chat.thread_entries): the page keeps no verb lists.
-    li.className = [t.kind, t.housekeeping && "housekeeping", t.agreement && "agreement"].filter(Boolean).join(" ");
+    const at = Date.parse(t.at || "");
+    const grouped = lastHead && lastHead.party === t.party && at - lastHead.at < GROUP_WITHIN_MS && at >= lastHead.at;
+    li.className = [t.kind, t.housekeeping && "housekeeping", t.agreement && "agreement", grouped && "cont"].filter(Boolean).join(" ");
     li.title = `comment ${t.id}`;
     li.id = `turn-${t.id}`;
     const head = document.createElement("div");
     head.className = "head";
-    const party = cell("party", t.party);
-    party.style.color = colorFor(t.kind, t.group);
-    const verb = cell("verb", t.verb + " ");
+    if (!grouped) {
+      const party = cell("party", partyWords(t));
+      party.title = t.party;
+      party.style.color = colorFor(t.kind, t.group);
+      head.append(party);
+    }
+    const verb = cell("verb", (VERB_WORDS[t.verb] || t.verb.toLowerCase()) + " ");
+    verb.title = t.verb;
     if (t.ref) refLink(verb, t.ref);
     if (t.qualifier) text(verb.appendChild(document.createElement("span")), ` ${t.qualifier}`);
     const stamp = document.createElement("span");
     stamp.className = "dim";
-    link(stamp, clock12(Date.parse(t.at || "")), ghUrl("comment", t.id), "open this comment on GitHub");
-    head.append(party, verb, stamp);
-    li.append(head, cell("body", t.text));
+    link(stamp, clock12(at), ghUrl("comment", t.id), "open this comment on GitHub");
+    head.append(verb, stamp);
+    li.append(head, bodyOf(t.text));
     list.append(li);
+    lastHead = { party: t.party, at: Number.isNaN(at) ? 0 : at };
   }
   if (added && following) requestAnimationFrame(followNewest);
+}
+function bodyOf(raw) {
+  // The first three lines of a post, the rest behind "show all" (a <details>, no inner scrollbar); `verified-by:` lines
+  // are bookkeeping and dropped, as chat._lines does for the decisions.
+  const lines = String(raw || "").split("\n").filter((l) => l.trim() && !l.trim().toLowerCase().startsWith("verified-by:"));
+  const body = cell("body", lines.slice(0, 3).join("\n"));
+  if (lines.length <= 3) return body;
+  const more = document.createElement("details");
+  more.className = "more";
+  text(more.appendChild(document.createElement("summary")), `show all (${lines.length} lines)`);
+  text(more.appendChild(document.createElement("div")), lines.slice(3).join("\n"));
+  body.append(more);
+  return body;
 }
 
 // Every reference the page shows is a link to the thing itself on GitHub: the repository, the milestone, an issue or
@@ -239,8 +279,17 @@ function refLink(parent, ref) {
               n ? "open on GitHub" : "open the coordination issue on GitHub");
 }
 
-const LANES = [["To do", ["planned", "ready", "unlabeled"]], ["In progress", ["in_progress", "blocked", "needs_human"]],
-               ["In review", ["in_review"]], ["Done", ["closed"]]];
+// The lanes bucket by the journey's steps, not by label (plan 54): the last step the server marks done decides the lane,
+// so an issue whose PR has changes requested sits in review, not in progress. Nothing done is To do; claimed or built is
+// In progress; a pull request opened or reviewed is In review; merged, audited or closed is Done.
+const LANES = [["To do", []], ["In progress", ["claimed", "built"]], ["In review", ["pull request", "reviewed"]],
+               ["Done", ["merged", "audited", "closed"]]];
+const STEP_SHORT = { claimed: "claim", built: "build", "pull request": "PR", reviewed: "review", merged: "merge", audited: "audit", closed: "close" };
+function laneOf(i) {
+  const steps = ((lastJourneys[i.number] || {}).steps || []).filter((st) => st.state === "done").map((st) => st.name);
+  const last = steps[steps.length - 1];
+  return (LANES.find(([, names]) => names.includes(last)) || LANES[0])[0];
+}
 let prevLane = new Map();   // issue number -> lane name at the last render, so a card that moved can slide in
 let liveRuns = [];          // the running worker runs from the last state, by group and issue
 let laneFlowUntil = new Map();   // lane name -> when its flow line stops running fast after a card arrived
@@ -262,33 +311,33 @@ function issueCard(i, lane) {
   const num = document.createElement("span");
   num.className = "inum";
   link(num, `#${i.number}`, ghUrl("issue", i.number));
-  head.append(num, title);
-  const badges = document.createElement("div");
-  badges.className = "ibadges";
-  if (i.claimed_by) {
-    const who = cell("iwho", i.claimed_by);
-    who.style.color = colorFor("group", i.claimed_by);
-    badges.append(who);
+  head.append(num);
+  if (pr) {
+    // The open PR's number beside the issue's, so the pull request stays one click away (the sentence below names it).
+    const pnum = document.createElement("span");
+    pnum.className = "inum";
+    link(pnum, `PR #${pr.number}`, ghUrl("issue", pr.number));
+    head.append(pnum);
   }
-  const flags = [i.worker, i.status === "planned" && "planned", i.status === "blocked" && "blocked",
-                 i.status === "needs_human" && "needs a person", i.challenged && "challenged"].filter(Boolean);
-  if (flags.length) badges.append(text(document.createElement("span"), (i.claimed_by ? " · " : "") + flags.join(" · ")));
-  card.append(head, badges);
+  head.append(title);
+  if (i.claimed_by) card.style.setProperty("--group", colorFor("group", i.claimed_by));   // the journey's live step and the working ring take this colour
+  card.append(head);
   const j = lastJourneys[i.number];
   if (j) {
     // The issue's way from claimed to closed: seven segments, filled when done, pulsing for the step under way, dim for
-    // what is still to come; the server says what is happening now and what follows (chat.journey), the page prints it.
+    // what is still to come; then the one sentence the server says about it now (chat.journey). The chip carries a short
+    // word, the full step name and its detail are the tooltip.
     const strip = document.createElement("div");
     strip.className = "journey";
     for (const step of j.steps) {
       const seg = document.createElement("span");
       seg.className = `jstep ${step.state}`;
       seg.title = `${step.name}${step.detail ? `: ${step.detail}` : ""}`;
-      text(seg, step.name === "pull request" ? "PR" : step.name);   // the label is visible now (plan 49); the long one is the tooltip
+      text(seg, STEP_SHORT[step.name] || step.name);
       strip.append(seg);
     }
     card.append(strip);
-    if (j.now || j.next) card.append(cell("jnow", [j.now && `now: ${j.now}`, j.next].filter(Boolean).join(" · ")));
+    if (j.now) card.append(cell("jnow", j.now));
   }
   for (const r of [...runs, ...checks]) {
     // Who is on it, and how far through its time that run is: a bar that fills as the deadline nears.
@@ -304,16 +353,6 @@ function issueCard(i, lane) {
     bar.append(fill);
     card.append(line, bar);
   }
-  if (pr) {
-    const reviewing = liveRuns.filter((r) => r.pr === pr.number && (r.kind === "review" || r.kind === "audit")).map((r) => `${r.group} reviewing`);
-    const state = [pr.approvals.length && `approved by ${pr.approvals.join(", ")}`, pr.changes_requested.length && `changes requested by ${pr.changes_requested.join(", ")}`,
-                   (pr.checks === "pending" || pr.checks === "red") && `checks ${pr.checks}`, ...reviewing].filter(Boolean);
-    const line = document.createElement("div");
-    line.className = "ipr";
-    link(line, `PR #${pr.number}`, ghUrl("issue", pr.number));
-    text(line.appendChild(document.createElement("span")), state.length ? ` · ${state.join(" · ")}` : " · awaiting review");
-    card.append(line);
-  }
   const verbs = document.createElement("div");
   verbs.className = "rverbs";
   verbControls(verbs, i.legal, { ref: `#${i.number}`, number: i.number });
@@ -327,6 +366,7 @@ let lastPulls = [];
 let lastStatus = null;
 let lastThread = [];
 let lastGenerated = "";
+let lastState = null;
 
 function clock12(ms, { seconds = false } = {}) {
   // A time of day the way a person says it, in the browser's own zone: "9:05 pm", or "9:05:12 pm" on a transcript line.
@@ -352,7 +392,7 @@ function drawTimeline(state) {
   const shown = turns.filter((t) => Date.parse(t.at) >= from);
   const voices = [];
   for (const t of shown) { const v = t.group || t.kind; if (!voices.includes(v)) voices.push(v); }   // a group's two roles share a lane
-  const left = 92, right = 24, laneH = 18, top = 8, width = Math.max(640, svg.parentElement.clientWidth || 640);
+  const left = 100, right = 24, laneH = 18, top = 8, width = Math.max(640, svg.parentElement.clientWidth || 640);
   const height = top + voices.length * laneH + 20;
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
   svg.setAttribute("width", width);
@@ -360,7 +400,7 @@ function drawTimeline(state) {
   const xOf = (iso) => left + ((Date.parse(iso) - from) / span) * (width - left - right);
   voices.forEach((v, i) => {
     const y = top + i * laneH + laneH / 2;
-    svgText(svg, 4, y + 4, clip(v, 12), "sub");
+    svgText(svg, 16, y + 4, clip(v, 12), "sub");
     svgEl("line", { class: "lane", x1: left, y1: y, x2: width - right, y2: y }, svg);
   });
   // Time ticks every fifteen minutes, labelled HH:MM in UTC like every other stamp on the page.
@@ -396,22 +436,14 @@ function svgText(parent, x, y, value, cls) {
   return t;
 }
 function clip(value, n) { const s = String(value == null ? "" : value); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
-function arrowFor(svg) {
-  // One arrowhead marker per drawing, named after the svg so two drawings on the page never share an id.
-  const id = `${svg.id}-arrow`;
-  if (!svg.querySelector(`#${id}`)) {
-    const marker = svgEl("marker", { id, viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 3.5, markerHeight: 3.5, orient: "auto-start-reverse" }, svgEl("defs", {}, svg));
-    svgEl("path", { class: "arrow", d: "M 0 0 L 10 5 L 0 10 z" }, marker);
-  }
-  return `url(#${id})`;
-}
-function drawEdge(parent, x1, y1, x2, y2, { flowing = false } = {}) {
-  // A cubic curve from the right edge of one node to the left edge of the next. A flowing edge carries moving dashes:
-  // that is the page's picture of communication in progress, in the direction it goes. What the edge means is said
-  // by a pill on the card it enters (drawNode's `tag`), never by text on the edge, which overlapped whatever it crossed.
+function drawEdge(parent, x1, y1, x2, y2, { flowing = false, color = null } = {}) {
+  // A cubic curve from the right edge of one node to the left edge of the next, a hairline with no arrowhead (plan 54).
+  // A flowing edge carries moving dashes in the group's colour: that is the page's picture of communication in
+  // progress, in the direction it goes. What the edge means is said by a pill on the card it enters (drawNode's
+  // `tag`), never by text on the edge, which overlapped whatever it crossed.
   const mx = (x1 + x2) / 2;
-  const svg = parent.ownerSVGElement || parent;
-  svgEl("path", { class: "edge" + (flowing ? " flowing" : ""), d: `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`, "marker-end": arrowFor(svg) }, parent);
+  const path = svgEl("path", { class: "edge" + (flowing ? " flowing" : ""), d: `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}` }, parent);
+  if (color) path.style.setProperty("--edge-color", color);
 }
 function drawRing(parent, cx, cy, r, fraction, color) {
   // How far through its time a run is: a thin arc that fills clockwise from the top; red once it is past its deadline.
@@ -426,8 +458,9 @@ function runFraction(r) {
   if (!(start < end) || !now) return 0;
   return (now - start) / (end - start);
 }
-function drawNode(parent, x, y, w, h, color, title, sub, { live = false, onclick = null, ring = null, tag = null } = {}) {
+function drawNode(parent, x, y, w, h, color, title, sub, { live = false, onclick = null, ring = null, tag = null, tip = null } = {}) {
   const g = svgEl("g", {}, parent);
+  if (tip) svgEl("title", {}, g).textContent = tip;
   const rect = svgEl("rect", { class: "node" + (live ? " live" : "") + (onclick ? " clickable" : ""), x, y, width: w, height: h, rx: 6,
                                ...(color ? { stroke: color, "stroke-width": live ? 2.5 : 1.5 } : {}) }, g);
   if (color) svgEl("rect", { x: x + 1, y: y + 1, width: 5, height: h - 2, rx: 3, fill: color }, g);
@@ -438,50 +471,71 @@ function drawNode(parent, x, y, w, h, color, title, sub, { live = false, onclick
     svgText(g, x + w - 8 - pw / 2, y + 3.5, tag, "elabel").setAttribute("text-anchor", "middle");
   }
   const textW = ring == null ? w : w - 26;
-  svgText(g, x + 12, y + (sub ? 18 : h / 2 + 4), clip(title, Math.floor(textW / 7)));
+  svgText(g, x + 12, y + (sub ? 18 : h / 2 + 4), clip(title, Math.floor(textW / 6.6)));
   if (sub) svgText(g, x + 12, y + 34, clip(sub, Math.floor(textW / 6.4)), "sub");
   if (ring != null) drawRing(g, x + w - 16, y + h / 2, 9, ring, color || "#58a6ff");
   if (onclick) { g.style.cursor = "pointer"; g.addEventListener("click", onclick); }
   return { x, y, w, h };
 }
 
+const ROLE_WORDS = { orchestrator: "orchestrator", pm: "PM" };
+function roleWords(info, freeze) {
+  // A role's state in the words of the review's table (plan 54): running, stopped, out of quota until 5:09 pm, restarted
+  // 38 times. `freeze` is limits.frozen[group][role], the provider's reset time where it gave one.
+  if (freeze && !freeze.expired) return `out of quota until ${clock12(Date.parse(freeze.until || ""))}`;
+  const state = info.state === "alive" ? "running" : info.state === "dead" ? "stopped" : "not started";
+  const n = (info.launch_no || 1) - 1;
+  return state + (n > 0 ? ` · restarted ${n} time${n === 1 ? "" : "s"}` : "");
+}
+
 function drawMap(state) {
-  // The agents and what each is on: a row per group -- the group, its two roles with their liveness, then one node per
-  // running worker with its issue or PR -- wired left to right. The map is the page's picture of who does what.
+  // The agents and what each is on: a row per group -- the group with its one-line state (chat.agent_rows), its two
+  // roles in plain words, then one node per running worker with its issue or PR -- wired left to right; under the group,
+  // what it is doing and what it has spent. The map is the page's picture of who does what.
   const svg = el("map");
   svg.replaceChildren();
   const s = state.status || {};
-  const groups = Object.keys(state.supervisors || {});
+  const rows = state.agents || [];
+  const byGroup = new Map(rows.map((r) => [r.group, r]));
+  const groups = rows.length ? rows.map((r) => r.group) : Object.keys(state.processes || {});
   const running = (s.runs || []).filter((r) => r.state === "running");
-  const rowH = 62, left = 8, groupW = 120, roleW = 160, workW = 200, gap = 26, gapW = 40;
-  const rows = Math.max(1, groups.length);
+  const frozen = (state.limits || {}).frozen || {};
+  const spendLine = (g) => {
+    const a = byGroup.get(g) || {};
+    return [a.doing, a.cost_usd != null ? `$${a.cost_usd.toFixed(2)}` : "no dollar figure from this CLI", a.runs].filter(Boolean).join(" · ");
+  };
+  const chars = Math.max(12, ...groups.flatMap((g) => [((byGroup.get(g) || {}).summary || "").length, spendLine(g).length]));
+  const rowH = 86, left = 16, groupW = Math.min(360, Math.round(chars * 6.4) + 24), roleW = 236, workW = 200, gap = 26, gapW = 40;
+  const nrows = Math.max(1, groups.length);
   const widest = Math.max(1, ...groups.map((g) => running.filter((r) => r.group === g).length));
   const width = left + groupW + gap + roleW + gapW + widest * (workW + 10) + 8;
-  svg.setAttribute("viewBox", `0 0 ${Math.max(width, 640)} ${rows * rowH + 4}`);
+  svg.setAttribute("viewBox", `0 0 ${Math.max(width, 640)} ${nrows * rowH + 4}`);
   svg.setAttribute("width", Math.max(width, 640));   // drawn at its own size, never scaled up to the page width
-  svg.setAttribute("height", rows * rowH + 4);
+  svg.setAttribute("height", nrows * rowH + 4);
   groups.forEach((g, i) => {
     const y = i * rowH + 4, color = colorFor("group", g);
-    const sup = (state.supervisors || {})[g] || {};
-    const WORDS = { alive: "running", dead: "stopped", unknown: "not started" };
-    const node = drawNode(svg, left, y, groupW, 52, color, g, WORDS[sup.state] || sup.state || "", { live: sup.state === "alive" });
+    const a = byGroup.get(g) || {};
+    const live = a.state === "running" || a.state === "partly";
+    const node = drawNode(svg, left, y, groupW, 52, color, g, a.summary || "", { live, tip: a.summary ? `${g}: ${a.summary}` : g });
+    const spend = svgText(svg, left + 12, y + 52 + 15, clip(spendLine(g), Math.floor((groupW - 24) / 6.4)), "sub");
+    if (a.tokens) svgEl("title", {}, spend).textContent = `${fmtTokens(a.tokens.in)} in / ${fmtTokens(a.tokens.out)} out` + (a.tokens.cached ? ` (${fmtTokens(a.tokens.cached)} cached)` : "");
     const roles = ((state.processes || {})[g] || {}).roles || {};
     const rx = left + groupW + gap;
     let ri = 0;
     for (const [role, info] of Object.entries(roles)) {
-      const ry = y + ri * 27;
+      const ry = y + ri * 32;
       const liveRole = info.state === "alive";
-      const launches = (info.launch_no > 1 ? ` · launch ${info.launch_no}` : "") + (info.reason === "capacity" ? " · after capacity" : "");
-      const r = drawNode(svg, rx, ry, roleW, 24, liveRole ? color : null, `${role} · ${info.frozen ? "frozen" : (info.state === "alive" ? "awake" : info.state)}${launches}`, null, { live: liveRole });
-      drawEdge(svg, node.x + node.w, node.y + node.h / 2, r.x, r.y + r.h / 2, { flowing: liveRole });
+      const label = `${ROLE_WORDS[role] || role} · ${roleWords(info, (frozen[g] || {})[role])}`;
+      const r = drawNode(svg, rx, ry, roleW, 28, liveRole ? color : null, label, null, { live: liveRole, tip: label + (info.reason ? ` (last launch: ${info.reason})` : "") });
+      drawEdge(svg, node.x + node.w, node.y + node.h / 2, r.x, r.y + r.h / 2, { flowing: liveRole, color });
       ri++;
     }
     const wx = rx + roleW + gapW;
     running.filter((r) => r.group === g).forEach((r, k) => {
-      const what = r.kind === "build" ? `building #${r.issue}` : `${r.kind === "audit" ? "auditing" : "reviewing"} PR #${r.issue}`;
+      const what = r.kind === "build" ? `building #${r.issue}` : `${r.kind === "audit" ? "checking after merge" : "reviewing"} PR #${r.issue}`;
       const w = drawNode(svg, wx + k * (workW + 10), y + 14, workW, 36, color, what, `${r.worker || r.kind} · ${r.model || ""}`, { live: true,
-                         ring: runFraction(r), tag: "dispatched", onclick: r.kind === "build" ? () => openTask(r.issue) : () => showTranscript(r) });
-      drawEdge(svg, rx + roleW, y + 27 + 12, w.x, w.y + w.h / 2, { flowing: true });
+                         ring: runFraction(r), tag: "building", onclick: r.kind === "build" ? () => openTask(r.issue) : () => showTranscript(r) });
+      drawEdge(svg, rx + roleW, y + 32 + 14, w.x, w.y + w.h / 2, { flowing: true, color });
     });
   });
 }
@@ -533,11 +587,26 @@ function renderLimits(state) {
   }
 }
 
+async function startGroup(g, button) {
+  // The same two clicks the wizard offers, served by this page: no command, no token to paste. Once installed, the
+  // group is checked and started by itself.
+  button.disabled = true;
+  text(button, `checking ${g} …`);
+  try {
+    const out = await postJSON("/api/setup", { step: "start", group: g });
+    const r = (out.started || {})[g] || {};
+    text(button, r.error ? `not started: ${r.error}` : `started (pid ${r.pid})`);
+    return !r.error;
+  } catch (e) { text(button, e.message); button.disabled = false; return false; }
+}
+
 function renderSetup(state) {
   // A configured group that is not running, and what this machine says it still needs: the owner added two groups
-  // through the form and saw nothing, because a saved group starts nothing by itself.
+  // through the form and saw nothing, because a saved group starts nothing by itself. Collapsed to one line (plan 54):
+  // "4 groups are not running" with one Start all, the per-group rows behind a disclosure.
   const list = el("setup");
   list.replaceChildren();
+  const startable = [];
   if (state.config_error) {
     const li = text(document.createElement("li"), `the configuration file does not load, so the page keeps the last good one: ${state.config_error}`);
     li.className = "bad";
@@ -558,20 +627,27 @@ function renderSetup(state) {
       b.className = "start";
       text(b, `check and start ${g}`);
       b.title = "runs meld doctor for this group, then its supervisor; nothing to type";
-      b.addEventListener("click", async () => {
-        b.disabled = true;
-        text(b, `checking ${g} …`);
-        try {
-          const out = await postJSON("/api/setup", { step: "start", group: g });
-          const r = (out.started || {})[g] || {};
-          text(b, r.error ? `not started: ${r.error}` : `started (pid ${r.pid})`);
-          if (!r.error) setTimeout(pollState, 3000);
-        } catch (e) { text(b, e.message); b.disabled = false; }
-      });
+      b.addEventListener("click", async () => { if (await startGroup(g, b)) setTimeout(pollState, 3000); });
       li.append(b);
+      startable.push([g, b]);
     }
     list.append(li);
   }
+  const n = Object.values(state.setup || {}).filter((s) => !s.running).length;
+  el("setup-wrap").classList.toggle("hidden", !list.children.length);
+  text(el("setup-count"), n ? `${n} group${n === 1 ? "" : "s"} ${n === 1 ? "is" : "are"} not running` : "the configuration file does not load");
+  const all = el("start-all");
+  all.classList.toggle("hidden", startable.length < 2);
+  all.disabled = false;
+  text(all, "Start all");
+  all.onclick = async (e) => {
+    e.preventDefault();   // a button inside <summary> would also toggle the disclosure
+    all.disabled = true;
+    let started = 0;
+    for (const [g, b] of startable) if (await startGroup(g, b)) started++;   // one at a time: each start runs meld doctor
+    text(all, `started ${started} of ${startable.length}`);
+    setTimeout(pollState, 3000);
+  };
 }
 
 function drawBars(state) {
@@ -758,7 +834,7 @@ function openTask(number) {
 function renderBoard(s) {
   // Rebuilding every row on every poll swallowed a click that landed mid-rebuild and dropped focus from a control;
   // most polls change nothing, so a board identical to the one already drawn is left alone.
-  const key = JSON.stringify([s.issues, s.pulls, s.coordination && s.coordination.agreements, s.runs, lastJourneys]);
+  const key = JSON.stringify([s.phase, s.issues, s.pulls, s.coordination && s.coordination.agreements, s.runs, lastJourneys]);
   if (key === lastBoard) return;
   lastBoard = key;
   liveRuns = (s.runs || []).filter((r) => r.state === "running");
@@ -771,10 +847,12 @@ function renderBoard(s) {
   // its new place, then animate from the old place to none).
   const before = new Map([...issues.querySelectorAll(".icard")].map((c) => [c.dataset.issue, c.getBoundingClientRect()]));
   issues.replaceChildren();
-  for (const [name, statuses] of LANES) {
+  // Planning has no issues yet: one line says so in place of four empty lanes (plan 54).
+  if (!(s.issues || []).length) issues.append(cell("empty", s.phase === "planning" ? "No issues yet; the groups are agreeing a plan" : "No issues in this milestone yet"));
+  for (const [name] of (s.issues || []).length ? LANES : []) {
     const lane = document.createElement("div");
     lane.className = "lane";
-    const items = (s.issues || []).filter((i) => statuses.includes(i.status));
+    const items = (s.issues || []).filter((i) => laneOf(i) === name);
     lane.append(text(document.createElement("h3"), `${name} · ${items.length}`));
     const flow = document.createElement("div");
     flow.className = "flowline";
@@ -791,9 +869,10 @@ function renderBoard(s) {
     const dx = old.left - now.left, dy = old.top - now.top;
     if (dx || dy) card.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }], { duration: 800, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" });
   }
-  prevLane = new Map((s.issues || []).map((i) => [i.number, (LANES.find(([, statuses]) => statuses.includes(i.status)) || [""])[0]]));
+  prevLane = new Map((s.issues || []).map((i) => [i.number, laneOf(i)]));
   const pulls = el("pulls");
   pulls.replaceChildren();
+  setTab("pulls-panel", "Pull requests", (s.pulls || []).filter((p) => p.state === "open" && !p.merged).length);
   for (const p of s.pulls || []) {
     // A failing or pending check is the usual reason a merge button is missing, so the row says so.
     const how = [p.merged ? "merged" : p.state, p.issue && `closes #${p.issue}`, !p.merged && (p.checks === "pending" || p.checks === "red") && `checks ${p.checks}`,
@@ -920,7 +999,12 @@ function renderDecisions(list) {
   const asks = el("asks");
   asks.replaceChildren();
   root.classList.toggle("hidden", !(list && list.length));
-  if (!asksById.has(selectedAsk)) selectedAsk = list && list.length ? list[list.length - 1].id : null;
+  // The oldest open question is selected by default (plan 54): it has waited longest, and the newest is still in view.
+  if (!asksById.has(selectedAsk)) {
+    const oldest = (list || []).reduce((a, d) => (a == null || (d.age_minutes || 0) > (a.age_minutes || 0) ? d : a), null);
+    selectedAsk = oldest ? oldest.id : null;
+  }
+  text(el("asks-count"), list && list.length ? `${list.length} open` : "");
   for (const d of list || []) {
     const li = el("ask").content.firstElementChild.cloneNode(true);
     li.dataset.ask = d.id;
@@ -934,20 +1018,6 @@ function renderDecisions(list) {
     }
     text(li.querySelector(".atitle"), d.title);
     text(li.querySelector(".atext"), d.summary);
-    const quick = li.querySelector(".aquick");
-    for (const c of d.choices.filter((c) => !c.needs_text)) {
-      // a reply that is one word: a button in the bubble, sent at once
-      const b = text(document.createElement("button"), c.label);
-      b.type = "button";
-      b.addEventListener("click", async (e) => {
-        e.stopPropagation();
-        b.disabled = true;
-        const result = await postAction({ party: "human", ...c.body });
-        showReplyOutcome(result, c.label);
-        if (result.ok) pollState(); else b.disabled = false;
-      });
-      quick.append(b);
-    }
     li.addEventListener("click", () => { selectedAsk = d.id; renderReplyBox(); });
     if (d.comment_id) li.title = "click to reply to this one; the link opens the comment on GitHub";
     asks.append(li);
@@ -955,25 +1025,38 @@ function renderDecisions(list) {
   renderReplyBox();
 }
 
+// What the reply form's buttons say (plan 54): a one-word ruling is a whole sentence, a typed reply is sent with "Send".
+const REPLY_WORDS = { Uphold: "Uphold the challenge", Dismiss: "Dismiss the challenge", Resolved: "Send", "Give a directive": "Send" };
 function renderReplyBox() {
+  // The form is always visible while a question is open; its buttons change with the selection: "Approve the plan" alone
+  // for a plan, "Send" for a typed reply, the two rulings for a challenge. A choice that needs no text is sent at once.
   const d = asksById.get(selectedAsk);
   const form = el("reply");
   for (const li of el("asks").querySelectorAll(".ask")) li.classList.toggle("selected", li.dataset.ask === selectedAsk);
-  const typed = d && (d.reply || d.choices.some((c) => c.needs_text));
-  form.classList.toggle("hidden", !typed);
-  if (!typed) return;
+  form.classList.toggle("hidden", !d);
+  if (!d) return;
+  const typed = Boolean(d.reply || d.choices.some((c) => c.needs_text));
   const others = asksById.size > 1 ? ` (${asksById.size} open; click another question to reply to it)` : "";
   text(el("reply-to"), `Replying to ${d.from || "the agents"}${d.ref ? ` about ${d.ref}` : ""}${others}`);
+  el("reply-text").classList.toggle("hidden", !typed);
   el("reply-text").placeholder = d.hint || "your reply";
   const send = el("reply-send");
   send.replaceChildren();
-  const ways = d.reply ? [{ label: "Send", body: d.reply }] : d.choices.filter((c) => c.needs_text).map((c) => ({ label: `Send as ${c.label.toLowerCase()}`, body: c.body }));
+  const ways = [...(d.reply ? [{ label: "Send", body: d.reply, typed: true }] : []),
+                ...d.choices.map((c) => ({ label: c.needs_text ? (REPLY_WORDS[c.label] || `Send as ${c.label.toLowerCase()}`) : c.label, body: c.body, typed: c.needs_text }))];
   for (const w of ways) {
     const b = text(document.createElement("button"), w.label);
     b.type = "button";
-    b.addEventListener("click", () => sendReply(w));
+    b.addEventListener("click", () => (w.typed ? sendReply(w) : sendChoice(w, b)));
     send.append(b);
   }
+}
+
+async function sendChoice(way, button) {
+  button.disabled = true;
+  const result = await postAction({ party: "human", ...way.body });
+  showReplyOutcome(result, way.label);
+  if (result.ok) pollState(); else button.disabled = false;
 }
 
 async function sendReply(way) {
@@ -1466,6 +1549,7 @@ async function saveConfig() {
 }
 
 function renderState(state) {
+  lastState = state;
   const s = state.status;
   lastStatus = s;   // first: every reference drawn below links through ghUrl, which reads the repository from it
   el("repo").replaceChildren();
@@ -1474,20 +1558,14 @@ function renderState(state) {
   if (s.milestone) link(el("milestone"), `milestone ${s.milestone}`, ghUrl("milestone", s.milestone), "open the milestone on GitHub");
   badge(el("phase"), "", s.phase || "");
   el("halted").classList.toggle("hidden", !s.halted);
-  // `spent` is Board.spend: group -> tier -> count, so it takes two levels of entries. One level stringified
-  // the inner object and the header read "spent: claude [object Object]" on any run that had dispatched a
-  // worker. The cap (tier -> ceiling) goes beside it, because a count means nothing without the number it is of.
-  const spent = Object.entries(s.budget.spent || {})
-    .flatMap(([group, tiers]) => Object.entries(tiers || {}).map(([tier, n]) => `${group}/${tier} ${n}`)).join(", ");
-  const cap = Object.entries(s.budget.cap || {}).map(([tier, n]) => `${tier} ${n}`).join(", ");
-  text(el("budget"), [spent && `spent: ${spent}`, cap && `cap: ${cap}`].filter(Boolean).join(" · "));
-  const disk = state.disk.free_mb == null ? "disk: unreadable" : `disk: ${state.disk.free_mb} MB free`;
-  text(el("disk"), disk).classList.toggle("bad", state.disk.free_mb != null && state.disk.free_mb < state.disk.warn_free_mb);
-  text(el("logs"), `logs: ${state.logs.total_mb} MB`).classList.toggle("bad", state.logs.total_mb > state.logs.warn_total_mb);
-  text(el("stamp"), `as of ${state.generated_at}`);
+  // The footer carries only warnings (plan 54): disk and logs are said when they are wrong, never as readings; spend is
+  // in the header bars and under each group on the map.
+  const gb = (mb) => `${(mb / 1024).toFixed(1)} GB`;
+  text(el("disk"), state.disk.free_mb == null ? "disk unreadable" : state.disk.free_mb < state.disk.warn_free_mb ? `disk low: ${gb(state.disk.free_mb)} free` : "");
+  text(el("logs"), state.logs.total_mb > state.logs.warn_total_mb ? `logs ${gb(state.logs.total_mb)}` : "");
   text(el("error"), "");
 
-  text(el("headline"), state.headline || "");
+  renderStrip(state);
   groupOrder = Object.keys(state.supervisors || {});
   lastThread = state.thread || [];
   lastGenerated = state.generated_at || "";
@@ -1497,35 +1575,9 @@ function renderState(state) {
   drawMap(state);
   renderLimits(state);
   renderSetup(state);
-  drawTimeline(state);
+  if (!el("activity").classList.contains("hidden")) drawTimeline(state);
   renderDecisions(state.decisions);
   renderThread(state.thread);
-  // The agents, one chip per group in its colour: its supervisor in plain words (the reason on hover), and any frozen role.
-  const WORDS = { alive: "running", dead: "stopped", unknown: "not running here" };
-  const sup = el("supervisors");
-  sup.replaceChildren();
-  for (const [group, live] of Object.entries(state.supervisors)) {
-    const span = document.createElement("span");
-    span.className = "agent";
-    span.title = live.reason;
-    const dot = cell("dot", "●");
-    dot.style.color = colorFor("group", group);
-    span.append(dot, text(document.createElement("span"), group), badge(document.createElement("span"), live.state, WORDS[live.state] || live.state));
-    // what the group is doing right now, from its running worker runs
-    const busy = (s.runs || []).filter((r) => r.group === group && r.state === "running");
-    if (busy.length) {
-      span.classList.add("busy");
-      span.append(cell("doing", busy.map((r) => r.kind === "build" ? `building #${r.issue}` : `${r.kind === "audit" ? "auditing" : "reviewing"} PR #${r.pr}`).join(", ")));
-    }
-    for (const [role, freeze] of Object.entries(state.frozen[group] || {})) {
-      if (freeze) {
-        const f = badge(document.createElement("span"), "frozen", `${role} frozen`);
-        f.title = freeze.resets_at ? `resets ${freeze.resets_at}` : `since ${freeze.at}, re-probing`;
-        span.append(" ", f);
-      }
-    }
-    sup.append(span);
-  }
   // The needs-human items are decision cards now (plan 18); this row carries only the state errors below.
   const nh = el("needs-human");
   nh.replaceChildren();
@@ -1598,8 +1650,9 @@ function openFeed() {
     const col = columns.get(JSON.parse(e.data).stream);
     if (col) col.root.classList.add("ended");
   });
-  feed.onopen = () => badge(el("feed"), "alive", "feed live");
-  feed.onerror = () => badge(el("feed"), "reconnecting", "feed reconnecting");
+  // The feed badge is only interesting when the feed is not live: hidden while it is, red while it reconnects.
+  feed.onopen = () => badge(el("feed"), "alive", "feed live").classList.add("hidden");
+  feed.onerror = () => badge(el("feed"), "reconnecting", "feed reconnecting").classList.remove("hidden");
 }
 
 function renderStreams(list) {
@@ -1632,13 +1685,62 @@ function renderStreams(list) {
     col.root.classList.toggle("dead", col.liveness.state === "dead");
     el("streams").append(col.root);
   }
+  const live = ordered.filter((c) => c.liveness.state === "alive").length;
+  setTab("streams", "Transcripts", live ? `${live} running` : 0);
   scrollColumns();
 }
+
+// The strip (plan 54): the server's one-line state of the run (chat.status_strip), rendered as the page's first line in
+// one of four colours, with the one obvious act as a button and a second clause under it. `state.headline` is the
+// sentence `meld chat` prints from the same board; it is not rendered twice, only kept on hover for parity.
+const STRIP_LEVELS = ["ok", "attention", "bad", "quiet"];
+const ACTION_WORDS = { "plan-approve": "Approve the plan", RESUME: "Resume" };
+function setStrip(level, line, detail, action) {
+  const strip = el("strip");
+  strip.classList.remove(...STRIP_LEVELS);
+  strip.classList.add(STRIP_LEVELS.includes(level) ? level : "quiet");
+  text(el("headline"), line);
+  text(el("strip-detail"), detail);
+  const b = el("strip-action");
+  b.classList.toggle("hidden", !action);
+  b.onclick = null;
+  if (!action) return;
+  text(b, ACTION_WORDS[action.action || action.verb] || action.action || action.verb);
+  b.disabled = false;
+  b.onclick = async () => {
+    b.disabled = true;
+    const result = await postAction({ party: "human", ...action });
+    if (result.ok) pollState(); else { b.disabled = false; setStrip("bad", result.message, "", action); }
+  };
+}
+function renderStrip(state) {
+  const strip = state.strip || { level: "quiet", text: state.headline || "", detail: "", action: null };
+  const last = state.last_post_at ? `last post ${clock12(Date.parse(state.last_post_at))}` : "";
+  setStrip(strip.level, strip.text, [strip.detail, last].filter(Boolean).join(" · "), strip.action);
+  el("headline").title = state.headline || "";
+}
+// "updated N s ago" counts from the last successful poll, in the strip and in the footer; a failed poll turns the strip
+// red with the error and leaves the last board on the page.
+let lastPollAt = 0;
+function tickUpdated() {
+  if (!lastPollAt) return;
+  const s = Math.round((Date.now() - lastPollAt) / 1000);
+  const ago = s < 90 ? `${s} s ago` : `${Math.round(s / 60)} min ago`;
+  for (const id of ["updated", "stamp"]) text(el(id), `updated ${ago}`);
+}
+setInterval(tickUpdated, 1000);
 
 let statePending = null;
 async function pollState() {
   if (statePending) clearTimeout(statePending);
-  try { renderState(await getJSON("/api/state")); } catch (e) { text(el("error"), e.message); }
+  try {
+    renderState(await getJSON("/api/state"));
+    lastPollAt = Date.now();
+    tickUpdated();
+  } catch (e) {
+    text(el("error"), "connection lost, retrying");
+    setStrip("bad", `Cannot reach meld: ${e.message}`, lastPollAt ? "The board below is from the last successful update." : "", null);
+  }
   statePending = setTimeout(pollState, STATE_EVERY_MS);
 }
 
@@ -1670,11 +1772,22 @@ function openTab(name) {
   for (const b of document.querySelectorAll("#tabs .tab")) b.classList.toggle("active", b.dataset.tab === name);
   for (const pane of el("drawer").querySelectorAll(".tabpane")) pane.classList.toggle("hidden", pane.id !== name);
   el("drawer").classList.toggle("closed", !name);
+  el("drawer-close").classList.toggle("hidden", !name);
   if (name === "config") el("config").open = true;
   if (name === "streams") scrollColumns();
+  if (name === "activity" && lastState) drawTimeline(lastState);   // drawn at the pane's width, which it had none of while hidden
 }
 for (const b of document.querySelectorAll("#tabs .tab")) {
   b.addEventListener("click", () => openTab(b.classList.contains("active") ? null : b.dataset.tab));
+}
+el("drawer-close").addEventListener("click", () => openTab(null));
+document.addEventListener("keydown", (e) => {
+  // Escape closes the sheet; the task dialog closes itself on Escape first, and a form control keeps its own Escape.
+  if (e.key === "Escape" && !el("task").open && !el("drawer").classList.contains("closed")) openTab(null);
+});
+// A tab's label carries its count: "Transcripts · 3 running", "Pull requests · 1".
+function setTab(name, label, count) {
+  text(document.querySelector(`#tabs .tab[data-tab="${name}"]`), count ? `${label} · ${count}` : label);
 }
 el("show-tools").addEventListener("change", (e) => { el("streams").classList.toggle("narration", !e.target.checked); scrollColumns(); });
 for (const [key, intent] of Object.entries(INTENTS)) {

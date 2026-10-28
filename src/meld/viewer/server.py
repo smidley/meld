@@ -17,7 +17,7 @@ import time
 import tomllib
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
@@ -39,7 +39,7 @@ from meld.prompts import ROLES
 from meld.results import ResultsError
 from meld.runners import freeze_path, read_record, supervisor_path, processes
 from meld.state import liveness, pid_alive, proc_start_of
-from meld.chat import decisions, headline, journeys, progress_line, thread_entries
+from meld.chat import agent_rows, decisions, headline, journeys, progress_line, status_strip, thread_entries
 from meld.limits import freeze_view, usage_totals
 from meld.status import build_status
 from meld.transcript import total_bytes
@@ -219,7 +219,7 @@ class Viewer:
                  state_ttl: float = STATE_TTL_SECONDS, interval: float = 1.0, check_every: int = st.CHECK_EVERY,
                  max_polls: int | None = None, which: Callable[[str], str | None] = shutil.which,
                  env: Mapping[str, str] | None = None, usage_async: bool = True, usage_every: float = 60.0,
-                 setup=None, load_ctx: Callable[[Path], object] | None = None) -> None:
+                 setup=None, load_ctx: Callable[[Path], object] | None = None, tz: tzinfo | None = None) -> None:
         if ctx is None and setup is None:
             raise ValueError("a Viewer needs a context, or a SetupSession to make one")
         self.ctx = ctx
@@ -237,6 +237,7 @@ class Viewer:
         self._usage: dict = {}
         self._usage_thread: threading.Thread | None = None
         self.now, self.clock, self.sleep = now, clock, sleep
+        self.tz = tz   # the zone the strip's 12-hour times are in; None is this machine's, read per request
         self.alive, self.start_of, self.disk_usage = alive, start_of, disk_usage
         self.state_ttl, self.interval, self.check_every, self.max_polls = state_ttl, interval, check_every, max_polls
         self._state_cache: tuple[float, Response] | None = None
@@ -424,13 +425,24 @@ class Viewer:
             free_mb: int | None = self.disk_usage(home).free // (1024 * 1024)  # type: ignore[attr-defined]
         except OSError:
             free_mb = None
-        return _json(200, {"status": status, "supervisors": supervisors, "frozen": frozen, "thread": thread_entries(board, last=THREAD_LAST),
-                           "processes": processes(cfg, home, alive=self.alive, start_of=self.start_of),
+        thread = thread_entries(board, last=THREAD_LAST)
+        procs = processes(cfg, home, alive=self.alive, start_of=self.start_of)
+        limits = {"frozen": freeze_view(cfg, home, self.now()), "usage": self._usage_snapshot(), "retry_minutes": cfg.runners_limit_retry_minutes}
+        pending = decisions(board, cfg, self.ctx.actor(), now)
+        # The newest post's stamp, for the strip's silence clause; the review named `runners.silence_grace_minutes`, which
+        # config.py keeps as `silence_grace_minutes` (plan 54).
+        last_post_at = max((t["at"] for t in thread), default=None)
+        grace = getattr(cfg, "runners_silence_grace_minutes", None) or getattr(cfg, "silence_grace_minutes", 15)
+        tz = self.tz or datetime.now().astimezone().tzinfo or timezone.utc
+        return _json(200, {"status": status, "supervisors": supervisors, "frozen": frozen, "thread": thread,
+                           "processes": procs,
                            "setup": self._setup(cfg, supervisors), "config_error": self._config_error,
                            "journeys": journeys(status, now), "progress": progress_line(status, now),
-                           "limits": {"frozen": freeze_view(cfg, home, self.now()), "usage": self._usage_snapshot(),
-                                      "retry_minutes": cfg.runners_limit_retry_minutes},
-                           "decisions": (pending := decisions(board, cfg, self.ctx.actor(), now)), "headline": headline(status, pending),
+                           "limits": limits,
+                           "decisions": pending, "headline": headline(status, pending),
+                           "strip": status_strip(status, pending, procs, limits, now, last_post_at=last_post_at, silence_grace_minutes=grace, tz=tz),
+                           "agents": agent_rows(status, procs, limits, now, tz=tz),
+                           "last_post_at": last_post_at, "silence_grace_minutes": grace,
                            "disk": {"free_mb": free_mb, "warn_free_mb": cfg.logs_warn_free_mb},
                            "logs": {"total_mb": total_bytes(home / "logs") // (1024 * 1024), "warn_total_mb": cfg.logs_warn_total_mb},
                            "generated_at": self.now()})

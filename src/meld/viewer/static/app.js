@@ -7,14 +7,17 @@ const KINDS = ["run_started", "message", "thinking", "tool_call", "tool_result",
 const BADGE_STATES = ["alive", "dead", "unknown", "frozen", "reconnecting"];
 const STATE_EVERY_MS = 10000;
 // One colour per party, so who is talking reads at a glance in the conversation and on the transcript columns:
-// groups in configuration order, the human green, the framework's [joint] voice lilac.
-const PALETTE = ["#58a6ff", "#f0883e", "#a371f7", "#39c5cf", "#e3b341"];
+// six fixed group colours by configuration order (plan 54: sky, tangerine, violet, teal, gold, rose, all readable on
+// the card surface), the human white ink, the framework's [joint] voice a lavender grey. A group the state does not
+// list falls back to a hash of its name, so it still keeps one colour across polls.
+const PALETTE = ["#6fb3f2", "#f0955a", "#b48cf5", "#45c7c2", "#e0bd56", "#ee82b0"];
 let groupOrder = [];
 function colorFor(kind, group) {
-  if (kind === "human") return "#3fb950";
-  if (kind === "joint") return "#d2a8ff";
+  if (kind === "human") return "#e6e9ef";
+  if (kind === "joint") return "#c6bfe6";
   const i = groupOrder.indexOf(group);
-  return PALETTE[(i < 0 ? 0 : i) % PALETTE.length];
+  const h = i < 0 ? [...String(group || "")].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 0) : i;
+  return PALETTE[h % PALETTE.length];
 }
 const STREAMS_EVERY_MS = 5000;
 const columns = new Map();   // stream id -> {root, list, live, why, listed, liveness}
@@ -268,6 +271,7 @@ function issueCard(i, lane) {
   if (i.claimed_by) {
     const who = cell("iwho", i.claimed_by);
     who.style.color = colorFor("group", i.claimed_by);
+    card.style.setProperty("--group", colorFor("group", i.claimed_by));   // the journey's live step and the working ring take this colour
     badges.append(who);
   }
   const flags = [i.worker, i.status === "planned" && "planned", i.status === "blocked" && "blocked",
@@ -352,7 +356,7 @@ function drawTimeline(state) {
   const shown = turns.filter((t) => Date.parse(t.at) >= from);
   const voices = [];
   for (const t of shown) { const v = t.group || t.kind; if (!voices.includes(v)) voices.push(v); }   // a group's two roles share a lane
-  const left = 92, right = 24, laneH = 18, top = 8, width = Math.max(640, svg.parentElement.clientWidth || 640);
+  const left = 100, right = 24, laneH = 18, top = 8, width = Math.max(640, svg.parentElement.clientWidth || 640);
   const height = top + voices.length * laneH + 20;
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
   svg.setAttribute("width", width);
@@ -360,7 +364,7 @@ function drawTimeline(state) {
   const xOf = (iso) => left + ((Date.parse(iso) - from) / span) * (width - left - right);
   voices.forEach((v, i) => {
     const y = top + i * laneH + laneH / 2;
-    svgText(svg, 4, y + 4, clip(v, 12), "sub");
+    svgText(svg, 16, y + 4, clip(v, 12), "sub");
     svgEl("line", { class: "lane", x1: left, y1: y, x2: width - right, y2: y }, svg);
   });
   // Time ticks every fifteen minutes, labelled HH:MM in UTC like every other stamp on the page.
@@ -396,22 +400,14 @@ function svgText(parent, x, y, value, cls) {
   return t;
 }
 function clip(value, n) { const s = String(value == null ? "" : value); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
-function arrowFor(svg) {
-  // One arrowhead marker per drawing, named after the svg so two drawings on the page never share an id.
-  const id = `${svg.id}-arrow`;
-  if (!svg.querySelector(`#${id}`)) {
-    const marker = svgEl("marker", { id, viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 3.5, markerHeight: 3.5, orient: "auto-start-reverse" }, svgEl("defs", {}, svg));
-    svgEl("path", { class: "arrow", d: "M 0 0 L 10 5 L 0 10 z" }, marker);
-  }
-  return `url(#${id})`;
-}
-function drawEdge(parent, x1, y1, x2, y2, { flowing = false } = {}) {
-  // A cubic curve from the right edge of one node to the left edge of the next. A flowing edge carries moving dashes:
-  // that is the page's picture of communication in progress, in the direction it goes. What the edge means is said
-  // by a pill on the card it enters (drawNode's `tag`), never by text on the edge, which overlapped whatever it crossed.
+function drawEdge(parent, x1, y1, x2, y2, { flowing = false, color = null } = {}) {
+  // A cubic curve from the right edge of one node to the left edge of the next, a hairline with no arrowhead (plan 54).
+  // A flowing edge carries moving dashes in the group's colour: that is the page's picture of communication in
+  // progress, in the direction it goes. What the edge means is said by a pill on the card it enters (drawNode's
+  // `tag`), never by text on the edge, which overlapped whatever it crossed.
   const mx = (x1 + x2) / 2;
-  const svg = parent.ownerSVGElement || parent;
-  svgEl("path", { class: "edge" + (flowing ? " flowing" : ""), d: `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`, "marker-end": arrowFor(svg) }, parent);
+  const path = svgEl("path", { class: "edge" + (flowing ? " flowing" : ""), d: `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}` }, parent);
+  if (color) path.style.setProperty("--edge-color", color);
 }
 function drawRing(parent, cx, cy, r, fraction, color) {
   // How far through its time a run is: a thin arc that fills clockwise from the top; red once it is past its deadline.
@@ -438,7 +434,7 @@ function drawNode(parent, x, y, w, h, color, title, sub, { live = false, onclick
     svgText(g, x + w - 8 - pw / 2, y + 3.5, tag, "elabel").setAttribute("text-anchor", "middle");
   }
   const textW = ring == null ? w : w - 26;
-  svgText(g, x + 12, y + (sub ? 18 : h / 2 + 4), clip(title, Math.floor(textW / 7)));
+  svgText(g, x + 12, y + (sub ? 18 : h / 2 + 4), clip(title, Math.floor(textW / 6.6)));
   if (sub) svgText(g, x + 12, y + 34, clip(sub, Math.floor(textW / 6.4)), "sub");
   if (ring != null) drawRing(g, x + w - 16, y + h / 2, 9, ring, color || "#58a6ff");
   if (onclick) { g.style.cursor = "pointer"; g.addEventListener("click", onclick); }
@@ -453,7 +449,7 @@ function drawMap(state) {
   const s = state.status || {};
   const groups = Object.keys(state.supervisors || {});
   const running = (s.runs || []).filter((r) => r.state === "running");
-  const rowH = 62, left = 8, groupW = 120, roleW = 160, workW = 200, gap = 26, gapW = 40;
+  const rowH = 68, left = 16, groupW = 136, roleW = 184, workW = 200, gap = 26, gapW = 40;
   const rows = Math.max(1, groups.length);
   const widest = Math.max(1, ...groups.map((g) => running.filter((r) => r.group === g).length));
   const width = left + groupW + gap + roleW + gapW + widest * (workW + 10) + 8;
@@ -469,11 +465,11 @@ function drawMap(state) {
     const rx = left + groupW + gap;
     let ri = 0;
     for (const [role, info] of Object.entries(roles)) {
-      const ry = y + ri * 27;
+      const ry = y + ri * 32;
       const liveRole = info.state === "alive";
       const launches = (info.launch_no > 1 ? ` · launch ${info.launch_no}` : "") + (info.reason === "capacity" ? " · after capacity" : "");
-      const r = drawNode(svg, rx, ry, roleW, 24, liveRole ? color : null, `${role} · ${info.frozen ? "frozen" : (info.state === "alive" ? "awake" : info.state)}${launches}`, null, { live: liveRole });
-      drawEdge(svg, node.x + node.w, node.y + node.h / 2, r.x, r.y + r.h / 2, { flowing: liveRole });
+      const r = drawNode(svg, rx, ry, roleW, 28, liveRole ? color : null, `${role} · ${info.frozen ? "frozen" : (info.state === "alive" ? "awake" : info.state)}${launches}`, null, { live: liveRole });
+      drawEdge(svg, node.x + node.w, node.y + node.h / 2, r.x, r.y + r.h / 2, { flowing: liveRole, color });
       ri++;
     }
     const wx = rx + roleW + gapW;
@@ -481,7 +477,7 @@ function drawMap(state) {
       const what = r.kind === "build" ? `building #${r.issue}` : `${r.kind === "audit" ? "auditing" : "reviewing"} PR #${r.issue}`;
       const w = drawNode(svg, wx + k * (workW + 10), y + 14, workW, 36, color, what, `${r.worker || r.kind} · ${r.model || ""}`, { live: true,
                          ring: runFraction(r), tag: "dispatched", onclick: r.kind === "build" ? () => openTask(r.issue) : () => showTranscript(r) });
-      drawEdge(svg, rx + roleW, y + 27 + 12, w.x, w.y + w.h / 2, { flowing: true });
+      drawEdge(svg, rx + roleW, y + 32 + 14, w.x, w.y + w.h / 2, { flowing: true, color });
     });
   });
 }
@@ -1484,7 +1480,7 @@ function renderState(state) {
   const disk = state.disk.free_mb == null ? "disk: unreadable" : `disk: ${state.disk.free_mb} MB free`;
   text(el("disk"), disk).classList.toggle("bad", state.disk.free_mb != null && state.disk.free_mb < state.disk.warn_free_mb);
   text(el("logs"), `logs: ${state.logs.total_mb} MB`).classList.toggle("bad", state.logs.total_mb > state.logs.warn_total_mb);
-  text(el("stamp"), `as of ${state.generated_at}`);
+  text(el("stamp"), `as of ${clock12(Date.parse(state.generated_at || ""), { seconds: true })}`);
   text(el("error"), "");
 
   text(el("headline"), state.headline || "");

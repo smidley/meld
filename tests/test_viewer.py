@@ -1121,7 +1121,7 @@ def test_the_page_is_laid_out_as_header_decisions_conversation_work_and_a_tab_dr
     assert "flex-direction: column" in css.split("#live {")[1].split("}")[0] and ".icard .jstep::before" in css and "font-size: 0" not in css.split(".icard .jstep {")[1].split("}")[0]
     assert 'step.name === "pull request" ? "PR" : step.name' in js
     # what appears or goes does so smoothly: sections carry .appears, the drawer slides, the dialog and <details> transition
-    assert "allow-discrete" in css and "@starting-style" in css and "transition: height 0.3s ease" in css.split("#drawer {")[1].split("}")[0]
+    assert "allow-discrete" in css and "@starting-style" in css and "transition: height var(--d-sheet) var(--ease)" in css.split("#drawer {")[1].split("}")[0]   # plan 54: the drawer slides on the motion tokens
     assert html.count('class="hidden appears"') >= 2 and 'class="ask appears"' in html and '"icard appears"' in js
 
 
@@ -1193,7 +1193,7 @@ def test_the_page_draws_its_overview_as_inline_svg(tmp_path):
         assert marker in html, marker
     js = get(v, "/static/app.js").body.decode()
     for marker in ("createElementNS", "drawMap", "drawBars", "drawTaskGraph", "state.processes", "drawEdge",
-                   "drawTimeline", "drawRing", "runFraction", "arrowFor", "showTurn(t.id)", "clock12", "flowing", "animationDelay"):
+                   "drawTimeline", "drawRing", "runFraction", "showTurn(t.id)", "clock12", "flowing", "animationDelay"):   # plan 54: edges carry no arrowhead, so no arrowFor
         assert marker in js, marker
     assert "innerHTML" not in js and "http://www.w3.org/2000/svg" in js
     state = body(get(v, "/api/state"))

@@ -660,6 +660,9 @@ The maze's #4 worker edited `.github/workflows/tests.yml`; GitHub refused the pu
 ## Plan 70 — a spend cap is a limit, not a crash (this branch)
 
 From about 15:00 UTC on 2026-10-29 both maze codex roles printed "You hit your spend cap set by the owner of your workspace" and exited; `is_limit` knew "spend limit" but not "spend cap", so the supervisor relaunched both every ten minutes for four hours with no `LIMITED` post. `spend cap` and `spending limit` are limit phrases now; the codex adapter's `turn.failed` path already makes a `usage_limit` of them, so the freeze and the single post follow. Plan 69 (PR #89, no checks is nothing to wait for) is open beside this one.
+## Plan 69 — no checks is nothing to wait for (this branch)
+
+The owner's GitHub Actions quota for the month ran out. With Actions off, every new head has no check runs and `rules._merge` refused with "required checks are none, not green", so nothing could merge again. `none` now passes the checks clause; red, pending and unreadable still refuse. A head that already carries failed runs stays red until a new commit.
 
 ## Plan 68 — red checks say why (PR #88)
 

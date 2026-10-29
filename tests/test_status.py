@@ -422,3 +422,7 @@ def test_status_says_when_a_role_has_nothing_it_can_do():
     assert render_status(held, CFG2, CLAUDE_PM, REG)["idle"] is True
     running = mk_board(CFG2, issues=[mk_issue(11, status="needs_human", claimed_by="claude")], runs={"claude": {11: mk_run("claude", 11)}, "codex": {}})
     assert render_status(running, CFG2, CLAUDE_PM, REG)["idle"] is False
+    # plan 72: an issue the group holds with nothing to do on it is idle even though release is always legal to the holder
+    holding = mk_board(CFG2, issues=[mk_issue(11, status="blocked", claimed_by="claude")])
+    st = render_status(holding, CFG2, CLAUDE_PM, REG)
+    assert "release" in next(i for i in st["issues"])["legal"] and st["idle"] is True

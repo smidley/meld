@@ -85,7 +85,9 @@ def render_status(board: Board, cfg: Config, actor: Actor, models: ModelRegistry
                   for ref, ag in ((r, agreement_for(board.comments, r, cfg)) for r in refs)}
     # Plan 64: nothing this role can do -- no active verb on any issue, PR or open agreement, and no live run of its group.
     # The maze's claude PM relaunched every four minutes into exactly that board for an evening while a person held the answer.
-    passive = {"tag", "remember", "challenge", "propose", "draft", "ask"}
+    # Plan 72: `release` is an escape hatch, not work -- it is legal on every issue a group holds, so counting it kept the
+    # maze's claude PM out of idle (and relaunching every three minutes) while #4 waited on a person.
+    passive = {"tag", "remember", "challenge", "propose", "draft", "ask", "release"}
     acts = [v for i in issues for v in i["legal"] if v not in passive] + [v for p in pulls for v in p["legal"] if v not in passive]
     acts += [v for a in agreements.values() for v in a["legal"] if v not in passive]
     live = any(r.alive for r in board.runs.get(actor.group or "", {}).values())

@@ -1,6 +1,8 @@
 """Legal-action computation. Every invariant lives here and has a test."""
 from __future__ import annotations
 
+import re
+
 from dataclasses import dataclass
 from enum import Enum
 
@@ -717,15 +719,22 @@ def remember_rule(board: Board, cfg: Config, actor: Actor, ref: str, supersedes:
     return None
 
 
-def ask_rule(board: Board, actor: Actor, ref: str | None) -> str | None:
+def ask_rule(board: Board, actor: Actor, ref: str | None, text: str = "") -> str | None:
     """Why `actor` may not post `NEEDS-HUMAN` on `ref` now, or None. One open ask per ref: while the newest ask on it has
     no listed human's answer, a group's or PM's repeat is refused -- the person already has the card, and a second one
     from another party says the same thing in other words (plan 41). A human's own is never refused: that is how a
-    person re-gates an issue they answered."""
+    person re-gates an issue they answered. One open ask per problem (plan 66): an ask on a fresh ref whose text names an
+    issue or PR that already has an open ask is the same card under a new name -- the maze's claude PM, refused on `#4`,
+    posted the same words as `ask-2`."""
     if actor.is_human:
         return None
     standing = board.open_ask(ref)
     if standing is None:
+        for n in sorted({int(m) for m in re.findall(r"#(\d+)", text or "")}):
+            other = board.open_ask(f"#{n}")
+            if other is not None:
+                return (f"#{n} already has an open NEEDS-HUMAN (comment {other.id} by {other.header.party.label}); a new ref does not "
+                        f"make it a new question -- wait for a listed human's PROVIDED or RESOLVED on #{n}")
         return None
     return (f"{standing.header.ref} already has an open NEEDS-HUMAN (comment {standing.id} by {standing.header.party.label}); "
             f"wait for a listed human's PROVIDED or RESOLVED on it instead of asking again")

@@ -117,7 +117,7 @@ def post(ctx, verb: str, ref: str | None = None, qualifier: str | None = None, t
         if verb == "AMEND" and not agreement.can_amend(ctx.cfg):
             _refuse(ctx, board, verb, ref, f"amend cap ({ctx.cfg.amend_cap}) reached for {ref}; post AGREE or DISSENT")
     if verb == "NEEDS-HUMAN":
-        rule = ask_rule(board, actor, ref)
+        rule = ask_rule(board, actor, ref, text or "")
         if rule:
             _refuse(ctx, board, verb, ref, rule, quiet=True)   # plan 63: the refusal is the feedback; a post would wake the others
     if verb == "RESOLVED":

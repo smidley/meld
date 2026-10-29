@@ -653,6 +653,10 @@ The owner: "the UI for the dashboard needs a lot of work; dispatch some sub agen
 
 **Known follow-ups:** the map's group node repeats the role chips' words; the strip's `ok` and `quiet` levels were checked through their classes only; the token-limit monitor stays a freeze notice since no provider reports a quota ceiling.
 
+## Fix — the App manifest asks for Workflows: write (this branch)
+
+The maze's #4 worker edited `.github/workflows/tests.yml`; GitHub refused the push because the claude App had no Workflows permission, `collect` failed twice and the PM asked a person. `appsetup.PERMISSIONS` now includes `workflows: write` for every App the wizard creates, and `meld doctor` warns on an existing App without it, naming the fix (grant it on the App, then accept the change on its installation). Existing Apps need that by hand.
+
 ## Plan 60 — a person's answer lifts the attempt cap (this branch)
 
 The maze's #4 reached the attempt budget on three builds that all ran before #3 merged; claude's PM asked a person as told, and nothing a person could post made `dispatch` legal again. `Board.answered_since(issue, at)` is a listed human's `RESOLVED`/`PROVIDED` on the issue newer than `at`; `rules._dispatch` skips the cap when the answer is newer than the capped build, and `dispatch` starts the next build's `attempt` at 1. The person answers the ask on the page as always; that reply is the decision.

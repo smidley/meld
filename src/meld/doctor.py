@@ -248,7 +248,7 @@ def run_checks(cfg: Config, repo_root: Path, *, env: Mapping[str, str], gh_facto
                                                   repositories=[cfg.repo_name.rpartition("/")[2] or cfg.repo_name], post=app_post)
                     need = {"contents": "write", "issues": "write", "pull_requests": "write", "statuses": "write"}
                     wrong = {k: tok.permissions.get(k, "none") for k, v in need.items() if tok.permissions.get(k) != v}
-                    detail = "permissions: " + ", ".join(f"{k}: {tok.permissions.get(k, 'none')}" for k in (*need, "checks"))
+                    detail = "permissions: " + ", ".join(f"{k}: {tok.permissions.get(k, 'none')}" for k in (*need, "checks", "workflows"))
                     # The mint above asked for the product repo by name, so a 422 (handled below) is the "not covered"
                     # answer and a listed repo is the "covered" one. An empty list is neither: absent evidence warns.
                     unverified = not tok.repositories
@@ -262,14 +262,20 @@ def run_checks(cfg: Config, repo_root: Path, *, env: Mapping[str, str], gh_facto
                     no_checks = tok.permissions.get("checks") != "write"
                     if no_checks:
                         detail += "; this group cannot read check runs (every open PR shows checks unreadable to it, so it can never merge) and each review it posts will record check_run_error"
+                    # A worker's branch that touches .github/workflows/* is refused by GitHub without Workflows: write, and collect
+                    # fails on the push (the maze run's #4). A warning: most work never touches a workflow file.
+                    no_workflows = tok.permissions.get("workflows") != "write"
+                    if no_workflows:
+                        detail += "; without Workflows: write a worker branch that edits .github/workflows/* cannot be pushed, so collect fails on it"
                     bad = bool(wrong) or (not unverified and not covers)
                     fix = ""
                     if bad:
                         fix = ("edit the App's permissions (Contents, Issues, Pull requests, Commit statuses: read & write; "
                                "Checks: read & write recommended) and install it on the repo")
-                    elif no_checks:
-                        fix = "grant the App Checks: read & write (GitHub > Settings > Developer settings > GitHub Apps > the App > Permissions), then accept the change on its installation"
-                    checks.append(Check(f"app-installation:{group.name}", False if bad else (None if unverified or no_checks else True), detail, fix,
+                    elif no_checks or no_workflows:
+                        missing = " and ".join(n for n, m in (("Checks", no_checks), ("Workflows", no_workflows)) if m)
+                        fix = f"grant the App {missing}: read & write (GitHub > Settings > Developer settings > GitHub Apps > the App > Permissions), then accept the change on its installation"
+                    checks.append(Check(f"app-installation:{group.name}", False if bad else (None if unverified or no_checks or no_workflows else True), detail, fix,
                                         measured=not unverified))
                 except AppAuthError as e:
                     checks.append(Check(f"app-installation:{group.name}", False, f"installation token failed: {e}", "check installation_id (from the installation URL) and that the App is installed on the repo"))

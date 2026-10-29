@@ -25,7 +25,8 @@ from meld.atomic import write_atomic
 from meld.config import Config, ConfigError, dumps
 
 # The four a group needs plus checks (a review's verdict is also a check run; doctor's app-installation check asks for it) and metadata.
-PERMISSIONS = {"contents": "write", "issues": "write", "pull_requests": "write", "statuses": "write", "checks": "write", "metadata": "read"}
+# workflows: a worker that edits .github/workflows/* cannot be pushed without it (the maze run's #4 was stuck on exactly that)
+PERMISSIONS = {"contents": "write", "issues": "write", "pull_requests": "write", "statuses": "write", "checks": "write", "workflows": "write", "metadata": "read"}
 
 
 def manifest(name: str, repo: str, redirect_url: str, setup_url: str) -> dict:

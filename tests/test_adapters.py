@@ -241,6 +241,8 @@ def test_is_limit_recognises_the_prose_each_cli_actually_prints():
         "429 Too Many Requests",
         "rate limited; retry later",
         "quota exceeded for this organization",
+        "You hit your spend cap set by the owner of your workspace. Ask an owner to increase your spend cap to continue.",   # plan 70: codex, a crash loop for four hours on the maze
+        "spending limit reached for this workspace",
     ]:
         assert is_limit(text), text
 
@@ -332,3 +334,12 @@ def test_reset_at_reads_compact_and_day_durations():
     assert reset_at("usage limit reached; resets in 3d2h", now) == "2026-10-30T01:40:00Z"
     assert reset_at("usage limit reached; resets in 7 days", now) == "2026-11-02T23:40:00Z"
     assert reset_at("usage limit reached, no time given", now) is None
+
+
+def test_a_codex_turn_that_fails_on_the_workspace_spend_cap_is_a_usage_limit():
+    """Plan 70: the maze's codex roles printed this and exited for four hours; the supervisor called it a crash and relaunched
+    both every ten minutes with nothing on the board to say why."""
+    from meld.adapters.codex import CodexAdapter
+    line = '{"type":"turn.failed","error":{"message":"You hit your spend cap set by the owner of your workspace. Ask an owner to increase your spend cap to continue."}}'
+    (event,) = CodexAdapter().parse_events(line, "2026-10-29T18:30:55Z")
+    assert event.kind == "usage_limit" and "spend cap" in event.text and "resets_at" not in event.meta

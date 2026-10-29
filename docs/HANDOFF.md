@@ -660,6 +660,9 @@ The maze's #4 worker edited `.github/workflows/tests.yml`; GitHub refused the pu
 ## Plan 71 — `remember 4` is `remember #4` (this branch)
 
 Claude's orchestrator on the maze ran `meld remember 4` and was told 4 was not on the board. `remember_rule` and the `remember` command now read a bare number as `#<n>`, as every other verb does. Plans 69 and 70 (PRs #89 and #90) are open beside this one.
+## Plan 69 — no checks is nothing to wait for (this branch)
+
+The owner's GitHub Actions quota for the month ran out. With Actions off, every new head has no check runs and `rules._merge` refused with "required checks are none, not green", so nothing could merge again. `none` now passes the checks clause; red, pending and unreadable still refuse. A head that already carries failed runs stays red until a new commit.
 
 ## Plan 68 — red checks say why (PR #88)
 

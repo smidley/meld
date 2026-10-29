@@ -408,7 +408,9 @@ def _merge(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | No
         return "PR has an open CHALLENGE"
     if pr.head_committer is None:
         return UNKNOWN_COMMITTER
-    if pr.checks != "green":
+    if pr.checks not in ("green", "none"):
+        # Plan 69: a head with no check runs at all has nothing to wait for -- a repository without CI, or one whose Actions
+        # are switched off (the maze's owner ran out of Actions quota for the month). Red, pending and unreadable still refuse.
         return f"required checks are {pr.checks}, not green"
     have = approving_parties(cfg, pr)
     need = needed_approvals(board, cfg)

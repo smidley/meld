@@ -409,6 +409,18 @@ def dispatch(ctx, number: int, *, kind: str = "build", worker: str | None = None
     return _dispatch_pr(ctx, board, actor, number, kind, adapter, when, env, worker)
 
 
+def push_limits(permissions: dict[str, str] | None) -> str:
+    """What a group's GitHub App cannot push, from its installation's permissions (plan 62), in words for a worker's brief;
+    "" for a PAT group or an App with nothing missing. GitHub refuses a push that creates or changes a workflow file unless
+    the App holds Workflows: write."""
+    if permissions is None or permissions.get("workflows") == "write":
+        return ""
+    return ("This group pushes through a GitHub App that has no Workflows permission: a branch that creates or edits any file "
+            "under `.github/workflows/` is refused on push, and the whole run is lost with it. Do not create or edit workflow "
+            "files. If the task cannot be done without a workflow change, make every other change, finish with status "
+            "`blocked`, and say in `needs_human` exactly which workflow change is needed and why.")
+
+
 def person_answer(board: Board, number: int) -> tuple[str, str, str] | None:
     """(ask, answer, who) when the newest `NEEDS-HUMAN #number` has been answered -- by a listed human's PROVIDED/RESOLVED or
     by the asking group's own RESOLVED (plan 52) -- so the retry's brief carries what was said (plan 53); None otherwise."""
@@ -482,6 +494,7 @@ def _dispatch_build(ctx, board: Board, actor: Actor, number: int, adapter: Adapt
     brief = render_brief(role=worker, kind="build", group=group.name, model=issue.model or "", effort=issue.effort or "", issue=issue,
                          pr=open_pr if open_pr is not None and open_pr.state == "open" else None, plan_text=board.plan_text, repo_root=ctx.repo_root, worktree=wt, base_branch=ctx.cfg.default_branch,
                          conflicts=conflicts, answer=person_answer(board, number), sandbox=worker_notes(adp),
+                         cannot_push=push_limits(ctx.app_auth.permissions() if ctx.app_auth is not None else None),
                          skills=select_skills(f"{issue.title}\n{issue.body}",
                                               [w for w in ctx.roster_entries() if w.source in ("skill", "product-skill")], pinned=issue.skills),
                          recall=recall_hits, project_skills_dir=adp.project_skills_dir(),

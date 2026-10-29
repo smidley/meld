@@ -216,6 +216,15 @@ class AppAuth:
         self.repositories = tuple(repositories or ())
         self.last: InstallationToken | None = None
 
+    def permissions(self) -> dict[str, str]:
+        """The installation's granted permissions as the last mint reported them (plan 62): the cached token's, else a
+        fresh one's. Empty when nothing is known."""
+        try:
+            self.token(False)
+        except AppAuthError:
+            return {}
+        return dict((self.last or self.cache.load() or InstallationToken("", "", {}, ())).permissions)
+
     def token(self, force: bool = False) -> str:
         now = self._now()
         cached = self.last or self.cache.load()

@@ -125,6 +125,24 @@ class StateStore:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         write_atomic(self.snapshot_path, json.dumps(digest, sort_keys=True))
 
+    # ---- idle (plan 64) -----------------------------------------------------
+
+    @property
+    def idle_path(self) -> Path:
+        return self.state_dir / "idle.json"
+
+    def write_idle(self, until: str, since: str) -> None:
+        """This role's wait timed out on a board that offers it nothing: the supervisor may let it sleep until `until`."""
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        write_atomic(self.idle_path, json.dumps({"until": until, "since": since}))
+
+    def read_idle(self) -> dict | None:
+        try:
+            data = json.loads(self.idle_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        return data if isinstance(data, dict) and isinstance(data.get("until"), str) else None
+
     # ---- run records -------------------------------------------------------
 
     def write_run(self, record: RunRecord) -> Path:

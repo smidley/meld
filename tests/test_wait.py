@@ -188,3 +188,19 @@ def test_cli_wait_clamps_a_roles_short_timeout_but_not_a_humans(tmp_path, monkey
     assert seen[-1] == 0 and "timeout_clamped" not in json.loads(out.output)                      # a one-shot read is left alone
     out = CliRunner().invoke(cli.main, ["--config", str(tmp_path / ".meld.toml"), "--compact", "wait", "--timeout", "45"], env=env_for(tmp_path, group=None))
     assert seen[-1] == 45 and "timeout_clamped" not in json.loads(out.output)                     # and so is a human
+
+
+def test_a_wait_that_times_out_on_an_idle_board_records_how_long_the_role_may_sleep(tmp_path):
+    """Plan 64: the marker the supervisor reads before relaunching this role."""
+    from datetime import datetime, timezone
+    fake, ctx = make_ctx(tmp_path)
+    clock = Clock()
+    wall = lambda: datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)   # noqa: E731
+    first = wait_for_change(ctx, timeout=0, interval=1, sleep=clock.sleep, clock=clock, wall=wall)   # the initial snapshot is a change
+    assert first["changes"] == ["initial snapshot"] and ctx.store.read_idle() is None
+    out = wait_for_change(ctx, timeout=5, interval=1, sleep=clock.sleep, clock=clock, wall=wall)
+    assert out["timed_out"] is True
+    if out["idle"]:
+        assert out["idle_until"] == "2026-09-03T12:15:00Z" and ctx.store.read_idle() == {"until": "2026-09-03T12:15:00Z", "since": "2026-09-03T12:00:00Z"}
+    else:
+        assert "idle_until" not in out and ctx.store.read_idle() is None

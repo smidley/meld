@@ -136,6 +136,32 @@ def test_run_group_relaunches_a_clean_exit_no_sooner_than_one_wait_timeout_after
     assert "- Reason: `exit` (" in relaunch.prompt
 
 
+def test_run_group_lets_an_idle_role_sleep_until_its_recorded_instant(tmp_path):
+    """Plan 64: a clean exit whose last wait recorded an idle board is relaunched after the recorded sleep, at most
+    runners.idle_minutes, with reason `idle`; a record that has passed changes nothing."""
+    from meld.runners import _idle_seconds, idle_path, write_record
+    _, ctx, env = make(tmp_path)
+    write_record(idle_path(ctx.store.home, "claude", "pm"), {"until": "2026-09-03T12:10:00Z", "since": "2026-09-03T12:00:00Z"})
+    write_record(idle_path(ctx.store.home, "claude", "orchestrator"), {"until": "2026-09-03T11:00:00Z", "since": "2026-09-03T10:45:00Z"})   # passed
+    adapter = FakeAdapter(script="import sys; sys.exit(0)")
+    clock = Clock()
+    slept: list[float] = []
+
+    def sleep(s):
+        slept.append(s)
+        clock.t += 61.0
+        time.sleep(0.05)
+
+    out = run_group(ctx, adapter=adapter, cycles=3, interval=0.01, sleep=sleep, clock=clock, base_env=env, wall=lambda: "2026-09-03T12:00:00Z")
+    assert 600.0 in slept and out["roles"]["pm"]["launches"] >= 2
+    pm_relaunch = next(s for s in adapter.launches if s.role == "pm" and "Launch number: 2" in s.prompt)
+    assert "- Reason: `idle` (" in pm_relaunch.prompt
+    orch_relaunch = next(s for s in adapter.launches if s.role == "orchestrator" and "Launch number: 2" in s.prompt)
+    assert "- Reason: `exit` (" in orch_relaunch.prompt
+    assert _idle_seconds({"until": "2026-09-03T12:30:00Z"}, "2026-09-03T12:00:00Z") == 1800.0 and _idle_seconds(None, "2026-09-03T12:00:00Z") == 0.0
+    assert _idle_seconds({"until": "nonsense"}, "2026-09-03T12:00:00Z") == 0.0
+
+
 def test_run_group_throttles_a_quick_zero_exit_without_calling_it_a_crash(tmp_path):
     """A session that exits 0 within a minute is backed off like a crash (no hot loop) but is still told `exit`, not
     `crash`: the first live run's codex PM finished honest 50-second turns and posted RESUMED on every relaunch."""

@@ -1286,7 +1286,7 @@ const WORDS = {
   budget: ["Budgets", "worker runs a milestone may spend, per model tier", { small: "small-tier runs", medium: "medium-tier runs", large: "large-tier runs", wallclock_hours: "wall-clock hours (not enforced yet)" }],
   timeouts: ["Worker time", "how long one worker run may take, by task size", { S: "small task", M: "medium task", L: "large task" }],
   polling: ["Polling", "how often the roles look at GitHub", { interval_seconds: "poll every (seconds)", wait_timeout_seconds: "wait at most (seconds)" }],
-  runners: ["Role schedule", "when a role is restarted, refreshed or nudged", { restart_hours: "restart roles every (hours)", roster_refresh_minutes: "refresh the roster every (minutes)", silence_grace_minutes: "silence allowed before a nudge (minutes)", summary_cadence_minutes: "STATUS summary every (minutes)", limit_retry_minutes: "retry after a usage limit (minutes)" }],
+  runners: ["Role schedule", "when a role is restarted, refreshed or nudged", { restart_hours: "restart roles every (hours)", roster_refresh_minutes: "refresh the roster every (minutes)", silence_grace_minutes: "silence allowed before a nudge (minutes)", summary_cadence_minutes: "STATUS summary every (minutes)", limit_retry_minutes: "retry after a usage limit (minutes)", idle_minutes: "sleep when the board offers a role nothing (minutes)" }],
   worker: ["Workers", "what one worker run gets", { log_tail_lines: "log lines quoted on failure", max_turns: "turns a run may take" }],
   lease: ["Leases", "", { grace_minutes: "grace after a lease expires (minutes)" }],
   audit: ["Audits", "when merged work is audited", { batch_merges: "merges per audit batch", batch_hours: "hours before a batch is due" }],

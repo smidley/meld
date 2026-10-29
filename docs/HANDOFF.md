@@ -660,6 +660,21 @@ The maze's #4 worker edited `.github/workflows/tests.yml`; GitHub refused the pu
 ## Plan 67 — a refusal the board already stated is quiet (this branch)
 
 While #4 waited on a person, the maze's claude PM re-ran, launch after launch, dispatches and claims that its own `meld status` listed under `refused` with the reason; each posted a `PROTOCOL-VIOLATION` and drew an orchestrator's `PING`. `actions.refuse` now compares a refusal on a numeric target with the status's own verb table for that party (`_status_said`) and posts nothing when the table already said it; a refusal the table could not have stated still posts. The preamble tells roles a refused verb stays refused and that `idle` means wait. Plans 62 to 66 (PRs #82 to #86) are open beside this one.
+## Plan 66 — one open ask per problem (this branch)
+
+With `NEEDS-HUMAN #4` open and its repeat refused, the maze's claude PM posted the same words as `NEEDS-HUMAN ask-2`, and the page showed two questions for one missing permission. `rules.ask_rule` now reads the ask's text: a group's or PM's ask on a fresh ref that names an issue or PR with an open ask is refused naming that ask (quietly, plan 63). The PM prompt says one open ask per ref and one per problem. Plans 62 to 65 (PRs #82 to #85) are open beside this one.
+## Plan 65 — a refusal names the mistake, and nobody explains it again (this branch)
+
+The maze's claude PM ran `meld dispatch 17 --kind audit` on an open issue; the refusal called it a PR on the wrong branch, and both orchestrators posted a `PING` explaining the dependency gate. `_dispatch_pr` now says "#17 is an issue, not a pull request; `--kind audit` takes a PR number" when the number is an issue; the orchestrator prompt lists `PROTOCOL-VIOLATION` among the posts never acknowledged. Plans 62 to 64 (PRs #82 to #84) are open beside this one.
+## Plan 64 — an idle board is cheap (this branch)
+
+With #4 waiting on an App permission only the owner could grant, the maze's claude PM had nothing legal to do and still relaunched every wait timeout: launches 87 to 110 in two hours and $40 of spend. `meld status` now carries `idle` (no active verb on any issue, PR or open agreement for this role, no live run of its group); a role's `meld wait` that times out idle writes `state/<group>/<role>/idle.json` with `until` = now + `runners.idle_minutes` (default 15); the supervisor sleeps until that instant after a clean exit and launches with reason `idle`. Plans 62 and 63 (PRs #82, #83) are open beside this one.
+## Plan 63 — waiting on a person is quiet (this branch)
+
+With an ask open on the maze's #4 that only a person could answer, claude's PM re-posted it on every launch, each refusal posted a `PROTOCOL-VIOLATION`, codex's PM woke and posted `PING`, and claude's PM woke again: launches 87 to 102 in an hour in which nothing could move. A repeat of an open ask is now refused quietly (`refuse(..., quiet=True)`); the violation throttle treats `4` and `#4` as one target; `meld wait` has a `human` change kind (a listed person's post, `board_digest.last_human_comment_id`), and the PM prompt waits on `human,issue,pr,run` while its own ask is open; the orchestrator never `PING`s a group about its open ask. Running roles pick the prompt up on their next launch. Plan 62 (PR #82, a worker is told what its App cannot push) is open beside this one.
+## Plan 62 — a worker is told what its App cannot push (this branch)
+
+The maze's #4 worker edited `.github/workflows/tests.yml`; the claude App had no Workflows permission, GitHub refused the push, `collect` failed twice and the fix took three asks. `AppAuth.permissions()` reports the installation's granted permissions from the last mint; `dispatch.push_limits` turns a missing Workflows permission into words; the build brief carries `## What you cannot push` telling the worker not to touch workflow files and, if the task needs one, to finish `blocked` naming the change. The maze's two Apps still lack the permission until the owner accepts it on each installation.
 
 ## Plan 61 — a network blip is not a question for a person (PR #81)
 

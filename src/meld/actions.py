@@ -52,11 +52,12 @@ def _already_said(board: Board, party: Party, target: str, verb: Verb, rule: str
     verbs -- a substring or rule-only match would let one throttle the other.
     """
     expected = _refusal_text(verb, rule)
+    canon = lambda r: f"#{r}" if (r or "").isdigit() else r   # noqa: E731  -- plan 63: `4` and `#4` are one target
     for comment in sorted(board.comments, key=lambda c: (c.created_at, c.id), reverse=True):
         if not comment.ok or comment.header is None:
             continue
         h = comment.header
-        if h.verb != "PROTOCOL-VIOLATION" or h.party != party or h.ref != target:
+        if h.verb != "PROTOCOL-VIOLATION" or h.party != party or canon(h.ref) != canon(target):
             continue
         return comment.text.strip() == expected
     return False

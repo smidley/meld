@@ -28,6 +28,7 @@ class FakeGh:
     calls: list[Call] = field(default_factory=list)
     envs: list[dict] = field(default_factory=list)
     rate_limit_next: bool = False
+    connect_fail_next: int = 0   # plan 61: this many calls fail the way gh does when api.github.com is unreachable
 
     def route(self, method: str, endpoint: str, body: object, status: int = 200, etag: str | None = None,
               query: dict[str, str] | None = None) -> None:
@@ -67,6 +68,9 @@ class FakeGh:
         self.calls.append(Call(method, parts.path, query, body, headers))
         self.envs.append(dict(env or {}))
 
+        if self.connect_fail_next > 0:
+            self.connect_fail_next -= 1
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com")
         if self.rate_limit_next:
             self.rate_limit_next = False
             head = "HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 1700000000\r\n\r\n"

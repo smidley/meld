@@ -387,3 +387,21 @@ def test_a_provider_that_fails_only_on_the_401_refresh_also_surfaces_as_a_github
     gh = GitHub("acme/widgets", run=fake, token_provider=flaky)
     with pytest.raises(GitHubError, match="could not reach"):
         gh.get("repos/acme/widgets/issues/2", use_cache=False)
+
+
+def test_a_connection_failure_is_retried_with_backoff_and_then_is_an_error(tmp_path):
+    """Plan 61: gh could not reach api.github.com at all; the call is retried after 2, 5, 15 and 30 seconds (injected
+    sleep) and only then raised. The maze run's roles asked a person over a three-minute network blip."""
+    from meld.github import CONNECT_RETRY_SECONDS, GitHub, GitHubError
+    fake = FakeGh()
+    fake.route("GET", "repos/acme/widgets/milestones", [{"number": 3, "state": "open"}])
+    pauses = []
+    gh = GitHub("acme/widgets", token="t", run=fake, sleep=pauses.append)
+    fake.connect_fail_next = 2
+    assert gh.get("repos/acme/widgets/milestones")[0]["number"] == 3
+    assert pauses == [2, 5] and len(fake.calls) == 3
+    fake.connect_fail_next = 10
+    pauses.clear()
+    with pytest.raises(GitHubError, match="error connecting to api.github.com"):
+        gh.get("repos/acme/widgets/milestones")
+    assert pauses == list(CONNECT_RETRY_SECONDS) and fake.connect_fail_next == 5   # five tries, then the error

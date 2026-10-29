@@ -272,6 +272,7 @@ def test_limit_retry_and_free_space_knobs_have_defaults_and_floors():
     }
     default = Config.from_dict(base)
     assert default.runners_limit_retry_minutes == 30
+    assert default.runners_idle_minutes == 15 and Config.from_dict({**base, "runners": {"idle_minutes": 40}}).runners_idle_minutes == 40   # plan 64
     assert default.logs_warn_free_mb == 2048
 
     tuned = Config.from_dict({**base, "runners": {"limit_retry_minutes": 5}, "logs": {"warn_free_mb": 1}})

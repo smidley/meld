@@ -407,3 +407,18 @@ def test_status_agreements_list_the_post_verbs_of_the_round(board1_gh, tmp_path)
     assert legal(claude, agreed) == ["amend", "joint"] and legal(codex, agreed) == ["amend"]                   # the proposer may post the [joint]
     closed = agreed + [mk_comment(104, "meld-claude-bot", "[joint] PLAN plan-1\n\nsplit, in order\n\nverified-by: agreed", "2026-09-03T10:03:00Z")]
     assert "agree" not in legal(codex, closed) and "joint" not in legal(claude, closed)                         # a closed round takes no more posts
+
+
+def test_status_says_when_a_role_has_nothing_it_can_do():
+    """Plan 64: `idle` is true for a role with no active verb on any issue, PR or open agreement and no live run of its own;
+    tag and remember do not count. The maze's claude PM relaunched into such a board every four minutes for an evening."""
+    from meld.status import render_status
+    from tests.factories import mk_run
+    finished = mk_run("claude", 11, alive=False, collected=False)
+    busy = mk_board(CFG2, issues=[mk_issue(11, status="in_progress", claimed_by="claude")], runs={"claude": {11: finished}, "codex": {}})   # collect is legal
+    assert "collect" in next(i for i in render_status(busy, CFG2, CLAUDE_PM, REG)["issues"])["legal"]
+    assert render_status(busy, CFG2, CLAUDE_PM, REG)["idle"] is False
+    held = mk_board(CFG2, issues=[mk_issue(11, status="needs_human", claimed_by="claude")])
+    assert render_status(held, CFG2, CLAUDE_PM, REG)["idle"] is True
+    running = mk_board(CFG2, issues=[mk_issue(11, status="needs_human", claimed_by="claude")], runs={"claude": {11: mk_run("claude", 11)}, "codex": {}})
+    assert render_status(running, CFG2, CLAUDE_PM, REG)["idle"] is False

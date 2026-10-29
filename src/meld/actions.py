@@ -52,21 +52,25 @@ def _already_said(board: Board, party: Party, target: str, verb: Verb, rule: str
     verbs -- a substring or rule-only match would let one throttle the other.
     """
     expected = _refusal_text(verb, rule)
+    canon = lambda r: f"#{r}" if (r or "").isdigit() else r   # noqa: E731  -- plan 63: `4` and `#4` are one target
     for comment in sorted(board.comments, key=lambda c: (c.created_at, c.id), reverse=True):
         if not comment.ok or comment.header is None:
             continue
         h = comment.header
-        if h.verb != "PROTOCOL-VIOLATION" or h.party != party or h.ref != target:
+        if h.verb != "PROTOCOL-VIOLATION" or h.party != party or canon(h.ref) != canon(target):
             continue
         return comment.text.strip() == expected
     return False
 
 
-def refuse(ctx, board: Board | None, refusal: Refusal) -> NoReturn:
+def refuse(ctx, board: Board | None, refusal: Refusal, *, quiet: bool = False) -> NoReturn:
+    """Refuse, and for a group party post PROTOCOL-VIOLATION on the thread unless `quiet` (plan 63: a repeat of an open
+    ask is refused without a post, because the post woke the other group, whose PING woke this one, every few minutes
+    for an hour on the maze run while a person held the answer)."""
     actor = ctx.actor()
     post_error = None
     violation_posted: bool | None = None
-    if board is not None and not actor.is_human:
+    if board is not None and not actor.is_human and not quiet:
         header = Header(actor.party, "PROTOCOL-VIOLATION", refusal.target, None)
         if _already_said(board, actor.party, refusal.target, refusal.verb, refusal.rule):
             raise Refused(refusal, post_error=None, violation_posted=None)

@@ -83,7 +83,15 @@ def render_status(board: Board, cfg: Config, actor: Actor, models: ModelRegistry
                         "summary": ((ag.text or "").strip().splitlines() or [""])[0][:160],   # the proposal's first line, so a row says what the ref is about
                         "legal": legal_agreement_verbs(board, cfg, actor, ref)}
                   for ref, ag in ((r, agreement_for(board.comments, r, cfg)) for r in refs)}
+    # Plan 64: nothing this role can do -- no active verb on any issue, PR or open agreement, and no live run of its group.
+    # The maze's claude PM relaunched every four minutes into exactly that board for an evening while a person held the answer.
+    passive = {"tag", "remember", "challenge", "propose", "draft", "ask"}
+    acts = [v for i in issues for v in i["legal"] if v not in passive] + [v for p in pulls for v in p["legal"] if v not in passive]
+    acts += [v for a in agreements.values() for v in a["legal"] if v not in passive]
+    live = any(r.alive for r in board.runs.get(actor.group or "", {}).values())
+    idle = bool(actor.group) and not live and not acts
     return {
+        "idle": idle,
         "repo": board.repo, "milestone": board.milestone, "coordination_issue": board.coordination_issue,
         "phase": board.phase, "halted": board.halted, "party": actor.party.label, "actor": actor.login,
         "quorum": needed_approvals(board, cfg), "needs_human": needs_human,

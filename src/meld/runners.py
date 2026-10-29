@@ -122,6 +122,16 @@ def _terminate(proc, *, grace: float = 10.0, sleep=time.sleep) -> None:
         proc.wait()
 
 
+def _idle_seconds(record: dict | None, now: str) -> float:
+    """Seconds left on an idle record's `until`, or 0 when there is none, it is malformed, or it has passed."""
+    try:
+        until = datetime.strptime(str((record or {}).get("until", "")), _ISO_FMT).replace(tzinfo=timezone.utc)
+        then = datetime.strptime(now, _ISO_FMT).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return 0.0
+    return max(0.0, (until - then).total_seconds())
+
+
 def _iso_now() -> str:
     """The default `wall` seam (see run_group): what time it is, as the format every instant here uses."""
     return datetime.now(timezone.utc).strftime(_ISO_FMT)
@@ -149,6 +159,11 @@ def freeze_path(home: Path, group: str, role: str) -> Path:
 def supervisor_path(home: Path, group: str) -> Path:
     """Where a group's supervisor records itself: its pid and the instant the kernel started it (spec 22)."""
     return home / "state" / group / "supervisor.json"
+
+
+def idle_path(home: Path, group: str, role: str) -> Path:
+    """Where a role's last wait recorded that its board offered it nothing (plan 64): `until` is how long it may sleep."""
+    return home / "state" / group / role / "idle.json"
 
 
 def role_run_path(home: Path, group: str, role: str) -> Path:
@@ -497,6 +512,12 @@ def run_group(ctx, *, adapter: Adapter | None = None, once: bool = False, cycles
                 floor = float(ctx.cfg.wait_timeout_seconds)
                 if lived < floor:
                     _pause(floor - lived)
+                # Plan 64: the session's last wait found nothing it could do; sleep until the instant it recorded, at most
+                # runners.idle_minutes. The maze's claude PM spent forty dollars relaunching into a board only a person could move.
+                idle_for = _idle_seconds(read_record(idle_path(ctx.store.home, group.name, role)), wall())
+                if idle_for > 0:
+                    reason = "idle"
+                    _pause(min(idle_for, ctx.cfg.runners_idle_minutes * 60.0))
             else:
                 restarts, reason = rp.restarts + 1, ("exit" if code == 0 else "crash")
                 _pause(min(5.0 * (2 ** rp.restarts), _MAX_BACKOFF))

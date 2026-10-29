@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
 from meld.github import RateLimited
@@ -17,8 +18,12 @@ def _nap(sleep, clock, deadline: float, want: float) -> None:
     sleep(max(0.0, min(want, deadline - clock())))
 
 
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def wait_for_change(ctx, timeout: float, interval: float, *, kinds: Iterable[str] | None = None,
-                    sleep=time.sleep, clock=time.monotonic) -> dict:
+                    sleep=time.sleep, clock=time.monotonic, wall=_utcnow) -> dict:
     deadline = clock() + timeout
     prev = ctx.store.load_snapshot()
     backoff = float(interval)
@@ -43,5 +48,12 @@ def wait_for_change(ctx, timeout: float, interval: float, *, kinds: Iterable[str
             return data
         if clock() >= deadline:
             data.update({"changes": [], "change_records": [], "timed_out": True, "rate_limited": False})
+            if data.get("idle") and ctx.store.role:
+                # Plan 64: a role's wait ran out on a board that offers it nothing; the supervisor reads this and lets the
+                # next launch wait runners.idle_minutes instead of one wait timeout.
+                now = wall()
+                until = now + timedelta(minutes=ctx.cfg.runners_idle_minutes)
+                ctx.store.write_idle(until.strftime("%Y-%m-%dT%H:%M:%SZ"), now.strftime("%Y-%m-%dT%H:%M:%SZ"))
+                data["idle_until"] = until.strftime("%Y-%m-%dT%H:%M:%SZ")
             return data
         _nap(sleep, clock, deadline, interval)

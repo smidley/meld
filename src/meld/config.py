@@ -219,7 +219,7 @@ KNOWN: dict[str, tuple[str, ...]] = {
     "agreement": ("amend_cap",),
     "polling": ("interval_seconds", "wait_timeout_seconds"),
     "runners": ("restart_hours", "roster_refresh_minutes", "silence_grace_minutes", "summary_cadence_minutes",
-                "limit_retry_minutes"),
+                "limit_retry_minutes", "idle_minutes"),
     "timeouts": ("S", "M", "L"),
     "budget": ("small", "medium", "large", "wallclock_hours", "attempts_per_issue"),
     "notify": ("slack_dm_webhook_env", "repeat_after_minutes"),
@@ -383,7 +383,8 @@ def dumps(cfg: Config) -> str:
                                 ("roster_refresh_minutes", cfg.roster_refresh_minutes),
                                 ("silence_grace_minutes", cfg.silence_grace_minutes),
                                 ("summary_cadence_minutes", cfg.summary_cadence_minutes),
-                                ("limit_retry_minutes", cfg.runners_limit_retry_minutes)]),
+                                ("limit_retry_minutes", cfg.runners_limit_retry_minutes),
+                                ("idle_minutes", cfg.runners_idle_minutes)]),
         ["[timeouts]"] + _lines([(size, cfg.timeouts[size]) for size in ("S", "M", "L")]),
         ["[budget]"] + _lines([("small", cfg.budget["small"]), ("medium", cfg.budget["medium"]),
                                ("large", cfg.budget["large"]), ("wallclock_hours", cfg.budget_wallclock_hours),
@@ -433,6 +434,7 @@ class Config:
     logs_max_bytes_per_run: int = 8 * 1024 * 1024
     logs_warn_total_mb: int = 2048
     runners_limit_retry_minutes: int = 30
+    runners_idle_minutes: int = 15   # plan 64: how long the supervisor lets a role sleep when its board offers it nothing
     logs_warn_free_mb: int = 2048
     viewer_port: int = 0
     viewer_open_browser: bool = False
@@ -601,6 +603,7 @@ class Config:
                                          "logs.warn_total_mb", "megabytes"),
             runners_limit_retry_minutes=_at_least(runners.get("limit_retry_minutes", 30), RUNNERS_MIN_LIMIT_RETRY_MINUTES,
                                                   "runners.limit_retry_minutes", "minutes"),
+            runners_idle_minutes=_at_least(runners.get("idle_minutes", 15), 1, "runners.idle_minutes", "minutes"),
             logs_warn_free_mb=_at_least(logs.get("warn_free_mb", 2048), LOGS_MIN_WARN_FREE_MB, "logs.warn_free_mb", "MB"),
             viewer_port=_port(viewer.get("port", 0), "viewer.port"),
             viewer_open_browser=bool(viewer.get("open_browser", False)),

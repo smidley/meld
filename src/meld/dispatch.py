@@ -520,6 +520,10 @@ def _dispatch_pr(ctx, board: Board, actor: Actor, number: int, kind: str, adapte
     target = f"#{number}"
     pr = board.pulls.get(number)
     if pr is None:
+        # Plan 65: the maze's claude PM ran `dispatch 17 --kind audit` on an open issue and was told the PR was on the wrong
+        # branch; two orchestrators then spent a turn each explaining. Name the mistake.
+        if number in board.issues:
+            refuse(ctx, board, Refusal(Verb.DISPATCH, target, f"#{number} is an issue, not a pull request; `--kind {kind}` takes a PR number"))
         refuse(ctx, board, Refusal(Verb.DISPATCH, target, "PR is not on a meld/ branch of the active repo"))
     blocker = pr_refusal(board, ctx.cfg, actor, Verb.REVIEW if kind == "review" else Verb.AUDIT, pr)
     if blocker:

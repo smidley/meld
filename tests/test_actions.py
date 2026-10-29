@@ -114,7 +114,8 @@ def test_claim_refusal_posts_protocol_violation_for_groups_only(tmp_path):
     with pytest.raises(Refused) as ei:
         claim(ctx, 11)
     assert ei.value.refusal.rule == "only a PM or a human may claim"
-    assert posted_headers(fake) == ["[claude] PROTOCOL-VIOLATION #11"]
+    assert posted_headers(fake) == []   # plan 67: `meld status` already listed this refusal for the orchestrator, so no violation post
+    assert ei.value.violation_posted is None
     assert not any(c.endpoint.endswith("/labels") for c in fake.calls)
 
     fake2, human = make(tmp_path, group=None)
@@ -142,11 +143,11 @@ def test_claim_compensates_when_reread_fails(tmp_path):
 
 
 def test_refusal_survives_a_failed_violation_post(tmp_path):
-    fake, ctx = make(tmp_path, role="orchestrator")  # no comments route -> post fails with 404
+    fake, ctx = make(tmp_path, role="orchestrator")  # no comments POST route -> the violation post fails with 404
+    board = build_status(ctx)[1]
     with pytest.raises(Refused) as ei:
-        claim(ctx, 11)
-    assert ei.value.refusal.rule == "only a PM or a human may claim"
-    assert ei.value.post_error is not None
+        refuse(ctx, board, Refusal(Verb.CLAIM, "#11", "a rule no status table states"))   # plan 67: a table-listed one would not post
+    assert ei.value.post_error is not None and ei.value.violation_posted is False
 
 
 def test_release_by_owner_and_forced_by_human(tmp_path):
@@ -202,7 +203,7 @@ def test_cli_claim_refusal_exit_code(tmp_path, monkeypatch):
     assert result.exit_code == 2
     data = json.loads(result.output)
     assert data["verb"] == "claim" and data["target"] == "#12" and "not ready" in data["rule"]
-    assert data["violation_posted"] is True
+    assert data["violation_posted"] is None   # plan 67: `meld status` already lists this refusal for the party, so nothing is posted
 
 
 def test_claim_compensates_both_halves_when_the_label_swap_fails(tmp_path):
@@ -386,6 +387,23 @@ def test_only_the_newest_violation_about_a_target_throttles(tmp_path):
     with pytest.raises(Refused) as caught:
         refuse(ctx, board, Refusal(Verb.COLLECT, "#11", RULE))
 
+    assert caught.value.violation_posted is True
+
+
+def test_a_refusal_the_status_already_listed_posts_no_violation(tmp_path):
+    """Plan 67: the maze's claude PM re-ran dispatches and claims that `meld status` listed as refused, each a violation
+    post and an orchestrator's reply. A refusal the status table already states is quiet; a new one still posts."""
+    fake, ctx = make(tmp_path, role="pm")
+    board = board_with(fake, ctx, [])
+    before = len(posts(fake))
+    with pytest.raises(Refused) as caught:
+        refuse(ctx, board, Refusal(Verb.DISPATCH, "#11", "issue is ready, not in-progress"))   # what status says for a ready issue
+    assert caught.value.violation_posted is None and len(posts(fake)) == before
+    with pytest.raises(Refused) as caught:
+        refuse(ctx, board, Refusal(Verb.DISPATCH, "#11", "something the table never said"))
+    assert caught.value.violation_posted is True and len(posts(fake)) == before + 1
+    with pytest.raises(Refused) as caught:
+        refuse(ctx, board, Refusal(Verb.DISPATCH, "#999", "issue is ready, not in-progress"))   # not on the board: no table, so it posts
     assert caught.value.violation_posted is True
 
 

@@ -185,3 +185,27 @@ def test_the_board_carries_the_coordination_issues_body_as_the_goal(board1_gh):
     board = build_board(gh, CFG2, {}, {})
     raw = next(i for i in _json.loads((_P(__file__).parent / "fixtures" / "board1" / "issues.json").read_text()) if i["number"] == board.coordination_issue)
     assert board.goal == (raw.get("body") or "") and board.goal_title == raw["title"]
+
+
+def test_red_checks_carry_why_from_the_check_runs_annotations(board1_gh):
+    """Plan 68: a failed check run's annotations say why; a job GitHub never started (billing) is marked not started. The maze's
+    PR #20 stayed red through three rebuilds because Actions refused to start its jobs and nobody could read that."""
+    fake, gh = board1_gh
+    fake.route("GET", "repos/acme/widgets/commits/abc123/check-runs", {"total_count": 2, "check_runs": [
+        {"id": 77, "name": "Browser suite", "status": "completed", "conclusion": "failure", "details_url": "https://github.com/acme/widgets/actions/runs/1/job/77"},
+        {"id": 78, "name": "Lint", "status": "completed", "conclusion": "success"}]})
+    fake.route("GET", "repos/acme/widgets/check-runs/77/annotations", [
+        {"annotation_level": "failure", "path": ".github", "start_line": 1, "message": "The job was not started because recent account payments have failed or your spending limit needs to be increased."},
+        {"annotation_level": "notice", "path": ".github", "start_line": 1, "message": "ubuntu-latest will migrate"}])
+    board = build_board(gh, CFG2, {}, {})
+    pr = board.pulls[20]
+    assert pr.checks == "red" and len(pr.failures) == 1
+    f = pr.failures[0]
+    assert f["name"] == "Browser suite" and f["started"] is False and f["notes"] == ["The job was not started because recent account payments have failed or your spending limit needs to be increased."]
+    assert f["url"].endswith("/job/77") and f["conclusion"] == "failure"
+    fake.route("GET", "repos/acme/widgets/check-runs/77/annotations", [{"annotation_level": "failure", "message": "Process completed with exit code 1."}])
+    board = build_board(gh, CFG2, {}, {})
+    assert board.pulls[20].failures[0]["started"] is True
+    fake.route("GET", "repos/acme/widgets/check-runs/77/annotations", {"message": "Resource not accessible by integration"}, status=403)
+    board = build_board(gh, CFG2, {}, {})
+    assert board.pulls[20].failures[0]["notes"] == [] and board.pulls[20].failures[0]["started"] is True

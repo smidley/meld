@@ -305,7 +305,21 @@ def review_feedback(pr: PullRequest) -> str:
         out.append(f"### {r.author} requested changes on `{r.commit_id[:7]}`\n\n{(r.body or '(no text)').strip()}\n")
     if not requested:
         out.append("No reviewer has requested changes yet; the PR is being re-dispatched for another reason -- read its comments.\n")
+    if pr.failures:
+        out.append(failing_checks(pr))
     return "\n".join(out)
+
+
+def failing_checks(pr: PullRequest) -> str:
+    """The `### Failing checks` part of a retry's review feedback (plan 68): each failed check run on the head with what its
+    annotations said, so the worker reads the CI failure instead of guessing at it."""
+    lines = [f"### Failing checks on `{pr.head_sha[:7]}`\n"]
+    for f in pr.failures:
+        notes = "; ".join(f.get("notes") or []) or "(no message recorded)"
+        lines.append(f"- **{f.get('name') or 'check'}** ({f.get('conclusion') or 'failed'}): {notes}" + (f" -- {f['url']}" if f.get("url") else ""))
+    if not any(f.get("started", True) for f in pr.failures):
+        lines.append("\nThese jobs never ran, so nothing in the code caused this; do not change the code for it.")
+    return "\n".join(lines) + "\n"
 
 
 def merge_conflicts(base_branch: str, files: Sequence[str]) -> str:

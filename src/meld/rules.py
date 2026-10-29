@@ -172,6 +172,13 @@ def _dispatch(board: Board, cfg: Config, actor: Actor, issue: Issue, models: Mod
         # retry is not refused: the review may call for a different approach rather than more effort.
         return (f"retry at the unchanged tag ({issue.model}/{issue.effort}) after a failed run: the orchestrator re-tags per the rubric "
                 f"first (raise effort a level or move up a tier)")
+    pr = board.pr_for_issue(issue.number)
+    if pr is not None and pr.state == "open" and pr.checks == "red" and pr.failures and not any(f.get("started", True) for f in pr.failures):
+        # Plan 68: the checks did not run at all (billing, a spending limit, a runner that never came). The maze's claude PM
+        # rebuilt #4 three times against a red PR whose jobs GitHub had refused to start.
+        note = next((n for f in pr.failures for n in f.get("notes", [])), "the job was not started")
+        return (f"PR #{pr.number}'s checks did not run ({note[:140]}); a rebuild cannot change that: "
+                f"post NEEDS-HUMAN #{issue.number} quoting it and wait")
     if board.is_challenged(f"#{issue.number}"):
         return "issue has an open CHALLENGE"
     missing = [name for name, val in (("model", issue.model), ("effort", issue.effort), ("size", issue.size)) if val is None]

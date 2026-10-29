@@ -453,3 +453,18 @@ def test_a_brief_says_what_the_groups_app_cannot_push(tmp_path: Path):
     assert "## What you cannot push" in text and text.index("## Where you run") < text.index("## What you cannot push") < text.index("## Product standards")
     assert "## What you cannot push" not in render_brief(role=role, kind="build", group="claude", model="m", effort="high", issue=issue, pr=None, plan_text="",
                                                         repo_root=tmp_path, worktree=tmp_path, base_branch="main")
+
+
+def test_a_retry_brief_names_the_failing_checks(tmp_path: Path):
+    """Plan 68: the review-feedback section carries each failed check run's name and annotation notes; jobs that never ran say so."""
+    from dataclasses import replace
+    from tests.factories import mk_issue, mk_pr
+    issue = mk_issue(4, status="in_progress", claimed_by="claude")
+    role = next(w for w in builtin_workers() if w.name == "backend")
+    pr = replace(mk_pr(20, 4, checks="red"), failures=({"name": "Browser suite", "conclusion": "failure", "url": "https://x/job/1", "notes": ["Process completed with exit code 1."], "started": True},))
+    text = render_brief(role=role, kind="build", group="claude", model="m", effort="high", issue=issue, pr=pr, plan_text="", repo_root=tmp_path, worktree=tmp_path, base_branch="main")
+    assert "### Failing checks on `abc123`" in text and "**Browser suite** (failure): Process completed with exit code 1. -- https://x/job/1" in text
+    assert "never ran" not in text
+    stalled = replace(pr, failures=({**pr.failures[0], "notes": ["The job was not started because recent account payments have failed"], "started": False},))
+    text = render_brief(role=role, kind="build", group="claude", model="m", effort="high", issue=issue, pr=stalled, plan_text="", repo_root=tmp_path, worktree=tmp_path, base_branch="main")
+    assert "These jobs never ran" in text

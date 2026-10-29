@@ -64,7 +64,7 @@ def render_status(board: Board, cfg: Config, actor: Actor, models: ModelRegistry
         {"number": p.number, "title": p.title, "issue": p.issue_number, "state": p.state, "head_sha": p.head_sha,
          "committer_party": committer_party(cfg, p), "approvals": sorted(approving_parties(cfg, p)),
          "changes_requested": sorted({q for q in (party_of_login(cfg, a) for a in p.changes_requested_on_head()) if q}),
-         "checks": p.checks, "pingpong_exceeded": pingpong_exceeded(cfg, p),
+         "checks": p.checks, "failures": [dict(f) for f in p.failures], "pingpong_exceeded": pingpong_exceeded(cfg, p),
          "merged": p.merged, "merged_at": p.merged_at, "files": len(p.files),
          "touches_security_paths": p.touches(cfg.security_paths), "audited_by": dict(board.audits.get(p.number, {})),
          "scope_violations": list(board.scope_violations(p)), "blocked_deletions": list(board.blocked_deletions(p)),

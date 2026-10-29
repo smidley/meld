@@ -218,6 +218,12 @@ class GitHub:
     def check_runs(self, sha: str) -> dict:
         return self.get(self._r(f"commits/{sha}/check-runs"))
 
+    def check_run_annotations(self, check_run_id: int) -> list[dict]:
+        """A check run's annotations (plan 68): for a GitHub Actions job this is where "Process completed with exit code 1"
+        and "The job was not started because recent account payments have failed" live; the Checks permission reads it."""
+        out = self.get(self._r(f"check-runs/{check_run_id}/annotations"))
+        return out if isinstance(out, list) else []
+
     def combined_status(self, sha: str) -> dict[str, str]:
         """Commit statuses on `sha` as {context: state}; GitHub already reports only the latest status per context.
         The page is widened to 100 so a repo with many CI contexts cannot push a `meld/review/*` context off it."""

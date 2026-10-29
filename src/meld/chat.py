@@ -224,7 +224,7 @@ def journey(issue: dict, status: dict, now: datetime) -> dict:
         if pr.get("changes_requested"):
             now_text = f"PR #{pr['number']}: changes requested by {', '.join(pr['changes_requested'])}; the author group fixes and asks again"
         elif len(pr.get("approvals") or []) >= quorum:
-            now_text = f"PR #{pr['number']} is approved" + ("; checks are red" if pr.get("checks") == "red" else "; checks are pending" if pr.get("checks") == "pending" else " and ready to merge")
+            now_text = f"PR #{pr['number']} is approved" + ("; " + _red(pr) if pr.get("checks") == "red" else "; checks are pending" if pr.get("checks") == "pending" else " and ready to merge")
         else:
             have = len(pr.get("approvals") or [])
             now_text = f"PR #{pr['number']} waits for a review ({have} of {quorum} approvals)"
@@ -251,6 +251,14 @@ def journey(issue: dict, status: dict, now: datetime) -> dict:
 
 def journeys(status: dict, now: datetime) -> dict[int, dict]:
     return {i["number"]: journey(i, status, now) for i in status.get("issues", [])}
+
+
+def _red(pr: dict) -> str:
+    """"checks are red" and, when the board knows why (plan 68), the first failing check's first note."""
+    for f in pr.get("failures") or []:
+        for n in f.get("notes") or []:
+            return f"checks are red: {f.get('name') or 'a check'}: {n[:100]}"
+    return "checks are red"
 
 
 def progress_line(status: dict, now: datetime) -> str:

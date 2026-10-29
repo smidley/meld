@@ -410,3 +410,17 @@ def test_an_issue_waits_for_the_items_its_plan_put_before_it():
     assert rule(mk_board(CFG2, issues=[done, site]), CLAUDE_PM, Verb.CLAIM, site) is None
     status = render_status(board, CFG2, CLAUDE_PM, REG)
     assert next(i for i in status["issues"] if i["number"] == 32)["waits_for"] == [31]
+
+
+def test_dispatch_refuses_a_rebuild_when_the_prs_checks_never_ran():
+    """Plan 68: a red PR whose jobs GitHub did not start is the account's problem; a rebuild cannot change it."""
+    from dataclasses import replace
+    from tests.factories import mk_pr
+    issue = mk_issue(12, status="in_progress", claimed_by="claude", model="claude-sonnet-5", effort="high")
+    billing = {"name": "Browser suite", "conclusion": "failure", "url": "u", "notes": ["The job was not started because recent account payments have failed"], "started": False}
+    pr = replace(mk_pr(20, 12, checks="red"), failures=(billing,))
+    board = mk_board(CFG2, issues=[issue], pulls=[pr])
+    assert rule(board, CLAUDE_PM, Verb.DISPATCH, issue) == ("PR #20's checks did not run (The job was not started because recent account payments have failed); "
+                                                           "a rebuild cannot change that: post NEEDS-HUMAN #12 quoting it and wait")
+    ran = replace(mk_pr(20, 12, checks="red"), failures=({**billing, "notes": ["Process completed with exit code 1."], "started": True},))
+    assert rule(mk_board(CFG2, issues=[issue], pulls=[ran]), CLAUDE_PM, Verb.DISPATCH, issue) is None

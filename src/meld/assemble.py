@@ -62,6 +62,30 @@ def checks_state(check_runs: dict) -> str:
     return "red"
 
 
+FAILED_CONCLUSIONS = ("failure", "timed_out", "cancelled", "action_required", "startup_failure")
+
+
+def check_failures(gh: GitHub, check_runs: dict) -> tuple[dict, ...]:
+    """Why the head's checks are red (plan 68): one entry per failed check run with its name, its link and the messages of
+    its annotations, and whether the job ran at all. The maze's PR #20 stayed red through three rebuilds because GitHub
+    Actions never started a job ("recent account payments have failed"), which the annotations said and nobody could read."""
+    out = []
+    for run in check_runs.get("check_runs", []):
+        if run.get("status") != "completed" or run.get("conclusion") not in FAILED_CONCLUSIONS:
+            continue
+        notes: list[str] = []
+        try:
+            for a in gh.check_run_annotations(int(run.get("id") or 0)):
+                if a.get("annotation_level") in ("failure", "warning") and a.get("message"):
+                    notes.append(str(a["message"]).strip()[:300])
+        except GitHubError:
+            pass
+        started = not any("was not started" in n for n in notes)
+        out.append({"name": run.get("name") or "", "conclusion": run.get("conclusion"), "url": run.get("details_url") or run.get("html_url") or "",
+                    "notes": notes[:5], "started": started})
+    return tuple(out)
+
+
 def issue_number_from_pr(body: str, head_ref: str) -> int | None:
     m = _CLOSES_RE.search(body or "")
     if m:
@@ -115,6 +139,7 @@ def _pull(gh: GitHub, raw: dict, errors: list[str] | None = None) -> PullRequest
     files: tuple[str, ...] = ()
     removed: tuple[str, ...] = ()
     statuses: dict[str, str] = {}
+    failures: tuple[dict, ...] = ()
     if state == "open":
         reviews = tuple(_review(r) for r in gh.pull_reviews(number))
         commits = gh.pull_commits(number)
@@ -125,7 +150,10 @@ def _pull(gh: GitHub, raw: dict, errors: list[str] | None = None) -> PullRequest
         # every `meld status` died on HTTP 403 here. Degrade to "unreadable" (so rules._merge refuses to merge on what it
         # cannot see, and the card says so) and record the gap; a rate limit still propagates.
         try:
-            checks = checks_state(gh.check_runs(head_sha))
+            raw_runs = gh.check_runs(head_sha)
+            checks = checks_state(raw_runs)
+            if checks == "red":
+                failures = check_failures(gh, raw_runs)
         except RateLimited:
             raise
         except GitHubError as e:
@@ -159,6 +187,7 @@ def _pull(gh: GitHub, raw: dict, errors: list[str] | None = None) -> PullRequest
         author=author, head_committer=head_committer, issue_number=issue_number_from_pr(raw.get("body") or "", raw["head"]["ref"]),
         reviews=reviews, checks=checks, labels=_labels(raw), state=state, merged=merged,
         files=files, removed=removed, merge_commit_sha=raw.get("merge_commit_sha"), merged_at=raw.get("merged_at") or "", statuses=statuses,
+        failures=failures,
     )
 
 

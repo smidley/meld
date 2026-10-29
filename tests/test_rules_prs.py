@@ -101,6 +101,10 @@ def test_merge_blockers_and_stale_approvals():
     assert rule(mk_board(CFG2, pulls=[red]), CFG2, CLAUDE_PM, Verb.MERGE, red) == "required checks are red, not green"
     pending = mk_pr(20, 13, committer="meld-codex-bot", approvals=("meld-claude-bot",), checks="pending")
     assert rule(mk_board(CFG2, pulls=[pending]), CFG2, CLAUDE_PM, Verb.MERGE, pending) == "required checks are pending, not green"
+    unreadable = mk_pr(20, 13, committer="meld-codex-bot", approvals=("meld-claude-bot",), checks="unreadable")
+    assert rule(mk_board(CFG2, pulls=[unreadable]), CFG2, CLAUDE_PM, Verb.MERGE, unreadable) == "required checks are unreadable, not green"
+    none = mk_pr(20, 13, committer="meld-codex-bot", approvals=("meld-claude-bot",), checks="none")
+    assert rule(mk_board(CFG2, pulls=[none]), CFG2, CLAUDE_PM, Verb.MERGE, none) is None   # plan 69: no check runs is nothing to wait for
     stale = mk_pr(20, 13, committer="meld-codex-bot", stale_approvals=("meld-claude-bot",))
     assert "0/1 approvals" in rule(mk_board(CFG2, pulls=[stale]), CFG2, CLAUDE_PM, Verb.MERGE, stale)
 

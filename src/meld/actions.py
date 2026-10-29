@@ -63,16 +63,37 @@ def _already_said(board: Board, party: Party, target: str, verb: Verb, rule: str
     return False
 
 
+def _status_said(ctx, board: Board, actor, refusal: Refusal) -> bool:
+    """Was this refusal already in `meld status`'s `refused` table for this target and party (plan 67)? Then the party
+    ran a verb the board had told it was illegal, and the refusal text is the whole answer: a PROTOCOL-VIOLATION on the
+    thread would only wake the other sessions. The maze's claude PM re-ran refused dispatches and claims on every launch,
+    and each one cost a post and an orchestrator's reply."""
+    from meld.rules import issue_verb_rules, pr_verb_rules
+    n = refusal.target.lstrip("#")
+    if not n.isdigit():
+        return False
+    try:
+        if int(n) in board.issues:
+            table = issue_verb_rules(board, ctx.cfg, actor, board.issues[int(n)], ctx.models)
+        elif int(n) in board.pulls:
+            table = pr_verb_rules(board, ctx.cfg, actor, board.pulls[int(n)])
+        else:
+            return False
+    except Exception:   # a table that cannot be computed is not a reason to lose the refusal
+        return False
+    said = [r for r in table.values() if r]
+    return any(refusal.rule == r or refusal.rule.endswith(": " + r) for r in said)
+
+
 def refuse(ctx, board: Board | None, refusal: Refusal, *, quiet: bool = False) -> NoReturn:
-    """Refuse, and for a group party post PROTOCOL-VIOLATION on the thread unless `quiet` (plan 63: a repeat of an open
-    ask is refused without a post, because the post woke the other group, whose PING woke this one, every few minutes
-    for an hour on the maze run while a person held the answer)."""
+    """Refuse, and for a group party post PROTOCOL-VIOLATION on the thread unless the refusal is already said: by `quiet`,
+    by an identical violation already posted, or by `meld status`'s own refused table (plan 67)."""
     actor = ctx.actor()
     post_error = None
     violation_posted: bool | None = None
     if board is not None and not actor.is_human and not quiet:
         header = Header(actor.party, "PROTOCOL-VIOLATION", refusal.target, None)
-        if _already_said(board, actor.party, refusal.target, refusal.verb, refusal.rule):
+        if _already_said(board, actor.party, refusal.target, refusal.verb, refusal.rule) or _status_said(ctx, board, actor, refusal):
             raise Refused(refusal, post_error=None, violation_posted=None)
         try:
             ctx.gh.create_comment(board.coordination_issue, compose(header, _refusal_text(refusal.verb, refusal.rule)))

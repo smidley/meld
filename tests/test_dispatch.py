@@ -159,7 +159,7 @@ def test_dispatch_refusals(tmp_path):
     fake, ctx, repo, origin = make_product(tmp_path)
     with pytest.raises(Refused) as ei:
         dispatch(ctx, 11, adapter=FakeAdapter(), now=NOW)  # issue 11 is ready, not in-progress
-    assert ei.value.refusal.rule == "issue is ready, not in-progress" and ei.value.violation_posted is True
+    assert ei.value.refusal.rule == "issue is ready, not in-progress" and ei.value.violation_posted is None   # plan 67: status said it
     with pytest.raises(Refused) as ei:
         dispatch(ctx, 12, adapter=FakeAdapter(), now=NOW)  # challenged in the fixtures
     assert ei.value.refusal.rule == "issue has an open CHALLENGE"
@@ -300,7 +300,7 @@ def test_dispatch_review_is_refused_under_halt(tmp_path):
     fake.route("GET", R + "issues/10/comments", comments)
     with pytest.raises(Refused) as ei:
         dispatch(ctx, 20, kind="review", adapter=FakeAdapter(), now=NOW)
-    assert ei.value.refusal.rule == "cannot review: HALT is in effect" and ei.value.violation_posted is True
+    assert ei.value.refusal.rule == "cannot review: HALT is in effect" and ei.value.violation_posted is None   # plan 67: status said it
     assert not (tmp_path / "home" / "runs" / "claude" / "20.json").exists()
 
 

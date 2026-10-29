@@ -112,6 +112,7 @@ def raw_event(now: str, stripped: str) -> list[Event]:
 _LIMIT_RE = re.compile(
     r"(?:\b(?:your|the)\b[^.]{0,40}?\b(?:usage|rate|spend|session|weekly|daily|monthly)\s+limit\b"
     r"|\busage\s+limit\s+reached\b"
+    r"|\bspend(?:ing)?\s+(?:cap|limit)\b"           # plan 70: Codex's "You hit your spend cap set by the owner of your workspace"
     r"|\brate[-\s]?limit(?:ed|ing)?\b"
     r"|\bquota\s+exceeded\b"
     r"|\b429\s+too\s+many\s+requests\b"

@@ -446,6 +446,7 @@ def decide(ctx: click.Context, ref: str, supersedes: str | None) -> None:
 def remember(ctx: click.Context, ref: str, message: str, supersedes: str | None) -> None:
     """Append a lesson about a resolved issue or PR to .meld/memory/lessons.md through a memory PR."""
     c = _load(ctx)
+    ref = f"#{ref}" if ref.isdigit() else ref   # plan 71: a bare number is the issue or PR, as every other verb reads it
     _run_action(ctx, lambda: do_remember(c, ref, message, supersedes=supersedes))
 
 

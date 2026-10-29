@@ -253,3 +253,16 @@ def test_a_cached_token_minted_for_another_app_is_not_reused(tmp_path, keypair):
     other = AppAuth(1235, 56, pem, tmp_path / "app-token.json", now=lambda: NOW, post=post)
     assert other.token() == "ghs_2" and len(minted) == 2                                 # another App mints its own
     assert TokenCache(tmp_path / "app-token.json").load().token == "ghs_2"               # a reader with no expectation still reads it
+
+
+def test_app_auth_reports_the_installations_permissions(tmp_path, keypair):
+    """Plan 62: the dispatcher asks what the App may push before it briefs a worker."""
+    import meld.appauth as appauth
+    pem = keypair[0] if isinstance(keypair, tuple) else keypair
+    calls = []
+    def post(url, headers, body):
+        calls.append(url)
+        return 201, {"token": "ghs_x", "expires_at": "2030-01-01T00:00:00Z", "permissions": {"contents": "write", "checks": "write"}, "repositories": [{"full_name": "acme/widgets"}]}
+    auth = appauth.AppAuth(1, 2, pem, tmp_path / "tok.json", now=lambda: 1_700_000_000, post=post, sign=lambda m, p: b"sig")
+    assert auth.permissions() == {"contents": "write", "checks": "write"} and len(calls) == 1
+    assert auth.permissions() == {"contents": "write", "checks": "write"} and len(calls) == 1   # cached, no second mint

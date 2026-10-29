@@ -334,7 +334,8 @@ def render_brief(*, role: WorkerType, kind: str, group: str, model: str, effort:
                  plan_text: str, repo_root: Path, worktree: Path, base_branch: str, concern: str | None = None,
                  skills: Sequence[WorkerType] = (), recall: Sequence[str] = (), project_skills_dir: str | None = None,
                  scope: Sequence[str] = (), may_delete: Sequence[str] = (), authorized: Sequence[str] = (),
-                 conflicts: Sequence[str] = (), answer: tuple[str, str, str] | None = None, sandbox: str = "") -> str:
+                 conflicts: Sequence[str] = (), answer: tuple[str, str, str] | None = None, sandbox: str = "",
+                 cannot_push: str = "") -> str:
     if issue is not None:
         title = f"# Meld brief: {role.name} for #{issue.number}"
         task = f"## Your task\n\n**#{issue.number}: {issue.title}**\n\n{issue.body.strip() or '(no description)'}\n"
@@ -368,6 +369,10 @@ def render_brief(*, role: WorkerType, kind: str, group: str, model: str, effort:
              "## Who you are", "", role_text, "", task]
     if sandbox:
         parts += ["## Where you run", "", sandbox, ""]
+    if cannot_push:
+        # Plan 62: the maze's #4 worker edited a workflow file its group's App could not push; collect failed twice and
+        # three people-hours went by. The limit is known before the build starts, so the brief says it.
+        parts += ["## What you cannot push", "", cannot_push, ""]
     if concern:
         parts += ["## Your primary concern", "",
                   f"Other groups review this PR too; yours is **{concern}**. Report anything else you notice, but spend your effort there first.", ""]

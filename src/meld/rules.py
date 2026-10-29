@@ -704,6 +704,7 @@ def recorded_lesson(board: Board, ref: str) -> PullRequest | None:
 
 
 def remember_rule(board: Board, cfg: Config, actor: Actor, ref: str, supersedes: str | None = None) -> str | None:
+    ref = f"#{ref}" if ref.isdigit() else ref   # plan 71: `4` and `#4` are one ref here as everywhere else
     if actor.party.kind not in ("group", "pm"):
         return "only an orchestrator or PM may record a lesson"
     # One lesson per ref (plan 44): a later `remember` on the same ref must supersede the entry it improves on, so

@@ -64,6 +64,7 @@ def test_remember_rule_needs_a_resolved_board_item():
     assert remember_rule(board, CFG2, CLAUDE_PM, "#11") is None
     assert remember_rule(board, CFG2, CLAUDE_PM, "#14") == "#14 is still needs_human; a lesson is recorded once the item resolves"
     assert remember_rule(board, CFG2, CLAUDE_PM, "#99") == "#99 is not an issue or PR on the board"
+    assert remember_rule(board, CFG2, CLAUDE_PM, "11") is None   # plan 71: a bare number is the same ref (the maze's claude ran `remember 4`)
     assert remember_rule(board, CFG2, HUMAN, "#11") == "only an orchestrator or PM may record a lesson"
 
 

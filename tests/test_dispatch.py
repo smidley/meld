@@ -304,6 +304,16 @@ def test_dispatch_review_is_refused_under_halt(tmp_path):
     assert not (tmp_path / "home" / "runs" / "claude" / "20.json").exists()
 
 
+def test_dispatch_of_a_pr_kind_on_an_issue_number_names_the_mistake(tmp_path):
+    """Plan 65: the maze's claude PM ran `dispatch 17 --kind audit` on an open issue and was told the PR was on the wrong branch."""
+    fake, ctx, repo, origin = make_product(tmp_path)
+    with pytest.raises(Refused) as ei:
+        dispatch(ctx, 11, kind="audit", adapter=FakeAdapter(), now=NOW)
+    assert ei.value.refusal.rule == "#11 is an issue, not a pull request; `--kind audit` takes a PR number"
+    with pytest.raises(Refused, match="PR is not on a meld/ branch"):
+        dispatch(ctx, 999, kind="review", adapter=FakeAdapter(), now=NOW)   # neither an issue nor a PR on the board
+
+
 def test_dispatch_security_reviewer_and_worker_validation(tmp_path):
     fake, ctx, repo, origin = make_product(tmp_path)
     publish_pr_branch(repo)

@@ -26,9 +26,9 @@ FRAMEWORK_ONLY_VERBS = frozenset({"LEASE", "EXPIRED", "IGNORED-COMMENT", "RELEAS
 COMMAND_VERBS = frozenset({"CHALLENGE", "EVIDENCE", "RETRACT", "UPHELD", "DISMISSED"})
 
 
-def _refuse(ctx, board: Board, verb: str, ref: str | None, rule: str) -> NoReturn:
-    """Refuse a rule-level violation: a group party also posts PROTOCOL-VIOLATION."""
-    refuse(ctx, board, Refusal(Verb.POST, ref or verb, rule))
+def _refuse(ctx, board: Board, verb: str, ref: str | None, rule: str, *, quiet: bool = False) -> NoReturn:
+    """Refuse a rule-level violation: a group party also posts PROTOCOL-VIOLATION, unless `quiet`."""
+    refuse(ctx, board, Refusal(Verb.POST, ref or verb, rule), quiet=quiet)
 
 
 def _indent(text: str) -> str:
@@ -119,7 +119,7 @@ def post(ctx, verb: str, ref: str | None = None, qualifier: str | None = None, t
     if verb == "NEEDS-HUMAN":
         rule = ask_rule(board, actor, ref, text or "")
         if rule:
-            _refuse(ctx, board, verb, ref, rule)
+            _refuse(ctx, board, verb, ref, rule, quiet=True)   # plan 63: the refusal is the feedback; a post would wake the others
     if verb == "RESOLVED":
         rule = withdraw_rule(board, actor, ref)
         if rule:

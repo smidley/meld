@@ -125,6 +125,24 @@ class StateStore:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         write_atomic(self.snapshot_path, json.dumps(digest, sort_keys=True))
 
+    # ---- idle (plan 64) -----------------------------------------------------
+
+    @property
+    def idle_path(self) -> Path:
+        return self.state_dir / "idle.json"
+
+    def write_idle(self, until: str, since: str) -> None:
+        """This role's wait timed out on a board that offers it nothing: the supervisor may let it sleep until `until`."""
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        write_atomic(self.idle_path, json.dumps({"until": until, "since": since}))
+
+    def read_idle(self) -> dict | None:
+        try:
+            data = json.loads(self.idle_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        return data if isinstance(data, dict) and isinstance(data.get("until"), str) else None
+
     # ---- run records -------------------------------------------------------
 
     def write_run(self, record: RunRecord) -> Path:
@@ -239,13 +257,14 @@ def board_digest(board: Board) -> dict:
         "runs": {f"{g}/#{n}": ("running" if r.alive else "collected" if r.collected else "finished")
                  for g, recs in sorted(board.runs.items()) for n, r in sorted(recs.items())},
         "last_comment_id": max((c.id for c in board.comments), default=0),
+        "last_human_comment_id": max((c.id for c in board.comments if c.ok and c.header is not None and c.header.party.kind == "human"), default=0),
         "open_challenges": sorted(board.open_challenges),
         "challenges": {ref: c.challenger for ref, c in sorted(board.challenges.items())},
         "audits": {str(n): dict(sorted(v.items())) for n, v in sorted(board.audits.items())},
     }
 
 
-CHANGE_KINDS = ("snapshot", "phase", "halted", "issue", "pr", "run", "comments", "challenges", "audits")
+CHANGE_KINDS = ("snapshot", "phase", "halted", "issue", "pr", "run", "comments", "human", "challenges", "audits")   # human: a listed person posted (plan 63)
 
 
 @dataclass(frozen=True)
@@ -305,6 +324,11 @@ def diff_changes(old: dict | None, new: dict) -> list[Change]:
     if old.get("last_comment_id") != new.get("last_comment_id"):
         out.append(Change("comments", "", old.get("last_comment_id"), new.get("last_comment_id"),
                           f"comments: new up to #{new.get('last_comment_id')}"))
+    # Plan 63: a PM waiting on a person waits for a person's post, not for the other group talking about the wait. A
+    # snapshot from before this key is treated as current, so an upgrade does not read as a person posting.
+    if "last_human_comment_id" in old and old["last_human_comment_id"] != new.get("last_human_comment_id"):
+        out.append(Change("human", "", old["last_human_comment_id"], new.get("last_human_comment_id"),
+                          f"human: a listed person posted, up to #{new.get('last_human_comment_id')}"))
     # Old snapshots on disk may predate the "challenges"/"audits" keys: .get(..., {}) treats a
     # missing section as empty rather than raising, so a fresh digest against a stale snapshot
     # reads as "everything present is new" instead of erroring.

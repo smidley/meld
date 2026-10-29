@@ -392,9 +392,12 @@ def test_a_second_needs_human_on_a_ref_with_an_open_ask_is_refused_until_a_human
         post(ctx, "NEEDS-HUMAN", ref="#9", text="PR #9 cannot merge either.")
     with pytest.raises(Refused, match="#9 already has an open NEEDS-HUMAN"):
         post(ctx, "NEEDS-HUMAN", ref="9", text="same thing, bare ref")
-    assert [h for h in posted_headers(fake) if h.startswith("[codex] NEEDS-HUMAN")] == []          # the refusal posted a violation, never the ask
+    assert [h for h in posted_headers(fake) if h.startswith("[codex] NEEDS-HUMAN")] == []          # never the ask
+    assert [h for h in posted_headers(fake) if "PROTOCOL-VIOLATION" in h] == []                    # plan 63: and no violation either -- the refusal is the feedback
     # plan 66: the same question under a fresh ref that names the issue is refused too (the maze's claude PM posted ask-2 about #4)
+
     with pytest.raises(Refused, match=r"#9 already has an open NEEDS-HUMAN \(comment 120 by \[claude:pm\]\); a new ref does not make it a new question"):
+
         post(ctx, "NEEDS-HUMAN", ref="ask-2", text="collect for issue #9 still fails; please grant the permission")
     out = post(ctx, "NEEDS-HUMAN", ref="#12", text="a different ref is a different ask")
     assert out["header"] == "[codex] NEEDS-HUMAN #12"

@@ -389,6 +389,25 @@ def test_only_the_newest_violation_about_a_target_throttles(tmp_path):
     assert caught.value.violation_posted is True
 
 
+def test_a_bare_and_a_hashed_ref_are_one_target_for_the_throttle(tmp_path):
+    """Plan 63: claude's PM on the maze posted the same refusal as `#4` and then as `4`, and the throttle let the second through."""
+    fake, ctx = make(tmp_path, role="pm")
+    board = board_with(fake, ctx, [violation(RULE, target="#11", created_at="2026-09-03T11:00:00Z", cid=8001)])
+    with pytest.raises(Refused) as caught:
+        refuse(ctx, board, Refusal(Verb.COLLECT, "11", RULE))
+    assert caught.value.violation_posted is None
+
+
+def test_a_quiet_refusal_posts_nothing(tmp_path):
+    """Plan 63: a repeat of an open ask is refused without a PROTOCOL-VIOLATION on the thread."""
+    fake, ctx = make(tmp_path, role="pm")
+    board = board_with(fake, ctx, [])
+    before = len(fake.calls)
+    with pytest.raises(Refused) as caught:
+        refuse(ctx, board, Refusal(Verb.POST, "#11", "already has an open NEEDS-HUMAN"), quiet=True)
+    assert caught.value.violation_posted is None and len(fake.calls) == before
+
+
 def test_a_human_still_never_posts_a_violation_at_all(tmp_path):
     """Unchanged behaviour, asserted here because the new branch sits next to it."""
     fake, ctx = make(tmp_path, group=None, role="pm")

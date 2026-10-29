@@ -210,6 +210,16 @@ def test_diff_changes_are_structured_and_filterable():
     initial = diff_changes(None, d2)
     assert [c.kind for c in initial] == ["snapshot"] and initial[0].text == "initial snapshot"
     assert filter_changes(initial, {"comments"}) == initial
+    # plan 63: a listed person's post is its own change kind, so a PM waiting on a person is not woken by the other group
+    from tests.factories import mk_comment
+    human = mk_comment(CFG2, 501, "empowerScott", "[human] RESOLVED #11\n\ndone", "2026-09-03T12:00:00Z")
+    bot = mk_comment(CFG2, 502, "meld-codex-bot", "[codex] PING #11\n\nstill waiting", "2026-09-03T12:01:00Z")
+    d3 = board_digest(mk_board(CFG2, issues=[mk_issue(11)], pulls=[mk_pr(20, 13)], comments=[human]))
+    d4 = board_digest(mk_board(CFG2, issues=[mk_issue(11)], pulls=[mk_pr(20, 13)], comments=[human, bot]))
+    assert d3["last_human_comment_id"] == 501 and d4["last_human_comment_id"] == 501
+    assert [c.kind for c in diff_changes(d1, d3)] == ["comments", "human"] and [c.kind for c in diff_changes(d3, d4)] == ["comments"]
+    old_snapshot = {k: v for k, v in d1.items() if k != "last_human_comment_id"}
+    assert [c.kind for c in diff_changes(old_snapshot, d3)] == ["comments"]   # a snapshot from before the key is not a person posting
 
 
 def test_a_claim_move_at_the_same_status_is_reported_as_a_change():

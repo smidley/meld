@@ -436,3 +436,20 @@ def test_a_retry_brief_carries_the_persons_answer_and_the_sandbox_note(tmp_path:
                          worktree=tmp_path, base_branch="main")
     assert "## The person answered" not in plain and "## Where you run" not in plain
     assert person_answered("a", "b", "codex (withdrawing the ask)").count("> ") == 2
+
+
+def test_a_brief_says_what_the_groups_app_cannot_push(tmp_path: Path):
+    """Plan 62: the maze's #4 worker edited .github/workflows/tests.yml and its App had no Workflows permission; GitHub refused
+    the push, collect failed twice and a person was asked. The limit is known before the build, so the brief carries it."""
+    from meld.dispatch import push_limits
+    from tests.factories import mk_issue
+    assert push_limits(None) == "" and push_limits({"contents": "write", "workflows": "write"}) == ""
+    words = push_limits({"contents": "write", "checks": "write"})
+    assert ".github/workflows/" in words and "`blocked`" in words
+    issue = mk_issue(4, status="in_progress", claimed_by="claude")
+    role = next(w for w in builtin_workers() if w.name == "backend")
+    text = render_brief(role=role, kind="build", group="claude", model="m", effort="high", issue=issue, pr=None, plan_text="", repo_root=tmp_path,
+                        worktree=tmp_path, base_branch="main", sandbox="A sandbox.", cannot_push=words)
+    assert "## What you cannot push" in text and text.index("## Where you run") < text.index("## What you cannot push") < text.index("## Product standards")
+    assert "## What you cannot push" not in render_brief(role=role, kind="build", group="claude", model="m", effort="high", issue=issue, pr=None, plan_text="",
+                                                        repo_root=tmp_path, worktree=tmp_path, base_branch="main")

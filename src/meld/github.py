@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Callable, Literal
 from urllib.parse import quote, urlencode
@@ -30,9 +31,17 @@ class RateLimited(GitHubError):
         self.reset_at = reset_at
 
 
+#: Plan 61: a connection failure (`gh` could not reach api.github.com at all) is retried after these pauses, about a
+#: minute in all, before it is an error. The maze run's three live roles each posted or nearly posted NEEDS-HUMAN over a
+#: three-minute network blip.
+CONNECT_RETRY_SECONDS: tuple[float, ...] = (2, 5, 15, 30)
+CONNECT_ERRORS = ("error connecting to", "could not resolve host", "connection reset", "connection refused", "timeout", "timed out", "tls handshake")
+
+
 class GitHub:
     def __init__(self, repo: str, token: str | None = None, run: RunFn = subprocess.run, cache_dir: Path | None = None,
-                 token_provider: Callable[[bool], str] | None = None):
+                 token_provider: Callable[[bool], str] | None = None, sleep: Callable[[float], None] = time.sleep):
+        self._sleep = sleep
         self.repo = repo
         self._token = token
         self._provider = token_provider
@@ -66,7 +75,12 @@ class GitHub:
         env = dict(os.environ)
         if token:
             env["GH_TOKEN"] = token
-        proc = self._run(cmd, input=json.dumps(body) if body is not None else None, capture_output=True, text=True, env=env)
+        for pause in (*CONNECT_RETRY_SECONDS, None):
+            proc = self._run(cmd, input=json.dumps(body) if body is not None else None, capture_output=True, text=True, env=env)
+            err = (proc.stderr or "").lower()
+            if pause is None or (proc.stdout or "").strip() or not any(w in err for w in CONNECT_ERRORS):
+                break
+            self._sleep(pause)   # no response at all and gh blames the connection: wait and ask again
         raw = (proc.stdout or "").replace("\r\n", "\n")
         head, _, text = raw.partition("\n\n")
         lines = head.split("\n")

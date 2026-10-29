@@ -65,7 +65,7 @@ meld/
     cli.py                  # argument parsing, dispatches to verbs
     board.py                # typed board model and derivations (leases, challenges, audits)
     assemble.py             # builds a Board from GitHub JSON; the only reader of GitHub in the core
-    github.py               # gh wrapper: conditional requests, rate-limit detection, endpoint helpers
+    github.py               # gh wrapper: conditional requests, rate-limit detection, endpoint helpers; a connection failure is retried for about a minute before it is an error (plan 61)
     grammar.py              # coordination header parser and agreement rounds
     rules.py                # legal-action computation; every invariant lives here
     actions.py posting.py tagging.py challenge.py   # claim/release, post, tag, challenge

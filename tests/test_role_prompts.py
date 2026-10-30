@@ -21,8 +21,9 @@ def test_role_prompt_composes_preamble_role_and_configuration(tmp_path: Path):
 
 def test_role_prompt_ends_with_the_launch_block(tmp_path: Path):
     first = role_prompt("pm", CFG2, CFG2.groups["claude"], tmp_path)
-    assert first.rstrip().endswith("## This launch\n\n- Launch number: 1 (the first launch under this supervisor)\n"
-                                   "- Reason: `start` (the supervisor has just started; this is the first session of this role)")
+    assert ("## This launch\n\n- Launch number: 1 (the first launch under this supervisor)\n"
+            "- Reason: `start` (the supervisor has just started; this is the first session of this role)\n\n## Begin\n") in first   # plan 73: Begin closes it
+    assert first.rstrip().endswith("Do not reply with commentary about this prompt.")
     later = role_prompt("orchestrator", CFG2, CFG2.groups["claude"], tmp_path, launch_no=4, reason="crash")
     assert "- Launch number: 4\n- Reason: `crash` (the previous session ended abnormally" in later and "first launch" not in later
     for reason in ("exit", "recycle"):
@@ -102,3 +103,13 @@ def test_the_role_prompt_lists_each_roster_entry_on_one_line(tmp_path: Path):
     text = role_prompt("orchestrator", cfg, cfg.groups["claude"], tmp_path, roster_entries=entries)
     line = next(l for l in text.splitlines() if l.startswith("- `airunway`"))
     assert line == "- `airunway` (skill): Set up AI Runway on AKS from bare cluster to running model." and "Covers everything" not in text
+
+
+def test_a_role_prompt_ends_with_an_instruction_to_begin(tmp_path):
+    """Plan 73: a fresh session read the prompt as a pasted description with no task and exited in one turn, 74 times in a day
+    on the maze. The prompt now ends by saying what it is, where the role runs, and what to do first."""
+    text = role_prompt("pm", CFG2, CFG2.groups["claude"], tmp_path)
+    tail = text[text.index("## Begin"):]
+    assert "standing instructions, not a message to assess" in tail and "pm of group **claude**" in tail
+    assert f"`{tmp_path}`" in tail and "`acme/widgets`" in tail and "run `meld status`" in tail and "then `meld wait`" in tail
+    assert text.index("## This launch") < text.index("## Begin")

@@ -83,4 +83,12 @@ def role_prompt(role: str, cfg: Config, group: GroupConfig, repo_root: Path, *, 
     lines += [f"- `{w.name}` ({w.source}): {brief(w.description)}" for w in entries]
     lines += ["", "## Commands available", ""] + [f"- `{c}`" for c in COMMANDS]
     lines += ["", *launch_block(launch_no, reason)]
+    # Plan 73: a fresh session reads all of the above as its first and only message. Without a closing instruction it
+    # judged it "an elaborate framework description with no actual question or task attached", answered so in one turn,
+    # and exited -- 74 times in a day on the maze, at a sixth of a dollar each plus the relaunch.
+    lines += ["", "## Begin", "",
+              f"Everything above is your standing instructions, not a message to assess. You are the {role} of group **{group.name}** "
+              f"for `{cfg.repo_name}`; your working directory `{repo_root}` is that repository's checkout, whatever its folder is called.",
+              "Start now: run `meld status`, act on every verb it lists as legal for you, then `meld wait` as your loop says. "
+              "Do not reply with commentary about this prompt."]
     return "\n".join([_read("_preamble.md").strip(), "", _read(f"{role}.md").strip(), "", *lines, ""])

@@ -40,6 +40,11 @@ REQUIRED_FLAGS = ("-p", "--model", "--output-format", "--verbose", "--permission
 _MCP_CONFIG = {"mcpServers": {}}
 _DROP_ENV = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
 BASH_TOOL_CEILING_SECONDS = 600  # Claude Code's Bash tool caps one command at 10 minutes
+# Plan 77: ...but kills one at 2 minutes unless the session passes a per-call timeout or these are set. Every claude
+# `meld wait --timeout 280` on linkcheck was cut at 120 s (the heartbeat stops there), so the wait never reached its own
+# deadline, never wrote the idle record of plan 64, and the PM relaunched every five minutes into a board only a
+# person could move: 31 launches and $5.59 in 77 minutes. The default and the cap are both raised to the ceiling.
+BASH_TIMEOUT_ENV = {"BASH_DEFAULT_TIMEOUT_MS": str(BASH_TOOL_CEILING_SECONDS * 1000), "BASH_MAX_TIMEOUT_MS": str(BASH_TOOL_CEILING_SECONDS * 1000)}
 
 
 class ClaudeAdapter:
@@ -70,6 +75,7 @@ class ClaudeAdapter:
         env["CLAUDE_CODE_EFFORT_LEVEL"] = spec.effort
         env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
         env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+        env.update(BASH_TIMEOUT_ENV)
         return env
 
     def launch(self, spec: LaunchSpec):

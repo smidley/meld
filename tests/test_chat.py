@@ -530,6 +530,13 @@ def test_a_role_is_crash_looping_past_five_launches_and_silence_starts_past_the_
     assert exited["level"] == "ok"                                                                # six clean recycles are not a loop
     stopped = status_strip(_executing(), [], _procs(claude=None, codex=_role("dead", launch_no=2, reason="exit")), limits, NOW, last_post_at=RECENT)
     assert stopped["text"] == "codex's PM has stopped. Open its transcript."
+    # Plan 78: a dead supervisor is the reason its roles are dead; the strip names the group and the command, once.
+    group_gone = status_strip(_executing(), [], _procs(claude=None, codex="dead"), limits, NOW, last_post_at=RECENT)
+    assert group_gone["level"] == "bad" and group_gone["text"] == "codex is stopped: nothing it owns moves until `meld run codex --detach` runs here."
+    assert "has stopped" not in group_gone["detail"]
+    codex_frozen = {"frozen": {"codex": {"pm": {"until": "2026-09-03T17:09:00Z", "expired": False}}}, "usage": {}}
+    gone_but_frozen = status_strip(_executing(), [], _procs(claude=None, codex="dead"), codex_frozen, NOW, last_post_at=RECENT)
+    assert "codex is stopped" not in gone_but_frozen["text"] + gone_but_frozen["detail"]   # a freeze explains the exit
     at_grace = status_strip(_executing(), [], _procs(**ALIVE), limits, NOW, last_post_at="2026-09-03T11:45:00Z", silence_grace_minutes=15)
     assert at_grace["level"] == "ok"                                                              # 15 min is not past a 15-min grace
     past = status_strip(_executing(), [], _procs(**ALIVE), limits, NOW, last_post_at="2026-09-03T11:44:00Z", silence_grace_minutes=15)

@@ -48,6 +48,8 @@ def test_env_sets_effort_and_strips_nested_session_guard(tmp_path: Path):
     assert env["CLAUDE_CODE_EFFORT_LEVEL"] == "high" and env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1"
     assert env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
     assert "CLAUDECODE" not in env and "CLAUDE_CODE_ENTRYPOINT" not in env
+    # Plan 77: a `meld wait` of one wait timeout must outlive the Bash tool's 2-minute default, or idle is never recorded.
+    assert env["BASH_DEFAULT_TIMEOUT_MS"] == "600000" and env["BASH_MAX_TIMEOUT_MS"] == "600000"
     assert env["PATH"] == "/usr/bin" and env["HOME"] == "/Users/x" and env["MELD_WORKER"] == "1"
 
 

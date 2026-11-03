@@ -57,6 +57,13 @@ def override_args(cli_config: dict) -> list[str]:
     return [arg for key, value in sorted(cli_config.items()) for arg in ("-c", f"{key}={_toml_value(value)}")]
 
 
+def resume_sandbox_args(role: str) -> list[str]:
+    """The sandbox `sandbox_args` chose, restated as `-c` overrides for `codex exec resume`, which takes no `-s`."""
+    if role in TRUSTED_ROLES:
+        return ["-c", 'sandbox_mode="danger-full-access"']
+    return ["-c", 'sandbox_mode="workspace-write"', "-c", "sandbox_workspace_write.network_access=true"]
+
+
 def sandbox_args(role: str, cwd: Path, env: dict[str, str], home: Path) -> list[str]:
     if role in TRUSTED_ROLES:
         return ["-s", "danger-full-access"]
@@ -78,11 +85,14 @@ class CodexAdapter:
         if spec.resume:
             # Plan 55: a role relaunched after a clean exit continues its own thread (`codex exec resume`): its context is
             # cached and only the short continue prompt travels, instead of the whole role prompt and the thread again.
-            # `resume` takes no sandbox or directory flags; both come from the session being resumed.
+            # `resume` takes no `-s` or `-C` (the directory comes from the session), but the sandbox does NOT carry over
+            # (plan 75): codex 0.159 resumed linkcheck's PM read-only and offline, and every `meld status` failed to
+            # connect, so the sandbox is restated as the config override `resume` does accept.
             return [
                 self.binary, "exec", "resume", spec.resume,
                 "-m", spec.model,
                 "-c", f'model_reasoning_effort="{spec.effort}"',
+                *resume_sandbox_args(spec.role),
                 *override_args(spec.cli_config),
                 "--json",
                 "-o", str(spec.cwd / LAST_MESSAGE_FILE),

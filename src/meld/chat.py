@@ -375,6 +375,12 @@ def status_strip(status: dict, decisions: list[dict], processes: dict, limits: d
             oldest = f" — oldest {max(ages)} min" if ages else ""
             states.append(("attention", f"{_n(len(decisions), 'question')} need{'s' if len(decisions) == 1 else ''} you{oldest}.", None, ""))
     for g, proc in processes.items():
+        if (proc.get("supervisor") or {}).get("state") == "dead" and not _frozen_until(g, limits):
+            # Plan 78: the group's supervisor is gone, so its roles are dead because of that, not on their own. On
+            # linkcheck the owner stopped codex, the strip said "codex's orchestrator has stopped (restarted 11 times).
+            # Open its transcript", the headline said nothing waited on them, and #2, tagged for codex, sat ready for an hour.
+            states.append(("bad", f"{g} is stopped: nothing it owns moves until `meld run {g} --detach` runs here.", None, ""))
+            continue
         for role, rec in (proc.get("roles") or {}).items():
             if _crash_looping(rec):
                 states.append(("bad", f"{g}'s {ROLE_WORDS.get(role, role)} has stopped (restarted {_n((rec.get('launch_no') or 1) - 1, 'time')}). Open its transcript.", None, ""))

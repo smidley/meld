@@ -108,6 +108,22 @@ def test_writes_are_atomic_and_pid_guard(tmp_path):
     assert pid_alive(0) is False and pid_alive(-1) is False
 
 
+def test_a_zombie_is_dead_to_every_process_and_a_live_pid_is_alive():
+    """Plan 76: `kill(pid, 0)` says a defunct process exists; the ps state column says it has exited. `meld stop` and
+    `meld run` from another shell read the column, so a stop reports the truth and a restart is never refused for it."""
+    import subprocess
+    from meld.state import is_zombie, pid_alive
+    def ps(argv, **kw):
+        assert argv[:4] == ["ps", "-o", "stat=", "-p"]
+        return subprocess.CompletedProcess(argv, 0, stdout="Z+\n", stderr="")
+    assert is_zombie(os.getpid(), run=ps) is True and pid_alive(os.getpid(), run=ps) is False
+    live = lambda argv, **kw: subprocess.CompletedProcess(argv, 0, stdout="S\n", stderr="")   # noqa: E731
+    assert pid_alive(os.getpid(), run=live) is True
+    no_ps = lambda argv, **kw: (_ for _ in ()).throw(OSError("no ps"))   # noqa: E731
+    assert pid_alive(os.getpid(), run=no_ps) is True                    # cannot say is not dead
+    assert is_zombie(os.getpid()) is False                              # the real ps on this live process
+
+
 def test_dirs_are_per_group_cache_and_per_party_state(tmp_path):
     orch = StateStore(tmp_path, "claude", "orchestrator")
     assert orch.cache_dir == tmp_path / "cache" / "claude"

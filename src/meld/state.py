@@ -25,7 +25,7 @@ def meld_home(env: Mapping[str, str], repo: str | None = None) -> Path:
     return base / "products" / repo if repo and "/" in repo else base
 
 
-def pid_alive(pid: int) -> bool:
+def pid_alive(pid: int, run=subprocess.run) -> bool:
     if pid <= 0:
         return False
     try:
@@ -39,8 +39,21 @@ def pid_alive(pid: int) -> bool:
     except ProcessLookupError:
         return False
     except PermissionError:
-        return True
-    return True
+        pass
+    # Plan 76: a zombie answers `kill(pid, 0)` as if alive, but it has exited; only its parent can reap it, and the
+    # parent of a supervisor the wizard started is the `meld start` process, which may not look for a while. From any
+    # other process (`meld stop`, `meld run`) the state column is the only way to tell: linkcheck's `meld stop codex`
+    # reported `stopped: false` and `meld run codex` refused "already running" over a supervisor that was defunct.
+    return not is_zombie(pid, run)
+
+
+def is_zombie(pid: int, run=subprocess.run) -> bool:
+    """True when `ps` reports `pid` in state Z (exited, unreaped); False when it is live or `ps` cannot say."""
+    try:
+        out = run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out.returncode == 0 and out.stdout.strip().startswith("Z")
 
 
 def proc_start_of(pid: int, run=subprocess.run) -> str:

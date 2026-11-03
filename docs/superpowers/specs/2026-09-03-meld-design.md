@@ -527,7 +527,7 @@ A survey of existing multi-agent coding systems (Symphony and its forks, Gas Tow
 - Per-group machines and a shared `$MELD_HOME` alternative.
 - A third adapter to prove the N-group claims end to end.
 - A read-only GitHub token for workers that need to read issues beyond their brief.
-- PID reuse is only partly detected: `kill_run` signals a pid only while it still leads its own process group, so a reused pid that is not a session leader is left alone; one that is a session leader is indistinguishable from the worker. A run record's pid plus deadline remains the liveness signal.
+- PID reuse is only partly detected: `kill_run` signals a pid only while it still leads its own process group, so a reused pid that is not a session leader is left alone; one that is a session leader is indistinguishable from the worker. A run record's pid plus deadline remains the liveness signal. A zombie is dead (plan 76): `state.pid_alive` reads the `ps` state column after `kill(pid, 0)`, because a supervisor the wizard started is a child of the `meld start` process and lingers as defunct until that process looks, during which `meld stop` reported it not stopped and `meld run` refused to start another.
 
 ### Carried into plan 3 from the plan-1 final review
 

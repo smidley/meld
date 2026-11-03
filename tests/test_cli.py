@@ -97,8 +97,11 @@ def _watch(tmp_path, monkeypatch, args, env_extra=None, bind_error: OSError | No
     config.write_text(PROJECT_TOML)
     fake = FakeGh()
     load_board1_routes(fake)
+    fake.route("GET", "repos/acme/widgets/issues/10", {"number": 10, "body": "# Coordination: M1\n\n## Goal\n\nBuild it.\n"})
+    fake.route("PATCH", "repos/acme/widgets/issues/10", {"number": 10})     # plan 74: the link goes on GitHub
+    fake.route("PATCH", "repos/acme/widgets", {})
     monkeypatch.setattr(cli, "RUN", fake)
-    seen = {}
+    seen = {"gh": fake}
 
     def fake_serve(viewer, *, host="127.0.0.1", port=0):
         seen["viewer"], seen["port"] = viewer, port
@@ -123,6 +126,9 @@ def test_watch_prints_exactly_the_url_with_a_fresh_token_and_serves_until_stoppe
     assert len(token) >= 43 and result.output == f"http://127.0.0.1:4321/?t={token}\n"
     assert seen["port"] == 0                         # [viewer] port's default: the OS chooses
     assert seen["server"].served and seen["server"].closed and opened == []
+    patches = [c for c in seen["gh"].calls if c.method == "PATCH"]       # plan 74: the same link is on GitHub
+    assert [c.endpoint for c in patches] == ["repos/acme/widgets/issues/10", "repos/acme/widgets"]
+    assert token in patches[0].body["body"] and patches[1].body == {"homepage": f"http://127.0.0.1:4321/?t={token}"}
 
 
 def test_watch_honours_port_and_open_flags(tmp_path, monkeypatch):

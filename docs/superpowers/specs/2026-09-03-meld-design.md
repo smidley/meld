@@ -681,7 +681,7 @@ Three rules keep this honest. A line an adapter does not recognize becomes `raw`
 
 ### The viewer
 
-`meld watch` serves one page and prints its URL. It is a tool a person runs, not a service the framework depends on: no role may start it, nothing reads from it, and every verb it offers also exists on the CLI. Section 2's "polling only" non-goal rules out webhooks and anything reachable from off the machine; a loopback page that a human starts and closes is neither.
+`meld watch` serves one page and prints its URL. It is a tool a person runs, not a service the framework depends on: no role may start it, nothing reads from it, and every verb it offers also exists on the CLI. The URL is also put on GitHub when the page comes up (plan 74): `meld start`, `meld watch` and the wizard's adoption of a new board write it to the repository's homepage field and to a `## Dashboard` section at the end of the coordination issue's body, so a person who opens the repository finds the page that watches it; `assemble` strips that section from the goal the agents read, a failure to write it is a line on stderr and never a reason not to serve, and the page stays loopback-only, so the link works from the machine it names. Section 2's "polling only" non-goal rules out webhooks and anything reachable from off the machine; a loopback page that a human starts and closes is neither.
 
 | Route | Method | Purpose |
 |---|---|---|

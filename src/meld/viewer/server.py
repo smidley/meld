@@ -332,6 +332,10 @@ class Viewer:
         self.config_path = path
         self._config_stamp = self._config_mtime()
         self._state_cache = None
+        if self.setup.base_url:
+            # Plan 74: the wizard's page becomes the board here; the repository now exists, so put the link on it.
+            from meld.dashboard import try_publish
+            try_publish(self.ctx.gh, f"{self.setup.base_url}/?t={self.token}")
         return True
 
     # ---- routes -----------------------------------------------------------------------------------------

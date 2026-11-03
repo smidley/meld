@@ -853,6 +853,10 @@ def watch(ctx: click.Context, port: int | None, open_browser: bool | None) -> No
     link = url(httpd, viewer.token)
     session.base_url, session.token = link.partition("/?")[0], viewer.token
     click.echo(link)                                  # the one line this prints to stdout
+    from meld.dashboard import try_publish
+    note = try_publish(c.gh, link)                    # plan 74: the link is on GitHub too, for whoever opens the repository
+    if note:
+        click.echo(note, err=True)
     wants_browser = c.cfg.viewer_open_browser if open_browser is None else open_browser
     if wants_browser:
         webbrowser.open(link)

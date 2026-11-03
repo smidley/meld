@@ -19,6 +19,7 @@ from meld.board import (
     held_leases,
     utc_now_iso,
 )
+from meld.dashboard import strip_section
 from meld.config import Config
 from meld.github import GitHub, GitHubError, RateLimited
 from meld.grammar import parse_comment
@@ -226,5 +227,5 @@ def build_board(gh: GitHub, cfg: Config, runs: dict[str, dict[int, RunRecord]], 
         leases=held_leases(derive_leases(comments), issues),
         plan_text=description, now=now or utc_now_iso(),
         challenges=challenges, audits=derive_audits(comments),
-        goal=(coord_raw_list[0].get("body") or ""), goal_title=str(coord_raw_list[0].get("title") or ""), bots={g.name: g.bot for g in cfg.groups.values()},
+        goal=strip_section(coord_raw_list[0].get("body") or ""), goal_title=str(coord_raw_list[0].get("title") or ""), bots={g.name: g.bot for g in cfg.groups.values()},
     )

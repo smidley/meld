@@ -1203,9 +1203,10 @@ def test_the_page_draws_its_overview_as_inline_svg(tmp_path):
         assert marker in html, marker
     js = get(v, "/static/app.js").body.decode()
     for marker in ("createElementNS", "drawMap", "drawBars", "drawTaskGraph", "state.processes", "drawEdge",
-                   "drawTimeline", "drawRing", "runFraction", "showTurn(t.id)", "clock12", "flowing", "animationDelay"):   # plan 54: edges carry no arrowhead, so no arrowFor
+                   "drawTimeline", "drawRing", "runFraction", "showTurn(t.id)", "clock12", "flowing", 'class: "grid"'):   # plan 54: edges carry no arrowhead, so no arrowFor; plan 79: a grid, no breathing
         assert marker in js, marker
     assert "innerHTML" not in js and "http://www.w3.org/2000/svg" in js
+    assert "animationDelay" not in js and "style.width" not in js   # plan 79: nothing idles, and fills scale instead of animating width
     state = body(get(v, "/api/state"))
     assert set(state["processes"]) == set(state["supervisors"]) and all("roles" in v for v in state["processes"].values())
     assert all("launch_no" in r for p in state["processes"].values() for r in p["roles"].values()) and "restarted ${n} time" in js   # plan 54: plain words on the role chip

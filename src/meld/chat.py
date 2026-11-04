@@ -349,6 +349,15 @@ def _doing(group: str, status: dict) -> str:
     return ", ".join(out)
 
 
+def _age(minutes: int) -> str:
+    """An age a person reads at a glance: minutes under an hour and a half, then hours, then days (plan 79)."""
+    if minutes < 90:
+        return f"{minutes} min"
+    if minutes < 48 * 60:
+        return f"{round(minutes / 60)} h"
+    return f"{round(minutes / 1440)} d"
+
+
 def status_strip(status: dict, decisions: list[dict], processes: dict, limits: dict, now: datetime, *,
                  last_post_at: str | None = None, silence_grace_minutes: int = 15, tz: tzinfo = timezone.utc,
                  activity_at: str | None = None) -> dict:
@@ -372,14 +381,14 @@ def status_strip(status: dict, decisions: list[dict], processes: dict, limits: d
             states.append(("attention", f"The plan for milestone {milestone} is ready for your approval.", {"verb": "plan-approve"}, ""))
         else:
             ages = [d["age_minutes"] for d in decisions if d.get("age_minutes") is not None]
-            oldest = f" — oldest {max(ages)} min" if ages else ""
-            states.append(("attention", f"{_n(len(decisions), 'question')} need{'s' if len(decisions) == 1 else ''} you{oldest}.", None, ""))
+            oldest = f" — oldest {_age(max(ages))}" if ages else ""
+            states.append(("attention", f"{_n(len(decisions), 'question')} need{'s' if len(decisions) == 1 else ''} you{oldest}", None, ""))
     for g, proc in processes.items():
         if (proc.get("supervisor") or {}).get("state") == "dead" and not _frozen_until(g, limits):
             # Plan 78: the group's supervisor is gone, so its roles are dead because of that, not on their own. On
             # linkcheck the owner stopped codex, the strip said "codex's orchestrator has stopped (restarted 11 times).
             # Open its transcript", the headline said nothing waited on them, and #2, tagged for codex, sat ready for an hour.
-            states.append(("bad", f"{g} is stopped: nothing it owns moves until `meld run {g} --detach` runs here.", None, ""))
+            states.append(("bad", f"{g} is stopped: nothing it owns moves until `meld run {g} --detach` runs here", None, ""))
             continue
         for role, rec in (proc.get("roles") or {}).items():
             if _crash_looping(rec):
@@ -388,11 +397,11 @@ def status_strip(status: dict, decisions: list[dict], processes: dict, limits: d
                 states.append(("bad", f"{g}'s {ROLE_WORDS.get(role, role)} has stopped. Open its transcript.", None, ""))
     frozen = {g: until for g in processes if (until := _frozen_until(g, limits))}
     if frozen and len(frozen) == len(processes):
-        states.append(("bad", f"Every agent is out of quota; next try {_clock(min(frozen.values()), tz)}.", None, ""))
+        states.append(("bad", f"Every agent is out of quota; next try {_clock(min(frozen.values()), tz)}", None, ""))
     elif frozen:
         others = [g for g in processes if g not in frozen]
         still = ", ".join(f"{g} is still {'building' if _doing(g, status) else 'running'}" for g in others)
-        states.append(("attention", "; ".join(f"{g} is out of quota until {_clock(until, tz)}" for g, until in frozen.items()) + f"; {still}.", None, ""))
+        states.append(("attention", "; ".join(f"{g} is out of quota until {_clock(until, tz)}" for g, until in frozen.items()) + f"; {still}", None, ""))
     blocked = [i["number"] for i in issues if i.get("status") == "blocked"]
     if blocked:
         refs = ", ".join(f"#{n}" for n in blocked)
@@ -403,14 +412,14 @@ def status_strip(status: dict, decisions: list[dict], processes: dict, limits: d
     quiet_since = _minutes(max(last_post, last_run, activity_at or "") or None, now)   # plan 58: a process writing is life
     done = bool(issues) and all(i["status"] == "closed" for i in issues)
     if quiet_since is not None and quiet_since > silence_grace_minutes and not done:
-        states.append(("attention", f"Nothing has happened for {quiet_since} min — last post {_clock(last_post, tz) or 'never'}.", None, ""))
+        states.append(("attention", f"Nothing has happened for {_age(quiet_since)} — last post {_clock(last_post, tz) or 'never'}", None, ""))
     if status.get("phase") == "planning":
         states.append(("quiet", f"Planning milestone {milestone} — the groups are agreeing a plan. Nothing needs you.", None, ""))
     elif done:
         spent = sum(float(u.get("cost_usd") or 0) for u in (limits.get("usage") or {}).values())
         pending = (status.get("audit") or {}).get("pending") or []
-        states.append(("ok", f"Milestone {milestone} is complete — {len(issues)} of {_n(len(issues), 'issue')} closed" + (f", ${spent:.2f} spent" if spent else "") + ".",
-                       None, f"{_n(len(pending), 'merged PR')} still await{'s' if len(pending) == 1 else ''} an audit." if pending else ""))
+        states.append(("ok", f"Milestone {milestone} is complete — {len(issues)} of {_n(len(issues), 'issue')} closed" + (f", ${spent:.2f} spent" if spent else ""),
+                       None, f"{_n(len(pending), 'merged PR')} still await{'s' if len(pending) == 1 else ''} an audit" if pending else ""))
     else:
         closed = sum(1 for i in issues if i["status"] == "closed")
         states.append(("ok", f"Building milestone {milestone} — {_n(len(running), 'worker')} running, {closed} of {_n(len(issues), 'issue')} done. Nothing needs you.", None, ""))

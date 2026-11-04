@@ -478,28 +478,28 @@ def test_the_status_strip_says_each_state_in_the_reviews_words():
     building = strip(_executing())
     assert building["level"] == "ok" and building["text"] == "Building milestone 3 — 1 worker running, 1 of 3 issues done. Nothing needs you."
     asked = strip(_executing(), [{"kind": "needs_human", "age_minutes": 25}, {"kind": "budget", "age_minutes": 8}])
-    assert asked["level"] == "attention" and asked["text"] == "2 questions need you — oldest 25 min." and asked["action"] is None
-    assert strip(_executing(), [{"kind": "needs_human", "age_minutes": 3}])["text"] == "1 question needs you — oldest 3 min."
+    assert asked["level"] == "attention" and asked["text"] == "2 questions need you — oldest 25 min" and asked["action"] is None
+    assert strip(_executing(), [{"kind": "needs_human", "age_minutes": 3}])["text"] == "1 question needs you — oldest 3 min"
     one_frozen = {"frozen": {"codex": {"pm": {"until": "2026-09-03T17:09:00Z", "expired": False}}}, "usage": {}}
     frozen = strip(_executing(), limits=one_frozen)
-    assert frozen["level"] == "attention" and frozen["text"] == "codex is out of quota until 5:09 pm; claude is still building."
+    assert frozen["level"] == "attention" and frozen["text"] == "codex is out of quota until 5:09 pm; claude is still building"
     all_frozen = {"frozen": {"codex": {"pm": {"until": "2026-09-03T17:09:00Z", "expired": False}},
                              "claude": {"orchestrator": {"until": "2026-09-03T18:00:00Z", "expired": False}}}, "usage": {}}
     every = strip(_executing(), limits=all_frozen)
-    assert every["level"] == "bad" and every["text"] == "Every agent is out of quota; next try 5:09 pm."
+    assert every["level"] == "bad" and every["text"] == "Every agent is out of quota; next try 5:09 pm"
     looping = strip(_executing(), procs=_procs(claude=None, codex=_role("dead", launch_no=39, reason="crash")))
     assert looping["level"] == "bad" and looping["text"] == "codex's PM has stopped (restarted 38 times). Open its transcript."
     stuck = strip(_executing(issues=[mk_issue(3, status="blocked"), mk_issue(12, status="in_progress", claimed_by="claude")]))
     assert stuck["level"] == "attention" and stuck["text"] == "#3 is blocked: the worker could not finish. 1 worker still running."
     silent = strip(_executing(), last_post_at="2026-09-03T11:35:00Z")   # the run started 10:00, the last post 11:35
-    assert silent["level"] == "attention" and silent["text"] == "Nothing has happened for 25 min — last post 11:35 am."
+    assert silent["level"] == "attention" and silent["text"] == "Nothing has happened for 25 min — last post 11:35 am"
     halted = strip(_executing(halted=True))
     assert halted["level"] == "bad" and halted["text"] == "Paused by you. Nothing moves until you resume." and halted["action"] == {"verb": "post", "action": "RESUME"}
     done_status = {"milestone": 1, "phase": "executing", "issues": [{"number": n, "status": "closed"} for n in (1, 2, 3)], "runs": [], "audit": {"pending": [40]}}
     done = strip(done_status, limits={"frozen": {}, "usage": {"claude": {"cost_usd": 41.2}, "codex": {"cost_usd": 0.0}}})
-    assert done == {"level": "ok", "text": "Milestone 1 is complete — 3 of 3 issues closed, $41.20 spent.", "action": None, "detail": "1 merged PR still awaits an audit."}
-    assert strip({**done_status, "audit": {"pending": []}})["text"] == "Milestone 1 is complete — 3 of 3 issues closed."
-    assert strip({**done_status, "audit": {"pending": [40, 41]}})["detail"] == "2 merged PRs still await an audit."
+    assert done == {"level": "ok", "text": "Milestone 1 is complete — 3 of 3 issues closed, $41.20 spent", "action": None, "detail": "1 merged PR still awaits an audit"}
+    assert strip({**done_status, "audit": {"pending": []}})["text"] == "Milestone 1 is complete — 3 of 3 issues closed"
+    assert strip({**done_status, "audit": {"pending": [40, 41]}})["detail"] == "2 merged PRs still await an audit"
 
 
 def test_the_status_strip_keeps_the_reviews_precedence_and_names_the_next_state_as_the_detail():
@@ -508,13 +508,13 @@ def test_the_status_strip_keeps_the_reviews_precedence_and_names_the_next_state_
     frozen = {"frozen": {"claude": {"pm": {"until": "2026-09-03T17:09:00Z", "expired": False}}}, "usage": {}}
     asks = [{"kind": "needs_human", "age_minutes": 25}]
     everything = status_strip(_executing(halted=True, issues=[mk_issue(3, status="blocked")]), asks, looping, frozen, NOW, last_post_at="2026-09-03T10:00:00Z")
-    assert everything["text"].startswith("Paused by you.") and everything["detail"] == "1 question needs you — oldest 25 min."
+    assert everything["text"].startswith("Paused by you.") and everything["detail"] == "1 question needs you — oldest 25 min"
     not_halted = status_strip(_executing(issues=[mk_issue(3, status="blocked")]), asks, looping, frozen, NOW, last_post_at="2026-09-03T10:00:00Z")
     assert not_halted["text"].startswith("1 question needs you") and not_halted["detail"].startswith("codex's PM has stopped")
     no_asks = status_strip(_executing(issues=[mk_issue(3, status="blocked")]), [], looping, frozen, NOW, last_post_at="2026-09-03T10:00:00Z")
-    assert no_asks["text"].startswith("codex's PM has stopped") and no_asks["detail"] == "claude is out of quota until 5:09 pm; codex is still running."
+    assert no_asks["text"].startswith("codex's PM has stopped") and no_asks["detail"] == "claude is out of quota until 5:09 pm; codex is still running"
     quiet = status_strip(_executing(issues=[mk_issue(3, status="blocked")]), [], _procs(**ALIVE), {"frozen": {}, "usage": {}}, NOW, last_post_at="2026-09-03T10:00:00Z")
-    assert quiet["text"].startswith("#3 is blocked") and quiet["detail"].startswith("Nothing has happened for 120 min")
+    assert quiet["text"].startswith("#3 is blocked") and quiet["detail"].startswith("Nothing has happened for 2 h")
     silent = status_strip(_executing(), [], _procs(**ALIVE), {"frozen": {}, "usage": {}}, NOW, last_post_at="2026-09-03T10:00:00Z")
     assert silent["text"].startswith("Nothing has happened") and silent["detail"] == "Building milestone 3 — 1 worker running, 1 of 3 issues done. Nothing needs you."
 
@@ -532,7 +532,7 @@ def test_a_role_is_crash_looping_past_five_launches_and_silence_starts_past_the_
     assert stopped["text"] == "codex's PM has stopped. Open its transcript."
     # Plan 78: a dead supervisor is the reason its roles are dead; the strip names the group and the command, once.
     group_gone = status_strip(_executing(), [], _procs(claude=None, codex="dead"), limits, NOW, last_post_at=RECENT)
-    assert group_gone["level"] == "bad" and group_gone["text"] == "codex is stopped: nothing it owns moves until `meld run codex --detach` runs here."
+    assert group_gone["level"] == "bad" and group_gone["text"] == "codex is stopped: nothing it owns moves until `meld run codex --detach` runs here"
     assert "has stopped" not in group_gone["detail"]
     codex_frozen = {"frozen": {"codex": {"pm": {"until": "2026-09-03T17:09:00Z", "expired": False}}}, "usage": {}}
     gone_but_frozen = status_strip(_executing(), [], _procs(claude=None, codex="dead"), codex_frozen, NOW, last_post_at=RECENT)
@@ -540,7 +540,7 @@ def test_a_role_is_crash_looping_past_five_launches_and_silence_starts_past_the_
     at_grace = status_strip(_executing(), [], _procs(**ALIVE), limits, NOW, last_post_at="2026-09-03T11:45:00Z", silence_grace_minutes=15)
     assert at_grace["level"] == "ok"                                                              # 15 min is not past a 15-min grace
     past = status_strip(_executing(), [], _procs(**ALIVE), limits, NOW, last_post_at="2026-09-03T11:44:00Z", silence_grace_minutes=15)
-    assert past["text"] == "Nothing has happened for 16 min — last post 11:44 am."
+    assert past["text"] == "Nothing has happened for 16 min — last post 11:44 am"
     wider = status_strip(_executing(), [], _procs(**ALIVE), limits, NOW, last_post_at="2026-09-03T11:44:00Z", silence_grace_minutes=30)
     assert wider["level"] == "ok"
     nothing_yet = status_strip({"milestone": 1, "phase": "planning", "issues": [], "runs": []}, [], _procs(**ALIVE), limits, NOW)

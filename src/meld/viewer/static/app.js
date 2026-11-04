@@ -348,7 +348,7 @@ function issueCard(i, lane) {
     bar.className = "iprogress";
     const fill = document.createElement("div");
     fill.className = "ifill";
-    fill.style.width = `${Math.round(Math.min(1, runFraction(r)) * 100)}%`;
+    fill.style.transform = `scaleX(${Math.min(1, runFraction(r))})`;
     fill.style.background = colorFor("group", r.group);
     bar.append(fill);
     card.append(line, bar);
@@ -403,10 +403,12 @@ function drawTimeline(state) {
     svgText(svg, 16, y + 4, clip(v, 12), "sub");
     svgEl("line", { class: "lane", x1: left, y1: y, x2: width - right, y2: y }, svg);
   });
-  // Time ticks every fifteen minutes, labelled HH:MM in UTC like every other stamp on the page.
+  // Time ticks every fifteen minutes, labelled like every other stamp on the page, each with a hairline down the lanes
+  // (plan 79: the band is the page's instrument, so it has a grid).
   const step = 15 * 60 * 1000;
   for (let t = Math.ceil(from / step) * step; t <= now; t += step) {
     const x = xOf(new Date(t).toISOString());
+    svgEl("line", { class: "grid", x1: x, y1: top, x2: x, y2: height - 16 }, svg);
     svgText(svg, x, height - 4, clock12(t), "tick").setAttribute("text-anchor", "middle");
   }
   svgEl("line", { class: "now", x1: width - right, y1: top, x2: width - right, y2: height - 16 }, svg);
@@ -417,7 +419,6 @@ function drawTimeline(state) {
     const dot = svgEl("circle", { class: "dot" + (attention ? " attention" : ""), cx: xOf(t.at), cy: y,
                                   r: attention ? 5 : (t.housekeeping ? 2.5 : 4), fill: color, "fill-opacity": t.housekeeping ? 0.45 : 1 }, svg);
     svgEl("title", {}, dot).textContent = `${clock12(Date.parse(t.at))} [${t.party}] ${t.verb}${t.ref ? " " + t.ref : ""}${t.qualifier ? " " + t.qualifier : ""}`;
-    dot.style.animationDelay = `-${(t.id % 29) * 0.11}s`;   // each dot breathes on its own beat, never all together
     dot.addEventListener("click", () => showTurn(t.id));
   }
 }
@@ -685,7 +686,7 @@ function drawBars(state) {
   const issues = s.issues || [];
   const done = issues.filter((i) => i.status === "closed").length;
   const pct = issues.length ? Math.round((done / issues.length) * 100) : 0;
-  el("progress-fill").style.width = `${pct}%`;
+  el("progress-fill").style.transform = `scaleX(${pct / 100})`;
   text(el("progress-text"), (issues.length ? `${done} of ${issues.length} issues done` : "no issues yet") + (state.progress ? ` · ${state.progress}` : ""));
   const bars = el("budget-bars");
   bars.replaceChildren();
@@ -704,7 +705,7 @@ function drawBars(state) {
       const fill = document.createElement("div");
       const share = cap[tier] ? Math.min(100, Math.round((used / cap[tier]) * 100)) : 0;
       fill.className = "fill" + (share >= 90 ? " bad" : share >= 70 ? " warn" : "");
-      fill.style.width = `${share}%`;
+      fill.style.transform = `scaleX(${share / 100})`;
       track.append(fill);
       const t = text(document.createElement("span"), `${used} of ${cap[tier] || "?"} runs`);
       t.className = "dim";
@@ -1041,7 +1042,7 @@ function renderDecisions(list) {
     li.dataset.ask = d.id;
     const party = text(li.querySelector(".aparty"), d.from || "an agent");
     party.style.color = colorFor("group", String(d.from || "").split(":")[0]);
-    text(li.querySelector(".awhen"), d.age_minutes != null ? `${d.age_minutes} min ago` : "");
+    text(li.querySelector(".awhen"), d.age_minutes != null ? `${ageWords(d.age_minutes)} ago` : "");
     const where = li.querySelector(".awhere");
     if (d.comment_id) {
       link(where, "on GitHub ↗", ghUrl("comment", d.comment_id), "open this comment on GitHub");
@@ -1820,6 +1821,8 @@ function renderStrip(state) {
 // "updated N s ago" counts from the last successful poll, in the strip and in the footer; a failed poll turns the strip
 // red with the error and leaves the last board on the page.
 let lastPollAt = 0;
+// plan 79: an age in minutes reads at a glance, as chat._age says it: minutes under an hour and a half, then hours, then days
+function ageWords(minutes) { return minutes < 90 ? `${minutes} min` : minutes < 48 * 60 ? `${Math.round(minutes / 60)} h` : `${Math.round(minutes / 1440)} d`; }
 function tickUpdated() {
   if (!lastPollAt) return;
   const s = Math.round((Date.now() - lastPollAt) / 1000);

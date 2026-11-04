@@ -60,8 +60,6 @@ def test_tag_replaces_labels_and_validates(tmp_path):
 
 def test_tag_refusals(tmp_path):
     fake, ctx = make(tmp_path)
-    with pytest.raises(Refused, match="at least one"):
-        tag(ctx, 11)
     with pytest.raises(Refused, match="not valid"):
         tag(ctx, 11, effort="turbo")
     with pytest.raises(Refused, match="unknown for adapter"):
@@ -75,6 +73,19 @@ def test_tag_refusals(tmp_path):
     _, pm = make(tmp_path / "pm", role="pm")
     with pytest.raises(Refused, match="orchestrator or a human"):
         tag(pm, 11, size="S")
+
+
+def test_tag_with_nothing_to_set_reads_the_declarations_and_posts_nothing(tmp_path):
+    """Plan 80: linkcheck's orchestrator ran `meld tag N` to confirm its items' tags; a usage refusal, posted as a
+    PROTOCOL-VIOLATION each time, is not what a read deserves. Anyone who can read the board may read, a PM included."""
+    fake, ctx = make(tmp_path)
+    posts = len([c for c in fake.calls if c.method == "POST" and c.endpoint.endswith("/comments")])
+    out = tag(ctx, 11)   # the fixture's #11 carries worker backend and size S
+    assert out["read"] is True and out["issue"] == 11 and out["size"] == "S" and out["worker"] == "backend" and out["held"] == []
+    assert set(out) == {"issue", "read", "worker", "model", "effort", "size", "skills", "scope", "may_delete", "held"}
+    assert len([c for c in fake.calls if c.method == "POST" and c.endpoint.endswith("/comments")]) == posts   # no violation posted
+    _, pm = make(tmp_path / "pm", role="pm")
+    assert tag(pm, 11)["read"] is True
 
 
 def test_human_may_tag_any_model(tmp_path):

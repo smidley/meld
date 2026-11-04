@@ -15,6 +15,12 @@ PREFIXES = ("worker", "model", "effort", "size")
 NEEDS_HUMAN = "meld:needs-human"
 
 
+def declarations(issue) -> dict:
+    """What `meld tag` has set on an issue, as the read `meld tag N` prints (plan 80)."""
+    return {"issue": issue.number, "read": True, "worker": issue.worker, "model": issue.model, "effort": issue.effort, "size": issue.size,
+            "skills": list(issue.skills), "scope": list(issue.scope), "may_delete": list(issue.may_delete), "held": list(issue.held)}
+
+
 def tag(ctx, number: int, *, worker: str | None = None, model: str | None = None, effort: str | None = None,
         size: str | None = None, skills: Sequence[str] | None = None, scope: Sequence[str] | None = None,
         may_delete: Sequence[str] | None = None, held: Sequence[str] | None = None) -> dict:
@@ -24,13 +30,15 @@ def tag(ctx, number: int, *, worker: str | None = None, model: str | None = None
     issue = board.issues.get(number)
     if issue is None:
         refuse(ctx, board, Refusal(Verb.TAG, target, "issue is not in the active milestone"))
+    wanted = {"worker": worker, "model": model, "effort": effort, "size": size}
+    if not any(wanted.values()) and not skills and scope is None and may_delete is None and not held:
+        # Plan 80: `meld tag N` with nothing to set is a read, legal for anyone who can read the board. Linkcheck's
+        # orchestrator ran it to confirm its items' tags and each call was refused as a usage error and posted to the
+        # thread as a PROTOCOL-VIOLATION, three in a row.
+        return declarations(issue)
     refusal = issue_refusal(board, ctx.cfg, actor, Verb.TAG, issue, ctx.models)
     if refusal:
         refuse(ctx, board, refusal)
-    wanted = {"worker": worker, "model": model, "effort": effort, "size": size}
-    if not any(wanted.values()) and not skills and scope is None and may_delete is None and not held:
-        refuse(ctx, board, Refusal(Verb.TAG, target,
-                                    "provide at least one of --worker, --model, --effort, --size, --skill, --scope, --may-delete, --held"))
     if size is not None and size not in SIZES:
         refuse(ctx, board, Refusal(Verb.TAG, target, f"size '{size}' is not one of {', '.join(SIZES)}"))
     if skills is not None and any(not name for name in skills):

@@ -363,3 +363,25 @@ def test_the_quorum_counts_only_the_groups_that_have_spoken():
     assert participating_groups(spoken, CFG3) == frozenset({"claude", "codex"}) and needed_approvals(spoken, CFG3) == 1
     pr = mk_pr(20, 13, committer="meld-claude-bot", approvals=("meld-codex-bot",), checks="green")
     assert prule(replace(spoken, pulls={20: pr}), CODEX_PM, Verb.MERGE, pr) is None
+
+
+def test_a_review_or_an_audit_is_refused_once_the_orchestrator_models_tier_is_spent():
+    """Plan 83: livedrop's codex ran 25 large-tier reviews and audits against a cap of 20 and its orchestrator asked a person
+    to stop it. Only `claim` read the budget; a review or an audit runs on the group's orchestrator model and was never
+    counted against that model's tier before it started. The same refusal now covers both, and `meld status` lists it."""
+    from meld.models import ModelRegistry
+    from meld.rules import pr_verb_rules
+    REG = ModelRegistry.load()   # the packaged catalogue: claude-opus-5, the factories' orchestrator model, is large tier
+    pr = mk_pr(20, 13, committer="meld-codex-bot")
+    spent = mk_board(CFG2, pulls=[pr], spend={"claude": {"large": 20}, "codex": {}})
+    said = pr_refusal(spent, CFG2, CLAUDE_PM, Verb.REVIEW, pr, REG).rule
+    assert said.startswith("claude has exhausted its large-tier budget (20/20)") and "claude-opus-5" in said and "[budget] large" in said
+    under = mk_board(CFG2, pulls=[pr], spend={"claude": {"large": 19}, "codex": {}})
+    assert pr_refusal(under, CFG2, CLAUDE_PM, Verb.REVIEW, pr, REG) is None
+    merged = mk_pr(19, 9, committer="meld-codex-bot", state="closed", merged=True)
+    over = mk_board(CFG2, pulls=[merged], spend={"claude": {"large": 25}, "codex": {}})
+    assert pr_refusal(over, CFG2, CLAUDE_PM, Verb.AUDIT, merged, REG).rule.startswith("claude has exhausted its large-tier budget (25/20)")
+    assert pr_verb_rules(over, CFG2, CLAUDE_PM, merged, REG)["audit"].startswith("claude has exhausted its large-tier budget")
+    busy = replace(spent, runs={"claude": {n: mk_run("claude", n, kind="review", pr=n) for n in range(30, 34)}, "codex": {}})
+    assert pr_refusal(busy, CFG2, CLAUDE_PM, Verb.REVIEW, pr, REG).rule == "claude is at its review concurrency cap (4/4)"   # the nearer cap first
+    assert pr_refusal(over, CFG2, CLAUDE_PM, Verb.AUDIT, merged) is None   # no catalogue given: the tier is not this caller's question

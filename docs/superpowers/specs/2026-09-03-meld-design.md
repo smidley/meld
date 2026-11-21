@@ -464,7 +464,7 @@ The Codex adapter runs `codex exec -m <model> -c 'model_reasoning_effort="<effor
 | GitHub rate limit | `meld wait` | Backoff, no action |
 | Off-protocol GitHub change (label or assignee changed on a milestone issue by an actor that is neither a configured bot nor a listed human) | `meld tick`'s `off_protocol_sweep`, reading each open issue's own `issue_events` against a persisted per-issue cursor (not a `meld status` snapshot diff) | `PROTOCOL-VIOLATION` naming the actor and the change, posted once per event by the alphabetically first configured group's PM; no automatic revert |
 
-Budgets are per milestone in worker runs by model tier plus a wall-clock cap. `claim` refuses when the issue's model tier is exhausted for the caller; the orchestrator re-tags to a cheaper tier or posts `BUDGET`. Spend to date appears in `meld status` and the PM `STATUS` comment.
+Budgets are per milestone in worker runs by model tier plus a wall-clock cap. `claim` refuses when the issue's model tier is exhausted for the caller; the orchestrator re-tags to a cheaper tier or posts `BUDGET`. A review or an audit run is held to the same cap (plan 83): it runs on the group's orchestrator model, is recorded under that model's tier, and `dispatch --kind review|audit` refuses once that tier is spent, saying so in `meld status` too (`rules._run_slot`, reading the tier from the catalogue the caller passes); no cheaper model is substituted, so the PM posts `BUDGET` and the pull request waits for a person to raise the cap. Before this only `claim` read the budget, and the livedrop run's codex group spent 25 large-tier runs against a cap of 20. Spend to date appears in `meld status` and the PM `STATUS` comment.
 
 ## 18. Security
 

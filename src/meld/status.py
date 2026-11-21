@@ -68,7 +68,7 @@ def render_status(board: Board, cfg: Config, actor: Actor, models: ModelRegistry
          "merged": p.merged, "merged_at": p.merged_at, "files": len(p.files),
          "touches_security_paths": p.touches(cfg.security_paths), "audited_by": dict(board.audits.get(p.number, {})),
          "scope_violations": list(board.scope_violations(p)), "blocked_deletions": list(board.blocked_deletions(p)),
-         **_verbs(pr_verb_rules(board, cfg, actor, p))}
+         **_verbs(pr_verb_rules(board, cfg, actor, p, models))}
         for p in sorted(board.pulls.values(), key=lambda p: p.number)
     ]
     runs = [

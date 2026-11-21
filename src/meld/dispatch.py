@@ -538,7 +538,7 @@ def _dispatch_pr(ctx, board: Board, actor: Actor, number: int, kind: str, adapte
         if number in board.issues:
             refuse(ctx, board, Refusal(Verb.DISPATCH, target, f"#{number} is an issue, not a pull request; `--kind {kind}` takes a PR number"))
         refuse(ctx, board, Refusal(Verb.DISPATCH, target, "PR is not on a meld/ branch of the active repo"))
-    blocker = pr_refusal(board, ctx.cfg, actor, Verb.REVIEW if kind == "review" else Verb.AUDIT, pr)
+    blocker = pr_refusal(board, ctx.cfg, actor, Verb.REVIEW if kind == "review" else Verb.AUDIT, pr, ctx.models)
     if blocker:
         refuse(ctx, board, Refusal(Verb.DISPATCH, target, f"cannot {kind}: {blocker.rule}"))
     group = ctx.cfg.groups[actor.group]  # type: ignore[index]

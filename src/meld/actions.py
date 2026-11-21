@@ -76,7 +76,7 @@ def _status_said(ctx, board: Board, actor, refusal: Refusal) -> bool:
         if int(n) in board.issues:
             table = issue_verb_rules(board, ctx.cfg, actor, board.issues[int(n)], ctx.models)
         elif int(n) in board.pulls:
-            table = pr_verb_rules(board, ctx.cfg, actor, board.pulls[int(n)])
+            table = pr_verb_rules(board, ctx.cfg, actor, board.pulls[int(n)], ctx.models)
         else:
             return False
     except Exception:   # a table that cannot be computed is not a reason to lose the refusal

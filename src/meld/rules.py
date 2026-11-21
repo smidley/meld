@@ -116,11 +116,13 @@ def _claim(board: Board, cfg: Config, actor: Actor, issue: Issue, models: ModelR
     tier = models.tier_of(group.cli, issue.model)
     if tier is None:
         return f"model '{issue.model}' is unknown for adapter '{group.cli}'"
-    used = board.spend.get(group.name, {}).get(tier, 0)
+    return _tier_spent(board, cfg, group.name, tier)
+
+
+def _tier_spent(board: Board, cfg: Config, group: str, tier: str) -> str | None:
+    used = board.spend.get(group, {}).get(tier, 0)
     cap = cfg.budget.get(tier, 0)
-    if used >= cap:
-        return f"{group.name} has exhausted its {tier}-tier budget ({used}/{cap})"
-    return None
+    return f"{group} has exhausted its {tier}-tier budget ({used}/{cap})" if used >= cap else None
 
 
 CAPACITY_RETRY_SECONDS = 60
@@ -425,7 +427,10 @@ def _merge(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | No
     return None
 
 
-def _run_slot(board: Board, cfg: Config, actor: Actor, number: int) -> str | None:
+def _run_slot(board: Board, cfg: Config, actor: Actor, number: int, models: ModelRegistry | None = None) -> str | None:
+    """May this PM start a review or an audit run on #number now. With `models`, the run is also held to the budget of
+    the tier it will be recorded under (plan 83): a review or an audit runs on the group's orchestrator model, and
+    livedrop's codex spent 25 large-tier runs against a cap of 20 because only `claim` read the budget."""
     group = cfg.groups[actor.group]  # type: ignore[index]
     live = [r for r in board.runs.get(group.name, {}).values() if r.alive and r.kind in ("review", "audit")]
     if len(live) >= group.review_concurrency:
@@ -433,10 +438,17 @@ def _run_slot(board: Board, cfg: Config, actor: Actor, number: int) -> str | Non
     existing = board.run_for(group.name, number)
     if existing is not None and (existing.alive or not existing.collected):
         return "a run already exists for this PR (running or uncollected)"
+    if models is not None:
+        model = group.orchestrator.model
+        tier = models.tier_of(group.cli, model) or "medium"   # the tier `dispatch` records the run under
+        spent = _tier_spent(board, cfg, group.name, tier)
+        if spent:
+            return (f"{spent}; a review or an audit runs on the orchestrator's model ({model}), so it waits "
+                    f"until a person raises [budget] {tier}")
     return None
 
 
-def _review(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | None:
+def _review(board: Board, cfg: Config, actor: Actor, pr: PullRequest, models: ModelRegistry | None = None) -> str | None:
     if board.halted:
         return "HALT is in effect"
     if not actor.is_pm:
@@ -453,7 +465,7 @@ def _review(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | N
     if spent >= allowed:
         what = "already reviewed" if allowed == 1 else "already used both its review slots (reviewer and security) on"
         return f"{actor.group} {what} head {pr.head_sha[:7]}; a new review needs a new head"
-    return _run_slot(board, cfg, actor, pr.number)
+    return _run_slot(board, cfg, actor, pr.number, models)
 
 
 def _reviews_on_head(cfg: Config, group: str, pr: PullRequest) -> int:
@@ -477,7 +489,7 @@ def outside_milestone(board: Board, pr: PullRequest) -> bool:
     return pr.issue_number is not None and bool(board.issues) and pr.issue_number not in board.issues
 
 
-def _audit(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | None:
+def _audit(board: Board, cfg: Config, actor: Actor, pr: PullRequest, models: ModelRegistry | None = None) -> str | None:
     if board.halted:
         return "HALT is in effect"
     if not actor.is_pm:
@@ -499,7 +511,7 @@ def _audit(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> str | No
         return f"{actor.group} already audited #{pr.number}"
     if outside_milestone(board, pr):
         return "PR closes an issue outside the active milestone; it was audited in its own"
-    return _run_slot(board, cfg, actor, pr.number)
+    return _run_slot(board, cfg, actor, pr.number, models)
 
 
 CONCERNS = ("correctness and security", "tests and product conventions", "architecture, performance, and visual design")
@@ -517,11 +529,13 @@ def review_concern(cfg: Config, pr: PullRequest, group: str) -> str | None:
     return CONCERNS[reviewers.index(group) % len(CONCERNS)]
 
 
-def pr_refusal(board: Board, cfg: Config, actor: Actor, verb: Verb, pr: PullRequest) -> Refusal | None:
+def pr_refusal(board: Board, cfg: Config, actor: Actor, verb: Verb, pr: PullRequest, models: ModelRegistry | None = None) -> Refusal | None:
+    """`models` is the catalogue a review's or an audit's budget tier is read from; `meld status` and `dispatch` pass it.
+    A caller asking about a verb no tier touches (merge, a verdict) may leave it out."""
     if verb == Verb.REAP:
         rule: str | None = reap_rule(board, cfg, actor, pr.number, None, pr)
     elif verb == Verb.AUDIT:
-        rule = _audit(board, cfg, actor, pr)
+        rule = _audit(board, cfg, actor, pr, models)
     elif verb == Verb.REMEMBER:
         rule = remember_rule(board, cfg, actor, f"#{pr.number}")
     elif pr.state != "open":
@@ -535,13 +549,13 @@ def pr_refusal(board: Board, cfg: Config, actor: Actor, verb: Verb, pr: PullRequ
     elif verb == Verb.MERGE:
         rule = _merge(board, cfg, actor, pr)
     elif verb == Verb.REVIEW:
-        rule = _review(board, cfg, actor, pr)
+        rule = _review(board, cfg, actor, pr, models)
     else:
         rule = f"{verb.value} is not a PR verb"
     return Refusal(verb, f"#{pr.number}", rule) if rule else None
 
 
-def pr_verb_rules(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> dict[str, str | None]:
+def pr_verb_rules(board: Board, cfg: Config, actor: Actor, pr: PullRequest, models: ModelRegistry | None = None) -> dict[str, str | None]:
     """Every PR verb and why `actor` may not run it on `pr` right now -- None when it may. approve/request-changes are
     judged through the path `meld review` really takes: the author group's verdict is legal as a COMMENT review
     (review_verdict_rule), and a memory PR's verdict follows memory_review_rule -- so the table never says approve is
@@ -552,15 +566,15 @@ def pr_verb_rules(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> d
             verdict = "approve" if v == Verb.APPROVE else "request-changes"
             rule = memory_review_rule(board, cfg, actor, pr) if pr.memory else review_verdict_rule(board, cfg, actor, pr, verdict)
         else:
-            refusal = pr_refusal(board, cfg, actor, v, pr)
+            refusal = pr_refusal(board, cfg, actor, v, pr, models)
             rule = None if refusal is None else refusal.rule
         out[v.value] = rule
     return out
 
 
-def legal_pr_verbs(board: Board, cfg: Config, actor: Actor, pr: PullRequest) -> list[str]:
+def legal_pr_verbs(board: Board, cfg: Config, actor: Actor, pr: PullRequest, models: ModelRegistry | None = None) -> list[str]:
     """What `actor` may do to `pr` now."""
-    return [v for v, rule in pr_verb_rules(board, cfg, actor, pr).items() if rule is None]
+    return [v for v, rule in pr_verb_rules(board, cfg, actor, pr, models).items() if rule is None]
 
 
 def review_verdict_rule(board: Board, cfg: Config, actor: Actor, pr: PullRequest, verdict: str) -> str | None:

@@ -71,6 +71,18 @@ def test_the_catalogue_carries_the_current_families():
     assert "ultra" not in reg.get("codex", "gpt-6-luna").efforts and reg.validate("claude", "claude-sonnet-5-5", "xhigh") == []
 
 
+def test_a_new_product_starts_on_the_newest_models():
+    """Plan 81: `meld setup` takes the first model of a tier in file order, so the catalogue lists the newest first. The
+    wizard's first product after the 5.5 family landed would have started Claude on claude-opus-5."""
+    from meld.setup import _group_block
+    reg = ModelRegistry.load()
+    assert reg.get("claude", "claude-fable-5-2").tier == "large" and reg.get("codex", "gpt-6.1-terra").tier == "medium"
+    claude, _ = _group_block("claude", reg, commented=False)
+    codex, _ = _group_block("codex", reg, commented=False)
+    assert 'model = "claude-opus-5-5"' in claude and 'model = "claude-sonnet-5-5"' in claude
+    assert 'model = "gpt-6.1-sol"' in codex and 'model = "gpt-6.1-terra"' in codex
+
+
 def test_the_products_own_catalogue_lays_over_the_packaged_one(tmp_path: Path):
     """Plan 28: `.meld/models.toml` adds a local model (or redefines a packaged one) without touching the package."""
     from meld.models import write_product_model

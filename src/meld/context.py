@@ -88,7 +88,9 @@ def product_models_path(config_path: Path) -> Path:
 
 def load_context(config_path: Path | None = None, env: Mapping[str, str] | None = None, run=subprocess.run,
                  cwd: Path | None = None, models: ModelRegistry | None = None, adapter_for: Callable[[str], Adapter] = get_adapter,
-                 app_post=None) -> Context:
+                 app_post=None, human_token: Callable[[str], str | None] | None = None) -> Context:
+    """`human_token` (repo -> token or None) is how the caller names the person's `gh` account when the party is human
+    (plan 82); without it, or when it answers None, the client runs as `gh`'s own active account."""
     env = os.environ if env is None else env
     refuse_worker(env)
     path = config_path or find_config(cwd or Path.cwd())
@@ -115,6 +117,8 @@ def load_context(config_path: Path | None = None, env: Mapping[str, str] | None 
             token = env.get(g.token_env or "")
             if not token:
                 raise ConfigError(f"{g.token_env} is not set in the environment")
+    elif human_token is not None:
+        token = human_token(cfg.repo_name) or None
     gh = GitHub(cfg.repo_name, token=token, run=run, cache_dir=store.cache_dir, token_provider=provider)
     login = cfg.groups[party.group].bot if party.group else gh.viewer_login()
     return Context(cfg=cfg, party=party, gh=gh, store=store, models=models or ModelRegistry.load(extra=product_models_path(path)),

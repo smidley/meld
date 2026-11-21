@@ -70,7 +70,7 @@ def main(ctx: click.Context, config_path: Path | None, pretty: bool) -> None:
 
 
 def _load(ctx: click.Context) -> Context:
-    return _guard(lambda: load_context(ctx.obj["config_path"], run=RUN, adapter_for=ADAPTER_FOR))
+    return _guard(lambda: load_context(ctx.obj["config_path"], run=RUN, adapter_for=ADAPTER_FOR, human_token=_human_token))
 
 
 def _guard(fn):
@@ -571,15 +571,24 @@ def setup_viewer(cwd: Path) -> tuple[Viewer, "SetupSession"]:
                            doctor=lambda g: group_doctor(cwd / ".meld.toml", session.home)(g),
                            home_for=lambda repo: meld_home(os.environ, repo))
     viewer = Viewer(None, token=stable_token(home), port=0, config_path=None, setup=session,
-                    load_ctx=lambda p: load_context(p, run=RUN, adapter_for=ADAPTER_FOR))
+                    load_ctx=lambda p: load_context(p, run=RUN, adapter_for=ADAPTER_FOR, human_token=_human_token))
     return viewer, session
 
 
-def _human_gh(repo: str) -> GitHub:
-    """The wizard's and the board's GitHub client as the person: the `gh` account that owns `repo` when it is logged in,
-    else `gh`'s active account (plan 45). A token `gh` cannot give leaves the client on `gh`'s own default."""
+def _human_token(repo: str) -> str | None:
+    """The person's token for `repo`: the `gh` account that owns it when that account is logged in, else `gh`'s active
+    account's (plan 45), for every human client -- the wizard, the board, each verb, doctor, setup (plan 82: the board
+    read a private repository as the active work account and GitHub said 404). A `GH_TOKEN` or `GITHUB_TOKEN` the person
+    exported is their word: None, so `gh` uses it. None too when `gh` gives no token, leaving `gh` on its own default."""
+    if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"):
+        return None
     from meld.firstrun import gh_token_for
-    return GitHub(repo, token=gh_token_for(repo.partition("/")[0], RUN) or None, run=RUN)
+    return gh_token_for(repo.partition("/")[0], RUN) or None
+
+
+def _human_gh(repo: str, token: str | None = None) -> GitHub:
+    """A GitHub client for `repo`: with `token` (a group's), as that group; with none, as the person (`_human_token`)."""
+    return GitHub(repo, token=token if token is not None else _human_token(repo), run=RUN)
 
 
 def group_doctor(config_path: Path, home: Path):
@@ -588,7 +597,7 @@ def group_doctor(config_path: Path, home: Path):
 
     def check(group: str) -> list[dict]:
         cfg = load_config(config_path)
-        checks = run_checks(cfg, config_path.parent, env=os.environ, gh_factory=lambda token: GitHub(cfg.repo_name, token=token, run=RUN),
+        checks = run_checks(cfg, config_path.parent, env=os.environ, gh_factory=lambda token: _human_gh(cfg.repo_name, token),
                             registry=ModelRegistry.load(), adapter_for=ADAPTER_FOR, home=home)
         return [asdict(c) for c in checks if c.name.endswith(f":{group}")]
     return check
@@ -679,7 +688,7 @@ def ps(ctx: click.Context) -> None:
 def setup(ctx: click.Context, repo: str, goal: str, milestone_title: str, target_dir: Path, allow_public: bool, force: bool,
           no_protection: bool, pr: bool, app: bool) -> None:
     """Bootstrap a product repo: labels, milestone, coordination issue, and a starter .meld.toml (runs as you, via gh)."""
-    gh = GitHub(repo, token=None, run=RUN)
+    gh = _human_gh(repo)
     human = _guard(gh.viewer_login)
     # RUN carries gh api calls (a FakeGh in tests); git for --pr always runs through the default subprocess.run so it
     # is the human's own git identity and credentials that commit and push, never a test's or a group's fake.
@@ -703,14 +712,14 @@ def doctor(ctx: click.Context, probe_status: bool, do_sweep: bool, dry_run: bool
     if do_sweep:
         states: dict[int, str] | None = None
         try:
-            c = load_context(path, run=RUN, adapter_for=ADAPTER_FOR)
+            c = load_context(path, run=RUN, adapter_for=ADAPTER_FOR, human_token=_human_token)
             _, board = build_status(c)
             states = {n: ("merged" if p.merged else p.state) for n, p in board.pulls.items()}
         except (BoardError, GitHubError, ConfigError, AppAuthError):
             states = None
         emit(sweep(meld_home(os.environ, cfg.repo_name), cfg, repo_root=path.parent, pull_states=states, older_than_days=older_than_days, apply=not dry_run), ctx.obj["pretty"])
         return
-    checks = _guard(lambda: run_checks(cfg, path.parent, env=os.environ, gh_factory=lambda token: GitHub(cfg.repo_name, token=token, run=RUN),
+    checks = _guard(lambda: run_checks(cfg, path.parent, env=os.environ, gh_factory=lambda token: _human_gh(cfg.repo_name, token),
                                        registry=ModelRegistry.load(), adapter_for=ADAPTER_FOR, home=meld_home(os.environ, cfg.repo_name), probe_status=probe_status))
     result = summary(checks)
     emit(result, ctx.obj["pretty"])

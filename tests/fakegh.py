@@ -46,6 +46,8 @@ class FakeGh:
         return self.routes.get((method, path))
 
     def __call__(self, cmd, input=None, capture_output=True, text=True, env=None, **_):
+        if cmd[:3] == ["gh", "auth", "token"]:   # the CLI asking for the person's account (plan 82): this gh has none to give
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="no oauth token found")
         assert cmd[:3] == ["gh", "api", "--include"], cmd
         method, endpoint, headers = "GET", None, {}
         it = iter(cmd[3:])

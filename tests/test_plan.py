@@ -216,3 +216,42 @@ def test_a_plan_item_can_wait_for_others_and_the_issue_body_carries_it(tmp_path)
     plan_issues(ctx, "plan-3")
     bodies = [c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues"]
     assert "plan-after:" not in bodies[0] and "plan-after: engine\n" in bodies[1] and "plan-after: engine, site\n" in bodies[2]
+
+
+def _planned(n, ref):
+    return {"number": n, "title": f"P{n}", "body": f"plan-item: p{n}\nplan-ref: {ref}\n", "state": "open",
+            "labels": [{"name": "meld:planned"}, {"name": "worker:backend"}], "milestone": {"number": 3}}
+
+
+def test_plan_approve_follows_the_ref_the_orchestrators_gave_the_plan(tmp_path):
+    """Plan 84: livedrop's second milestone was planned as `plan-m2`; `meld plan approve` looked for `plan-2`, found no
+    verified [joint] PLAN under that name and refused, while `meld status` listed `plan-approve` as legal on `plan-m2`.
+    The gate acts on the verified [joint] PLAN that is on the coordination issue, whatever it is called."""
+    fake, human, repo, origin = make_product(tmp_path, group=None)
+    planning_board(fake, [_planned(31, "plan-m3"), _planned(32, "plan-m3")])
+    thread = [dict(c, body=c["body"].replace(" plan-3\n", " plan-m3\n", 1)) for c in PLAN_THREAD]
+    fake.route("GET", R + "issues/10/comments", fixture("comments_10.json") + thread)
+    for n in (10, 31, 32):
+        fake.route("POST", R + f"issues/{n}/labels", [])
+        fake.route("DELETE", R + f"issues/{n}/labels/meld%3Aplanned", [])
+    assert plan_approve(human) == {"approved": "plan-m3", "ready": [31, 32]}
+
+
+def test_plan_approve_finishes_an_approval_whose_label_was_added_by_hand(tmp_path):
+    """Plan 84: the coordination issue said "approve the plan by adding the label"; the owner did, the milestone read
+    `executing`, every issue stayed `planned`, and `plan approve` refused as already approved, with no verb left to
+    release them. While the plan's own issues are still planned the approval is unfinished and the verb finishes it;
+    an addition's issues wait for their own ack, and with nothing left it is the old refusal."""
+    fake, human, repo, origin = make_product(tmp_path, group=None)
+    issues = fixture("issues.json") + [_planned(31, "plan-3"), _planned(32, "plan-3"), _planned(33, "plan-add-1")]   # #10 keeps meld:plan-approved
+    fake.route("GET", R + "issues", issues)
+    fake.route("GET", R + "issues/10/comments", fixture("comments_10.json") + PLAN_THREAD)
+    for n in (10, 31, 32, 33):
+        fake.route("GET", R + f"issues/{n}/events", [])
+        fake.route("POST", R + f"issues/{n}/labels", [])
+        fake.route("DELETE", R + f"issues/{n}/labels/meld%3Aplanned", [])
+    assert plan_approve(human) == {"approved": "plan-3", "ready": [31, 32]}
+    assert not [c for c in fake.calls if c.endpoint.startswith(R + "issues/33/labels")]          # the addition is not released
+    fake.route("GET", R + "issues", fixture("issues.json") + [_planned(33, "plan-add-1")])       # the plan's issues are ready now
+    with pytest.raises(Refused, match="already approved"):
+        plan_approve(human)

@@ -80,7 +80,8 @@ def ensure_coordination_issue(gh: GitHub, milestone: int, milestone_title: str, 
     body = (f"# Coordination: {milestone_title}\n\n## Goal\n\n{goal.strip()}\n\n"
             + (f"## Context\n\n{context.strip()}\n\n" if context.strip() else "")
             + "Orchestrators post here in the `[party] VERB` grammar; humans speak as `[human]`. "
-            "Approve the plan by adding the `meld:plan-approved` label to this issue.\n")
+            "Approve the plan with `meld plan approve`, or Approve on the board; adding the `meld:plan-approved` label "
+            "by hand does not release the planned issues.\n")
     created = gh.create_issue(f"Coordination: {milestone_title}", body, [COORDINATION_LABEL], milestone)
     return int(created["number"]), "created"
 

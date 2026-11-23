@@ -478,7 +478,7 @@ def plan_issues_cmd(ctx: click.Context, ref: str, dry_run: bool) -> None:
 @plan.command("approve")
 @click.pass_context
 def plan_approve_cmd(ctx: click.Context) -> None:
-    """Human: add meld:plan-approved and flip every planned issue to ready."""
+    """Human: add meld:plan-approved and flip every planned issue to ready (also finishes an approval whose label was added by hand)."""
     c = _load(ctx)
     _run_action(ctx, lambda: do_plan_approve(c))
 

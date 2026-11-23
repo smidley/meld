@@ -140,7 +140,7 @@ Bootstrapping a fresh product repo, start to finish:
    **A group may run against another model server** (Ollama, vLLM, OpenRouter, anything OpenAI- or Anthropic-compatible): give it `[groups.<g>.env]` (`ANTHROPIC_BASE_URL` for Claude Code, or `OPENAI_API_KEY = "ollama"` as the placeholder a keyless server ignores) and, for Codex, `[groups.<g>.cli_config]` with `model_provider` and the `model_providers.<id>.*` keys the CLI documents; the page's "Add a group" writes both from a URL. Name its models with `meld add-model <adapter> <id> --tier large` (they go to `.meld/models.toml`, laid over Meld's catalogue). No secret goes in either table: the file is committed, so a keyed provider's key is exported in the shell that runs `meld run`.
 5. `meld doctor` until it reports green.
 6. `task up GROUP=claude` and `task up GROUP=codex` (`meld run GROUP --detach`), one per group; `task ps` shows them and `task down GROUP=...` stops one. `task run GROUP=...` is the same supervisor in the foreground.
-7. `meld chat`; when the plan appears, approve it with `/approve` (or `uv run meld plan approve`) — that adds `meld:plan-approved` *and* flips every planned issue to ready. Adding the label by hand does neither for the issues.
+7. `meld chat`; when the plan appears, approve it with `/approve` (or `uv run meld plan approve`) — that adds `meld:plan-approved` *and* flips every planned issue to ready. Adding the label by hand does neither for the issues; if you did, run `meld plan approve` anyway and it releases them.
 8. `meld watch`, and open the URL it prints, to watch the roles and workers as they run.
 
 ## Known issue: macOS hidden `.pth` files

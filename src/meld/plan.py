@@ -9,7 +9,7 @@ from meld.board import PLAN_APPROVED_LABEL
 from meld.grammar import agreement_for
 from meld.models import SIZES
 from meld.posting import post
-from meld.rules import Refusal, Verb, plan_rule
+from meld.rules import Refusal, Verb, gate_plan_ref, plan_rule
 from meld.status import build_status
 
 ITEM_RE = re.compile(r"^\s*-\s*id:\s*(?P<id>[a-z0-9][a-z0-9-]*)\s*\|\s*title:\s*(?P<title>[^|]+?)\s*\|\s*worker:\s*(?P<worker>\S+)\s*\|"
@@ -113,11 +113,14 @@ def plan_issues(ctx, ref: str, *, dry_run: bool = False) -> dict:
 def plan_approve(ctx) -> dict:
     _, board = build_status(ctx)
     actor = ctx.actor()
-    ref = f"plan-{board.milestone}"
+    ref = gate_plan_ref(board, ctx.cfg)
     rule = plan_rule(board, ctx.cfg, actor, "approve", ref)
     if rule:
         refuse(ctx, board, Refusal(Verb.PLAN, ref, rule))
-    ready = sorted(n for n, i in board.issues.items() if PLANNED in i.labels)
+    # In planning every planned issue is the plan's. Once the label is on (added by hand, plan 84) only the plan's own
+    # issues are released: an addition's wait for `plan ack`.
+    ready = (sorted(n for n, i in board.issues.items() if PLANNED in i.labels) if board.phase == "planning"
+             else _planned_for(board, ref))
     # Flip first, label last: the label is what makes the milestone `executing` (and this very call refuse as "already
     # approved"), so a failure while flipping leaves a still-planning board that a retry completes -- flipping is idempotent.
     _ready(ctx, ready)

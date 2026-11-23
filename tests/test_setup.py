@@ -387,3 +387,14 @@ def test_context_becomes_a_file_and_a_section_of_the_coordination_issue(tmp_path
     fake.calls.clear()
     ensure_coordination_issue(gh_for(fake), 1, "M1", "Ship it")
     assert "## Context" not in [c for c in fake.calls if c.method == "POST"][-1].body["body"]
+
+
+def test_the_coordination_issue_names_the_command_that_approves_the_plan(tmp_path):
+    """Plan 84: the issue told a person to approve by adding the label, which makes the milestone read `executing` and
+    releases no issue. It names `meld plan approve` and says the label alone is not the approval."""
+    fake = FakeGh()
+    fake.route("GET", R + "issues", [])
+    fake.route("POST", R + "issues", {"number": 48}, status=201)
+    ensure_coordination_issue(gh_for(fake), 2, "M2", "Ship it")
+    body = [c.body["body"] for c in fake.calls if c.method == "POST" and c.endpoint == R + "issues"][0]
+    assert "`meld plan approve`" in body and "by adding the" not in body and "does not release" in body

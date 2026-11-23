@@ -686,6 +686,18 @@ def _verified_plan_joint(board: Board, cfg: Config, ref: str, verbs: tuple[str, 
     return None
 
 
+def gate_plan_ref(board: Board, cfg: Config) -> str:
+    """The ref `meld plan approve` acts on: the verified [joint] PLAN on the coordination issue, whatever the
+    orchestrators called it (plan 84: livedrop's second milestone was planned as `plan-m2` and the gate looked for
+    `plan-2`). `plan-<milestone>` when it is among them or when there is none, so a refusal names the usual ref; the
+    newest otherwise."""
+    usual = f"plan-{board.milestone}"
+    verified = [c.header.ref for c in board.comments
+                if c.ok and c.header is not None and c.header.ref and c.header.party.kind == "joint" and c.header.verb == "PLAN"
+                and _verified_plan_joint(board, cfg, c.header.ref, ("PLAN",)) is None]
+    return usual if usual in verified or not verified else verified[-1]
+
+
 def plan_rule(board: Board, cfg: Config, actor: Actor, action: str, ref: str) -> str | None:
     """Why `meld plan <action> REF` is refused, or None. `action` is issues, approve, or ack."""
     if action == "issues":
@@ -703,7 +715,10 @@ def plan_rule(board: Board, cfg: Config, actor: Actor, action: str, ref: str) ->
     if action == "approve":
         if not actor.is_human:
             return "only a human may approve the plan"
-        if board.phase != "planning":
+        # Plan 84: the label alone makes the milestone `executing`. A person who added it by hand left every issue
+        # planned and this verb refusing; while the plan's own issues are still planned the approval is unfinished.
+        unfinished = any(i.status == "planned" and f"plan-ref: {ref}" in (i.body or "") for i in board.issues.values())
+        if board.phase != "planning" and not unfinished:
             return "the plan is already approved (milestone is executing)"
         return _verified_plan_joint(board, cfg, ref, ("PLAN",))
     if action == "ack":
